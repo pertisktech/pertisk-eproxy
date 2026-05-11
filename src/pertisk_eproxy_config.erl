@@ -222,6 +222,8 @@ json_to_config(Json) ->
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
         http_port       => maps:get(<<"http_port">>, Json, 8080),
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
+        quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
+        quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"127.0.0.1">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
@@ -248,6 +250,7 @@ parse_site(S) ->
         challenge_type => parse_opt_challenge_type(maps:get(<<"challenge_type">>, S, null)),
         wildcard => parse_opt_bool(maps:get(<<"wildcard">>, S, null)),
         acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
+        advertise_http3 => parse_opt_bool(maps:get(<<"advertise_http3">>, S, true)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
     }.
 

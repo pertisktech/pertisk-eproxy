@@ -16,6 +16,8 @@ stop(_State) ->
     stop_listener(http6),
     stop_listener(https4),
     stop_listener(https6),
+    stop_listener(quic4),
+    stop_listener(quic6),
     stop_listener(management),
     ok.
 
@@ -31,11 +33,17 @@ start_listeners() ->
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 8080),
     {ok, _}    = cowboy:start_clear(http4,
-        [{ip, {0,0,0,0}}, {port, HttpPort}, {num_acceptors, 100}],
+        #{
+            num_acceptors => 100,
+            socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
+        },
         #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
     ),
     {ok, _}    = cowboy:start_clear(http6,
-        [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}, {num_acceptors, 100}],
+        #{
+            num_acceptors => 100,
+            socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
+        },
         #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
     ),
     lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
@@ -44,12 +52,20 @@ start_listeners() ->
     case maps:find(https_port, Config) of
         {ok, HttpsPort} ->
             TlsOpts = tls_opts(Config),
+            TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
+            TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
             {ok, _} = cowboy:start_tls(https4,
-                [{ip, {0,0,0,0}}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
+                #{
+                    num_acceptors => 100,
+                    socket_opts => TlsSocketOpts4
+                },
                 #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
             ),
             {ok, _} = cowboy:start_tls(https6,
-                [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
+                #{
+                    num_acceptors => 100,
+                    socket_opts => TlsSocketOpts6
+                },
                 #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
             ),
             lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
@@ -57,15 +73,59 @@ start_listeners() ->
             ok
     end,
 
+    maybe_start_quic(Config, Routes),
+
     %% Management / Admin listener (local only by default)
     MgmtAddr = maps:get(management_addr, Config, {127,0,0,1}),
     MgmtPort = maps:get(management_port, Config, 9080),
     {ok, _}  = cowboy:start_clear(management,
-        [{ip, MgmtAddr}, {port, MgmtPort}, {num_acceptors, 10}],
+        #{
+            num_acceptors => 10,
+            socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]
+        },
         #{env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])}}
     ),
     lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
     ok.
+
+maybe_start_quic(Config, Routes) ->
+    case maps:get(quic_enabled, Config, false) of
+        true ->
+            Port = case maps:get(quic_port, Config, undefined) of
+                P when is_integer(P), P > 0 -> P;
+                _ -> maps:get(https_port, Config, 443)
+            end,
+            Tls = tls_opts(Config),
+            QuicSocketOpts4 = [{ip, {0,0,0,0}}, {port, Port} | Tls],
+            QuicProtoOpts = #{
+                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                enable_connect_protocol => true,
+                h3_datagram => true,
+                wt_max_sessions => 16,
+                enable_webtransport => true
+            },
+            case erlang:function_exported(cowboy, start_quic, 3) of
+                true ->
+                    R1 = catch cowboy:start_quic(quic4,
+                        #{
+                            num_acceptors => 100,
+                            socket_opts => QuicSocketOpts4
+                        }, QuicProtoOpts),
+                    case R1 of
+                        {ok, _} ->
+                            lager:info("QUIC proxy listening on udp/:~w", [Port]),
+                            ok;
+                        _ ->
+                            lager:warning("QUIC start requested but failed (~p). Keep using HTTP/1.1+HTTP/2 on TCP 443.", [R1]),
+                            ok
+                    end;
+                false ->
+                    lager:warning("QUIC requested on udp/:~w but Cowboy was built without start_quic/3 (enable COWBOY_QUICER=1 and quicer dependency).", [Port]),
+                    ok
+            end;
+        _ ->
+            ok
+    end.
 
 stop_listener(Name) ->
     _ = catch cowboy:stop_listener(Name),

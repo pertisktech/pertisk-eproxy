@@ -642,14 +642,22 @@ config_to_json(Config) ->
         P when is_integer(P) -> Base#{<<"https_port">> => P};
         _ -> Base
     end,
+    WithQuic = case maps:get(quic_enabled, Config, undefined) of
+        V when is_boolean(V) -> WithHttps#{<<"quic_enabled">> => V};
+        _ -> WithHttps
+    end,
+    WithQuicPort = case maps:get(quic_port, Config, undefined) of
+        Pq when is_integer(Pq) -> WithQuic#{<<"quic_port">> => Pq};
+        _ -> WithQuic
+    end,
     case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
         {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->
-            WithHttps#{
+            WithQuicPort#{
                 <<"tls_cert_file">> => json_text(Cf),
                 <<"tls_key_file">> => json_text(Kf)
             };
         _ ->
-            WithHttps
+            WithQuicPort
     end.
 
 site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
@@ -675,9 +683,14 @@ site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
         V when is_boolean(V) -> WithChallenge#{wildcard => V};
         _ -> WithChallenge
     end,
-    case maps:get(acme_contact_email, Site, undefined) of
+    WithHttp3 = case maps:get(advertise_http3, Site, undefined) of
         undefined -> WithWildcard;
-        E -> WithWildcard#{acme_contact_email => json_text(E)}
+        V2 when is_boolean(V2) -> WithWildcard#{advertise_http3 => V2};
+        _ -> WithWildcard
+    end,
+    case maps:get(acme_contact_email, Site, undefined) of
+        undefined -> WithHttp3;
+        E -> WithHttp3#{acme_contact_email => json_text(E)}
     end.
 
 route_to_json(R) ->
@@ -731,6 +744,7 @@ parse_site(Body) ->
         dns_provider => optional_string(maps:get(<<"dns_provider">>, Body, null)),
         challenge_type => optional_challenge_type(maps:get(<<"challenge_type">>, Body, null)),
         wildcard => optional_bool(maps:get(<<"wildcard">>, Body, null)),
+        advertise_http3 => optional_bool(maps:get(<<"advertise_http3">>, Body, true)),
         acme_contact_email => optional_string(maps:get(<<"acme_contact_email">>, Body, null)),
         routes  => Routes
     }.

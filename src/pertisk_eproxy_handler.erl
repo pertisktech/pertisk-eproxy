@@ -40,7 +40,8 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>),
-            Req2 = cowboy_req:reply(404, #{<<"content-type">> => <<"text/plain">>},
+            H404 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+            Req2 = cowboy_req:reply(404, H404,
                                     <<"No route found for host: ", Host/binary>>, Req),
             log_access(Host, Method, Path, 404, T0, Vsn),
             {ok, Req2, State};
@@ -49,7 +50,8 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
                     pertisk_eproxy_metrics:inc_request(Host, <<"502">>),
-                    Req2 = cowboy_req:reply(502, #{<<"content-type">> => <<"text/plain">>},
+                    H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                    Req2 = cowboy_req:reply(502, H502,
                                             <<"Bad Gateway: no healthy upstream">>, Req),
                     log_access(Host, Method, Path, 502, T0, Vsn),
                     {ok, Req2, State};
@@ -68,7 +70,8 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
                             lager:warning("Proxy error ~p for ~s~s -> ~s",
                                           [Reason, Host, Path, UpstreamAddr]),
-                            Req2 = cowboy_req:reply(502, #{<<"content-type">> => <<"text/plain">>},
+                            H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                            Req2 = cowboy_req:reply(502, H502,
                                                     <<"Bad Gateway">>, Req),
                             log_access(Host, Method, Path, 502, T0, Vsn),
                             {ok, Req2, State}
@@ -121,11 +124,13 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
     Result = case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
         {response, nofin, Status, RespHeaders} ->
             {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
-            CowboyHeaders  = headers_to_map(RespHeaders),
+            RawHeaders  = headers_to_map(RespHeaders),
+            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req),
             {ok, Status, Req2};
         {response, fin, Status, RespHeaders} ->
-            CowboyHeaders = headers_to_map(RespHeaders),
+            RawHeaders = headers_to_map(RespHeaders),
+            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),
             {ok, Status, Req2};
         {error, Reason} ->
@@ -233,3 +238,35 @@ method_to_gun(<<"DELETE">>)  -> <<"DELETE">>;
 method_to_gun(<<"HEAD">>)    -> <<"HEAD">>;
 method_to_gun(<<"OPTIONS">>) -> <<"OPTIONS">>;
 method_to_gun(M)             -> M.
+
+maybe_add_alt_svc(Req, Host, Headers) ->
+    case {cowboy_req:port(Req), site_advertise_http3(Host)} of
+        {443, true} -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
+        _ -> Headers
+    end.
+
+site_advertise_http3(Host) ->
+    Config = pertisk_eproxy_config:get_config(),
+    Sites = maps:get(sites, Config, []),
+    case find_site_for_host(Sites, string:lowercase(Host)) of
+        undefined -> true;
+        Site -> maps:get(advertise_http3, Site, true) =/= false
+    end.
+
+find_site_for_host([], _Host) -> undefined;
+find_site_for_host([Site | Rest], Host) ->
+    SiteHost = string:lowercase(maps:get(host, Site, <<>>)),
+    case host_matches(Host, SiteHost) of
+        true -> Site;
+        false -> find_site_for_host(Rest, Host)
+    end.
+
+host_matches(Host, <<"*.", Suffix/binary>>) ->
+    case binary:match(Host, <<".">>) of
+        nomatch -> false;
+        {Pos, _} ->
+            HostSuffix = binary:part(Host, Pos + 1, byte_size(Host) - Pos - 1),
+            HostSuffix =:= Suffix
+    end;
+host_matches(Host, SiteHost) ->
+    Host =:= SiteHost.

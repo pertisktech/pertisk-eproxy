@@ -10,6 +10,8 @@
 -define(SERVER, ?MODULE).
 -define(MAX, 1000).
 
+-include_lib("lager/include/lager.hrl").
+
 -record(st, {entries = [] :: [map()]}).
 
 %% ---------------------------------------------------------------------------
@@ -70,13 +72,9 @@ handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto}, #st{ent
         S when S >= 400 -> <<"warn">>;
         _ -> <<"info">>
     end,
-    ProtoShort = case ClientProto of
-        'HTTP/2' -> <<"2">>;
-        'HTTP/1.1' -> <<"1.1">>;
-        'HTTP/1.0' -> <<"1.0">>;
-        _ -> <<"1.1">>
-    end,
+    ProtoShort = protocol_short(ClientProto),
     Msg = iolist_to_binary(io_lib:format("~s ~s ~w ~wms", [Method, Path, Status, DurationMs])),
+    lager_http_log(Level, ProtoShort, Host, Method, Path, Status, DurationMs),
     Entry = #{
         <<"timestamp">> => Ts,
         <<"level">> => Level,
@@ -104,3 +102,16 @@ code_change(_OldVsn, St, _Extra) -> {ok, St}.
 trim(L, Max) when length(L) =< Max -> L;
 trim(L, Max) ->
     lists:sublist(L, Max).
+
+protocol_short('HTTP/3') -> <<"3">>;
+protocol_short('HTTP/2') -> <<"2">>;
+protocol_short('HTTP/1.1') -> <<"1.1">>;
+protocol_short('HTTP/1.0') -> <<"1.0">>;
+protocol_short(_) -> <<"1.1">>.
+
+lager_http_log(<<"error">>, Proto, Host, Method, Path, Status, DurationMs) ->
+    lager:error("[http/~s] ~s ~s ~s -> ~w (~wms)", [Proto, Host, Method, Path, Status, DurationMs]);
+lager_http_log(<<"warn">>, Proto, Host, Method, Path, Status, DurationMs) ->
+    lager:warning("[http/~s] ~s ~s ~s -> ~w (~wms)", [Proto, Host, Method, Path, Status, DurationMs]);
+lager_http_log(_, Proto, Host, Method, Path, Status, DurationMs) ->
+    lager:info("[http/~s] ~s ~s ~s -> ~w (~wms)", [Proto, Host, Method, Path, Status, DurationMs]).

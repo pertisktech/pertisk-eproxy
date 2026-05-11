@@ -33,6 +33,7 @@ export interface Site {
   dns_provider?: string | null;
   challenge_type?: 'http-01' | 'dns-01' | null;
   wildcard?: boolean | null;
+  advertise_http3?: boolean | null;
   acme_contact_email?: string | null;
   routes: PathRewrite[];
 }
@@ -70,6 +71,8 @@ export interface ProxyConfig {
   sites: Site[];
   backends: Backend[];
   https_port?: number | null;
+  quic_enabled?: boolean | null;
+  quic_port?: number | null;
   tls_cert_file?: string | null;
   tls_key_file?: string | null;
 }

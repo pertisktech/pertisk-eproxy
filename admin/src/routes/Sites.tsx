@@ -282,7 +282,7 @@ export default function Sites() {
     setFormContactEmail(site.acme_contact_email?.trim() ?? '');
     setFormChallengeType(site.challenge_type === 'dns-01' ? 'dns-01' : 'http-01');
     setFormWildcard(Boolean(site.wildcard));
-    setFormAdvertiseHttp3(true);
+    setFormAdvertiseHttp3(site.advertise_http3 !== false);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
@@ -433,6 +433,7 @@ export default function Sites() {
       dns_provider,
       challenge_type,
       wildcard,
+      advertise_http3: formAdvertiseHttp3,
       acme_contact_email,
     };
 
