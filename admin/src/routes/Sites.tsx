@@ -1,7 +1,6 @@
 import FaIcon from '@/components/FaIcon';
 import { useEffect, useState, FormEvent, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
 import {
   api,
   type ProxyConfig,
@@ -540,9 +539,7 @@ export default function Sites() {
                     <div className={styles.siteCardHeader}>
                       <h3 className={styles.siteCardDomain}>
                         <FaIcon className="fas fa-globe" aria-hidden />
-                        <Link to={`/sites/${encodeURIComponent(site.host)}`} className={styles.hostText}>
-                          {site.host}
-                        </Link>
+                        <span className={styles.hostText}>{site.host}</span>
                         {domainUrl(site.host) && (
                           <a
                             href={domainUrl(site.host)}
@@ -663,9 +660,7 @@ export default function Sites() {
                                 <FaIcon className="fas fa-globe" aria-hidden />
                               </span>
                               <span className={styles.hostTextGroup}>
-                                <Link to={`/sites/${encodeURIComponent(site.host)}`} className={styles.hostText}>
-                                  {site.host}
-                                </Link>
+                                <span className={styles.hostText}>{site.host}</span>
                                 <span className={styles.cellSubtle}>Cert {ssl}</span>
                               </span>
                             </div>

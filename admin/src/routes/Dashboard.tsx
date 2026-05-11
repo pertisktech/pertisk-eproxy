@@ -22,6 +22,13 @@ export default function Dashboard() {
     }
   }, []);
 
+  function upstreamForSite(host: string, backendName: string): string {
+    const site = config?.sites?.find((s) => s.host === host);
+    if (!site) return backendName;
+    const backend = config?.backends?.find((b) => b.name === site.backend);
+    return backend?.upstreams?.[0]?.addr ?? backendName;
+  }
+
   useEffect(() => { load(); }, [load]);
 
   return (
@@ -77,7 +84,7 @@ export default function Dashboard() {
                   <thead>
                     <tr>
                       <th>Host</th>
-                      <th>Backend</th>
+                      <th>Upstream</th>
                       <th>Routes</th>
                     </tr>
                   </thead>
@@ -85,9 +92,9 @@ export default function Dashboard() {
                     {config?.sites.map(s => (
                       <tr key={s.host}>
                         <td className="mono" style={{ color: 'var(--color-text)' }}>
-                          <Link to={`/sites/${encodeURIComponent(s.host)}`}>{s.host}</Link>
+                          {s.host}
                         </td>
-                        <td>{s.backend}</td>
+                        <td>{upstreamForSite(s.host, s.backend)}</td>
                         <td><span className="badge badge-purple">{s.routes.length}</span></td>
                       </tr>
                     ))}
