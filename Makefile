@@ -1,8 +1,9 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke package-deb-amd64
 
 REBAR = rebar3
 IMAGE ?= harbor.example.com/pertisk-eproxy
 VERSION ?= v1.0.0
+PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 DOCKERFILE ?= Dockerfile
 INGRESS_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 INGRESS_BUILD_PROVENANCE ?= false
@@ -10,6 +11,7 @@ INGRESS_BUILD_SBOM ?= false
 # Set to 1 to enable Cowboy QUIC/HTTP3 hooks when supported by Cowboy build.
 COWBOY_QUICER ?= 0
 COWBOY_QUIC ?= 0
+PACKAGE_NAME ?= pertisk-eproxy
 
 all: compile
 
@@ -77,4 +79,8 @@ tls-smoke: compile
 	@erlc -o scripts scripts/tls_pem_smoke.erl
 	@erl -pa scripts -pa _build/default/lib/pertisk_eproxy/ebin -pa _build/default/lib/*/ebin \
 		-noshell -eval "tls_pem_smoke:run(\"$${PEM:-priv/tls/listener.pem}\"), init:stop()."
+
+## Build Linux x86_64 Debian package into release/
+package-deb-amd64: release
+	@bash scripts/build-deb-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 

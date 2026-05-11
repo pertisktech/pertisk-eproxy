@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([auth_mode/0, auth_config_map/0, login/2, verify_request/1, logout/1, refresh/1]).
+-export([auth_mode/0, auth_config_map/0, login/2, verify_request/1, verify_token/1, logout/1, refresh/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
