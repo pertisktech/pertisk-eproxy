@@ -179,7 +179,193 @@ handle(<<"GET">>, helm_values, Req) ->
     json_reply(404, #{<<"error">> => <<"Helm is not available on eProxy">>}, Req);
 
 handle(<<"GET">>, certificates, Req) ->
-    json_reply(200, [], Req);
+    ListenerRows = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
+    case pertisk_eproxy_db:list_certificates(db_file_path()) of
+        {ok, Certs} ->
+            Config = pertisk_eproxy_config:get_config(),
+            Sites = maps:get(sites, Config, []),
+            AcmeRows = [certificate_row_json(C, Sites) || C <- Certs],
+            json_reply(200, ListenerRows ++ AcmeRows, Req);
+        {error, Reason} ->
+            error_reply(500, Reason, Req)
+    end;
+
+handle(<<"POST">>, certificates, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        Name = maps:get(<<"name">>, Body, <<>>),
+        case pertisk_eproxy_db:insert_certificate(db_file_path(), Name) of
+            {ok, Id} ->
+                json_reply(201, #{<<"status">> => <<"ok">>, <<"id">> => Id}, Req2);
+            {error, empty_name} ->
+                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+            {error, Reason} ->
+                error_reply(400, Reason, Req2)
+        end
+    end);
+
+handle(<<"PUT">>, certificate, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid certificate id">>}, Req);
+        {ok, Id} ->
+            with_json_body(Req, fun(Body, Req2) ->
+                Name = maps:get(<<"name">>, Body, <<>>),
+                case certificate_name_by_id(Id) of
+                    {ok, PrevName} ->
+                        case pertisk_eproxy_db:update_certificate(db_file_path(), Id, Name) of
+                            ok ->
+                                update_sites_cert_name(PrevName, bin_field(Name)),
+                                json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                            {error, empty_name} ->
+                                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+                            {error, Reason} ->
+                                error_reply(400, Reason, Req2)
+                        end;
+                    {error, not_found} ->
+                        not_found_reply(Req2);
+                    {error, Reason} ->
+                        error_reply(400, Reason, Req2)
+                end
+            end)
+    end;
+
+handle(<<"DELETE">>, certificate, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid certificate id">>}, Req);
+        {ok, Id} ->
+            case certificate_name_by_id(Id) of
+                {ok, Name} ->
+                    case certificate_in_use(Name) of
+                        true ->
+                            json_reply(400, #{<<"error">> => <<"Certificate is used by one or more sites">>}, Req);
+                        false ->
+                            case pertisk_eproxy_db:delete_certificate(db_file_path(), Id) of
+                                ok -> json_reply(200, #{<<"status">> => <<"deleted">>}, Req);
+                                {error, not_found} -> not_found_reply(Req);
+                                {error, Reason} -> error_reply(400, Reason, Req)
+                            end
+                    end;
+                {error, not_found} ->
+                    not_found_reply(Req);
+                {error, Reason} ->
+                    error_reply(400, Reason, Req)
+            end
+    end;
+
+handle(<<"GET">>, dns_providers, Req) ->
+    case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
+        {ok, Rows} ->
+            json_reply(200, [dns_provider_db_row_to_json(R) || R <- Rows], Req);
+        {error, Reason} ->
+            error_reply(500, Reason, Req)
+    end;
+
+handle(<<"POST">>, dns_providers, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        Name = bin_field(maps:get(<<"name">>, Body, <<>>)),
+        Pt = bin_field(maps:get(<<"provider_type">>, Body, <<"label">>)),
+        Cred = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
+        case pertisk_eproxy_db:insert_dns_provider(db_file_path(), Name, Pt, Cred) of
+            {ok, Id} ->
+                sync_dns_providers_into_runtime_config(),
+                json_reply(201, #{<<"status">> => <<"ok">>, <<"id">> => Id}, Req2);
+            {error, empty_name} ->
+                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+            {error, empty_provider_type} ->
+                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+            {error, Reason} ->
+                error_reply(400, Reason, Req2)
+        end
+    end);
+
+handle(<<"PUT">>, dns_provider, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid dns provider id">>}, Req);
+        {ok, Id} ->
+            with_json_body(Req, fun(Body, Req2) ->
+                Name = bin_field(maps:get(<<"name">>, Body, <<>>)),
+                Pt = bin_field(maps:get(<<"provider_type">>, Body, <<"label">>)),
+                Cred = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
+                case dns_provider_name_by_id(Id) of
+                    {ok, PrevName} ->
+                        case pertisk_eproxy_db:update_dns_provider(db_file_path(), Id, Name, Pt, Cred) of
+                            ok ->
+                                update_sites_dns_provider_name(PrevName, Name),
+                                sync_dns_providers_into_runtime_config(),
+                                json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                            {error, empty_name} ->
+                                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+                            {error, empty_provider_type} ->
+                                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+                            {error, Reason} ->
+                                error_reply(400, Reason, Req2)
+                        end;
+                    {error, not_found} ->
+                        not_found_reply(Req2);
+                    {error, Reason} ->
+                        error_reply(400, Reason, Req2)
+                end
+            end)
+    end;
+
+handle(<<"DELETE">>, dns_provider, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid dns provider id">>}, Req);
+        {ok, Id} ->
+            case dns_provider_name_by_id(Id) of
+                {ok, Name} ->
+                    case dns_provider_in_use(Name) of
+                        true ->
+                            json_reply(400, #{<<"error">> => <<"DNS provider is used by one or more sites">>}, Req);
+                        false ->
+                            case pertisk_eproxy_db:delete_dns_provider(db_file_path(), Id) of
+                                ok ->
+                                    sync_dns_providers_into_runtime_config(),
+                                    json_reply(200, #{<<"status">> => <<"deleted">>}, Req);
+                                {error, not_found} ->
+                                    not_found_reply(Req);
+                                {error, Reason} ->
+                                    error_reply(400, Reason, Req)
+                            end
+                    end;
+                {error, not_found} ->
+                    not_found_reply(Req);
+                {error, Reason} ->
+                    error_reply(400, Reason, Req)
+            end
+    end;
+
+handle(<<"POST">>, tls_listener, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        CertPem = bin_field(maps:get(<<"cert_pem">>, Body, <<>>)),
+        KeyPem = bin_field(maps:get(<<"key_pem">>, Body, <<>>)),
+        case pertisk_eproxy_tls_import:save_listener_pem(CertPem, KeyPem) of
+            {error, Msg} ->
+                json_reply(400, #{<<"error">> => Msg}, Req2);
+            {ok, {CertPath, KeyPath}} ->
+                C0 = pertisk_eproxy_config:get_config(),
+                NewC = maps:merge(C0, #{tls_cert_file => CertPath, tls_key_file => KeyPath}),
+                case pertisk_eproxy_config:put_config(NewC) of
+                    ok ->
+                        json_reply(200, #{
+                            <<"status">> => <<"ok">>,
+                            <<"tls_cert_file">> => CertPath,
+                            <<"tls_key_file">> => KeyPath,
+                            <<"notice">> =>
+                                <<"Restart the proxy process to load the new TLS material on the HTTPS listener.">>
+                        }, Req2);
+                    {error, R} ->
+                        error_reply(400, R, Req2)
+                end
+        end
+    end);
 
 handle(<<"GET">>, root, Req) ->
     API = #{
@@ -206,7 +392,14 @@ handle(<<"GET">>, root, Req) ->
 
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
-    json_reply(200, config_to_json(Config), Req);
+    Data = config_to_json(Config),
+    Body = thoas:encode(Data),
+    Headers = #{
+        <<"content-type">> => <<"application/json">>,
+        <<"cache-control">> => <<"no-store, max-age=0">>
+    },
+    Req2 = cowboy_req:reply(200, Headers, Body, Req),
+    {ok, Req2, undefined};
 
 handle(<<"PUT">>, config, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
@@ -338,26 +531,79 @@ not_found_reply(Req) ->
     json_reply(404, #{error => <<"not found">>}, Req).
 
 with_json_body(Req, Fun) ->
-    {ok, Body, Req2} = cowboy_req:read_body(Req),
-    case thoas:decode(Body) of
-        {ok, Json}       -> Fun(Json, Req2);
-        {error, _Reason} -> json_reply(400, #{error => <<"invalid json">>}, Req2)
+    case read_body_full(Req) of
+        {error, Reason} ->
+            Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
+            json_reply(400, #{error => Msg}, Req);
+        {ok, Body, Req2} ->
+            case thoas:decode(Body) of
+                {ok, Json}       -> Fun(Json, Req2);
+                {error, _Reason} -> json_reply(400, #{error => <<"invalid json">>}, Req2)
+            end
+    end.
+
+%% Cowboy may return {more, Data, Req} for large bodies; read until complete.
+read_body_full(Req) ->
+    read_body_full(Req, <<>>).
+
+read_body_full(Req, Acc) ->
+    case cowboy_req:read_body(Req, #{length => 16#1000000, period => 10000}) of
+        {ok, Data, Req2} ->
+            {ok, <<Acc/binary, Data/binary>>, Req2};
+        {more, Data, Req2} ->
+            read_body_full(Req2, <<Acc/binary, Data/binary>>);
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 %% ---------------------------------------------------------------------------
 %% Serialisation
 %% ---------------------------------------------------------------------------
 
-config_to_json(Config) ->
+%% Legacy entries were plain binaries in older configs; treat as label-only names.
+dns_provider_entry_to_json(P) when is_binary(P) ->
     #{
+        <<"name">> => P,
+        <<"provider_type">> => <<"label">>,
+        <<"credentials">> => #{}
+    };
+dns_provider_entry_to_json(P) when is_map(P) ->
+    Name = maps:get(name, P),
+    Pt = maps:get(provider_type, P, "label"),
+    Cred = maps:get(credentials, P, #{}),
+    #{
+        <<"name">> => json_text(Name),
+        <<"provider_type">> => json_text(Pt),
+        <<"credentials">> => dns_cred_to_json(Cred)
+    }.
+
+dns_cred_to_json(M) when is_map(M) -> M;
+dns_cred_to_json(_) -> #{}.
+
+config_to_json(Config) ->
+    Base = #{
         mode            => atom_to_binary(maps:get(mode, Config, proxy_admin), utf8),
         http_port       => maps:get(http_port, Config, 8080),
         management_port => maps:get(management_port, Config, 9080),
         certificates    => [json_text(V) || V <- maps:get(certificates, Config, [])],
-        dns_providers   => [json_text(V) || V <- maps:get(dns_providers, Config, [])],
+        dns_providers   => [dns_provider_entry_to_json(P) || P <- maps:get(dns_providers, Config, [])],
         sites           => [site_to_json(S) || S <- maps:get(sites, Config, [])],
         backends        => [backend_to_json(B) || B <- maps:get(backends, Config, [])]
-    }.
+    },
+    WithHttps = case maps:get(https_port, Config, undefined) of
+        undefined -> Base;
+        P when is_integer(P) -> Base#{<<"https_port">> => P};
+        _ -> Base
+    end,
+    case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
+        {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->
+            WithHttps#{
+                <<"tls_cert_file">> => json_text(Cf),
+                <<"tls_key_file">> => json_text(Kf)
+            };
+        _ ->
+            WithHttps
+    end.
 
 site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
     Base = #{
@@ -480,15 +726,147 @@ management_info() ->
         {ok, Hp} -> iolist_to_binary(io_lib:format("0.0.0.0:~w", [Hp]));
         _ -> <<>>
     end,
+    TlsInfoBeam = case code:which(pertisk_eproxy_tls_cert_info) of
+        Path when is_list(Path) -> list_to_binary(Path);
+        _ -> <<>>
+    end,
     #{
         <<"version">> => app_version(),
         <<"mode">> => ModeBin,
         <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
         <<"https_addr">> => HttpsAddr,
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
-        <<"db_path">> => null,
-        <<"http_versions">> => [<<"1.1">>, <<"2">>]
+        <<"db_path">> => iolist_to_binary(db_file_path()),
+        <<"http_versions">> => [<<"1.1">>, <<"2">>],
+        <<"loaded_tls_cert_info_beam">> => TlsInfoBeam
     }.
+
+db_file_path() ->
+    case application:get_env(pertisk_eproxy, db_file) of
+        {ok, F} when is_list(F) -> F;
+        {ok, F} when is_binary(F) -> binary_to_list(F);
+        _ -> "data/proxy.db"
+    end.
+
+parse_int_param(Bin) when is_binary(Bin) ->
+    try
+        {ok, binary_to_integer(Bin)}
+    catch
+        _:_ -> {error, bad_id}
+    end;
+parse_int_param(_) ->
+    {error, bad_id}.
+
+certificate_row_json(#{id := Id, name := Name}, Sites) ->
+    NameBin = json_text(Name),
+    #{
+        <<"id">> => integer_to_binary(Id),
+        <<"domain">> => NameBin,
+        <<"hosts">> => [NameBin],
+        <<"issuer">> => <<>>,
+        <<"challenge">> => <<"acme">>,
+        <<"source_type">> => <<"acme">>,
+        <<"created_at">> => <<>>,
+        <<"expires_at">> => <<>>,
+        <<"next_renew">> => <<>>,
+        <<"sites">> => [json_text(maps:get(host, S)) || S <- Sites, cert_field_matches(maps:get(certificate, S, undefined), Name)]
+    }.
+
+cert_field_matches(undefined, _) -> false;
+cert_field_matches(null, _) -> false;
+cert_field_matches(C, N) when is_binary(C), is_binary(N) -> C =:= N;
+cert_field_matches(C, N) when is_list(C), is_binary(N) -> iolist_to_binary(C) =:= N;
+cert_field_matches(C, N) when is_list(C), is_list(N) -> C =:= N;
+cert_field_matches(C, N) when is_binary(C), is_list(N) -> C =:= iolist_to_binary(N);
+cert_field_matches(_, _) -> false.
+
+certificate_name_by_id(Id) ->
+    case pertisk_eproxy_db:list_certificates(db_file_path()) of
+        {ok, Certs} ->
+            case lists:search(fun(#{id := RowId}) -> RowId =:= Id end, Certs) of
+                {value, #{name := Name}} -> {ok, json_text(Name)};
+                false -> {error, not_found}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+certificate_in_use(Name) ->
+    Sites = pertisk_eproxy_config:get_sites(),
+    lists:any(fun(S) -> cert_field_matches(maps:get(certificate, S, undefined), Name) end, Sites).
+
+update_sites_cert_name(PrevName, NextName0) ->
+    NextName = json_text(NextName0),
+    C0 = pertisk_eproxy_config:get_config(),
+    Sites0 = maps:get(sites, C0, []),
+    Sites = [
+        case cert_field_matches(maps:get(certificate, S, undefined), PrevName) of
+            true -> S#{certificate => binary_to_list(NextName)};
+            false -> S
+        end
+        || S <- Sites0
+    ],
+    _ = pertisk_eproxy_config:put_config(C0#{sites => Sites}),
+    ok.
+
+parse_dns_credentials(M) when is_map(M) -> M;
+parse_dns_credentials(_) -> #{}.
+
+dns_provider_db_row_to_json(#{id := Id, name := Name, provider_type := Pt, credentials := Cred}) ->
+    #{
+        <<"id">> => integer_to_binary(Id),
+        <<"name">> => json_text(Name),
+        <<"provider_type">> => json_text(Pt),
+        <<"credentials">> => Cred,
+        <<"created_at">> => <<>>
+    }.
+
+dns_provider_name_by_id(Id) ->
+    case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
+        {ok, Rows} ->
+            case lists:search(fun(#{id := RowId}) -> RowId =:= Id end, Rows) of
+                {value, #{name := Name}} -> {ok, json_text(Name)};
+                false -> {error, not_found}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+dns_provider_in_use(Name) ->
+    Sites = pertisk_eproxy_config:get_sites(),
+    lists:any(fun(S) -> cert_field_matches(maps:get(dns_provider, S, undefined), Name) end, Sites).
+
+update_sites_dns_provider_name(PrevName, NextName0) ->
+    NextName = json_text(NextName0),
+    C0 = pertisk_eproxy_config:get_config(),
+    Sites0 = maps:get(sites, C0, []),
+    Sites = [
+        case cert_field_matches(maps:get(dns_provider, S, undefined), PrevName) of
+            true -> S#{dns_provider => binary_to_list(NextName)};
+            false -> S
+        end
+        || S <- Sites0
+    ],
+    _ = pertisk_eproxy_config:put_config(C0#{sites => Sites}),
+    ok.
+
+sync_dns_providers_into_runtime_config() ->
+    case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
+        {ok, Rows} ->
+            DnsProviders = [
+                #{
+                    name => binary_to_list(json_text(maps:get(name, R))),
+                    provider_type => binary_to_list(json_text(maps:get(provider_type, R))),
+                    credentials => maps:get(credentials, R, #{})
+                }
+                || R <- Rows
+            ],
+            C0 = pertisk_eproxy_config:get_config(),
+            _ = pertisk_eproxy_config:put_config(C0#{dns_providers => DnsProviders}),
+            ok;
+        {error, _} ->
+            ok
+    end.
 
 bin_field(V) when is_binary(V) -> V;
 bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);

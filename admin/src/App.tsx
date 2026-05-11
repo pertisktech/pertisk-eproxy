@@ -5,7 +5,6 @@ import Metrics from '@/routes/Metrics';
 import Logs from '@/routes/Logs';
 import Sites from '@/routes/Sites';
 import SiteDetail from '@/routes/SiteDetail';
-import Backends from '@/routes/Backends';
 import Certificates from '@/routes/Certificates';
 import DnsProviders from '@/routes/DnsProviders';
 import Helm from '@/routes/Helm';
@@ -25,7 +24,6 @@ export default function App() {
         <Route path="/logs" element={<Logs />} />
         <Route path="/sites" element={<Sites />} />
         <Route path="/sites/:host" element={<SiteDetail />} />
-        <Route path="/backends" element={<Backends />} />
         <Route path="/certificates" element={<Certificates />} />
         <Route path="/dns-providers" element={<DnsProviders />} />
         <Route path="/helm" element={<Helm />} />

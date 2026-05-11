@@ -105,14 +105,6 @@ export default function Backup() {
 
   return (
     <div className={styles.container}>
-      <div className={styles.header}>
-        <p>
-          {isIngressMode
-            ? 'Export and restore Kubernetes Ingresses and TLS Secrets'
-            : 'Export and restore site configurations, certificates, and DNS providers'}
-        </p>
-      </div>
-
       {/* Export Section */}
       <div className={styles.section}>
         <h2>

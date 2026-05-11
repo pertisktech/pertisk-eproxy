@@ -1,4 +1,4 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke
 
 REBAR = rebar3
 IMAGE ?= harbor.example.com/pertisk-eproxy
@@ -13,7 +13,7 @@ all: compile
 compile:
 	$(REBAR) compile
 
-shell:
+shell: compile
 	$(REBAR) shell
 
 test:
@@ -68,4 +68,10 @@ health:
 ## Show Prometheus metrics
 metrics:
 	curl -sf http://127.0.0.1:9080/api/metrics
+
+## Verify TLS PEM parsing (no running node). Expects priv/tls/listener.pem or pass PEM=path
+tls-smoke: compile
+	@erlc -o scripts scripts/tls_pem_smoke.erl
+	@erl -pa scripts -pa _build/default/lib/pertisk_eproxy/ebin -pa _build/default/lib/*/ebin \
+		-noshell -eval "tls_pem_smoke:run(\"$${PEM:-priv/tls/listener.pem}\"), init:stop()."
 

@@ -1,4 +1,3 @@
-import FaIcon from "@/components/FaIcon";
 import { useAuth } from '@/context/AuthContext';
 import { detectAuthMethodFromToken, getAuthMethod, getEmail, getPicture, getToken, getUsername } from '@/auth';
 import styles from './Profile.module.css';
@@ -15,10 +14,6 @@ export default function Profile() {
 
   return (
     <section className={styles.section}>
-      <h2 className={styles.title}>
-        <FaIcon className="fas fa-user" aria-hidden />
-        Profile
-      </h2>
       <div className={styles.card}>
         {picture ? (
           <img src={picture} alt="" className={styles.avatarImage} />

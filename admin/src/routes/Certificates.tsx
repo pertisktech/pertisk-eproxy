@@ -1,163 +1,412 @@
-import { useEffect, useState } from 'react';
-import { api, type ProxyConfig } from '@/api/client';
+import { useCallback, useEffect, useState, ChangeEvent } from 'react';
+import { Link } from 'react-router-dom';
+import { api, type CertificateRow } from '@/api/client';
+import { useToast } from '@/context/ToastContext';
+import styles from './Certificates.module.css';
+
+function em(value: string | undefined | null): string {
+  const s = (value ?? '').trim();
+  return s.length ? s : '—';
+}
+
+function readFileAsText(file: File | null): Promise<string> {
+  if (!file) return Promise.resolve('');
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(typeof r.result === 'string' ? r.result : '');
+    r.onerror = () => reject(new Error('Failed to read file'));
+    r.readAsText(file);
+  });
+}
 
 export default function Certificates() {
-  const [config, setConfig] = useState<ProxyConfig | null>(null);
-  const [showModal, setShowModal] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [draftValue, setDraftValue] = useState('');
-  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+  const [rows, setRows] = useState<CertificateRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [certPem, setCertPem] = useState('');
+  const [keyPem, setKeyPem] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showLabelModal, setShowLabelModal] = useState(false);
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
+  const [labelValue, setLabelValue] = useState('');
+  const [labelError, setLabelError] = useState<string | null>(null);
+  const [labelSaving, setLabelSaving] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        setConfig(await api.config());
-      } catch (e: unknown) {
-        setError(String(e));
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const load = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
+    api.certificates
+      .list()
+      .then((list) => {
+        setRows(Array.isArray(list) ? list : []);
+      })
+      .catch((e: unknown) => {
+        setLoadError(e instanceof Error ? e.message : 'Failed to load certificates');
+        setRows([]);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
-  const save = async (next: ProxyConfig) => {
-    setSaving(true);
-    setError(null);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const closeImportModal = useCallback(() => {
+    setShowImportModal(false);
+    setCertPem('');
+    setKeyPem('');
+    setImportError(null);
+  }, []);
+
+  const openImportModal = useCallback(() => {
+    setImportError(null);
+    setCertPem('');
+    setKeyPem('');
+    setShowImportModal(true);
+  }, []);
+
+  function openAddLabelModal() {
+    setEditingLabel(null);
+    setLabelValue('');
+    setLabelError(null);
+    setShowLabelModal(true);
+  }
+
+  function openEditLabelModal(row: CertificateRow) {
+    setEditingLabel(row.id);
+    setLabelValue((row.domain ?? row.hosts?.[0] ?? row.id).trim());
+    setLabelError(null);
+    setShowLabelModal(true);
+  }
+
+  function closeLabelModal() {
+    setShowLabelModal(false);
+    setEditingLabel(null);
+    setLabelValue('');
+    setLabelError(null);
+  }
+
+  async function submitLabel() {
+    setLabelSaving(true);
+    setLabelError(null);
     try {
-      await api.putConfig(next);
-      setConfig(next);
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const openAdd = () => {
-    setEditingIndex(null);
-    setDraftValue('');
-    setShowModal(true);
-  };
-
-  const openEdit = (idx: number, value: string) => {
-    setEditingIndex(idx);
-    setDraftValue(value);
-    setShowModal(true);
-  };
-
-  const saveModal = async () => {
-    if (!config || !draftValue.trim()) return;
-    const trimmed = draftValue.trim();
-
-    if (editingIndex === null) {
-      if (config.certificates.includes(trimmed)) {
-        setError('Certificate already exists');
-        return;
+      if (!labelValue.trim()) throw new Error('Certificate id is required');
+      if (!editingLabel) {
+        await api.certificates.createLabel(labelValue);
+        toast.success('Certificate added.');
+      } else {
+        await api.certificates.updateLabel(editingLabel, labelValue);
+        toast.success('Certificate updated.');
       }
-      const next = { ...config, certificates: [...config.certificates, trimmed] };
-      await save(next);
-      setShowModal(false);
-      return;
+      closeLabelModal();
+      await load();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to save label';
+      setLabelError(msg);
+      toast.error(msg);
+    } finally {
+      setLabelSaving(false);
     }
+  }
 
-    const nextCertificates = config.certificates.map((c, i) => (i === editingIndex ? trimmed : c));
-    if (nextCertificates.some((c, i) => c === trimmed && i !== editingIndex)) {
-      setError('Certificate already exists');
-      return;
+  async function deleteLabel(row: CertificateRow) {
+    if (!confirm(`Delete certificate "${row.id}"?`)) return;
+    try {
+      await api.certificates.deleteLabel(row.id);
+      toast.success('Certificate deleted.');
+      await load();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete label');
     }
-    await save({ ...config, certificates: nextCertificates });
-    setShowModal(false);
-  };
+  }
 
-  const remove = async (idx: number) => {
-    if (!config) return;
-    const next = { ...config, certificates: config.certificates.filter((_, i) => i !== idx) };
-    await save(next);
-  };
+  async function deleteListenerTls() {
+    if (!confirm('Delete listener TLS from config?')) return;
+    try {
+      await api.certificates.deleteListenerTls();
+      toast.success('Listener TLS removed from config.');
+      await load();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete listener TLS');
+    }
+  }
+
+  useEffect(() => {
+    if (!showImportModal) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') closeImportModal();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showImportModal, closeImportModal]);
+
+  async function onCertFile(e: ChangeEvent<HTMLInputElement>) {
+    const t = await readFileAsText(e.target.files?.[0] ?? null);
+    if (t) setCertPem(t);
+    e.target.value = '';
+  }
+
+  async function onKeyFile(e: ChangeEvent<HTMLInputElement>) {
+    const t = await readFileAsText(e.target.files?.[0] ?? null);
+    if (t) setKeyPem(t);
+    e.target.value = '';
+  }
+
+  async function submitImport() {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const res = await api.certificates.importListenerPem(certPem.trim(), keyPem.trim());
+      toast.success(res.notice ?? 'TLS PEM replaced. Paths updated in running config.');
+      closeImportModal();
+      await load();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Import failed';
+      setImportError(msg);
+      toast.error(msg);
+    } finally {
+      setImporting(false);
+    }
+  }
 
   return (
-    <div>
-      <div className="page-header">
-        <div className="page-title">
-          <i className="fas fa-certificate" />
-          <h1>Certificates</h1>
+    <section className={styles.section}>
+      {loadError && (
+        <div className="error-banner">
+          <i className="fas fa-exclamation-circle" aria-hidden />
+          {loadError}
         </div>
-        <button className="btn btn-primary" onClick={openAdd}>
-          <i className="fas fa-plus" /> Add Certificate
-        </button>
+      )}
+
+      <div className="page-actions">
+        <div className={styles.headerActions}>
+          <div className={styles.toolbar}>
+            <button
+              type="button"
+              className={styles.btnSecondary}
+              onClick={load}
+              disabled={loading}
+            >
+              <i className="fas fa-sync-alt" aria-hidden /> Refresh
+            </button>
+            <button
+              type="button"
+              className={styles.btnPrimary}
+              onClick={() => openImportModal()}
+            >
+              <i className="fas fa-file-import" aria-hidden /> Import TLS…
+            </button>
+          </div>
+        </div>
       </div>
 
-      {error && <div className="error-banner"><i className="fas fa-exclamation-circle" />{error}</div>}
-
-      <div className="card">
-        <p style={{ color: 'var(--color-text-secondary)', marginBottom: 12 }}>
-          Manage SSL certificate names used by sites. These options appear in Add Site and Site Detail.
-        </p>
-
-        {loading ? (
-          <div className="spinner" />
-        ) : (
-          <>
-            <table>
+      {loading ? (
+        <div className="spinner" />
+      ) : rows.length === 0 ? (
+        <div className={styles.emptyState}>
+          <i className="fas fa-certificate" aria-hidden />
+          <h3 className={styles.emptyTitle}>No certificates</h3>
+          <button type="button" className={styles.btnPrimary} onClick={() => openImportModal()}>
+            <i className="fas fa-file-import" aria-hidden /> Import TLS…
+          </button>
+        </div>
+      ) : (
+        <div className={styles.tableWrap}>
+          <div style={{ overflowX: 'auto' }}>
+              <table className={styles.certTable}>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th style={{ width: 150 }}></th>
+                  <th scope="col">Id</th>
+                  <th scope="col">Domain</th>
+                  <th scope="col">Names</th>
+                  <th scope="col">Issuer</th>
+                  <th scope="col">Challenge</th>
+                  <th scope="col">Valid from</th>
+                  <th scope="col">Expires</th>
+                  <th scope="col">Next renew</th>
+                  <th scope="col">Sites</th>
+                  <th scope="col" className={styles.actionsCol}>
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {(config?.certificates ?? []).map((cert, idx) => (
-                  <tr key={`${cert}-${idx}`}>
-                    <td className="mono" style={{ color: 'var(--color-text)' }}>{cert}</td>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="mono">{row.source_type === 'tls_listener' ? '—' : em(row.id)}</td>
+                    <td className={styles.names}>{em(row.domain ?? row.hosts?.[0])}</td>
+                    <td className={styles.names}>
+                      {row.hosts?.length ? row.hosts.join(', ') : '—'}
+                    </td>
+                    <td>{em(row.issuer)}</td>
+                    <td>{em(row.challenge)}</td>
+                    <td className={styles.mono}>{em(row.created_at)}</td>
+                    <td className={styles.mono}>{em(row.expires_at)}</td>
+                    <td>{em(row.next_renew)}</td>
                     <td>
-                      <button className="btn btn-ghost btn-sm" onClick={() => openEdit(idx, cert)} disabled={saving}>
-                        <i className="fas fa-pen" />
-                      </button>
-                      <button className="btn btn-danger btn-sm" style={{ marginLeft: 8 }} onClick={() => remove(idx)} disabled={saving}>
-                        <i className="fas fa-trash" />
-                      </button>
+                      {!row.sites?.length ? (
+                        '—'
+                      ) : (
+                        <span className={styles.siteLinks}>
+                          {row.sites.map((h) => (
+                            <Link key={h} to={`/sites/${encodeURIComponent(h)}`}>
+                              {h}
+                            </Link>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                    <td className={styles.actionsCell}>
+                      {row.source_type === 'tls_listener' ? (
+                        <>
+                          <button type="button" className={styles.btnSecondary} onClick={() => openImportModal()}>
+                            <i className="fas fa-sync-alt" aria-hidden /> Update TLS…
+                          </button>
+                          <button type="button" className={styles.btnSecondary} onClick={() => void deleteListenerTls()}>
+                            <i className="fas fa-trash" aria-hidden /> Delete
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className={styles.btnSecondary} onClick={() => openEditLabelModal(row)}>
+                            <i className="fas fa-pen" aria-hidden /> Edit
+                          </button>
+                          <button type="button" className={styles.btnSecondary} onClick={() => void deleteLabel(row)}>
+                            <i className="fas fa-trash" aria-hidden /> Delete
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
-            </table>
-          </>
-        )}
-      </div>
+              </table>
+        </div>
+        </div>
+      )}
 
-      {showModal && (
-        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowModal(false)}>
-          <div className="modal">
-            <div className="modal-header">
-              <div className="modal-title">
-                <i className={`fas ${editingIndex === null ? 'fa-plus' : 'fa-pen'}`} />
-                {editingIndex === null ? 'Add Certificate' : 'Edit Certificate'}
+      {showImportModal && (
+        <div
+          className={styles.modalBackdrop}
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeImportModal();
+          }}
+        >
+          <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="import-tls-title">
+            <div className={styles.modalHeader}>
+              <h2 id="import-tls-title">
+                Import listener TLS
+              </h2>
+              <button type="button" className={styles.modalClose} onClick={closeImportModal} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+              {importError && (
+                <div className="error-banner" style={{ marginBottom: 12 }}>
+                  <i className="fas fa-exclamation-circle" aria-hidden />
+                  {importError}
+                </div>
+              )}
+              <p className={styles.modalHint}>
+                Paste PEM or choose files. Files are written under <code className="mono">priv/tls/</code> on the proxy
+                host, and <code className="mono">tls_cert_file</code> / <code className="mono">tls_key_file</code> are
+                updated in memory. Restart the proxy to use them on HTTPS.
+              </p>
+              <label className={styles.fieldLabel}>
+                Certificate PEM
+                <input type="file" accept=".pem,.crt,.txt" onChange={onCertFile} className={styles.fileInput} />
+                <textarea
+                  value={certPem}
+                  onChange={(e) => setCertPem(e.target.value)}
+                  rows={8}
+                  className={styles.textarea}
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                  spellCheck={false}
+                />
+              </label>
+              <label className={styles.fieldLabel}>
+                Private key PEM
+                <input type="file" accept=".pem,.key,.txt" onChange={onKeyFile} className={styles.fileInput} />
+                <textarea
+                  value={keyPem}
+                  onChange={(e) => setKeyPem(e.target.value)}
+                  rows={6}
+                  className={styles.textarea}
+                  placeholder="-----BEGIN PRIVATE KEY-----"
+                  spellCheck={false}
+                />
+              </label>
+              <div className={styles.modalActions}>
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={closeImportModal}
+                  disabled={importing}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnPrimary}
+                  onClick={() => void submitImport()}
+                  disabled={importing || !certPem.trim() || !keyPem.trim()}
+                >
+                  {importing ? 'Importing…' : 'Import TLS'}
+                </button>
               </div>
-              <button className="modal-close btn" onClick={() => setShowModal(false)}>
-                <i className="fas fa-times" />
-              </button>
-            </div>
-
-            <div className="form-group">
-              <label>Name</label>
-              <input
-                value={draftValue}
-                onChange={e => setDraftValue(e.target.value)}
-                placeholder="example-wildcard-cert"
-              />
-            </div>
-
-            <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveModal} disabled={saving || !draftValue.trim()}>
-                {saving ? 'Saving…' : (editingIndex === null ? 'Add' : 'Save')}
-              </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+      {showLabelModal && (
+        <div className={styles.modalBackdrop} role="presentation" onClick={(e) => e.target === e.currentTarget && closeLabelModal()}>
+          <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="label-modal-title">
+            <div className={styles.modalHeader}>
+              <h2 id="label-modal-title">{editingLabel ? 'Update certificate' : 'Import certificate'}</h2>
+              <button type="button" className={styles.modalClose} onClick={closeLabelModal} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <div className={styles.modalBody}>
+              {labelError && (
+                <div className="error-banner" style={{ marginBottom: 12 }}>
+                  <i className="fas fa-exclamation-circle" aria-hidden />
+                  {labelError}
+                </div>
+              )}
+              <label className={styles.fieldLabel}>
+                Certificate ID (ACME)
+                <input
+                  type="text"
+                  value={labelValue}
+                  onChange={(e) => setLabelValue(e.target.value)}
+                  className={styles.textarea}
+                  style={{ height: 38, resize: 'none' }}
+                  placeholder="example-wildcard-cert"
+                />
+              </label>
+              <div className={styles.modalActions}>
+                <button type="button" className={styles.btnSecondary} onClick={closeLabelModal} disabled={labelSaving}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={styles.btnPrimary}
+                  onClick={() => void submitLabel()}
+                  disabled={labelSaving || !labelValue.trim()}
+                >
+                  {labelSaving ? 'Saving…' : editingLabel ? 'Update' : 'Import'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

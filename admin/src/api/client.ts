@@ -1,4 +1,5 @@
 import { clearToken, clearUsername, getToken } from '@/auth';
+import { SUPPORTED_DNS_PROVIDERS } from '@/data/supportedDnsProviders';
 
 const API = '/api';
 
@@ -47,14 +48,141 @@ export interface BackendStatus {
   upstreams: UpstreamStatus[];
 }
 
+/** Entry as returned by GET /api/config (after JSON parse). */
+export interface DnsProviderConfigEntry {
+  name: string;
+  provider_type: string;
+  credentials: Record<string, string>;
+}
+
+export type DnsProviderJson = string | DnsProviderConfigEntry;
+
 export interface ProxyConfig {
   mode: 'proxy' | 'proxy_admin';
   http_port: number;
   management_port: number;
   certificates: string[];
-  dns_providers: string[];
+  /** Legacy: string labels, or structured `{ name, provider_type, credentials }` from the API. */
+  dns_providers?: DnsProviderJson[];
   sites: Site[];
   backends: Backend[];
+  https_port?: number | null;
+  tls_cert_file?: string | null;
+  tls_key_file?: string | null;
+}
+
+/** DNS provider row (rproxy-compatible shape; eProxy stores names in `dns_providers` only). */
+export type DnsProviderType = string;
+
+const DNS_LABEL_PROVIDER_ID = 'label';
+
+/** Known DNS integration ids from `supportedDnsProviders.ts` (upgrade legacy string-only entries). */
+const SUPPORTED_DNS_PROVIDER_IDS = new Set(SUPPORTED_DNS_PROVIDERS.map((p) => p.id));
+
+function inferProviderTypeFromLegacy(name: string, explicitType: string | undefined): string {
+  const t = (explicitType ?? '').trim();
+  if (t) return t;
+  const n = (name ?? '').trim();
+  if (n && SUPPORTED_DNS_PROVIDER_IDS.has(n)) return n;
+  return DNS_LABEL_PROVIDER_ID;
+}
+
+/** Normalize `dns_providers` from config (legacy strings or objects) for the admin UI. */
+export function normalizeDnsProviders(raw: unknown): DnsProviderConfigEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry: unknown) => {
+    if (typeof entry === 'string') {
+      const name = entry.trim();
+      const provider_type = inferProviderTypeFromLegacy(name, undefined);
+      return { name, provider_type, credentials: {} };
+    }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const o = entry as Record<string, unknown>;
+      const rawName = o.name;
+      const name =
+        typeof rawName === 'string'
+          ? rawName
+          : rawName != null && typeof rawName !== 'object'
+            ? String(rawName)
+            : '';
+      const rawPt = o.provider_type;
+      const explicitPt =
+        typeof rawPt === 'string'
+          ? rawPt.trim()
+          : rawPt != null && typeof rawPt !== 'object'
+            ? String(rawPt).trim()
+            : '';
+      const provider_type = inferProviderTypeFromLegacy(name, explicitPt || undefined);
+      const credentials: Record<string, string> = {};
+      const credRaw = o.credentials;
+      if (credRaw && typeof credRaw === 'object' && !Array.isArray(credRaw)) {
+        for (const [k, v] of Object.entries(credRaw)) {
+          if (v != null && String(v).length > 0) credentials[k] = String(v);
+        }
+      }
+      return { name, provider_type, credentials };
+    }
+    return { name: '', provider_type: DNS_LABEL_PROVIDER_ID, credentials: {} };
+  });
+}
+
+function dnsProvidersForPut(entries: DnsProviderConfigEntry[]): DnsProviderConfigEntry[] {
+  return entries.map((e) => ({
+    name: e.name,
+    provider_type: e.provider_type || DNS_LABEL_PROVIDER_ID,
+    credentials: e.credentials ?? {},
+  }));
+}
+
+/** Coalesce null/invalid list fields so PUT /api/config never sends JSON `null` for arrays. */
+function prepareConfigForPut(c: ProxyConfig): ProxyConfig {
+  const sites = Array.isArray(c.sites) ? c.sites : [];
+  const backends = Array.isArray(c.backends) ? c.backends : [];
+  return {
+    ...c,
+    sites: sites.map((s) => ({
+      ...s,
+      routes: Array.isArray(s.routes) ? s.routes : [],
+    })),
+    backends: backends.map((b) => ({
+      ...b,
+      upstreams: Array.isArray(b.upstreams) ? b.upstreams : [],
+    })),
+    certificates: Array.isArray(c.certificates) ? c.certificates : [],
+    dns_providers: Array.isArray(c.dns_providers) ? c.dns_providers : [],
+  };
+}
+
+export interface DnsProviderRow {
+  id: string;
+  name: string;
+  provider_type: DnsProviderType;
+  credentials?: Record<string, string> | null;
+  created_at: string;
+}
+
+export interface SupportedDnsProviderField {
+  key: string;
+  label: string;
+  type: string;
+  required: boolean;
+}
+
+export interface SupportedDnsProvider {
+  id: string;
+  name: string;
+  fields: SupportedDnsProviderField[];
+}
+
+function dnsProviderRowsFromConfig(c: ProxyConfig): DnsProviderRow[] {
+  const entries = normalizeDnsProviders(c.dns_providers);
+  return entries.map((e, i) => ({
+    id: String(i),
+    name: e.name,
+    provider_type: e.provider_type,
+    credentials: Object.keys(e.credentials ?? {}).length ? { ...e.credentials } : null,
+    created_at: '',
+  }));
 }
 
 export interface HealthReport {
@@ -148,14 +276,23 @@ export interface ManagementInfo {
   http_versions?: string[];
   process_cpu_usage_percent?: number | null;
   process_memory_bytes?: number | null;
+  /** Absolute path to loaded pertisk_eproxy_tls_cert_info.beam (debug stale-code issues). */
+  loaded_tls_cert_info_beam?: string;
 }
 
 export interface CertificateRow {
   id: string;
+  /** Primary CN / first SAN for display */
+  domain?: string;
   hosts: string[];
+  issuer?: string;
+  challenge?: string;
   source_type: string;
   created_at: string;
   expires_at?: string;
+  next_renew?: string;
+  /** Site hostnames that reference this certificate id */
+  sites?: string[];
 }
 
 export interface HelmHistoryEntry {
@@ -227,7 +364,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  return request<T>(path);
+  /* Avoid stale /api/config (and other GETs) after PUT — browsers may reuse cache for same URL. */
+  return request<T>(path, { cache: 'no-store' });
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -240,6 +378,11 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 
 async function del<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' });
+}
+
+function ensureDnsProviderRows(value: unknown): DnsProviderRow[] {
+  if (Array.isArray(value)) return value as DnsProviderRow[];
+  throw new Error('DNS providers API is unavailable. Restart proxy to load latest backend routes.');
 }
 
 // ---------------------------------------------------------------------------
@@ -299,37 +442,77 @@ export const api = {
 
   certificates: {
     list: () => get<CertificateRow[]>('/certificates'),
+    createLabel: async (id: string) => {
+      const n = id.trim();
+      if (!n) throw new Error('Certificate id is required');
+      await post<{ status: string; id: number }>('/certificates', { name: n });
+    },
+    updateLabel: async (prevId: string, nextId: string) => {
+      const from = prevId.trim();
+      const to = nextId.trim();
+      if (!from) throw new Error('Certificate id is required');
+      if (!to) throw new Error('Certificate name is required');
+      await put<{ status: string }>(`/certificates/${encodeURIComponent(from)}`, { name: to });
+    },
+    deleteLabel: async (id: string) => {
+      const n = id.trim();
+      if (!n) throw new Error('Certificate id is required');
+      await del<{ status: string }>(`/certificates/${encodeURIComponent(n)}`);
+    },
+    importListenerPem: (cert_pem: string, key_pem: string) =>
+      post<{ status: string; tls_cert_file: string; tls_key_file: string; notice?: string }>('/tls/listener', {
+        cert_pem,
+        key_pem,
+      }),
+    deleteListenerTls: async () => {
+      const c = await get<ProxyConfig>('/config');
+      const merged = prepareConfigForPut({
+        ...c,
+        tls_cert_file: null,
+        tls_key_file: null,
+      });
+      await put<{ status: string }>('/config', merged);
+    },
     upload: (_body: { hosts: string[]; cert_pem: string; key_pem: string }) =>
-      Promise.reject(new Error('Certificate upload is not implemented for eProxy')),
+      Promise.reject(new Error('Use certificates.importListenerPem for the listener TLS PEM.')),
     delete: (_id: string) => Promise.reject(new Error('Certificate delete is not implemented for eProxy')),
     renew: (_id: string) => Promise.reject(new Error('Certificate renew is not implemented for eProxy')),
     renewStatus: (_id: string) => Promise.reject(new Error('Certificate renew is not implemented for eProxy')),
   },
 
   dnsProviders: {
-    list: async () => {
-      const c = await get<ProxyConfig>('/config');
-      const names = c.dns_providers ?? [];
-      return names.map((name, i) => ({
-        id: `name-${i}-${name}`,
-        name,
-        provider_type: 'custom',
-        credentials: null,
-        created_at: new Date().toISOString(),
-      }));
+    list: async () => ensureDnsProviderRows(await get<unknown>('/dns-providers')),
+    supported: async () => SUPPORTED_DNS_PROVIDERS as SupportedDnsProvider[],
+    create: async (name: string, provider_type: DnsProviderType, credentials?: Record<string, string> | null) => {
+      const n = name.trim();
+      if (!n) throw new Error('Name is required');
+      const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;
+      const creds = credentials && typeof credentials === 'object' ? { ...credentials } : {};
+      await post<{ status: string; id: string }>('/dns-providers', { name: n, provider_type: pt, credentials: creds });
+      return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
     },
-    supported: () =>
-      Promise.resolve(
-        [] as {
-          id: string;
-          name: string;
-          fields: { key: string; label: string; type: string; required: boolean }[];
-        }[]
-      ),
-    create: () => Promise.reject(new Error('Use DNS provider names via Sites / config for eProxy')),
-    get: () => Promise.reject(new Error('not implemented')),
-    put: () => Promise.reject(new Error('not implemented')),
-    delete: () => Promise.reject(new Error('not implemented')),
+    get: async (id: string) => {
+      const rows = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+      const row = rows.find((r) => String(r.id) === String(id));
+      if (!row) throw new Error('DNS provider not found');
+      return row;
+    },
+    put: async (id: string, name: string, provider_type: DnsProviderType, credentials?: Record<string, string> | null) => {
+      const n = name.trim();
+      if (!n) throw new Error('Name is required');
+      const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;
+      const creds = credentials && typeof credentials === 'object' ? { ...credentials } : {};
+      await put<{ status: string }>(`/dns-providers/${encodeURIComponent(id)}`, {
+        name: n,
+        provider_type: pt,
+        credentials: creds,
+      });
+      return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+    },
+    delete: async (id: string) => {
+      await del<{ status: string }>(`/dns-providers/${encodeURIComponent(id)}`);
+      return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+    },
   },
 
   kubernetes: {

@@ -252,8 +252,6 @@ export default function Metrics() {
       });
   }, [history]);
 
-  const mode = history[history.length - 1]?.mode;
-
   const currentSnapshot = useMemo(() => {
     if (history.length === 0) return null;
     const latest = history[history.length - 1];
@@ -314,20 +312,13 @@ export default function Metrics() {
 
   return (
     <div className={styles.page}>
-      <header className={styles.header}>
-        <div className={styles.headerBadges}>
-          {mode && (
-            <span className={styles.modeBadge} title="Current management mode">
-              {mode === 'ingress' ? 'Ingress mode' : 'Proxy mode'}
-            </span>
-          )}
-          {!loading && history.length > 0 && (
-            <span className={styles.liveBadge} title="Auto-refresh">
-              Live
-            </span>
-          )}
+      {!loading && history.length > 0 && (
+        <div className="page-actions" style={{ marginBottom: 16 }}>
+          <span className={styles.liveBadge} title="Auto-refresh">
+            Live
+          </span>
         </div>
-      </header>
+      )}
 
       {missingRequestTotals && (
         <div className={styles.errorCard}>

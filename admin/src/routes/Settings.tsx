@@ -20,13 +20,6 @@ export default function Settings() {
 
   return (
     <div>
-      <div className="page-header">
-        <div className="page-title">
-          <i className="fas fa-cog" />
-          <h1>Settings</h1>
-        </div>
-      </div>
-
       {msg && (
         <div className={msg.ok ? 'success-banner' : 'error-banner'}>
           <i className={`fas ${msg.ok ? 'fa-check-circle' : 'fa-exclamation-circle'}`} />
@@ -60,10 +53,6 @@ export default function Settings() {
               ['GET',    '/api/sites',             'List sites'],
               ['POST',   '/api/sites',             'Add site'],
               ['DELETE', '/api/sites/:host',       'Remove site'],
-              ['GET',    '/api/backends',          'List backends'],
-              ['POST',   '/api/backends',          'Add backend'],
-              ['GET',    '/api/backends/:name',    'Backend status'],
-              ['DELETE', '/api/backends/:name',    'Remove backend'],
               ['GET',    '/api/health',            'Health report'],
               ['GET',    '/api/metrics',           'Prometheus metrics'],
               ['POST',   '/api/reload',            'Hot-reload from file'],

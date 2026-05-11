@@ -151,6 +151,8 @@ h3 { font-size: 1rem; font-weight: 600; }
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .page-title {
   display: flex;
@@ -159,6 +161,21 @@ h3 { font-size: 1rem; font-weight: 600; }
   color: var(--color-text);
 }
 .page-title i { color: var(--color-primary); font-size: 1.1rem; }
+.page-title h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+/* Primary actions for a page when the shell breadcrumb already shows the page title. */
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
 
 table {
   width: 100%;
@@ -263,3 +280,14 @@ tr:hover td { background: var(--color-hover); }
   margin-bottom: 6px;
 }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Full-screen modals portaled to <body>; scroll lives on #layout-main-scroll, not body. */
+html.eproxy-scroll-lock,
+html.eproxy-scroll-lock body {
+  overflow: hidden;
+}
+
+html.eproxy-scroll-lock #layout-main-scroll {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}

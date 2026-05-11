@@ -118,7 +118,10 @@ update_upstream_metrics() ->
                 _ -> ok
             end
         catch
-            _:Reason ->
-                lager:warning("Error updating metrics for backend ~s: ~p", [Name, Reason])
+            exit:{timeout, {gen_server, call, _}} ->
+                %% Backend busy (e.g. slow health checks); skip this scrape — no need to spam logs.
+                ok;
+            Class:Reason ->
+                lager:warning("Error updating metrics for backend ~s: ~w:~p", [Name, Class, Reason])
         end
     end, Backends).

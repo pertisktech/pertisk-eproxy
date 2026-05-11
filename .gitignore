@@ -27,6 +27,7 @@ data/
 # Admin UI
 admin/node_modules/
 priv/admin/
+priv/tls/
 
 # macOS
 .DS_Store

@@ -133,6 +133,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'fa-microchip': Cpu,
   'fa-moon': Moon,
   'fa-network-wired': Network,
+  'fa-pen': Pencil,
   'fa-pen-to-square': Pencil,
   'fa-plus': Plus,
   'fa-ram': MemoryStick,

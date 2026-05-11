@@ -30,18 +30,14 @@ CREATE TABLE IF NOT EXISTS path_rewrites (
     FOREIGN KEY(site_host) REFERENCES sites(host)
 );
 
--- Sample data: example backend with two upstreams
-INSERT OR REPLACE INTO backends (name, algorithm, health_path, health_interval_secs)
-VALUES ('example-backend', 'round_robin', '/health', 30);
+CREATE TABLE IF NOT EXISTS certificates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
 
-INSERT OR REPLACE INTO upstreams (backend_name, addr, weight)
-VALUES 
-    ('example-backend', '127.0.0.1:3000', 1),
-    ('example-backend', '127.0.0.1:3001', 1);
-
--- Sample site routing to the backend
-INSERT OR REPLACE INTO sites (host, backend)
-VALUES ('example.localhost', 'example-backend');
-
-INSERT OR REPLACE INTO path_rewrites (site_host, path, path_type, rewrite)
-VALUES ('example.localhost', '/', 'prefix', NULL);
+CREATE TABLE IF NOT EXISTS dns_providers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    provider_type TEXT NOT NULL,
+    credentials_json TEXT NOT NULL DEFAULT '{}'
+);

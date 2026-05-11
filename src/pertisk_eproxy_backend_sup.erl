@@ -29,6 +29,9 @@ start_backend(Backend = #{name := Name}) ->
     supervisor:start_child(?MODULE, ChildSpec).
 
 %% Stop (and remove) a backend worker by name.
+%% Idempotent if the child is already gone (e.g. duplicate stop).
 stop_backend(Name) ->
-    supervisor:terminate_child(?MODULE, {backend, Name}),
-    supervisor:delete_child(?MODULE, {backend, Name}).
+    Id = {backend, Name},
+    _ = supervisor:terminate_child(?MODULE, Id),
+    _ = supervisor:delete_child(?MODULE, Id),
+    ok.

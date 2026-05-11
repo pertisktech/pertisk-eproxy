@@ -2,7 +2,15 @@ import FaIcon from '@/components/FaIcon';
 import { useEffect, useState, FormEvent, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { api, type ProxyConfig, type Site, type PathRewrite, type Backend } from '@/api/client';
+import {
+  api,
+  type ProxyConfig,
+  type Site,
+  type PathRewrite,
+  type Backend,
+  type CertificateRow,
+  normalizeDnsProviders,
+} from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -40,6 +48,20 @@ function normalizeUpstream(url: string): string {
   return 'http://' + s;
 }
 
+function wildcardDomainFromHost(host: string): string {
+  const raw = host.trim().toLowerCase();
+  const noScheme = raw.replace(/^[a-z]+:\/\//, '');
+  const noPath = noScheme.split('/')[0] ?? '';
+  const noPort = noPath.split(':')[0] ?? '';
+  const h = noPort.replace(/^\*\./, '').replace(/\.$/, '');
+  if (!h) return '*.domain';
+  const parts = h.split('.').filter(Boolean);
+  if (parts.length >= 3) {
+    return `*.${parts.slice(1).join('.')}`;
+  }
+  return `*.${h}`;
+}
+
 /** Map UI path type to eProxy API (lowercase). */
 function toApiPathType(pt: string): 'prefix' | 'exact' {
   const u = (pt || 'Prefix').toLowerCase();
@@ -62,7 +84,8 @@ type DisplaySiteItem = {
   index: number;
 };
 
-type SslMode = 'none' | 'from_list';
+type SslMode = 'none' | 'existing_cert' | 'auto_ssl';
+type ChallengeType = 'http-01' | 'dns-01';
 
 export default function Sites() {
   const [config, setConfig] = useState<ProxyConfig | null>(null);
@@ -78,6 +101,11 @@ export default function Sites() {
   const [formSslMode, setFormSslMode] = useState<SslMode>('none');
   const [formCertName, setFormCertName] = useState('');
   const [formDnsProviderName, setFormDnsProviderName] = useState('');
+  const [formContactEmail, setFormContactEmail] = useState('');
+  const [formChallengeType, setFormChallengeType] = useState<ChallengeType>('http-01');
+  const [formWildcard, setFormWildcard] = useState(false);
+  const [formAdvertiseHttp3, setFormAdvertiseHttp3] = useState(true);
+  const [formOverrideSecurityHeaders, setFormOverrideSecurityHeaders] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
     normalizeViewMode(getCookieValue(VIEW_MODE_COOKIE)),
@@ -88,12 +116,16 @@ export default function Sites() {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
+  const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>([]);
   const toast = useToast();
+  const wildcardLabel = wildcardDomainFromHost(formHost);
 
   const sites = config?.sites ?? EMPTY_SITES;
   const backends = config?.backends ?? EMPTY_BACKENDS;
-  const certNames = config?.certificates ?? [];
-  const dnsNames = config?.dns_providers ?? [];
+  const dnsNames = useMemo(
+    () => normalizeDnsProviders(config?.dns_providers).map((e) => e.name).filter((n) => n.length > 0),
+    [config?.dns_providers],
+  );
 
   const displaySiteItems: DisplaySiteItem[] = useMemo(
     () =>
@@ -119,8 +151,11 @@ export default function Sites() {
   }
 
   function sslLabelForSite(site: Site): string {
-    if (site.certificate?.trim()) return site.certificate.trim();
-    return '—';
+    const v = site.certificate?.trim();
+    if (!v) return '—';
+    const row = issuedTlsCerts.find((r) => r.id === v);
+    if (row?.hosts?.length) return row.hosts.join(', ');
+    return v;
   }
 
   function compareStrings(a: string, b: string): number {
@@ -174,11 +209,18 @@ export default function Sites() {
   }, []);
 
   useEffect(() => {
+    api.certificates
+      .list()
+      .then((r) => setIssuedTlsCerts(Array.isArray(r) ? r : []))
+      .catch(() => setIssuedTlsCerts([]));
+  }, []);
+
+  useEffect(() => {
     if (!showForm) return;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const root = document.documentElement;
+    root.classList.add('eproxy-scroll-lock');
     return () => {
-      document.body.style.overflow = prevOverflow;
+      root.classList.remove('eproxy-scroll-lock');
     };
   }, [showForm]);
 
@@ -210,6 +252,11 @@ export default function Sites() {
     setFormSslMode('none');
     setFormCertName('');
     setFormDnsProviderName('');
+    setFormContactEmail('');
+    setFormChallengeType('http-01');
+    setFormWildcard(false);
+    setFormAdvertiseHttp3(true);
+    setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
   }
@@ -230,9 +277,14 @@ export default function Sites() {
           }))
         : [{ path: '/', path_type: 'Prefix', rewrite: '/' }],
     );
-    setFormSslMode(site.certificate?.trim() ? 'from_list' : 'none');
+    setFormSslMode(site.certificate?.trim() ? 'existing_cert' : site.dns_provider?.trim() ? 'auto_ssl' : 'none');
     setFormCertName(site.certificate?.trim() ?? '');
     setFormDnsProviderName(site.dns_provider?.trim() ?? '');
+    setFormContactEmail('');
+    setFormChallengeType('http-01');
+    setFormWildcard(false);
+    setFormAdvertiseHttp3(true);
+    setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
   }
@@ -256,6 +308,11 @@ export default function Sites() {
     setFormSslMode('none');
     setFormCertName('');
     setFormDnsProviderName(site.dns_provider?.trim() ?? '');
+    setFormContactEmail('');
+    setFormChallengeType('http-01');
+    setFormWildcard(false);
+    setFormAdvertiseHttp3(true);
+    setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
   }
@@ -290,8 +347,24 @@ export default function Sites() {
     }
     if (!config) return;
 
-    if (formSslMode === 'from_list' && !formCertName.trim()) {
-      setFormError('Select or enter a certificate name when using “Existing certificate label”.');
+    if (formSslMode === 'existing_cert' && !formCertName.trim()) {
+      setFormError('Choose a TLS certificate id when using “Certificate label” (see Certificates page).');
+      return;
+    }
+    if (formSslMode === 'auto_ssl' && !formDnsProviderName.trim()) {
+      setFormError('Choose a DNS provider for Auto SSL.');
+      return;
+    }
+    if (formSslMode === 'auto_ssl' && !formContactEmail.trim()) {
+      setFormError('Contact email is required for Auto SSL.');
+      return;
+    }
+    if (formSslMode === 'auto_ssl' && !formContactEmail.includes('@')) {
+      setFormError('Contact email is invalid.');
+      return;
+    }
+    if (formSslMode === 'auto_ssl' && formWildcard && formChallengeType !== 'dns-01') {
+      setFormError('Wildcard certificate requires DNS-01 challenge.');
       return;
     }
 
@@ -347,8 +420,8 @@ export default function Sites() {
       ];
     }
 
-    const certificate = formSslMode === 'from_list' ? formCertName.trim() || null : null;
-    const dns_provider = formDnsProviderName.trim() || null;
+    const certificate = formSslMode === 'existing_cert' ? formCertName.trim() || null : null;
+    const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : formDnsProviderName.trim() || null;
 
     const newSite: Site = {
       host,
@@ -415,7 +488,7 @@ export default function Sites() {
 
   return (
     <section className={styles.section}>
-      <div className={styles.header}>
+      <div className="page-actions">
         <div className={styles.headerActions}>
           <div className={styles.viewToggle}>
             <button
@@ -445,7 +518,6 @@ export default function Sites() {
             <div className={styles.emptyState}>
               <FaIcon className="fas fa-globe" size={48} aria-hidden />
               <h3 className={styles.emptyTitle}>No sites configured</h3>
-              <p className={styles.emptyText}>Get started by adding your first reverse proxy site</p>
               <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving}>
                 <FaIcon className="fas fa-plus" aria-hidden /> Add Your First Site
               </button>
@@ -715,21 +787,13 @@ export default function Sites() {
                     />
                   </label>
                 </div>
-                <p className={styles.hint}>
-                  <FaIcon className="fas fa-info-circle" aria-hidden /> A backend entry is created or updated
-                  automatically from this upstream URL.
-                </p>
               </div>
 
               <div className={styles.formSection}>
                 <h3 className={styles.sectionTitle}>
                   <FaIcon className={`fas fa-lock ${styles.sectionIcon}`} aria-hidden />
-                  TLS labels
+                  SSL / TLS
                 </h3>
-                <p className={styles.hint}>
-                  eProxy uses certificate and DNS provider <strong>names</strong> from your config (for your own
-                  tooling). Automatic Let&apos;s Encrypt is not wired here.
-                </p>
                 <div className={styles.sslChoices}>
                   <label className={formSslMode === 'none' ? styles.sslChoiceActive : styles.sslChoice}>
                     <input
@@ -744,60 +808,132 @@ export default function Sites() {
                     </span>
                     <span>
                       <span className={styles.sslChoiceTitle}>None</span>
-                      <span className={styles.sslChoiceText}>No certificate label on this site</span>
+                      <span className={styles.sslChoiceText}>Plain HTTP only</span>
                     </span>
                   </label>
-                  <label className={formSslMode === 'from_list' ? styles.sslChoiceActive : styles.sslChoice}>
+                  <label className={formSslMode === 'existing_cert' ? styles.sslChoiceActive : styles.sslChoice}>
                     <input
                       type="radio"
                       name="sslMode"
-                      checked={formSslMode === 'from_list'}
-                      onChange={() => setFormSslMode('from_list')}
+                      checked={formSslMode === 'existing_cert'}
+                      onChange={() => setFormSslMode('existing_cert')}
                       className={styles.radioInput}
                     />
                     <span className={styles.sslChoiceIcon}>
                       <FaIcon className="fas fa-certificate" aria-hidden />
                     </span>
                     <span>
-                      <span className={styles.sslChoiceTitle}>Certificate label</span>
-                      <span className={styles.sslChoiceText}>Match a name from Certificates</span>
+                      <span className={styles.sslChoiceTitle}>Existing cert</span>
+                      <span className={styles.sslChoiceText}>Reuse a configured certificate</span>
+                    </span>
+                  </label>
+                  <label className={formSslMode === 'auto_ssl' ? styles.sslChoiceActive : styles.sslChoice}>
+                    <input
+                      type="radio"
+                      name="sslMode"
+                      checked={formSslMode === 'auto_ssl'}
+                      onChange={() => setFormSslMode('auto_ssl')}
+                      className={styles.radioInput}
+                    />
+                    <span className={styles.sslChoiceIcon}>
+                      <FaIcon className="fas fa-magic" aria-hidden />
+                    </span>
+                    <span>
+                      <span className={styles.sslChoiceTitle}>Auto SSL</span>
+                      <span className={styles.sslChoiceText}>ACME / Let&apos;s Encrypt</span>
                     </span>
                   </label>
                 </div>
-                {formSslMode === 'from_list' && (
+                {formSslMode === 'existing_cert' && (
                   <label className={styles.label}>
-                    Certificate name
-                    <input
-                      type="text"
+                    TLS certificate
+                    <div className={styles.selectWrap}>
+                      <FaIcon className={`fas fa-certificate ${styles.selectLeadIcon}`} aria-hidden />
+                      <select
                       value={formCertName}
                       onChange={(e) => setFormCertName(e.target.value)}
-                      list="sites-cert-datalist"
-                      placeholder="Pick or type a certificate label"
-                      className={styles.input}
-                    />
-                    <datalist id="sites-cert-datalist">
-                      {certNames.map((c) => (
-                        <option key={c} value={c} />
+                      className={`${styles.select} ${styles.selectWithLead}`}
+                    >
+                      <option value="">Select certificate…</option>
+                      {issuedTlsCerts.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {(r.hosts?.length ? r.hosts.join(' · ') : r.id) + ` · ${r.source_type || 'tls'}`}
+                        </option>
                       ))}
-                    </datalist>
+                    </select>
+                    <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                    </div>
                   </label>
                 )}
-                <label className={styles.label}>
-                  DNS provider label (optional)
-                  <input
-                    type="text"
-                    value={formDnsProviderName}
-                    onChange={(e) => setFormDnsProviderName(e.target.value)}
-                    list="sites-dns-datalist"
-                    placeholder="Pick or type a DNS provider label"
-                    className={styles.input}
-                  />
-                  <datalist id="sites-dns-datalist">
-                    {dnsNames.map((d) => (
-                      <option key={d} value={d} />
-                    ))}
-                  </datalist>
-                </label>
+                {formSslMode === 'auto_ssl' && (
+                  <>
+                    <p className={styles.hint}>Certificate is issued automatically when you save (no restart).</p>
+                    <label className={styles.label}>
+                      Contact email (Let&apos;s Encrypt)
+                      <input
+                        type="email"
+                        value={formContactEmail}
+                        onChange={(e) => setFormContactEmail(e.target.value)}
+                        placeholder="you@yourdomain.com"
+                        className={styles.input}
+                        required
+                      />
+                      <p className={styles.hint}>Required for Let&apos;s Encrypt account. Used for expiry notifications.</p>
+                    </label>
+                    <label className={styles.label}>
+                      Challenge type
+                      <div className={styles.selectWrap}>
+                        <FaIcon className={`fas fa-shield-alt ${styles.selectLeadIcon}`} aria-hidden />
+                        <select
+                          value={formChallengeType}
+                          onChange={(e) => {
+                            const next = e.target.value as ChallengeType;
+                            setFormChallengeType(next);
+                            if (next !== 'dns-01') setFormDnsProviderName('');
+                          }}
+                          className={`${styles.select} ${styles.selectWithLead}`}
+                        >
+                          <option value="http-01">HTTP-01</option>
+                          <option value="dns-01">DNS-01</option>
+                        </select>
+                        <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                      </div>
+                    </label>
+                    {formChallengeType === 'dns-01' && (
+                      <label className={styles.label}>
+                        DNS provider
+                        <div className={styles.selectWrap}>
+                          <FaIcon className={`fas fa-server ${styles.selectLeadIcon}`} aria-hidden />
+                          <select
+                            value={formDnsProviderName}
+                            onChange={(e) => setFormDnsProviderName(e.target.value)}
+                            className={`${styles.select} ${styles.selectWithLead}`}
+                          >
+                            <option value="">Select DNS provider…</option>
+                            {dnsNames.map((d) => (
+                              <option key={d} value={d}>
+                                {d}
+                              </option>
+                            ))}
+                          </select>
+                          <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                        </div>
+                      </label>
+                    )}
+                    <label className={styles.autoSslCheck}>
+                      <input
+                        type="checkbox"
+                        checked={formWildcard}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setFormWildcard(checked);
+                          if (checked) setFormChallengeType('dns-01');
+                        }}
+                      />
+                      {`Wildcard certificate (${wildcardLabel})`}
+                    </label>
+                  </>
+                )}
               </div>
 
               <div className={styles.formSection}>
@@ -851,6 +987,36 @@ export default function Sites() {
                     </button>
                   </div>
                 ))}
+              </div>
+
+              <div className={styles.formSection}>
+                <h3 className={styles.sectionTitle}>Security headers</h3>
+                <div className={styles.securitySectionWrap}>
+                  <label className={styles.securityOption}>
+                    <input
+                      type="checkbox"
+                      checked={formAdvertiseHttp3}
+                      onChange={(e) => setFormAdvertiseHttp3(e.target.checked)}
+                    />
+                    <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
+                  </label>
+                  <p className={styles.securityHintText}>
+                    Turn this off to force clients to stay on HTTP/1.1 or HTTP/2 for this host.
+                  </p>
+                  <label className={styles.securityOption}>
+                    <input
+                      type="checkbox"
+                      checked={formOverrideSecurityHeaders}
+                      onChange={(e) => setFormOverrideSecurityHeaders(e.target.checked)}
+                    />
+                    <span className={styles.securityOptionTitle}>Override global security headers for this site</span>
+                  </label>
+                  <p className={styles.securityHintText}>
+                    {formOverrideSecurityHeaders
+                      ? 'Custom per-site security headers are not yet persisted in eProxy.'
+                      : 'Using global security headers from Settings.'}
+                  </p>
+                </div>
               </div>
 
               {formError && <p className={styles.formError}>{formError}</p>}

@@ -7,8 +7,8 @@
 %%   - mode (proxy | proxy_admin)
 %%   - sites (host, backend, certificate, dns_provider, routes)
 %%   - backends (name, algorithm, health_path, health_interval_secs)
-%%   - certificates (UI record names)
-%%   - dns_providers (UI record names)
+%%   - certificates (legacy string labels in JSON; site TLS picks use GET /api/certificates)
+%%   - dns_providers (list of #{name, provider_type, credentials} or legacy strings in JSON)
 %%
 %% All server config (HTTP/HTTPS/management ports, TLS certs) is passed
 %% via config/sys.config and application environment variables.
@@ -66,12 +66,14 @@ get_certificates() ->
         []                  -> []
     end.
 
-%% Return list of DNS provider record names.
--spec get_dns_providers() -> [binary() | list()].
+%% Return list of DNS provider display names (for validation / UI).
+-spec get_dns_providers() -> [list()].
 get_dns_providers() ->
     case ets:lookup(?TAB, dns_providers) of
-        [{dns_providers, D}] -> D;
-        []                   -> []
+        [{dns_providers, D}] when is_list(D) ->
+            [dns_provider_entry_name(P) || P <- D];
+        [] ->
+            []
     end.
 
 %% Return a single backend map by name, or error.
@@ -124,8 +126,13 @@ handle_call(reload, _From, State) ->
     {reply, Reply, State};
 
 handle_call({put_config, Config}, _From, State) ->
-    apply_config(Config),
-    {reply, ok, State};
+    case persist_runtime_config(Config) of
+        ok ->
+            apply_config(Config),
+            {reply, ok, State};
+        {error, R} ->
+            {reply, {error, {persist_runtime_config, R}}, State}
+    end;
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
@@ -153,23 +160,63 @@ config_file() ->
     end.
 
 load_config() ->
+    DbPath = db_file(),
+    case pertisk_eproxy_db:get_runtime_config(DbPath) of
+        {ok, Cfg} when is_map(Cfg) ->
+            _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
+            _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+            {ok, Cfg};
+        not_found ->
+            load_config_from_file_and_seed(DbPath);
+        {error, Reason} ->
+            lager:warning("Runtime config in SQLite unavailable (~p), falling back to file", [Reason]),
+            load_config_from_file_and_seed(DbPath)
+    end.
+
+load_config_from_file_and_seed(DbPath) ->
     File = config_file(),
     case file:read_file(File) of
         {ok, Bin} ->
             case thoas:decode(Bin) of
-                {ok, Json}      -> {ok, json_to_config(Json)};
-                {error, Reason} -> {error, {json_parse, Reason}}
+                {ok, Json} ->
+                    Cfg = json_to_config(Json),
+                    _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
+                    _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+                    _ = persist_runtime_config(DbPath, Cfg),
+                    {ok, Cfg};
+                {error, Reason} ->
+                    {error, {json_parse, Reason}}
             end;
         {error, Reason} ->
             {error, {file_read, Reason}}
     end.
 
+persist_runtime_config(Config) ->
+    persist_runtime_config(db_file(), Config).
+
+persist_runtime_config(DbPath, Config) ->
+    pertisk_eproxy_db:put_runtime_config(DbPath, Config).
+
+db_file() ->
+    case application:get_env(pertisk_eproxy, db_file) of
+        {ok, F} -> F;
+        undefined -> "data/proxy.db"
+    end.
+
+%% JSON `null` or non-lists must not crash list comprehensions (maps:get/3 default is
+%% ignored when the key is present with value `null`).
+-spec json_as_list(term()) -> list().
+json_as_list(undefined) -> [];
+json_as_list(null) -> [];
+json_as_list(L) when is_list(L) -> L;
+json_as_list(_) -> [].
+
 %% Parse JSON map into internal config map with atom keys and typed values.
 json_to_config(Json) ->
-    Sites    = parse_sites(maps:get(<<"sites">>,    Json, [])),
-    Backends = parse_backends(maps:get(<<"backends">>, Json, [])),
-    Certificates = parse_string_list(maps:get(<<"certificates">>, Json, [])),
-    DnsProviders  = parse_string_list(maps:get(<<"dns_providers">>, Json, [])),
+    Sites    = parse_sites(maps:get(<<"sites">>,    Json, undefined)),
+    Backends = parse_backends(maps:get(<<"backends">>, Json, undefined)),
+    Certificates = parse_string_list(maps:get(<<"certificates">>, Json, undefined)),
+    DnsProviders  = parse_dns_providers(maps:get(<<"dns_providers">>, Json, undefined)),
     Config = #{
         mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy_admin">>)),
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
@@ -189,8 +236,8 @@ json_to_config(Json) ->
 json_to_config_pub(Json) ->
     json_to_config(Json).
 
-parse_sites(List) ->
-    [parse_site(S) || S <- List].
+parse_sites(In) ->
+    [parse_site(S) || S <- json_as_list(In), is_map(S)].
 
 parse_site(S) ->
     #{
@@ -198,11 +245,11 @@ parse_site(S) ->
         backend => maps:get(<<"backend">>, S),
         certificate => parse_opt_str(maps:get(<<"certificate">>, S, null)),
         dns_provider => parse_opt_str(maps:get(<<"dns_provider">>, S, null)),
-        routes  => parse_routes(maps:get(<<"routes">>, S, []))
+        routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
     }.
 
-parse_routes(List) ->
-    [parse_route(R) || R <- List].
+parse_routes(In) ->
+    [parse_route(R) || R <- json_as_list(In), is_map(R)].
 
 parse_route(R) ->
     #{
@@ -215,17 +262,59 @@ parse_path_type(<<"exact">>)  -> exact;
 parse_path_type(<<"prefix">>) -> prefix;
 parse_path_type(_)            -> prefix.
 
-parse_backends(List) ->
-    [parse_backend(B) || B <- List].
+parse_backends(In) ->
+    [parse_backend(B) || B <- json_as_list(In), is_map(B)].
 
-parse_string_list(List) ->
-    [Str || V <- List, Str <- [parse_opt_str(V)], Str =/= undefined].
+parse_string_list(In) ->
+    [Str || V <- json_as_list(In), Str <- [parse_opt_str(V)], Str =/= undefined].
+
+%% DNS providers: JSON array of strings (legacy) or objects
+%% #{<<"name">>, <<"provider_type">>, <<"credentials">>}.
+-spec parse_dns_providers(term()) -> [map()].
+parse_dns_providers(In) ->
+    lists:filtermap(fun parse_dns_provider_elem/1, json_as_list(In)).
+
+parse_dns_provider_elem(Bin) when is_binary(Bin) ->
+    case parse_opt_str(Bin) of
+        undefined -> false;
+        Name -> {true, #{name => Name, provider_type => "label", credentials => #{}}}
+    end;
+parse_dns_provider_elem(M) when is_map(M) ->
+    case maps:get(<<"name">>, M, undefined) of
+        undefined ->
+            false;
+        NameBin when is_binary(NameBin) ->
+            parse_dns_provider_named(binary_to_list(NameBin), M);
+        NameI when is_integer(NameI) ->
+            parse_dns_provider_named(integer_to_list(NameI), M);
+        _ ->
+            false
+    end;
+parse_dns_provider_elem(_) ->
+    false.
+
+parse_dns_provider_named(Name, M) when is_list(Name) ->
+    Pt = case maps:get(<<"provider_type">>, M, <<"label">>) of
+        B when is_binary(B) -> binary_to_list(B);
+        _ -> "label"
+    end,
+    Cred0 = maps:get(<<"credentials">>, M, #{}),
+    Cred = case Cred0 of
+        CM when is_map(CM) -> CM;
+        _ -> #{}
+    end,
+    {true, #{name => Name, provider_type => Pt, credentials => Cred}}.
+
+dns_provider_entry_name(#{name := N}) when is_list(N) -> N;
+dns_provider_entry_name(#{name := N}) when is_binary(N) -> binary_to_list(N);
+dns_provider_entry_name(Bin) when is_binary(Bin) -> binary_to_list(Bin);
+dns_provider_entry_name(_) -> "".
 
 parse_backend(B) ->
     #{
         name                 => maps:get(<<"name">>, B),
         algorithm            => parse_algorithm(maps:get(<<"algorithm">>, B, <<"round_robin">>)),
-        upstreams            => parse_upstreams(maps:get(<<"upstreams">>, B, [])),
+        upstreams            => parse_upstreams(maps:get(<<"upstreams">>, B, undefined)),
         health_path          => parse_opt_str(maps:get(<<"health_path">>, B, null)),
         health_interval_secs => maps:get(<<"health_interval_secs">>, B, 30)
     }.
@@ -239,9 +328,9 @@ parse_mode(<<"proxy">>) -> proxy;
 parse_mode(<<"proxy_admin">>) -> proxy_admin;
 parse_mode(_) -> proxy_admin.
 
-parse_upstreams(List) ->
+parse_upstreams(In) ->
     [#{addr => maps:get(<<"addr">>, U), weight => maps:get(<<"weight">>, U, 1)}
-     || U <- List].
+     || U <- json_as_list(In), is_map(U)].
 
 parse_addr(Bin) ->
     case inet:parse_address(binary_to_list(Bin)) of
@@ -282,8 +371,8 @@ apply_config(Config) ->
     Router = pertisk_eproxy_router:build(Sites),
     ets:insert(?TAB, {router, Router}),
 
-    lager:info("Config applied: ~w site(s), ~w backend(s)",
-               [length(Sites), length(Backends)]).
+    lager:info("Config applied: ~w site(s), ~w backend(s), ~w dns provider(s)",
+               [length(Sites), length(Backends), length(DnsProviders)]).
 
 sync_backend_workers(Backends) ->
     %% Guard: backend_sup may not be up yet during early init.
@@ -293,6 +382,23 @@ sync_backend_workers(Backends) ->
     end.
 
 do_sync_backend_workers(Backends) ->
+    Wanted = sets:from_list([Name || #{name := Name} <- Backends]),
+    %% Stop workers (and health checks) for backends no longer in config.
+    lists:foreach(
+        fun
+            ({{backend, Name}, _Pid, worker, _}) ->
+                case sets:is_element(Name, Wanted) of
+                    true ->
+                        ok;
+                    false ->
+                        ok = pertisk_eproxy_backend_sup:stop_backend(Name),
+                        _ = ets:delete(?TAB, {backend, Name})
+                end;
+            (_) ->
+                ok
+        end,
+        supervisor:which_children(pertisk_eproxy_backend_sup)
+    ),
     lists:foreach(fun(B = #{name := Name}) ->
         case pertisk_eproxy_backend:whereis(Name) of
             undefined ->

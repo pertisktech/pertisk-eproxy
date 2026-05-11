@@ -56,7 +56,6 @@ function getSidebarWidth(): number {
 const NAV_MAIN_ALL = [
   { to: '/', end: true, label: 'Dashboard', icon: 'fa-home' },
   { to: '/sites', end: false, label: 'Sites', icon: 'fa-globe' },
-  { to: '/backends', end: false, label: 'Backends', icon: 'fa-sitemap' },
   { to: '/certificates', end: false, label: 'Certificates', icon: 'fa-certificate' },
   { to: '/dns-providers', end: false, label: 'DNS providers', icon: 'fa-server' },
 ] as const;
@@ -91,11 +90,17 @@ interface BreadcrumbItem {
 }
 
 function useBreadcrumbs(pathname: string): BreadcrumbItem[] {
-  if (pathname.startsWith('/sites/')) {
-    return [
-      { label: 'Sites', icon: 'fa-globe', path: '/sites' },
-      { label: 'Site detail', icon: 'fa-server' },
-    ];
+  const siteDetailMatch = /^\/sites\/([^/]+)$/.exec(pathname);
+  if (siteDetailMatch && siteDetailMatch[1]) {
+    try {
+      const host = decodeURIComponent(siteDetailMatch[1]);
+      return [
+        { label: 'Sites', icon: 'fa-globe', path: '/sites' },
+        { label: host, icon: 'fa-server' },
+      ];
+    } catch {
+      /* fall through */
+    }
   }
   const match = ALL_NAV.find(
     (item) => 'to' in item && item.to !== '/' && (pathname === item.to || pathname.startsWith(item.to + '/'))
@@ -249,6 +254,10 @@ export default function Layout() {
         rows.forEach((row) => {
           if (known.has(row.id)) return;
           known.add(row.id);
+          // Skip manual listener PEM imports; that flow already shows its own toast.
+          if (row.id === 'listener-tls' || row.source_type === 'tls_listener' || row.challenge === 'static PEM') {
+            return;
+          }
           toast.success(`SSL certificate issued for ${formatCertHosts(row.hosts)}.`);
         });
       } catch {
@@ -539,15 +548,6 @@ export default function Layout() {
           </nav>
           <div className={styles.utilityBarRight}>
           {mode && <span className={styles.modeBadge}>{modeLabel}</span>}
-          <a
-            href="/api/docs"
-            target="_blank"
-            rel="noopener noreferrer"
-            className={styles.headerLink}
-          >
-            <FaIcon className="fas fa-book" size={16} aria-hidden />
-            <span>API docs</span>
-          </a>
           {theme && (
             <button
               type="button"
@@ -640,7 +640,7 @@ export default function Layout() {
           )}
           </div>
         </div>
-        <main className={styles.main}>
+        <main id="layout-main-scroll" className={styles.main}>
           <div className={styles.mainAmbient} aria-hidden />
           <div className={styles.mainContent}>
             <div className={styles.mainContentInner}>

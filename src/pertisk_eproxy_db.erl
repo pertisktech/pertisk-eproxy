@@ -6,6 +6,18 @@
 -export([
     init/1,
     get_config/1,
+    get_runtime_config/1,
+    put_runtime_config/2,
+    list_certificates/1,
+    insert_certificate/2,
+    update_certificate/3,
+    delete_certificate/2,
+    ensure_certificates_seeded/2,
+    list_dns_providers/1,
+    insert_dns_provider/4,
+    update_dns_provider/5,
+    delete_dns_provider/2,
+    ensure_dns_providers_seeded/2,
     get_site/2,
     list_sites/1,
     insert_site/4,
@@ -65,6 +77,20 @@ init_schema(DbPath) ->
         path_type TEXT DEFAULT 'prefix',
         rewrite TEXT,
         FOREIGN KEY(site_host) REFERENCES sites(host)
+    );
+    CREATE TABLE IF NOT EXISTS runtime_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS certificates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS dns_providers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        provider_type TEXT NOT NULL,
+        credentials_json TEXT NOT NULL DEFAULT '{}'
     );",
     case sqlite_exec(DbPath, SQL) of
         ok -> ok;
@@ -74,7 +100,7 @@ init_schema(DbPath) ->
 %% Execute SQL via system sqlite3 using shell
 sqlite_exec(DbPath, SQL) ->
     EscapedSQL = escape_shell(SQL),
-    Cmd = "sqlite3 " ++ DbPath ++ " " ++ EscapedSQL,
+    Cmd = "sqlite3 " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
     Output = os:cmd(Cmd),
     case Output of
         "" -> ok;
@@ -88,7 +114,7 @@ sqlite_exec(DbPath, SQL) ->
 %% Query using sqlite3 JSON output
 sqlite_query(DbPath, SQL) ->
     EscapedSQL = escape_shell(SQL),
-    Cmd = "sqlite3 -json " ++ DbPath ++ " " ++ EscapedSQL,
+    Cmd = "sqlite3 -json " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
     Output = os:cmd(Cmd),
     case Output of
         "" -> {ok, []};
@@ -100,19 +126,29 @@ sqlite_query(DbPath, SQL) ->
             end
     end.
 
-%% Escape shell special characters (single quote wrapping with escaped quotes inside)
-escape_shell(Str) ->
-    "'" ++ replace_quotes(Str) ++ "'".
+%% Escape for shell with double quotes.
+escape_shell(Str0) ->
+    Str = to_list(Str0),
+    "\"" ++ escape_double_quotes(Str) ++ "\"".
 
-replace_quotes(Str) ->
-    replace_quotes(Str, []).
+escape_double_quotes(Str) ->
+    escape_double_quotes(Str, []).
 
-replace_quotes([], Acc) ->
+escape_double_quotes([], Acc) ->
     lists:reverse(Acc);
-replace_quotes([39 | Rest], Acc) ->  %% 39 is '
-    replace_quotes(Rest, [39, 92, 39 | Acc]);  %% Add '\''
-replace_quotes([C | Rest], Acc) ->
-    replace_quotes(Rest, [C | Acc]).
+escape_double_quotes([$\\ | Rest], Acc) ->
+    escape_double_quotes(Rest, [$\\, $\\ | Acc]);
+escape_double_quotes([$" | Rest], Acc) ->
+    escape_double_quotes(Rest, [$", $\\ | Acc]);
+escape_double_quotes([$$ | Rest], Acc) ->
+    escape_double_quotes(Rest, [$$, $\\ | Acc]);
+escape_double_quotes([$` | Rest], Acc) ->
+    escape_double_quotes(Rest, [$`, $\\ | Acc]);
+escape_double_quotes([C | Rest], Acc) ->
+    escape_double_quotes(Rest, [C | Acc]).
+
+to_list(B) when is_binary(B) -> binary_to_list(B);
+to_list(L) when is_list(L) -> L.
 
 %% Load complete proxy config from database
 get_config(DbPath) ->
@@ -127,6 +163,333 @@ get_config(DbPath) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+%% ---------------------------------------------------------------------------
+%% Runtime config persistence (full config term)
+%% ---------------------------------------------------------------------------
+
+-spec get_runtime_config(string()) -> {ok, map()} | not_found | {error, term()}.
+get_runtime_config(DbPath) ->
+    case ensure_runtime_state_table(DbPath) of
+        ok ->
+            SQL = "SELECT value FROM runtime_state WHERE key = 'runtime_config' LIMIT 1",
+            case sqlite_query(DbPath, SQL) of
+                {ok, []} ->
+                    not_found;
+                {ok, [Row | _]} ->
+                    decode_runtime_value(maps:get(<<"value">>, Row, undefined));
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec put_runtime_config(string(), map()) -> ok | {error, term()}.
+put_runtime_config(DbPath, Config) when is_map(Config) ->
+    case ensure_runtime_state_table(DbPath) of
+        ok ->
+            Enc = binary_to_list(base64:encode(term_to_binary(Config))),
+            SQL = "INSERT INTO runtime_state(key, value) VALUES('runtime_config', '" ++
+                sql_escape(Enc) ++
+                "') ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+            sqlite_exec(DbPath, SQL);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+ensure_runtime_state_table(DbPath) ->
+    SQL = "CREATE TABLE IF NOT EXISTS runtime_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    sqlite_exec(DbPath, SQL).
+
+ensure_certificates_table(DbPath) ->
+    SQL = "CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);",
+    sqlite_exec(DbPath, SQL).
+
+ensure_dns_providers_table(DbPath) ->
+    SQL = "CREATE TABLE IF NOT EXISTS dns_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, provider_type TEXT NOT NULL, credentials_json TEXT NOT NULL DEFAULT '{}');",
+    sqlite_exec(DbPath, SQL).
+
+-spec list_certificates(string()) -> {ok, [map()]} | {error, term()}.
+list_certificates(DbPath) ->
+    case ensure_certificates_table(DbPath) of
+        ok ->
+            SQL = "SELECT id, name FROM certificates ORDER BY id",
+            case sqlite_query(DbPath, SQL) of
+                {ok, Rows} ->
+                    {ok, [
+                        #{
+                            id => maps:get(<<"id">>, Row),
+                            name => maps:get(<<"name">>, Row)
+                        }
+                        || Row <- Rows
+                    ]};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec insert_certificate(string(), binary() | list()) -> {ok, integer()} | {error, term()}.
+insert_certificate(DbPath, Name0) ->
+    Name = string:trim(to_list(Name0)),
+    case Name of
+        [] ->
+            {error, empty_name};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    InsertSQL = "INSERT INTO certificates(name) VALUES('" ++ sql_escape(Name) ++ "')",
+                    case sqlite_exec(DbPath, InsertSQL) of
+                        ok ->
+                            IdSQL = "SELECT last_insert_rowid() AS id",
+                            case sqlite_query(DbPath, IdSQL) of
+                                {ok, [Row | _]} ->
+                                    {ok, maps:get(<<"id">>, Row)};
+                                _ ->
+                                    {error, insert_failed}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec update_certificate(string(), integer(), binary() | list()) -> ok | {error, term()}.
+update_certificate(DbPath, Id, Name0) ->
+    Name = string:trim(to_list(Name0)),
+    case Name of
+        [] ->
+            {error, empty_name};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    ExistsSQL = "SELECT id FROM certificates WHERE id = " ++ integer_to_list(Id) ++ " LIMIT 1",
+                    case sqlite_query(DbPath, ExistsSQL) of
+                        {ok, []} ->
+                            {error, not_found};
+                        {ok, [_ | _]} ->
+                            SQL = "UPDATE certificates SET name = '" ++ sql_escape(Name) ++ "' WHERE id = " ++ integer_to_list(Id),
+                            sqlite_exec(DbPath, SQL);
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec delete_certificate(string(), integer()) -> ok | {error, term()}.
+delete_certificate(DbPath, Id) ->
+    case ensure_certificates_table(DbPath) of
+        ok ->
+            SQL = "DELETE FROM certificates WHERE id = " ++ integer_to_list(Id),
+            case sqlite_exec(DbPath, SQL) of
+                ok ->
+                    case sqlite_query(DbPath, "SELECT changes() AS n") of
+                        {ok, [Row | _]} ->
+                            case maps:get(<<"n">>, Row, 0) > 0 of
+                                true -> ok;
+                                false -> {error, not_found}
+                            end;
+                        _ ->
+                            {error, not_found}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec ensure_certificates_seeded(string(), [binary() | list()]) -> ok | {error, term()}.
+ensure_certificates_seeded(DbPath, Names) ->
+    case ensure_certificates_table(DbPath) of
+        ok ->
+            lists:foreach(
+                fun(N0) ->
+                    N = string:trim(to_list(N0)),
+                    case N of
+                        [] -> ok;
+                        _ ->
+                            SQL = "INSERT OR IGNORE INTO certificates(name) VALUES('" ++ sql_escape(N) ++ "')",
+                            _ = sqlite_exec(DbPath, SQL),
+                            ok
+                    end
+                end,
+                Names
+            ),
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec list_dns_providers(string()) -> {ok, [map()]} | {error, term()}.
+list_dns_providers(DbPath) ->
+    case ensure_dns_providers_table(DbPath) of
+        ok ->
+            SQL = "SELECT id, name, provider_type, credentials_json FROM dns_providers ORDER BY id",
+            case sqlite_query(DbPath, SQL) of
+                {ok, Rows} ->
+                    {ok, [dns_row_to_map(Row) || Row <- Rows]};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+dns_row_to_map(Row) ->
+    Cj = maps:get(<<"credentials_json">>, Row, <<"{}">>),
+    Creds =
+        case thoas:decode(iolist_to_binary(Cj)) of
+            {ok, M} when is_map(M) -> M;
+            _ -> #{}
+        end,
+    #{
+        id => maps:get(<<"id">>, Row),
+        name => maps:get(<<"name">>, Row),
+        provider_type => maps:get(<<"provider_type">>, Row),
+        credentials => Creds
+    }.
+
+-spec insert_dns_provider(string(), binary() | list(), binary() | list(), map()) -> {ok, integer()} | {error, term()}.
+insert_dns_provider(DbPath, Name0, ProviderType0, Credentials) ->
+    Name = string:trim(to_list(Name0)),
+    Pt = string:trim(to_list(ProviderType0)),
+    Cj = sql_escape(binary_to_list(thoas:encode(Credentials))),
+    case {Name, Pt} of
+        {[], _} -> {error, empty_name};
+        {_, []} -> {error, empty_provider_type};
+        _ ->
+            case ensure_dns_providers_table(DbPath) of
+                ok ->
+                    SQL = "INSERT INTO dns_providers(name, provider_type, credentials_json) VALUES('" ++
+                        sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "')",
+                    case sqlite_exec(DbPath, SQL) of
+                        ok ->
+                            case sqlite_query(DbPath, "SELECT last_insert_rowid() AS id") of
+                                {ok, [Row | _]} -> {ok, maps:get(<<"id">>, Row)};
+                                _ -> {error, insert_failed}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec update_dns_provider(string(), integer(), binary() | list(), binary() | list(), map()) -> ok | {error, term()}.
+update_dns_provider(DbPath, Id, Name0, ProviderType0, Credentials) ->
+    Name = string:trim(to_list(Name0)),
+    Pt = string:trim(to_list(ProviderType0)),
+    Cj = sql_escape(binary_to_list(thoas:encode(Credentials))),
+    case {Name, Pt} of
+        {[], _} -> {error, empty_name};
+        {_, []} -> {error, empty_provider_type};
+        _ ->
+            case ensure_dns_providers_table(DbPath) of
+                ok ->
+                    ExistsSQL = "SELECT id FROM dns_providers WHERE id = " ++ integer_to_list(Id) ++ " LIMIT 1",
+                    case sqlite_query(DbPath, ExistsSQL) of
+                        {ok, []} ->
+                            {error, not_found};
+                        {ok, [_ | _]} ->
+                            SQL = "UPDATE dns_providers SET name='" ++ sql_escape(Name) ++
+                                "', provider_type='" ++ sql_escape(Pt) ++
+                                "', credentials_json='" ++ Cj ++
+                                "' WHERE id = " ++ integer_to_list(Id),
+                            sqlite_exec(DbPath, SQL);
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec delete_dns_provider(string(), integer()) -> ok | {error, term()}.
+delete_dns_provider(DbPath, Id) ->
+    case ensure_dns_providers_table(DbPath) of
+        ok ->
+            SQL = "DELETE FROM dns_providers WHERE id = " ++ integer_to_list(Id),
+            case sqlite_exec(DbPath, SQL) of
+                ok ->
+                    case sqlite_query(DbPath, "SELECT changes() AS n") of
+                        {ok, [Row | _]} ->
+                            case maps:get(<<"n">>, Row, 0) > 0 of
+                                true -> ok;
+                                false -> {error, not_found}
+                            end;
+                        _ -> {error, not_found}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec ensure_dns_providers_seeded(string(), [map()]) -> ok | {error, term()}.
+ensure_dns_providers_seeded(DbPath, Providers) ->
+    case ensure_dns_providers_table(DbPath) of
+        ok ->
+            lists:foreach(
+                fun(P0) ->
+                    P = case P0 of
+                        #{name := _} -> P0;
+                        _ -> #{}
+                    end,
+                    Name = string:trim(to_list(maps:get(name, P, ""))),
+                    Pt = string:trim(to_list(maps:get(provider_type, P, "label"))),
+                    Cred = case maps:get(credentials, P, #{}) of
+                        M when is_map(M) -> M;
+                        _ -> #{}
+                    end,
+                    case Name of
+                        [] ->
+                            ok;
+                        _ ->
+                            Cj = sql_escape(binary_to_list(thoas:encode(Cred))),
+                            SQL = "INSERT OR IGNORE INTO dns_providers(name, provider_type, credentials_json) VALUES('" ++
+                                sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "')",
+                            _ = sqlite_exec(DbPath, SQL),
+                            ok
+                    end
+                end,
+                Providers
+            ),
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+decode_runtime_value(undefined) ->
+    not_found;
+decode_runtime_value(V0) ->
+    try
+        V = iolist_to_binary(V0),
+        TermBin = base64:decode(V),
+        case binary_to_term(TermBin, [safe]) of
+            M when is_map(M) -> {ok, M};
+            _ -> {error, invalid_runtime_config_term}
+        end
+    catch
+        _:_ ->
+            {error, invalid_runtime_config_encoding}
+    end.
+
+sql_escape(Str) when is_list(Str) ->
+    lists:flatmap(
+        fun($') -> "''";
+           (C) -> [C]
+        end,
+        Str
+    ).
 
 %% Get a single site with its routes
 get_site(DbPath, Host) ->

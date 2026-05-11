@@ -24,16 +24,9 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, [load]);
 
-  const totalHealthy = health?.backends.reduce((s, b) => s + b.healthy, 0) ?? 0;
-  const totalUpstreams = health?.backends.reduce((s, b) => s + b.total, 0) ?? 0;
-
   return (
-    <div>
-      <div className="page-header">
-        <div className="page-title">
-          <i className="fas fa-home" />
-          <h1>Dashboard</h1>
-        </div>
+    <section className={styles.page}>
+      <div className="page-actions">
         <button className="btn btn-ghost btn-sm" onClick={load}>
           <i className="fas fa-sync-alt" /> Refresh
         </button>
@@ -61,13 +54,6 @@ export default function Dashboard() {
               </div>
               <div className={styles.statValue}>{config?.backends?.length ?? 0}</div>
               <div className={styles.statLabel}>Backends</div>
-            </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.green}`}>
-                <i className="fas fa-heartbeat" />
-              </div>
-              <div className={styles.statValue}>{totalHealthy}<span style={{ fontSize: '1rem', color: 'var(--color-muted)' }}>/{totalUpstreams}</span></div>
-              <div className={styles.statLabel}>Healthy Upstreams</div>
             </div>
             <div className={`card ${styles.statCard}`}>
               <div className={`${styles.statIcon} ${styles.yellow}`}>
@@ -112,6 +98,6 @@ export default function Dashboard() {
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 }
