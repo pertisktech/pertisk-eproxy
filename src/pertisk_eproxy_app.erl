@@ -3,9 +3,11 @@
 -behaviour(application).
 
 -export([start/2, stop/1]).
+-export([quic_noise_filter/2]).
 
 start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
+    _ = install_quic_log_filter(),
     ok = pertisk_eproxy_metrics:setup(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = start_listeners(),
@@ -37,14 +39,20 @@ start_listeners() ->
             num_acceptors => 100,
             socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
         },
-        #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
     ),
     {ok, _}    = cowboy:start_clear(http6,
         #{
             num_acceptors => 100,
             socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
         },
-        #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
     ),
     lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
@@ -59,14 +67,20 @@ start_listeners() ->
                     num_acceptors => 100,
                     socket_opts => TlsSocketOpts4
                 },
-                #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+                #{
+                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                    logger => pertisk_eproxy_cowboy_logger
+                }
             ),
             {ok, _} = cowboy:start_tls(https6,
                 #{
                     num_acceptors => 100,
                     socket_opts => TlsSocketOpts6
                 },
-                #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+                #{
+                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                    logger => pertisk_eproxy_cowboy_logger
+                }
             ),
             lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
         error ->
@@ -83,7 +97,10 @@ start_listeners() ->
             num_acceptors => 10,
             socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]
         },
-        #{env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])}}
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
     ),
     lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
     ok.
@@ -99,6 +116,7 @@ maybe_start_quic(Config, Routes) ->
             QuicSocketOpts4 = [{ip, {0,0,0,0}}, {port, Port} | Tls],
             QuicProtoOpts = #{
                 env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                logger => pertisk_eproxy_cowboy_logger,
                 enable_connect_protocol => true,
                 h3_datagram => true,
                 wt_max_sessions => 16,
@@ -130,6 +148,37 @@ maybe_start_quic(Config, Routes) ->
 stop_listener(Name) ->
     _ = catch cowboy:stop_listener(Name),
     ok.
+
+install_quic_log_filter() ->
+    Filter = {fun ?MODULE:quic_noise_filter/2, #{}},
+    case logger:add_primary_filter(quic_unknown_shutdown_filter, Filter) of
+        ok -> ok;
+        {error, {already_exist, _}} -> ok;
+        _ -> ok
+    end.
+
+quic_noise_filter(#{msg := Msg}, _Config) ->
+    case message_contains_quic_shutdown_noise(Msg) of
+        true -> stop;
+        false -> ignore
+    end;
+quic_noise_filter(_, _Config) ->
+    ignore.
+
+message_contains_quic_shutdown_noise({string, Format, Args}) ->
+    case {Format, Args} of
+        {"Received unknown QUIC message ~p.", [{quic, shutdown, _Ref, _Code}]} ->
+            true;
+        _ ->
+            Text = lists:flatten(io_lib:format(Format, Args)),
+            string:str(Text, "Received unknown QUIC message {quic,shutdown") > 0
+    end;
+message_contains_quic_shutdown_noise({report, Report}) ->
+    Text = lists:flatten(io_lib:format("~p", [Report])),
+    string:str(Text, "Received unknown QUIC message {quic,shutdown") > 0;
+message_contains_quic_shutdown_noise(Other) ->
+    Text = lists:flatten(io_lib:format("~p", [Other])),
+    string:str(Text, "Received unknown QUIC message {quic,shutdown") > 0.
 
 build_proxy_routes() ->
     [

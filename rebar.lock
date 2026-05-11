@@ -2,7 +2,7 @@
 [{<<"accept">>,{pkg,<<"accept">>,<<"0.3.7">>},2},
  {<<"cowboy">>,
   {git,"https://github.com/ninenines/cowboy.git",
-       {ref,"dcbd1b029502c16bbc849521445d5669fa85ddec"}},
+       {ref,"834f30a37cb9ed04fd5ee0ca15cc2ec980a98b2c"}},
   0},
  {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.16.0">>},1},
  {<<"esqlite">>,{pkg,<<"esqlite">>,<<"0.4.1">>},0},
