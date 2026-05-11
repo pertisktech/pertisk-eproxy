@@ -1,6 +1,6 @@
 import FaIcon from "@/components/FaIcon";
 import { useEffect, useState } from 'react';
-import { api, type LogEntry } from '@/api/client';
+import { openRealtimeStream, type LogEntry, type RealtimeSnapshot } from '@/api/client';
 import { formatDateTime } from '@/utils/dateFormat';
 import styles from './Logs.module.css';
 
@@ -12,8 +12,18 @@ function levelClass(level?: string): string {
   return styles.levelInfo;
 }
 
+function isWebSocketUpgradeLog(e: LogEntry): boolean {
+  return (
+    e.status === 101 &&
+    (e.path === '/api/realtime' || (e.message ?? '').toLowerCase().includes('/api/realtime'))
+  );
+}
+
 /** Display protocol as HTTP/1.1, HTTP/2, HTTP/3; append encoding if present. */
 function protoEncDisplay(e: LogEntry): string {
+  if (isWebSocketUpgradeLog(e)) {
+    return 'WS';
+  }
   const p = e.protocol?.trim() || '';
   const enc = e.encoding?.trim().toLowerCase() || '';
   const protocolLabel =
@@ -24,6 +34,7 @@ function protoEncDisplay(e: LogEntry): string {
 
 /** CSS class for protocol color (HTTP/1.1, HTTP/2, HTTP/3). */
 function protoColorClass(e: LogEntry): string {
+  if (isWebSocketUpgradeLog(e)) return styles.protoWs;
   const p = e.protocol?.trim() || '';
   if (p === '1.1') return styles.proto11;
   if (p === '2') return styles.proto2;
@@ -41,26 +52,41 @@ export default function Logs() {
   const [hostFilter, setHostFilter] = useState('');
 
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const data = await api.logs({
-          type: logType === 'all' ? undefined : logType,
-          host: hostFilter.trim() || undefined,
-        });
-        if (!cancelled) setEntries(Array.isArray(data) ? data : []);
-      } catch {
-        if (!cancelled) setEntries([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    let hasFrame = false;
+    const firstFrameTimer = window.setTimeout(() => {
+      if (!hasFrame) setLoading(false);
+    }, 5000);
+
+    function acceptType(entry: LogEntry): boolean {
+      if (logType === 'all') return true;
+      if (logType === 'proxy') return entry.type === 'proxy' || entry.type === 'request' || entry.type === 'response';
+      return entry.type === 'system' || entry.type === 'error';
     }
-    load();
-    if (!autoRefresh) return;
-    const t = setInterval(load, 3000);
+
+    function filterLogs(logs: LogEntry[]): LogEntry[] {
+      const hostNeedle = hostFilter.trim().toLowerCase();
+      return logs.filter((entry) => {
+        if (!acceptType(entry)) return false;
+        if (!hostNeedle) return true;
+        return (entry.host ?? '').toLowerCase().includes(hostNeedle);
+      });
+    }
+
+    function onRealtime(snapshot: RealtimeSnapshot) {
+      hasFrame = true;
+      if (!autoRefresh) return;
+      const logs = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+      setEntries(filterLogs(logs));
+      setLoading(false);
+    }
+
+    const stop = openRealtimeStream(onRealtime, () => {
+      if (!hasFrame) setLoading(false);
+    });
+
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      window.clearTimeout(firstFrameTimer);
+      stop();
     };
   }, [autoRefresh, logType, hostFilter]);
 
@@ -106,9 +132,9 @@ export default function Logs() {
               type="checkbox"
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
-              aria-label="Auto-refresh every 3 seconds"
+              aria-label="Live updates"
             />
-            <span>Auto-refresh 3s</span>
+            <span>Live updates</span>
           </label>
         </div>
       </div>

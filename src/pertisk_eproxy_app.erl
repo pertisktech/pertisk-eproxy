@@ -8,12 +8,15 @@
 start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
     _ = install_quic_log_filter(),
+    _ = application:ensure_all_started(inets),
     ok = pertisk_eproxy_metrics:setup(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = start_listeners(),
     {ok, Sup}.
 
 stop(_State) ->
+    _ = pertisk_eproxy_h3_api_gateway:stop(),
+    _ = pertisk_eproxy_h3_api_gateway:stop_probe(),
     stop_listener(http4),
     stop_listener(http6),
     stop_listener(https4),
@@ -106,8 +109,14 @@ start_listeners() ->
     ok.
 
 maybe_start_quic(Config, Routes) ->
-    case maps:get(quic_enabled, Config, false) of
-        true ->
+    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
+    _ = maybe_start_h3_api_gateway(Config),
+    _ = maybe_start_h3_probe(Config),
+    case {maps:get(quic_enabled, Config, false), GatewayEnabled} of
+        {_, true} ->
+            %% When erlang_quic gateway is enabled we reserve UDP QUIC port for it.
+            ok;
+        {true, false} ->
             Port = case maps:get(quic_port, Config, undefined) of
                 P when is_integer(P), P > 0 -> P;
                 _ -> maps:get(https_port, Config, 443)
@@ -139,6 +148,42 @@ maybe_start_quic(Config, Routes) ->
                     end;
                 false ->
                     lager:warning("QUIC requested on udp/:~w but Cowboy was built without start_quic/3 (enable COWBOY_QUICER=1 and quicer dependency).", [Port]),
+                    ok
+            end;
+        _ ->
+            ok
+    end.
+
+maybe_start_h3_api_gateway(Config) ->
+    case maps:get(h3_api_gateway_enabled, Config, true) of
+        true ->
+            case pertisk_eproxy_h3_api_gateway:start(Config) of
+                {ok, _Pid} ->
+                    lager:info("HTTP/3 API gateway (erlang_quic) listening on udp/:~w", [maps:get(quic_port, Config, maps:get(https_port, Config, 443))]),
+                    ok;
+                {error, {already_started, _}} ->
+                    ok;
+                {error, Reason} ->
+                    lager:warning("HTTP/3 API gateway failed to start: ~p", [Reason]),
+                    ok
+            end;
+        _ ->
+            ok
+    end.
+
+maybe_start_h3_probe(Config) ->
+    case maps:get(h3_probe_enabled, Config, true) of
+        true ->
+            case pertisk_eproxy_h3_api_gateway:start_probe(Config) of
+                {ok, _Pid} ->
+                    BasePort = maps:get(quic_port, Config, maps:get(https_port, Config, 443)),
+                    ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
+                    lager:info("HTTP/3 probe listener (erlang_quic) listening on udp/:~w", [ProbePort]),
+                    ok;
+                {error, {already_started, _}} ->
+                    ok;
+                {error, Reason} ->
+                    lager:warning("HTTP/3 probe listener failed to start: ~p", [Reason]),
                     ok
             end;
         _ ->
@@ -182,6 +227,9 @@ message_contains_quic_shutdown_noise(Other) ->
 
 build_proxy_routes() ->
     [
+        %% Realtime admin stream must always enter websocket proxy handler directly.
+        %% This avoids relying solely on Upgrade header detection in generic handler.
+        {"/api/realtime", pertisk_eproxy_ws_handler, []},
         {"/[...]", pertisk_eproxy_handler, []}
     ].
 
@@ -204,6 +252,8 @@ build_admin_api_routes() ->
         {"/api/version",            pertisk_eproxy_admin_handler, version},
         {"/api/management",         pertisk_eproxy_admin_handler, management},
         {"/api/stats",              pertisk_eproxy_admin_handler, stats},
+        {"/api/realtime",           pertisk_eproxy_admin_ws_handler, realtime},
+        {"/api/realtime-sse",       pertisk_eproxy_admin_sse_handler, realtime_sse},
         {"/api/logs",               pertisk_eproxy_admin_handler, logs},
         {"/api/auth/config",        pertisk_eproxy_admin_handler, auth_config},
         {"/api/auth/login",         pertisk_eproxy_admin_handler, auth_login},

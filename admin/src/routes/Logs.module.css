@@ -210,6 +210,11 @@
   color: var(--color-icon-success);
 }
 
+.protoWs {
+  color: #a855f7;
+  font-weight: 700;
+}
+
 .ts {
   color: var(--text-muted);
   white-space: nowrap;

@@ -2,7 +2,7 @@ import FaIcon from "@/components/FaIcon";
 import brandMarkUrl from '@/assets/brand-mark.svg?url';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
-import { api, type CertificateRow, type LogEntry } from '@/api/client';
+import { api, openRealtimeStream, type CertificateRow, type LogEntry, type RealtimeSnapshot } from '@/api/client';
 import {
   detectAuthMethodFromToken,
   getAuthMethod,
@@ -232,7 +232,6 @@ export default function Layout() {
 
   useEffect(() => {
     if (!loggedIn) return;
-    let cancelled = false;
 
     function formatCertHosts(hosts: CertificateRow['hosts']): string {
       if (!hosts?.length) return 'unknown host';
@@ -240,18 +239,19 @@ export default function Layout() {
       return `${hosts[0]} +${hosts.length - 1} more`;
     }
 
-    async function pollCertificates() {
-      try {
-        const rows = await api.certificates.list();
-        if (cancelled) return;
-        if (!certsInitializedRef.current) {
-          certsInitializedRef.current = true;
-          knownCertIdsRef.current = new Set(rows.map((row) => row.id));
-          return;
-        }
+    function parseTs(entry: LogEntry): number | null {
+      const ts = Date.parse(entry.timestamp);
+      return Number.isNaN(ts) ? null : ts;
+    }
 
+    function onRealtime(snapshot: RealtimeSnapshot) {
+      const certRows = Array.isArray(snapshot.certificates) ? snapshot.certificates : [];
+      if (!certsInitializedRef.current) {
+        certsInitializedRef.current = true;
+        knownCertIdsRef.current = new Set(certRows.map((row) => row.id));
+      } else {
         const known = knownCertIdsRef.current;
-        rows.forEach((row) => {
+        certRows.forEach((row) => {
           if (known.has(row.id)) return;
           known.add(row.id);
           // Skip manual listener PEM imports; that flow already shows its own toast.
@@ -260,65 +260,38 @@ export default function Layout() {
           }
           toast.success(`SSL certificate issued for ${formatCertHosts(row.hosts)}.`);
         });
-      } catch {
-        // ignore
       }
-    }
 
-    pollCertificates();
-    const t = setInterval(pollCertificates, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [loggedIn, toast]);
+      const entries = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+      const errors = entries.filter((e) => e.level === 'error' || e.type === 'error');
+      const withTs = errors
+        .map((e) => ({ entry: e, ts: parseTs(e) }))
+        .filter((e): e is { entry: LogEntry; ts: number } => e.ts !== null);
 
-  useEffect(() => {
-    if (!loggedIn) return;
-    let cancelled = false;
-
-    function parseTs(entry: LogEntry): number | null {
-      const ts = Date.parse(entry.timestamp);
-      return Number.isNaN(ts) ? null : ts;
-    }
-
-    async function pollSystemErrors() {
-      try {
-        const entries = await api.logs({ type: 'system' });
-        if (cancelled) return;
-        const errors = entries.filter((e) => e.level === 'error' || e.type === 'error');
-        const withTs = errors
-          .map((e) => ({ entry: e, ts: parseTs(e) }))
-          .filter((e): e is { entry: LogEntry; ts: number } => e.ts !== null);
-
-        const maxTs = withTs.reduce((max, e) => Math.max(max, e.ts), -1);
-        if (!errorsInitializedRef.current) {
-          errorsInitializedRef.current = true;
-          lastErrorTsRef.current = maxTs >= 0 ? maxTs : null;
-          return;
-        }
-        if (maxTs < 0) return;
-        const last = lastErrorTsRef.current ?? 0;
-        const newErrors = withTs
-          .filter((e) => e.ts > last)
-          .sort((a, b) => a.ts - b.ts)
-          .slice(0, 3);
-
-        newErrors.forEach(({ entry }) => {
-          const message = entry.message?.trim() || 'System error occurred.';
-          toast.error(`System error: ${message}`);
-        });
-        lastErrorTsRef.current = Math.max(last, maxTs);
-      } catch {
-        // ignore
+      const maxTs = withTs.reduce((max, e) => Math.max(max, e.ts), -1);
+      if (!errorsInitializedRef.current) {
+        errorsInitializedRef.current = true;
+        lastErrorTsRef.current = maxTs >= 0 ? maxTs : null;
+        return;
       }
+      if (maxTs < 0) return;
+
+      const last = lastErrorTsRef.current ?? 0;
+      const newErrors = withTs
+        .filter((e) => e.ts > last)
+        .sort((a, b) => a.ts - b.ts)
+        .slice(0, 3);
+
+      newErrors.forEach(({ entry }) => {
+        const message = entry.message?.trim() || 'System error occurred.';
+        toast.error(`System error: ${message}`);
+      });
+      lastErrorTsRef.current = Math.max(last, maxTs);
     }
 
-    pollSystemErrors();
-    const t = setInterval(pollSystemErrors, 5000);
+    const stop = openRealtimeStream(onRealtime);
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      stop();
     };
   }, [loggedIn, toast]);
 

@@ -153,7 +153,7 @@ handle(<<"GET">>, backup_export, Req) ->
         <<"content-type">> => <<"application/json">>,
         <<"content-disposition">> => <<"attachment; filename=\"eproxy-config.json\"">>
     },
-    Req2 = cowboy_req:reply(200, Headers, Body, Req),
+    Req2 = cowboy_req:reply(200, with_alt_svc(Req, Headers), Body, Req),
     {ok, Req2, undefined};
 
 handle(<<"POST">>, backup_restore, Req) ->
@@ -448,7 +448,7 @@ handle(<<"GET">>, config, Req) ->
         <<"content-type">> => <<"application/json">>,
         <<"cache-control">> => <<"no-store, max-age=0">>
     },
-    Req2 = cowboy_req:reply(200, Headers, Body, Req),
+    Req2 = cowboy_req:reply(200, with_alt_svc(Req, Headers), Body, Req),
     {ok, Req2, undefined};
 
 handle(<<"PUT">>, config, Req) ->
@@ -547,7 +547,7 @@ handle(<<"GET">>, health, Req) ->
 handle(<<"GET">>, metrics, Req) ->
     Output = prometheus_text_format:format(),
     Req2   = cowboy_req:reply(200,
-                              #{<<"content-type">> => <<"text/plain; version=0.0.4">>},
+                              with_alt_svc(Req, #{<<"content-type">> => <<"text/plain; version=0.0.4">>}),
                               Output, Req),
     {ok, Req2, metrics};
 
@@ -569,7 +569,7 @@ handle(_Method, _Resource, Req) ->
 json_reply(Status, Data, Req) ->
     Body = thoas:encode(Data),
     Req2 = cowboy_req:reply(Status,
-                            #{<<"content-type">> => <<"application/json">>},
+                            with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}),
                             Body, Req),
     {ok, Req2, undefined}.
 
@@ -1066,3 +1066,9 @@ sync_dns_providers_into_runtime_config() ->
 bin_field(V) when is_binary(V) -> V;
 bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
 bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).
+
+with_alt_svc(Req, Headers) ->
+    case cowboy_req:port(Req) of
+        443 -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
+        _ -> Headers
+    end.

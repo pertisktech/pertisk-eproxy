@@ -11,11 +11,10 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { api, type Metrics as ApiMetrics, type ManagementInfo } from '@/api/client';
+import { openRealtimeStream, type RealtimeSnapshot } from '@/api/client';
 import { formatTimeOnly } from '@/utils/dateFormat';
 import styles from './Metrics.module.css';
 
-const POLL_INTERVAL_MS = 5000;
 const MAX_POINTS = 60; // 5 min at 5s interval
 
 export interface MetricPoint {
@@ -127,64 +126,50 @@ export default function Metrics() {
   const [missingRequestTotals, setMissingRequestTotals] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-
-    function tick() {
-      Promise.all([api.metrics(), api.management()])
-        .then(([m, mgmt]: [ApiMetrics, ManagementInfo]) => {
-          if (cancelled) return;
-          const hasRequestTotals =
-            typeof (m as unknown as Record<string, unknown>).http_requests_total === 'number' &&
-            typeof (m as unknown as Record<string, unknown>).https_requests_total === 'number' &&
-            typeof (m as unknown as Record<string, unknown>).grpc_requests_total === 'number';
-          setMissingRequestTotals(!hasRequestTotals);
-          const t = Date.now();
-          const h2 = num(m.h2_requests_total);
-          const h3 = num(m.h3_requests_total);
-          const point: MetricPoint = {
-            t,
-            timeLabel: formatTime(t),
-            mode: typeof mgmt.mode === 'string' && mgmt.mode ? mgmt.mode : 'proxy',
-            uptime_secs: num(m.uptime_secs),
-            log_entries: num(m.log_entries),
-            active_connections: num(m.active_connections),
-            http_requests_total: hasRequestTotals ? num(m.http_requests_total) : h2 + h3,
-            https_requests_total: hasRequestTotals ? num(m.https_requests_total) : 0,
-            grpc_requests_total: hasRequestTotals ? num(m.grpc_requests_total) : 0,
-            h2_requests_total: h2,
-            h3_requests_total: h3,
-            h3_vs_h2_ratio: num(m.h3_vs_h2_ratio),
-            bytes_sent_total: num(m.bytes_sent_total),
-            bytes_received_total: num(m.bytes_received_total),
-            connections_per_site: m.connections_per_site ?? {},
-            site_h2_requests_total: m.site_h2_requests_total ?? {},
-            site_h3_requests_total: m.site_h3_requests_total ?? {},
-            site_h3_vs_h2_ratio: m.site_h3_vs_h2_ratio ?? {},
-            cpu_percent: mgmt.process_cpu_usage_percent ?? null,
-            memory_used_mb:
-              mgmt.process_memory_bytes != null
-                ? Math.round(num(mgmt.process_memory_bytes) / (1024 * 1024) * 10) / 10
-                : null,
-          };
-          setHistory((prev) => {
-            const next = [...prev, point].slice(-MAX_POINTS);
-            return next;
-          });
-          setError(null);
-        })
-        .catch((e) => {
-          if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load metrics');
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
+    function onRealtime(snapshot: RealtimeSnapshot) {
+      const m = snapshot.stats;
+      const mgmt = snapshot.management;
+      const hasRequestTotals =
+        typeof (m as unknown as Record<string, unknown>).http_requests_total === 'number' &&
+        typeof (m as unknown as Record<string, unknown>).https_requests_total === 'number' &&
+        typeof (m as unknown as Record<string, unknown>).grpc_requests_total === 'number';
+      setMissingRequestTotals(!hasRequestTotals);
+      const t = Date.now();
+      const h2 = num(m.h2_requests_total);
+      const h3 = num(m.h3_requests_total);
+      const point: MetricPoint = {
+        t,
+        timeLabel: formatTime(t),
+        mode: typeof mgmt.mode === 'string' && mgmt.mode ? mgmt.mode : 'proxy',
+        uptime_secs: num(m.uptime_secs),
+        log_entries: num(m.log_entries),
+        active_connections: num(m.active_connections),
+        http_requests_total: hasRequestTotals ? num(m.http_requests_total) : h2 + h3,
+        https_requests_total: hasRequestTotals ? num(m.https_requests_total) : 0,
+        grpc_requests_total: hasRequestTotals ? num(m.grpc_requests_total) : 0,
+        h2_requests_total: h2,
+        h3_requests_total: h3,
+        h3_vs_h2_ratio: num(m.h3_vs_h2_ratio),
+        bytes_sent_total: num(m.bytes_sent_total),
+        bytes_received_total: num(m.bytes_received_total),
+        connections_per_site: m.connections_per_site ?? {},
+        site_h2_requests_total: m.site_h2_requests_total ?? {},
+        site_h3_requests_total: m.site_h3_requests_total ?? {},
+        site_h3_vs_h2_ratio: m.site_h3_vs_h2_ratio ?? {},
+        cpu_percent: mgmt.process_cpu_usage_percent ?? null,
+        memory_used_mb:
+          mgmt.process_memory_bytes != null
+            ? Math.round(num(mgmt.process_memory_bytes) / (1024 * 1024) * 10) / 10
+            : null,
+      };
+      setHistory((prev) => [...prev, point].slice(-MAX_POINTS));
+      setError(null);
+      setLoading(false);
     }
 
-    tick();
-    const id = setInterval(tick, POLL_INTERVAL_MS);
+    const stop = openRealtimeStream(onRealtime, () => setLoading(false));
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      stop();
     };
   }, []);
 

@@ -224,7 +224,7 @@ export type Metrics = {
 };
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-export type LogEntryType = 'request' | 'response' | 'health_check' | 'config_reload' | 'error' | 'proxy';
+export type LogEntryType = 'request' | 'response' | 'health_check' | 'config_reload' | 'error' | 'proxy' | 'system';
 
 export interface LogEntry {
   timestamp: string;
@@ -284,6 +284,13 @@ export interface ManagementInfo {
   process_memory_bytes?: number | null;
   /** Absolute path to loaded pertisk_eproxy_tls_cert_info.beam (debug stale-code issues). */
   loaded_tls_cert_info_beam?: string;
+}
+
+export interface RealtimeSnapshot {
+  stats: Metrics;
+  management: ManagementInfo;
+  logs: LogEntry[];
+  certificates: CertificateRow[];
 }
 
 export interface CertificateRow {
@@ -384,6 +391,113 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 
 async function del<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' });
+}
+
+export function openRealtimeStream(
+  onMessage: (snapshot: RealtimeSnapshot) => void,
+  onError?: (event: Event) => void
+): () => void {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const baseUrl = new URL(`${proto}://${window.location.host}${API}/realtime`);
+  let ws: WebSocket | null = null;
+  let closedManually = false;
+  let reconnectTimer: number | null = null;
+  let reconnectAttempt = 0;
+
+  function reconnectDelayMs(attempt: number): number {
+    const base = Math.min(30000, 1000 * Math.pow(2, attempt));
+    const jitter = Math.floor(Math.random() * 300);
+    return base + jitter;
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function scheduleReconnect() {
+    if (closedManually) return;
+    clearReconnectTimer();
+    const delay = reconnectDelayMs(reconnectAttempt);
+    console.debug('[realtime-ws] scheduling reconnect', { attempt: reconnectAttempt + 1, delay_ms: delay });
+    reconnectAttempt += 1;
+    reconnectTimer = window.setTimeout(connect, delay);
+  }
+
+  function connect() {
+    if (closedManually) return;
+    const token = getToken();
+    const url = new URL(baseUrl.toString());
+    if (token) {
+      url.searchParams.set('token', token);
+    }
+    console.debug('[realtime-ws] connecting', { url: url.toString() });
+    ws = new WebSocket(url.toString());
+    ws.onopen = () => {
+      console.info('[realtime-ws] open');
+      reconnectAttempt = 0;
+    };
+    ws.onmessage = (event) => {
+      const parseAndDispatch = (raw: string) => {
+        try {
+          const parsed = JSON.parse(raw) as RealtimeSnapshot;
+          const logsLen = Array.isArray(parsed.logs) ? parsed.logs.length : -1;
+          console.debug('[realtime-ws] message', { logs: logsLen });
+          onMessage(parsed);
+        } catch {
+          console.error('[realtime-ws] message parse failed');
+          // ignore malformed frames
+        }
+      };
+
+      if (typeof event.data === 'string') {
+        parseAndDispatch(event.data);
+        return;
+      }
+
+      if (event.data instanceof Blob) {
+        void event.data.text().then(parseAndDispatch).catch(() => {
+          console.error('[realtime-ws] blob decode failed');
+        });
+        return;
+      }
+
+      if (event.data instanceof ArrayBuffer) {
+        try {
+          const raw = new TextDecoder().decode(event.data);
+          parseAndDispatch(raw);
+        } catch {
+          console.error('[realtime-ws] arraybuffer decode failed');
+        }
+        return;
+      }
+
+      console.error('[realtime-ws] unsupported message type', typeof event.data);
+    };
+    ws.onerror = (event) => {
+      console.error('[realtime-ws] error event', event);
+      if (onError) onError(event);
+    };
+    ws.onclose = (event) => {
+      console.warn('[realtime-ws] close', { code: event.code, reason: event.reason, wasClean: event.wasClean });
+      ws = null;
+      scheduleReconnect();
+    };
+  }
+
+  connect();
+  return () => {
+    closedManually = true;
+    clearReconnectTimer();
+    console.info('[realtime-ws] manual close');
+    try {
+      ws?.close();
+    } catch {
+      // ignore
+    }
+  };
 }
 
 function ensureDnsProviderRows(value: unknown): DnsProviderRow[] {
