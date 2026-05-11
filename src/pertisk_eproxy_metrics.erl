@@ -108,12 +108,17 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 update_upstream_metrics() ->
     Backends = pertisk_eproxy_config:get_backends(),
     lists:foreach(fun(#{name := Name}) ->
-        case pertisk_eproxy_backend:status(Name) of
-            {ok, #{upstreams := Ups}} ->
-                Conns   = [{maps:get(addr, U), maps:get(conns,   U, 0)} || U <- Ups],
-                Healthy = [{maps:get(addr, U), maps:get(healthy, U, true)} || U <- Ups],
-                set_upstream_conns(Name, Conns),
-                set_upstream_healthy(Name, Healthy);
-            _ -> ok
+        try
+            case pertisk_eproxy_backend:status(Name) of
+                {ok, #{upstreams := Ups}} ->
+                    Conns   = [{maps:get(addr, U), maps:get(conns,   U, 0)} || U <- Ups],
+                    Healthy = [{maps:get(addr, U), maps:get(healthy, U, true)} || U <- Ups],
+                    set_upstream_conns(Name, Conns),
+                    set_upstream_healthy(Name, Healthy);
+                _ -> ok
+            end
+        catch
+            _:Reason ->
+                lager:warning("Error updating metrics for backend ~s: ~p", [Name, Reason])
         end
     end, Backends).

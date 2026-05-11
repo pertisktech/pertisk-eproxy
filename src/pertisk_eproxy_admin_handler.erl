@@ -29,6 +29,29 @@ init(Req, Resource) ->
 %% Route dispatch
 %% ---------------------------------------------------------------------------
 
+handle(<<"GET">>, root, Req) ->
+    API = #{
+        status => <<"ok">>,
+        name => <<"Pertisk eProxy">>,
+        version => <<"1.0.0">>,
+        endpoints => [
+            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
+            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
+            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
+            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
+            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
+            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete a site">>},
+            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List all backends">>},
+            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add a backend">>},
+            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Get backend status">>},
+            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete a backend">>},
+            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Overall health">>},
+            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus metrics">>},
+            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload config">>}
+        ]
+    },
+    json_reply(200, API, Req);
+
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
     json_reply(200, config_to_json(Config), Req);
@@ -63,6 +86,17 @@ handle(<<"GET">>, site, Req) ->
         {value, S} -> json_reply(200, site_to_json(S), Req);
         false      -> not_found_reply(Req)
     end;
+
+handle(<<"PUT">>, site, Req) ->
+    HostParam = cowboy_req:binding(host, Req),
+    with_json_body(Req, fun(Body, Req2) ->
+        NewSite = parse_site(Body),
+        Config  = pertisk_eproxy_config:get_config(),
+        Sites   = maps:get(sites, Config, []),
+        NewSites = [S || S = #{host := H} <- Sites, H =/= HostParam, H =/= maps:get(host, NewSite)],
+        ok = pertisk_eproxy_config:put_config(Config#{sites => NewSites ++ [NewSite]}),
+        json_reply(200, site_to_json(NewSite), Req2)
+    end);
 
 handle(<<"DELETE">>, site, Req) ->
     HostParam = cowboy_req:binding(host, Req),
@@ -107,7 +141,7 @@ handle(<<"GET">>, health, Req) ->
     Health = lists:map(fun(#{name := Name}) ->
         case pertisk_eproxy_backend:status(Name) of
             {ok, #{upstreams := Ups}} ->
-                Healthy = length([U || #{healthy := true} <- Ups]),
+                Healthy = length([U || U = #{healthy := true} <- Ups]),
                 #{name => Name, total => length(Ups), healthy => Healthy};
             _ ->
                 #{name => Name, total => 0, healthy => 0}
@@ -164,47 +198,58 @@ with_json_body(Req, Fun) ->
 
 config_to_json(Config) ->
     #{
+        mode            => atom_to_binary(maps:get(mode, Config, proxy_admin), utf8),
         http_port       => maps:get(http_port, Config, 8080),
         management_port => maps:get(management_port, Config, 9080),
+        certificates    => [json_text(V) || V <- maps:get(certificates, Config, [])],
+        dns_providers   => [json_text(V) || V <- maps:get(dns_providers, Config, [])],
         sites           => [site_to_json(S) || S <- maps:get(sites, Config, [])],
         backends        => [backend_to_json(B) || B <- maps:get(backends, Config, [])]
     }.
 
-site_to_json(#{host := Host, backend := Backend, routes := Routes}) ->
-    #{
-        host    => Host,
-        backend => Backend,
+site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
+    Base = #{
+        host    => json_text(Host),
+        backend => json_text(Backend),
         routes  => [route_to_json(R) || R <- Routes]
-    }.
+    },
+    WithCertificate = case maps:get(certificate, Site, undefined) of
+        undefined -> Base;
+        Certificate -> Base#{certificate => json_text(Certificate)}
+    end,
+    case maps:get(dns_provider, Site, undefined) of
+        undefined -> WithCertificate;
+        DnsProvider -> WithCertificate#{dns_provider => json_text(DnsProvider)}
+    end.
 
 route_to_json(R) ->
     Base = #{
-        path      => maps:get(path, R, <<"/">>),
+        path      => json_text(maps:get(path, R, <<"/">>)),
         path_type => atom_to_binary(maps:get(path_type, R, prefix), utf8)
     },
     case maps:get(rewrite, R, undefined) of
         undefined -> Base;
-        Rw        -> Base#{rewrite => Rw}
+        Rw        -> Base#{rewrite => json_text(Rw)}
     end.
 
 backend_to_json(B) ->
     #{
-        name      => maps:get(name, B),
+        name      => json_text(maps:get(name, B)),
         algorithm => atom_to_binary(maps:get(algorithm, B, round_robin), utf8),
-        upstreams => [#{addr => maps:get(addr, U), weight => maps:get(weight, U, 1)}
+        upstreams => [#{addr => json_text(maps:get(addr, U)), weight => maps:get(weight, U, 1)}
                       || U <- maps:get(upstreams, B, [])],
         health_path => case maps:get(health_path, B, undefined) of
             undefined -> null;
-            P -> P
+            P -> json_text(P)
         end,
         health_interval_secs => maps:get(health_interval_secs, B, 30)
     }.
 
 status_to_json(#{name := Name, algorithm := Algo, upstreams := Ups}) ->
     #{
-        name      => Name,
+        name      => json_text(Name),
         algorithm => atom_to_binary(Algo, utf8),
-        upstreams => [#{addr    => maps:get(addr, U),
+        upstreams => [#{addr    => json_text(maps:get(addr, U)),
                         healthy => maps:get(healthy, U, true),
                         conns   => maps:get(conns, U, 0),
                         weight  => maps:get(weight, U, 1)}
@@ -224,6 +269,8 @@ parse_site(Body) ->
     #{
         host    => maps:get(<<"host">>, Body),
         backend => maps:get(<<"backend">>, Body),
+        certificate => optional_string(maps:get(<<"certificate">>, Body, null)),
+        dns_provider => optional_string(maps:get(<<"dns_provider">>, Body, null)),
         routes  => Routes
     }.
 
@@ -246,3 +293,11 @@ parse_algorithm(<<"round_robin">>)       -> round_robin;
 parse_algorithm(<<"least_connections">>) -> least_connections;
 parse_algorithm(<<"ip_hash">>)           -> ip_hash;
 parse_algorithm(_)                       -> round_robin.
+
+optional_string(null) -> undefined;
+optional_string(V) when is_binary(V) -> binary_to_list(V);
+optional_string(_) -> undefined.
+
+json_text(V) when is_binary(V) -> V;
+json_text(V) when is_list(V) -> list_to_binary(V);
+json_text(V) -> V.

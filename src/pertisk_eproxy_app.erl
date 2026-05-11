@@ -24,7 +24,7 @@ stop(_State) ->
 start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
     Routes = build_proxy_routes(),
-    AdminRoutes = build_admin_routes(),
+    AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
 
     %% HTTP listener (proxy)
     HttpAddr   = maps:get(http_addr, Config, {0,0,0,0}),
@@ -63,8 +63,21 @@ build_proxy_routes() ->
         {"/[...]", pertisk_eproxy_handler, []}
     ].
 
-build_admin_routes() ->
+build_admin_routes(proxy) ->
+    build_admin_api_routes() ++ [
+        {"/",                       pertisk_eproxy_admin_handler, root}
+    ];
+build_admin_routes(proxy_admin) ->
+    build_admin_api_routes() ++ [
+        %% Static admin UI
+        {"/assets/[...]",          cowboy_static, {dir, filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets"])}},
+        {"/",                      pertisk_eproxy_spa_handler, []},
+        {"/[...]",                 pertisk_eproxy_spa_handler, []}
+    ].
+
+build_admin_api_routes() ->
     [
+        %% REST API (management listener on :9080)
         {"/api/config",             pertisk_eproxy_admin_handler, config},
         {"/api/backends",           pertisk_eproxy_admin_handler, backends},
         {"/api/backends/:name",     pertisk_eproxy_admin_handler, backend},

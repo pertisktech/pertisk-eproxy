@@ -16,4 +16,17 @@ deps
 _build/
 _checkouts/
 log/
-_build/
+data/
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# Admin UI
+admin/node_modules/
+priv/admin/
+
+# macOS
+.DS_Store

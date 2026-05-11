@@ -1,50 +1,26 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
-%% Stores proxy config in an ETS table for fast concurrent reads.
-%% Supports hot-reload: call reload/0 or PUT /api/reload to re-read config
-%% from the config file without restarting any listeners.
+%% Loads proxy config from SQLite database at startup.
+%% Stores config in an ETS table for fast concurrent reads.
 %%
-%% Config format (JSON file pointed to by app env `config_file`):
+%% Config is stored as JSON and cached in ETS:
+%%   - mode (proxy | proxy_admin)
+%%   - sites (host, backend, certificate, dns_provider, routes)
+%%   - backends (name, algorithm, health_path, health_interval_secs)
+%%   - certificates (UI record names)
+%%   - dns_providers (UI record names)
 %%
-%%   {
-%%     "http_addr":        "0.0.0.0",
-%%     "http_port":        8080,
-%%     "https_port":       8443,
-%%     "management_addr":  "127.0.0.1",
-%%     "management_port":  9080,
-%%     "tls_cert_file":    "/path/to/cert.pem",
-%%     "tls_key_file":     "/path/to/key.pem",
-%%     "sites": [
-%%       {
-%%         "host":    "example.com",
-%%         "backend": "my-backend",
-%%         "routes": [
-%%           {"path": "/api", "path_type": "prefix", "rewrite": "/"},
-%%           {"path": "/",    "path_type": "prefix"}
-%%         ]
-%%       }
-%%     ],
-%%     "backends": [
-%%       {
-%%         "name":      "my-backend",
-%%         "algorithm": "round_robin",
-%%         "upstreams": [
-%%           {"addr": "127.0.0.1:3000", "weight": 1},
-%%           {"addr": "127.0.0.1:3001", "weight": 1}
-%%         ],
-%%         "health_path":          "/health",
-%%         "health_interval_secs": 30
-%%       }
-%%     ]
-%%   }
+%% All server config (HTTP/HTTPS/management ports, TLS certs) is passed
+%% via config/sys.config and application environment variables.
 
 -module(pertisk_eproxy_config).
 -behaviour(gen_server).
 
 -export([start_link/0]).
 -export([get_config/0, get_sites/0, get_backends/0,
+         get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
-         reload/0, put_config/1]).
+         reload/0, put_config/1, json_to_config_pub/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -80,6 +56,22 @@ get_backends() ->
     case ets:lookup(?TAB, backends) of
         [{backends, B}] -> B;
         []              -> []
+    end.
+
+%% Return list of certificate record names.
+-spec get_certificates() -> [binary() | list()].
+get_certificates() ->
+    case ets:lookup(?TAB, certificates) of
+        [{certificates, C}] -> C;
+        []                  -> []
+    end.
+
+%% Return list of DNS provider record names.
+-spec get_dns_providers() -> [binary() | list()].
+get_dns_providers() ->
+    case ets:lookup(?TAB, dns_providers) of
+        [{dns_providers, D}] -> D;
+        []                   -> []
     end.
 
 %% Return a single backend map by name, or error.
@@ -176,7 +168,10 @@ load_config() ->
 json_to_config(Json) ->
     Sites    = parse_sites(maps:get(<<"sites">>,    Json, [])),
     Backends = parse_backends(maps:get(<<"backends">>, Json, [])),
+    Certificates = parse_string_list(maps:get(<<"certificates">>, Json, [])),
+    DnsProviders  = parse_string_list(maps:get(<<"dns_providers">>, Json, [])),
     Config = #{
+        mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy_admin">>)),
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
         http_port       => maps:get(<<"http_port">>, Json, 8080),
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
@@ -185,9 +180,14 @@ json_to_config(Json) ->
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
         tls_key_file    => parse_opt_str(maps:get(<<"tls_key_file">>,  Json, null)),
         sites           => Sites,
-        backends        => Backends
+        backends        => Backends,
+        certificates    => Certificates,
+        dns_providers   => DnsProviders
     },
     maps:filter(fun(_K, V) -> V =/= undefined end, Config).
+
+json_to_config_pub(Json) ->
+    json_to_config(Json).
 
 parse_sites(List) ->
     [parse_site(S) || S <- List].
@@ -196,6 +196,8 @@ parse_site(S) ->
     #{
         host    => maps:get(<<"host">>,    S),
         backend => maps:get(<<"backend">>, S),
+        certificate => parse_opt_str(maps:get(<<"certificate">>, S, null)),
+        dns_provider => parse_opt_str(maps:get(<<"dns_provider">>, S, null)),
         routes  => parse_routes(maps:get(<<"routes">>, S, []))
     }.
 
@@ -216,6 +218,9 @@ parse_path_type(_)            -> prefix.
 parse_backends(List) ->
     [parse_backend(B) || B <- List].
 
+parse_string_list(List) ->
+    [Str || V <- List, Str <- [parse_opt_str(V)], Str =/= undefined].
+
 parse_backend(B) ->
     #{
         name                 => maps:get(<<"name">>, B),
@@ -229,6 +234,10 @@ parse_algorithm(<<"round_robin">>)      -> round_robin;
 parse_algorithm(<<"least_connections">>) -> least_connections;
 parse_algorithm(<<"ip_hash">>)          -> ip_hash;
 parse_algorithm(_)                      -> round_robin.
+
+parse_mode(<<"proxy">>) -> proxy;
+parse_mode(<<"proxy_admin">>) -> proxy_admin;
+parse_mode(_) -> proxy_admin.
 
 parse_upstreams(List) ->
     [#{addr => maps:get(<<"addr">>, U), weight => maps:get(<<"weight">>, U, 1)}
@@ -252,10 +261,14 @@ parse_opt_str(_)                 -> undefined.
 apply_config(Config) ->
     Sites    = maps:get(sites,    Config, []),
     Backends = maps:get(backends, Config, []),
+    Certificates = maps:get(certificates, Config, []),
+    DnsProviders  = maps:get(dns_providers, Config, []),
 
     ets:insert(?TAB, {config,   Config}),
     ets:insert(?TAB, {sites,    Sites}),
     ets:insert(?TAB, {backends, Backends}),
+    ets:insert(?TAB, {certificates, Certificates}),
+    ets:insert(?TAB, {dns_providers, DnsProviders}),
 
     %% Index backends by name for fast lookup
     lists:foreach(fun(B = #{name := Name}) ->
@@ -273,7 +286,13 @@ apply_config(Config) ->
                [length(Sites), length(Backends)]).
 
 sync_backend_workers(Backends) ->
-    %% Start workers for new backends; existing ones will receive updated config.
+    %% Guard: backend_sup may not be up yet during early init.
+    case erlang:whereis(pertisk_eproxy_backend_sup) of
+        undefined -> ok;
+        _SupPid   -> do_sync_backend_workers(Backends)
+    end.
+
+do_sync_backend_workers(Backends) ->
     lists:foreach(fun(B = #{name := Name}) ->
         case pertisk_eproxy_backend:whereis(Name) of
             undefined ->

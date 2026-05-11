@@ -3,11 +3,25 @@
   "http_port": 8080,
   "management_addr": "127.0.0.1",
   "management_port": 9080,
+  "mode": "proxy_admin",
+
+  "certificates": [
+    "example-wildcard-cert",
+    "localhost-dev-cert"
+  ],
+
+  "dns_providers": [
+    "cloudflare",
+    "route53",
+    "manual"
+  ],
 
   "sites": [
     {
       "host": "example.localhost",
       "backend": "example-backend",
+      "certificate": "example-wildcard-cert",
+      "dns_provider": "cloudflare",
       "routes": [
         {"path": "/api", "path_type": "prefix", "rewrite": "/"},
         {"path": "/",    "path_type": "prefix"}

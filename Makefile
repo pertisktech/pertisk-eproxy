@@ -1,6 +1,12 @@
-.PHONY: all compile shell test clean release
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi
 
 REBAR = rebar3
+IMAGE ?= harbor.example.com/pertisk-eproxy
+VERSION ?= v1.0.0
+DOCKERFILE ?= Dockerfile
+INGRESS_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
+INGRESS_BUILD_PROVENANCE ?= false
+INGRESS_BUILD_SBOM ?= false
 
 all: compile
 
@@ -23,11 +29,31 @@ clean:
 release:
 	$(REBAR) as prod release
 
-## Start the proxy (development — reads config/proxy.json)
+docker-release: release
+	docker build -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) .
+
+docker-build: release
+	docker buildx build --load -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) .
+
+docker-push: release
+	docker buildx build --push -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+
+docker-eproxy-multi: release
+	docker buildx build \
+		--platform "$(INGRESS_BUILD_PLATFORMS)" \
+		--provenance=$(INGRESS_BUILD_PROVENANCE) \
+		--sbom=$(INGRESS_BUILD_SBOM) \
+		--push \
+		-f $(DOCKERFILE) \
+		-t $(IMAGE):$(VERSION) \
+		-t $(IMAGE):latest \
+		.
+
+## Start the proxy (development — reads config from config/proxy.json)
 run: compile
 	$(REBAR) shell --apps pertisk_eproxy
 
-## Hot-reload config without restarting (calls the admin API)
+## Hot-reload config from JSON
 reload:
 	curl -sf -X POST http://127.0.0.1:9080/api/reload | python3 -m json.tool
 
@@ -42,3 +68,4 @@ health:
 ## Show Prometheus metrics
 metrics:
 	curl -sf http://127.0.0.1:9080/api/metrics
+

@@ -15,19 +15,19 @@ init([]) ->
         period    => 60
     },
     Children = [
+        %% Backend supervisor must start before config so config can spawn workers.
+        #{id       => pertisk_eproxy_backend_sup,
+          start    => {pertisk_eproxy_backend_sup, start_link, []},
+          restart  => permanent,
+          shutdown => infinity,
+          type     => supervisor},
+
         %% Config manager (ETS-backed, hot-reload capable)
         #{id       => pertisk_eproxy_config,
           start    => {pertisk_eproxy_config, start_link, []},
           restart  => permanent,
           shutdown => 5000,
           type     => worker},
-
-        %% Backend supervisor (one gen_server per backend)
-        #{id       => pertisk_eproxy_backend_sup,
-          start    => {pertisk_eproxy_backend_sup, start_link, []},
-          restart  => permanent,
-          shutdown => infinity,
-          type     => supervisor},
 
         %% Metrics server
         #{id       => pertisk_eproxy_metrics,
