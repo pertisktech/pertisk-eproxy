@@ -12,9 +12,11 @@ start(_StartType, _StartArgs) ->
     {ok, Sup}.
 
 stop(_State) ->
-    cowboy:stop_listener(http),
-    cowboy:stop_listener(https),
-    cowboy:stop_listener(management),
+    stop_listener(http4),
+    stop_listener(http6),
+    stop_listener(https4),
+    stop_listener(https6),
+    stop_listener(management),
     ok.
 
 %% -------------------------------------------------------------------------
@@ -26,24 +28,31 @@ start_listeners() ->
     Routes = build_proxy_routes(),
     AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
 
-    %% HTTP listener (proxy)
-    HttpAddr   = maps:get(http_addr, Config, {0,0,0,0}),
+    %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 8080),
-    {ok, _}    = cowboy:start_clear(http,
-        [{ip, HttpAddr}, {port, HttpPort}, {num_acceptors, 100}],
+    {ok, _}    = cowboy:start_clear(http4,
+        [{ip, {0,0,0,0}}, {port, HttpPort}, {num_acceptors, 100}],
         #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
     ),
-    lager:info("HTTP proxy listening on ~s:~w", [inet:ntoa(HttpAddr), HttpPort]),
+    {ok, _}    = cowboy:start_clear(http6,
+        [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}, {num_acceptors, 100}],
+        #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+    ),
+    lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
-    %% HTTPS listener (proxy) — optional, requires TLS config
+    %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS
     case maps:find(https_port, Config) of
         {ok, HttpsPort} ->
             TlsOpts = tls_opts(Config),
-            {ok, _} = cowboy:start_tls(https,
-                [{ip, HttpAddr}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
+            {ok, _} = cowboy:start_tls(https4,
+                [{ip, {0,0,0,0}}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
                 #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
             ),
-            lager:info("HTTPS proxy listening on ~s:~w", [inet:ntoa(HttpAddr), HttpsPort]);
+            {ok, _} = cowboy:start_tls(https6,
+                [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
+                #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+            ),
+            lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
         error ->
             ok
     end,
@@ -56,6 +65,10 @@ start_listeners() ->
         #{env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])}}
     ),
     lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+stop_listener(Name) ->
+    _ = catch cowboy:stop_listener(Name),
     ok.
 
 build_proxy_routes() ->
@@ -95,6 +108,8 @@ build_admin_api_routes() ->
         {"/api/helm/history",       pertisk_eproxy_admin_handler, helm_history},
         {"/api/helm/values/:revision", pertisk_eproxy_admin_handler, helm_values},
         {"/api/certificates",       pertisk_eproxy_admin_handler, certificates},
+        {"/api/certificates/import", pertisk_eproxy_admin_handler, certificates_import},
+        {"/api/certificates/:id/import", pertisk_eproxy_admin_handler, certificate_import},
         {"/api/certificates/:id",   pertisk_eproxy_admin_handler, certificate},
         {"/api/dns-providers",      pertisk_eproxy_admin_handler, dns_providers},
         {"/api/dns-providers/:id",  pertisk_eproxy_admin_handler, dns_provider},

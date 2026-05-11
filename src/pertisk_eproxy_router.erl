@@ -106,21 +106,32 @@ longest_prefix(Candidates) ->
 
 apply_rewrite(#{path := RulePath, rewrite := Rewrite, backend := Backend}, RequestPath)
     when Rewrite =/= undefined ->
+    RewriteBin = to_binary(Rewrite),
     %% Strip the matched prefix from the request path and prepend rewrite target.
     Stripped = binary:part(RequestPath, byte_size(RulePath),
                            byte_size(RequestPath) - byte_size(RulePath)),
     UpstreamPath = case Stripped of
-        <<>> -> Rewrite;
+        <<>> -> RewriteBin;
         _    ->
-            Suffix = case binary:last(Rewrite) of
-                $/ -> Stripped;
-                _  -> <<"/", Stripped/binary>>
+            Suffix = case ensure_trailing_mode(RewriteBin) of
+                with_slash -> Stripped;
+                without_slash -> <<"/", Stripped/binary>>
             end,
-            <<Rewrite/binary, Suffix/binary>>
+            <<RewriteBin/binary, Suffix/binary>>
     end,
     #{upstream_path => UpstreamPath, backend => Backend};
 apply_rewrite(#{backend := Backend}, RequestPath) ->
     #{upstream_path => RequestPath, backend => Backend}.
+
+ensure_trailing_mode(<<>>) -> without_slash;
+ensure_trailing_mode(Bin) ->
+    case binary:last(Bin) of
+        $/ -> with_slash;
+        _  -> without_slash
+    end.
+
+to_binary(Bin) when is_binary(Bin) -> Bin;
+to_binary(List) when is_list(List) -> list_to_binary(List).
 
 %% Host matching: exact or wildcard (*.example.com).
 host_matches(Host, <<"*.", Suffix/binary>>) ->

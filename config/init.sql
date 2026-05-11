@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS path_rewrites (
 
 CREATE TABLE IF NOT EXISTS certificates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
+    name TEXT NOT NULL UNIQUE,
+    cert_file TEXT,
+    key_file TEXT,
+    source_type TEXT NOT NULL DEFAULT 'acme'
 );
 
 CREATE TABLE IF NOT EXISTS dns_providers (

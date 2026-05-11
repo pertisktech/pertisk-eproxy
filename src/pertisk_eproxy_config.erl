@@ -245,6 +245,9 @@ parse_site(S) ->
         backend => maps:get(<<"backend">>, S),
         certificate => parse_opt_str(maps:get(<<"certificate">>, S, null)),
         dns_provider => parse_opt_str(maps:get(<<"dns_provider">>, S, null)),
+        challenge_type => parse_opt_challenge_type(maps:get(<<"challenge_type">>, S, null)),
+        wildcard => parse_opt_bool(maps:get(<<"wildcard">>, S, null)),
+        acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
     }.
 
@@ -345,6 +348,16 @@ parse_opt_int(_)                -> undefined.
 parse_opt_str(null)              -> undefined;
 parse_opt_str(V) when is_binary(V) -> binary_to_list(V);
 parse_opt_str(_)                 -> undefined.
+
+parse_opt_bool(true) -> true;
+parse_opt_bool(false) -> false;
+parse_opt_bool(_) -> undefined.
+
+parse_opt_challenge_type(<<"http-01">>) -> "http-01";
+parse_opt_challenge_type(<<"dns-01">>) -> "dns-01";
+parse_opt_challenge_type("http-01") -> "http-01";
+parse_opt_challenge_type("dns-01") -> "dns-01";
+parse_opt_challenge_type(_) -> undefined.
 
 %% Apply a config map: store in ETS, sync backend workers, rebuild router.
 apply_config(Config) ->

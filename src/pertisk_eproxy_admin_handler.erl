@@ -179,13 +179,12 @@ handle(<<"GET">>, helm_values, Req) ->
     json_reply(404, #{<<"error">> => <<"Helm is not available on eProxy">>}, Req);
 
 handle(<<"GET">>, certificates, Req) ->
-    ListenerRows = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
     case pertisk_eproxy_db:list_certificates(db_file_path()) of
         {ok, Certs} ->
             Config = pertisk_eproxy_config:get_config(),
             Sites = maps:get(sites, Config, []),
             AcmeRows = [certificate_row_json(C, Sites) || C <- Certs],
-            json_reply(200, ListenerRows ++ AcmeRows, Req);
+            json_reply(200, AcmeRows, Req);
         {error, Reason} ->
             error_reply(500, Reason, Req)
     end;
@@ -202,6 +201,54 @@ handle(<<"POST">>, certificates, Req) ->
                 error_reply(400, Reason, Req2)
         end
     end);
+
+handle(<<"POST">>, certificates_import, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        CertPem = bin_field(maps:get(<<"cert_pem">>, Body, <<>>)),
+        KeyPem = bin_field(maps:get(<<"key_pem">>, Body, <<>>)),
+        case pertisk_eproxy_tls_import:save_listener_pem(CertPem, KeyPem) of
+            {error, Msg} ->
+                json_reply(400, #{<<"error">> => Msg}, Req2);
+            {ok, {CertPath, KeyPath}} ->
+                Name = imported_cert_name(CertPath),
+                case insert_imported_certificate(Name, CertPath, KeyPath) of
+                    {ok, Id} ->
+                        json_reply(201, #{
+                            <<"status">> => <<"ok">>,
+                            <<"id">> => Id,
+                            <<"notice">> => <<"Certificate imported as a new TLS certificate.">>
+                        }, Req2);
+                    {error, Reason} ->
+                        error_reply(400, Reason, Req2)
+                end
+        end
+    end);
+
+handle(<<"PUT">>, certificate_import, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid certificate id">>}, Req);
+        {ok, Id} ->
+            with_json_body(Req, fun(Body, Req2) ->
+                CertPem = bin_field(maps:get(<<"cert_pem">>, Body, <<>>)),
+                KeyPem = bin_field(maps:get(<<"key_pem">>, Body, <<>>)),
+                case pertisk_eproxy_tls_import:save_listener_pem(CertPem, KeyPem) of
+                    {error, Msg} ->
+                        json_reply(400, #{<<"error">> => Msg}, Req2);
+                    {ok, {CertPath, KeyPath}} ->
+                        case pertisk_eproxy_db:update_certificate_pem(db_file_path(), Id, CertPath, KeyPath) of
+                            ok ->
+                                json_reply(200, #{
+                                    <<"status">> => <<"ok">>,
+                                    <<"notice">> => <<"Certificate PEM updated.">>
+                                }, Req2);
+                            {error, Reason} ->
+                                error_reply(400, Reason, Req2)
+                        end
+                end
+            end)
+    end;
 
 handle(<<"PUT">>, certificate, Req) ->
     IdBin = cowboy_req:binding(id, Req),
@@ -615,9 +662,22 @@ site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
         undefined -> Base;
         Certificate -> Base#{certificate => json_text(Certificate)}
     end,
-    case maps:get(dns_provider, Site, undefined) of
+    WithDns = case maps:get(dns_provider, Site, undefined) of
         undefined -> WithCertificate;
         DnsProvider -> WithCertificate#{dns_provider => json_text(DnsProvider)}
+    end,
+    WithChallenge = case maps:get(challenge_type, Site, undefined) of
+        undefined -> WithDns;
+        T -> WithDns#{challenge_type => json_text(T)}
+    end,
+    WithWildcard = case maps:get(wildcard, Site, undefined) of
+        undefined -> WithChallenge;
+        V when is_boolean(V) -> WithChallenge#{wildcard => V};
+        _ -> WithChallenge
+    end,
+    case maps:get(acme_contact_email, Site, undefined) of
+        undefined -> WithWildcard;
+        E -> WithWildcard#{acme_contact_email => json_text(E)}
     end.
 
 route_to_json(R) ->
@@ -669,6 +729,9 @@ parse_site(Body) ->
         backend => maps:get(<<"backend">>, Body),
         certificate => optional_string(maps:get(<<"certificate">>, Body, null)),
         dns_provider => optional_string(maps:get(<<"dns_provider">>, Body, null)),
+        challenge_type => optional_challenge_type(maps:get(<<"challenge_type">>, Body, null)),
+        wildcard => optional_bool(maps:get(<<"wildcard">>, Body, null)),
+        acme_contact_email => optional_string(maps:get(<<"acme_contact_email">>, Body, null)),
         routes  => Routes
     }.
 
@@ -695,6 +758,16 @@ parse_algorithm(_)                       -> round_robin.
 optional_string(null) -> undefined;
 optional_string(V) when is_binary(V) -> binary_to_list(V);
 optional_string(_) -> undefined.
+
+optional_bool(true) -> true;
+optional_bool(false) -> false;
+optional_bool(_) -> undefined.
+
+optional_challenge_type(<<"http-01">>) -> "http-01";
+optional_challenge_type(<<"dns-01">>) -> "dns-01";
+optional_challenge_type("http-01") -> "http-01";
+optional_challenge_type("dns-01") -> "dns-01";
+optional_challenge_type(_) -> undefined.
 
 json_text(V) when is_binary(V) -> V;
 json_text(V) when is_list(V) -> list_to_binary(V);
@@ -757,20 +830,74 @@ parse_int_param(Bin) when is_binary(Bin) ->
 parse_int_param(_) ->
     {error, bad_id}.
 
-certificate_row_json(#{id := Id, name := Name}, Sites) ->
+certificate_row_json(#{id := Id, name := Name} = CertRow, Sites) ->
+    IdBin = integer_to_binary(Id),
     NameBin = json_text(Name),
-    #{
-        <<"id">> => integer_to_binary(Id),
-        <<"domain">> => NameBin,
-        <<"hosts">> => [NameBin],
-        <<"issuer">> => <<>>,
-        <<"challenge">> => <<"acme">>,
-        <<"source_type">> => <<"acme">>,
-        <<"created_at">> => <<>>,
-        <<"expires_at">> => <<>>,
-        <<"next_renew">> => <<>>,
-        <<"sites">> => [json_text(maps:get(host, S)) || S <- Sites, cert_field_matches(maps:get(certificate, S, undefined), Name)]
-    }.
+    Source0 = maps:get(source_type, CertRow, <<"acme">>),
+    Source = json_text(Source0),
+    CertFile0 = maps:get(cert_file, CertRow, undefined),
+    case {Source, CertFile0} of
+        {<<"imported_pem">>, CertFile} when CertFile =/= undefined, CertFile =/= null, CertFile =/= <<>> ->
+            imported_cert_row_json(IdBin, NameBin, CertFile, Sites);
+        _ ->
+            #{
+                <<"id">> => IdBin,
+                <<"domain">> => NameBin,
+                <<"hosts">> => [NameBin],
+                <<"issuer">> => <<>>,
+                <<"challenge">> => <<"acme">>,
+                <<"source_type">> => <<"acme">>,
+                <<"created_at">> => <<>>,
+                <<"expires_at">> => <<>>,
+                <<"next_renew">> => <<>>,
+                <<"sites">> => sites_for_cert(Sites, IdBin, NameBin)
+            }
+    end.
+
+imported_cert_row_json(IdBin, NameBin, CertFile0, Sites) ->
+    CertFile = case CertFile0 of
+        B when is_binary(B) -> binary_to_list(B);
+        L when is_list(L) -> L;
+        _ -> ""
+    end,
+    case pertisk_eproxy_tls_cert_info:describe_listener_pem(CertFile) of
+        {ok, #{hosts := Hosts, not_before := NB, not_after := NA, issuer := Issuer}} ->
+            Domain = case Hosts of
+                [H | _] -> H;
+                _ -> NameBin
+            end,
+            #{
+                <<"id">> => IdBin,
+                <<"domain">> => Domain,
+                <<"hosts">> => Hosts,
+                <<"issuer">> => Issuer,
+                <<"challenge">> => <<"imported PEM">>,
+                <<"source_type">> => <<"imported_pem">>,
+                <<"created_at">> => NB,
+                <<"expires_at">> => NA,
+                <<"next_renew">> => <<>>,
+                <<"sites">> => sites_for_cert(Sites, IdBin, NameBin)
+            };
+        _ ->
+            #{
+                <<"id">> => IdBin,
+                <<"domain">> => NameBin,
+                <<"hosts">> => [NameBin],
+                <<"issuer">> => <<>>,
+                <<"challenge">> => <<"imported PEM">>,
+                <<"source_type">> => <<"imported_pem">>,
+                <<"created_at">> => <<>>,
+                <<"expires_at">> => <<>>,
+                <<"next_renew">> => <<>>,
+                <<"sites">> => sites_for_cert(Sites, IdBin, NameBin)
+            }
+    end.
+
+sites_for_cert(Sites, IdBin, NameBin) ->
+    [json_text(maps:get(host, S)) || S <- Sites, cert_ref_matches(maps:get(certificate, S, undefined), IdBin, NameBin)].
+
+cert_ref_matches(CertRef, IdBin, NameBin) ->
+    cert_field_matches(CertRef, IdBin) orelse cert_field_matches(CertRef, NameBin).
 
 cert_field_matches(undefined, _) -> false;
 cert_field_matches(null, _) -> false;
@@ -792,8 +919,59 @@ certificate_name_by_id(Id) ->
     end.
 
 certificate_in_use(Name) ->
+    NameBin = json_text(Name),
+    IdBin =
+        case certificate_id_by_name(NameBin) of
+            {ok, I} -> integer_to_binary(I);
+            _ -> <<>>
+        end,
     Sites = pertisk_eproxy_config:get_sites(),
-    lists:any(fun(S) -> cert_field_matches(maps:get(certificate, S, undefined), Name) end, Sites).
+    lists:any(
+        fun(S) ->
+            Ref = maps:get(certificate, S, undefined),
+            cert_field_matches(Ref, NameBin) orelse (IdBin =/= <<>> andalso cert_field_matches(Ref, IdBin))
+        end,
+        Sites
+    ).
+
+certificate_id_by_name(NameBin) ->
+    case pertisk_eproxy_db:list_certificates(db_file_path()) of
+        {ok, Certs} ->
+            case lists:search(fun(#{name := N}) -> json_text(N) =:= NameBin end, Certs) of
+                {value, #{id := Id}} -> {ok, Id};
+                false -> {error, not_found}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+imported_cert_name(CertPath0) ->
+    CertPath =
+        case CertPath0 of
+            B when is_binary(B) -> binary_to_list(B);
+            L when is_list(L) -> L;
+            _ -> ""
+        end,
+    case pertisk_eproxy_tls_cert_info:describe_listener_pem(CertPath) of
+        {ok, #{hosts := [H | _]}} ->
+            json_text(H);
+        _ ->
+            iolist_to_binary(io_lib:format("imported-~B", [erlang:system_time(second)]))
+    end.
+
+insert_imported_certificate(Name, CertPath, KeyPath) ->
+    case pertisk_eproxy_db:insert_certificate_pem(db_file_path(), Name, CertPath, KeyPath) of
+        {error, {sqlite_error, Msg}} ->
+            case string:str(Msg, "UNIQUE constraint failed: certificates.name") of
+                0 ->
+                    {error, {sqlite_error, Msg}};
+                _ ->
+                    Name2 = <<(json_text(Name))/binary, "-", (integer_to_binary(erlang:system_time(second)))/binary>>,
+                    pertisk_eproxy_db:insert_certificate_pem(db_file_path(), Name2, CertPath, KeyPath)
+            end;
+        Other ->
+            Other
+    end.
 
 update_sites_cert_name(PrevName, NextName0) ->
     NextName = json_text(NextName0),

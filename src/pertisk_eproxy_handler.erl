@@ -93,7 +93,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
 
     GunOpts = #{
         transport  => Transport,
-        protocols  => [http, http2],
+        protocols  => [http],
         connect_timeout => ?CONNECT_TIMEOUT
     },
 
@@ -111,14 +111,12 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
     end.
 
 do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
-    Headers  = forward_headers(Req, Host, ClientIp),
+    HeadersMap = forward_headers(Req, Host, ClientIp),
+    Headers = maps:to_list(HeadersMap),
     {ok, Body} = read_body(Req),
 
     GunMethod = method_to_gun(Method),
-    StreamRef = case Body of
-        <<>> -> gun:request(ConnPid, GunMethod, FullPath, Headers);
-        _    -> gun:request(ConnPid, GunMethod, FullPath, Headers, Body)
-    end,
+    StreamRef = gun:request(ConnPid, GunMethod, FullPath, Headers, Body),
 
     Result = case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
         {response, nofin, Status, RespHeaders} ->

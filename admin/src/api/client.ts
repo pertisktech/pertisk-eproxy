@@ -31,6 +31,9 @@ export interface Site {
   backend: string;
   certificate?: string | null;
   dns_provider?: string | null;
+  challenge_type?: 'http-01' | 'dns-01' | null;
+  wildcard?: boolean | null;
+  acme_contact_email?: string | null;
   routes: PathRewrite[];
 }
 
@@ -442,6 +445,16 @@ export const api = {
 
   certificates: {
     list: () => get<CertificateRow[]>('/certificates'),
+    importPem: (cert_pem: string, key_pem: string) =>
+      post<{ status: string; id: number; notice?: string }>('/certificates/import', {
+        cert_pem,
+        key_pem,
+      }),
+    updatePem: (id: string, cert_pem: string, key_pem: string) =>
+      put<{ status: string; notice?: string }>(`/certificates/${encodeURIComponent(id)}/import`, {
+        cert_pem,
+        key_pem,
+      }),
     createLabel: async (id: string) => {
       const n = id.trim();
       if (!n) throw new Error('Certificate id is required');

@@ -280,9 +280,9 @@ export default function Sites() {
     setFormSslMode(site.certificate?.trim() ? 'existing_cert' : site.dns_provider?.trim() ? 'auto_ssl' : 'none');
     setFormCertName(site.certificate?.trim() ?? '');
     setFormDnsProviderName(site.dns_provider?.trim() ?? '');
-    setFormContactEmail('');
-    setFormChallengeType('http-01');
-    setFormWildcard(false);
+    setFormContactEmail(site.acme_contact_email?.trim() ?? '');
+    setFormChallengeType(site.challenge_type === 'dns-01' ? 'dns-01' : 'http-01');
+    setFormWildcard(Boolean(site.wildcard));
     setFormAdvertiseHttp3(true);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
@@ -421,7 +421,10 @@ export default function Sites() {
     }
 
     const certificate = formSslMode === 'existing_cert' ? formCertName.trim() || null : null;
-    const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : formDnsProviderName.trim() || null;
+    const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : null;
+    const challenge_type = formSslMode === 'auto_ssl' ? formChallengeType : null;
+    const wildcard = formSslMode === 'auto_ssl' ? formWildcard : false;
+    const acme_contact_email = formSslMode === 'auto_ssl' ? formContactEmail.trim() || null : null;
 
     const newSite: Site = {
       host,
@@ -429,6 +432,9 @@ export default function Sites() {
       routes,
       certificate,
       dns_provider,
+      challenge_type,
+      wildcard,
+      acme_contact_email,
     };
 
     const newSites =

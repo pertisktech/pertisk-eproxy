@@ -10,6 +10,8 @@
     put_runtime_config/2,
     list_certificates/1,
     insert_certificate/2,
+    insert_certificate_pem/4,
+    update_certificate_pem/4,
     update_certificate/3,
     delete_certificate/2,
     ensure_certificates_seeded/2,
@@ -84,7 +86,10 @@ init_schema(DbPath) ->
     );
     CREATE TABLE IF NOT EXISTS certificates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE
+        name TEXT NOT NULL UNIQUE,
+        cert_file TEXT,
+        key_file TEXT,
+        source_type TEXT NOT NULL DEFAULT 'acme'
     );
     CREATE TABLE IF NOT EXISTS dns_providers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,8 +208,29 @@ ensure_runtime_state_table(DbPath) ->
     sqlite_exec(DbPath, SQL).
 
 ensure_certificates_table(DbPath) ->
-    SQL = "CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);",
-    sqlite_exec(DbPath, SQL).
+    SQL = "CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, cert_file TEXT, key_file TEXT, source_type TEXT NOT NULL DEFAULT 'acme');",
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN cert_file TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN key_file TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN source_type TEXT NOT NULL DEFAULT 'acme'"),
+            ok;
+        Err ->
+            Err
+    end.
+
+sqlite_exec_ignore_duplicate_column(DbPath, SQL) ->
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            ok;
+        {error, {sqlite_error, Msg}} ->
+            case string:str(Msg, "duplicate column name") of
+                0 -> {error, {sqlite_error, Msg}};
+                _ -> ok
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 ensure_dns_providers_table(DbPath) ->
     SQL = "CREATE TABLE IF NOT EXISTS dns_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, provider_type TEXT NOT NULL, credentials_json TEXT NOT NULL DEFAULT '{}');",
@@ -214,13 +240,16 @@ ensure_dns_providers_table(DbPath) ->
 list_certificates(DbPath) ->
     case ensure_certificates_table(DbPath) of
         ok ->
-            SQL = "SELECT id, name FROM certificates ORDER BY id",
+            SQL = "SELECT id, name, cert_file, key_file, source_type FROM certificates ORDER BY id",
             case sqlite_query(DbPath, SQL) of
                 {ok, Rows} ->
                     {ok, [
                         #{
                             id => maps:get(<<"id">>, Row),
-                            name => maps:get(<<"name">>, Row)
+                            name => maps:get(<<"name">>, Row),
+                            cert_file => maps:get(<<"cert_file">>, Row, undefined),
+                            key_file => maps:get(<<"key_file">>, Row, undefined),
+                            source_type => maps:get(<<"source_type">>, Row, <<"acme">>)
                         }
                         || Row <- Rows
                     ]};
@@ -243,13 +272,74 @@ insert_certificate(DbPath, Name0) ->
                     InsertSQL = "INSERT INTO certificates(name) VALUES('" ++ sql_escape(Name) ++ "')",
                     case sqlite_exec(DbPath, InsertSQL) of
                         ok ->
-                            IdSQL = "SELECT last_insert_rowid() AS id",
+                            IdSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' ORDER BY id DESC LIMIT 1",
                             case sqlite_query(DbPath, IdSQL) of
                                 {ok, [Row | _]} ->
                                     {ok, maps:get(<<"id">>, Row)};
                                 _ ->
                                     {error, insert_failed}
                             end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec insert_certificate_pem(string(), binary() | list(), binary() | list(), binary() | list()) -> {ok, integer()} | {error, term()}.
+insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
+    Name = string:trim(to_list(Name0)),
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
+    case {Name, CertFile, KeyFile} of
+        {[], _, _} ->
+            {error, empty_name};
+        {_, [], _} ->
+            {error, empty_cert_file};
+        {_, _, []} ->
+            {error, empty_key_file};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    SQL = "INSERT INTO certificates(name, cert_file, key_file, source_type) VALUES('" ++
+                        sql_escape(Name) ++ "','" ++ sql_escape(CertFile) ++ "','" ++ sql_escape(KeyFile) ++ "','imported_pem')",
+                    case sqlite_exec(DbPath, SQL) of
+                        ok ->
+                            IdSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' ORDER BY id DESC LIMIT 1",
+                            case sqlite_query(DbPath, IdSQL) of
+                                {ok, [Row | _]} -> {ok, maps:get(<<"id">>, Row)};
+                                _ -> {error, insert_failed}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec update_certificate_pem(string(), integer(), binary() | list(), binary() | list()) -> ok | {error, term()}.
+update_certificate_pem(DbPath, Id, CertFile0, KeyFile0) ->
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
+    case {CertFile, KeyFile} of
+        {[], _} ->
+            {error, empty_cert_file};
+        {_, []} ->
+            {error, empty_key_file};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    ExistsSQL = "SELECT id FROM certificates WHERE id = " ++ integer_to_list(Id) ++ " LIMIT 1",
+                    case sqlite_query(DbPath, ExistsSQL) of
+                        {ok, []} ->
+                            {error, not_found};
+                        {ok, [_ | _]} ->
+                            SQL = "UPDATE certificates SET cert_file='" ++ sql_escape(CertFile) ++
+                                "', key_file='" ++ sql_escape(KeyFile) ++
+                                "', source_type='imported_pem' WHERE id = " ++ integer_to_list(Id),
+                            sqlite_exec(DbPath, SQL);
                         {error, Reason} ->
                             {error, Reason}
                     end;

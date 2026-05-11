@@ -37,8 +37,12 @@
 %% Returns {ok, upstream(), NewState} | {error, no_healthy_upstream}.
 -spec next(lb_state(), algorithm(), binary() | undefined) ->
     {ok, upstream(), lb_state()} | {error, no_healthy_upstream}.
-next(State = #{upstreams := Upstreams, algorithm := Algo, rr_index := Idx},
-     _AlgoOverride, ClientIp) ->
+next(State = #{upstreams := Upstreams, rr_index := Idx},
+     AlgoOverride, ClientIp) ->
+    Algo = case maps:find(algorithm, State) of
+        {ok, A} -> A;
+        error -> AlgoOverride
+    end,
     Healthy = [U || U = #{healthy := true} <- Upstreams],
     case Healthy of
         [] -> {error, no_healthy_upstream};
