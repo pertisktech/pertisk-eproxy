@@ -1,0 +1,88 @@
+%% @doc Application callback for pertisk_eproxy.
+-module(pertisk_eproxy_app).
+-behaviour(application).
+
+-export([start/2, stop/1]).
+
+start(_StartType, _StartArgs) ->
+    lager:info("Starting pertisk_eproxy"),
+    ok = pertisk_eproxy_metrics:setup(),
+    {ok, Sup} = pertisk_eproxy_sup:start_link(),
+    ok = start_listeners(),
+    {ok, Sup}.
+
+stop(_State) ->
+    cowboy:stop_listener(http),
+    cowboy:stop_listener(https),
+    cowboy:stop_listener(management),
+    ok.
+
+%% -------------------------------------------------------------------------
+%% Internal
+%% -------------------------------------------------------------------------
+
+start_listeners() ->
+    Config = pertisk_eproxy_config:get_config(),
+    Routes = build_proxy_routes(),
+    AdminRoutes = build_admin_routes(),
+
+    %% HTTP listener (proxy)
+    HttpAddr   = maps:get(http_addr, Config, {0,0,0,0}),
+    HttpPort   = maps:get(http_port, Config, 8080),
+    {ok, _}    = cowboy:start_clear(http,
+        [{ip, HttpAddr}, {port, HttpPort}, {num_acceptors, 100}],
+        #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+    ),
+    lager:info("HTTP proxy listening on ~s:~w", [inet:ntoa(HttpAddr), HttpPort]),
+
+    %% HTTPS listener (proxy) — optional, requires TLS config
+    case maps:find(https_port, Config) of
+        {ok, HttpsPort} ->
+            TlsOpts = tls_opts(Config),
+            {ok, _} = cowboy:start_tls(https,
+                [{ip, HttpAddr}, {port, HttpsPort}, {num_acceptors, 100} | TlsOpts],
+                #{env => #{dispatch => cowboy_router:compile([{'_', Routes}])}}
+            ),
+            lager:info("HTTPS proxy listening on ~s:~w", [inet:ntoa(HttpAddr), HttpsPort]);
+        error ->
+            ok
+    end,
+
+    %% Management / Admin listener (local only by default)
+    MgmtAddr = maps:get(management_addr, Config, {127,0,0,1}),
+    MgmtPort = maps:get(management_port, Config, 9080),
+    {ok, _}  = cowboy:start_clear(management,
+        [{ip, MgmtAddr}, {port, MgmtPort}, {num_acceptors, 10}],
+        #{env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])}}
+    ),
+    lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+build_proxy_routes() ->
+    [
+        {"/[...]", pertisk_eproxy_handler, []}
+    ].
+
+build_admin_routes() ->
+    [
+        {"/api/config",             pertisk_eproxy_admin_handler, config},
+        {"/api/backends",           pertisk_eproxy_admin_handler, backends},
+        {"/api/backends/:name",     pertisk_eproxy_admin_handler, backend},
+        {"/api/sites",              pertisk_eproxy_admin_handler, sites},
+        {"/api/sites/:host",        pertisk_eproxy_admin_handler, site},
+        {"/api/health",             pertisk_eproxy_admin_handler, health},
+        {"/api/metrics",            pertisk_eproxy_admin_handler, metrics},
+        {"/api/reload",             pertisk_eproxy_admin_handler, reload}
+    ].
+
+tls_opts(Config) ->
+    CertFile = maps:get(tls_cert_file, Config, undefined),
+    KeyFile  = maps:get(tls_key_file,  Config, undefined),
+    case {CertFile, KeyFile} of
+        {undefined, _} -> [];
+        {_, undefined} -> [];
+        _ ->
+            [{certfile, CertFile}, {keyfile, KeyFile},
+             {versions, ['tlsv1.2', 'tlsv1.3']},
+             {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}]
+    end.

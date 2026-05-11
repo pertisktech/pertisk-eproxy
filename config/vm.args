@@ -1,0 +1,23 @@
+## Node name (for distributed Erlang / remsh)
+-name pertisk_eproxy@127.0.0.1
+
+## Cookie for distributed Erlang (change in production)
+-setcookie pertisk_eproxy_cookie
+
+## Heartbeat monitor (restart VM on crash)
+## -heart
+
+## SMP auto-detect
++S auto
+
+## Async thread pool
++A 32
+
+## Maximum number of ports (file descriptors)
++Q 65536
+
+## Increase process limit
++P 1048576
+
+## Enable kernel poll
++K true

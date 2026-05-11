@@ -1,0 +1,25 @@
+{application, pertisk_eproxy, [
+    {description, "Erlang Cowboy Reverse Proxy"},
+    {vsn, "0.1.0"},
+    {registered, [
+        pertisk_eproxy_sup,
+        pertisk_eproxy_config,
+        pertisk_eproxy_metrics,
+        pertisk_eproxy_backend_sup
+    ]},
+    {mod, {pertisk_eproxy_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        ssl,
+        cowboy,
+        gun,
+        thoas,
+        lager,
+        prometheus,
+        prometheus_cowboy
+    ]},
+    {env, []},
+    {modules, []}
+]}.
