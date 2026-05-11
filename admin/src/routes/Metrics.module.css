@@ -1,0 +1,265 @@
+/* Metrics dashboard: page, header, chart sections */
+
+.page {
+  width: 100%;
+  margin: 0;
+  padding: 1.5rem 1.75rem 2rem;
+  box-sizing: border-box;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.headerBadges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text);
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.9375rem;
+  color: var(--color-text-secondary);
+}
+
+.liveBadge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.modeBadge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-dashboard-info);
+  background: var(--color-dashboard-info-bg);
+  border: 1px solid color-mix(in srgb, var(--color-dashboard-info) 35%, transparent);
+  border-radius: var(--radius-md);
+}
+
+/* Error */
+.errorCard {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 8%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--error) 25%, transparent);
+  border-radius: var(--radius-lg);
+  font-size: 0.9375rem;
+}
+
+.errorIcon {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--error) 20%, transparent);
+  border-radius: 50%;
+}
+
+/* Chart colors (set in page so Recharts can use them) */
+.page {
+  --chart-uptime: #eab308;
+  --chart-logs: var(--color-primary);
+  --chart-connections: #0ea5e9;
+  --chart-cpu: #10b981;
+  --chart-memory: #f59e0b;
+}
+
+html.dark .page {
+  --chart-uptime: #facc15;
+  --chart-logs: var(--color-primary-hover);
+  --chart-connections: #38bdf8;
+  --chart-cpu: #34d399;
+  --chart-memory: #fbbf24;
+}
+
+.chartSection {
+  margin-bottom: 2rem;
+}
+
+.sectionTitle {
+  margin: 0 0 0.25rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text);
+  letter-spacing: -0.01em;
+}
+
+.sectionSubtitle {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+.chartWrap {
+  background: var(--color-card);
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 1rem 1.25rem;
+  min-height: 240px;
+}
+
+.chartSkeleton {
+  height: 220px;
+  background: linear-gradient(
+    90deg,
+    var(--color-hover) 0%,
+    color-mix(in srgb, var(--color-hover) 60%, var(--color-card)) 50%,
+    var(--color-hover) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton 1.2s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@keyframes skeleton {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Recharts overrides (text/axis use currentColor in some builds; we target via class) */
+.grid {
+  stroke: var(--color-border) !important;
+  opacity: 0.8;
+}
+
+.axis {
+  stroke: var(--color-text-secondary) !important;
+}
+
+/* Summary section */
+.summarySection {
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr));
+  gap: 1rem;
+}
+
+.summaryCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 1.25rem;
+  background: var(--color-card);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.summaryLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+}
+
+.summaryValue {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--color-text);
+}
+
+.tableWrap {
+  background: var(--color-card);
+  border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  font-size: 0.875rem;
+}
+
+.table th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.table td {
+  color: var(--color-text);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover td {
+  background: color-mix(in srgb, var(--color-hover) 70%, transparent);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 1rem 1.25rem 1.5rem;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    margin-bottom: 1.25rem;
+  }
+
+  .chartWrap {
+    padding: 0.75rem 1rem;
+  }
+
+  .summaryGrid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+  }
+}

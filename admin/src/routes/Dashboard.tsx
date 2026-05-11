@@ -82,7 +82,7 @@ export default function Dashboard() {
           <div className={styles.section}>
             <div className={styles.sectionTitle}>Sites</div>
             <div className="card" style={{ padding: 0 }}>
-              {config?.sites.length === 0 ? (
+              {config?.sites?.length === 0 ? (
                 <div style={{ padding: '20px', color: 'var(--color-muted)', textAlign: 'center' }}>
                   No sites configured. <Link to="/sites">Add one →</Link>
                 </div>

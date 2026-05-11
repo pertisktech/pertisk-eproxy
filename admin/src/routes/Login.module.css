@@ -1,0 +1,220 @@
+/* Match pertisk-reverse-proxy login: centered card, Omni primary */
+
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  padding-top: 4rem;
+  gap: 1.5rem;
+}
+
+.topBar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 1.25rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  z-index: 10;
+}
+
+.topBarSpacer {
+  flex: 1;
+}
+
+.themeToggleLabel {
+  margin-left: 0.4rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.brandLogo {
+  display: block;
+  width: 3rem;
+  height: 3rem;
+  object-fit: contain;
+}
+
+.brandName {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+
+.themeToggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  font-size: 1rem;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.themeToggle:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+  border-color: var(--color-border);
+}
+
+
+.version {
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.card {
+  width: 100%;
+  max-width: 28rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 2rem 2.25rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.cardHeader {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.title {
+  margin: 0 0 0.35rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.title i {
+  color: var(--color-primary);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-secondary);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.input {
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input:focus {
+  border-color: var(--color-primary);
+}
+
+.input::placeholder {
+  color: var(--color-muted);
+}
+
+.button {
+  margin-top: 0.25rem;
+  padding: 0.65rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: white;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: box-shadow 0.2s, opacity 0.2s;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 42%, transparent);
+}
+
+.button:hover:not(:disabled) {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 55%, transparent);
+  opacity: 0.95;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.buttonSecondary {
+  margin-top: 0.25rem;
+  padding: 0.65rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.buttonSecondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface));
+}
+
+.buttonSecondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--error);
+  text-align: center;
+}
+
+.hint {
+  margin: 1rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-muted);
+  text-align: center;
+}

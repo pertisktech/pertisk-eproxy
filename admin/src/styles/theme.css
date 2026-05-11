@@ -1,0 +1,19 @@
+.status-green {
+  background-color: color-mix(in srgb, var(--color-icon-success) 20%, transparent);
+  color: var(--color-icon-success);
+}
+
+.status-yellow {
+  background-color: color-mix(in srgb, var(--color-icon-warning) 20%, transparent);
+  color: var(--color-icon-warning);
+}
+
+.status-red {
+  background-color: color-mix(in srgb, var(--color-icon-danger) 20%, transparent);
+  color: var(--color-icon-danger);
+}
+
+.status-gray {
+  background-color: color-mix(in srgb, var(--color-icon-secondary) 20%, transparent);
+  color: var(--color-icon-secondary);
+}

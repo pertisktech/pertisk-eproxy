@@ -1,0 +1,92 @@
+.section {
+  margin-top: 0;
+}
+
+.title {
+  margin: 0 0 1.25rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.title i {
+  color: var(--color-icon-primary);
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  max-width: 28rem;
+}
+
+.avatar {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.avatarImage {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 1rem;
+  border: 1px solid var(--border);
+}
+
+.info {
+  margin-bottom: 1.25rem;
+}
+
+.label {
+  margin: 0 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.value {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.role {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.changePasswordBtn {
+  padding: 0.5rem 1rem;
+  font-size: inherit;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.changePasswordBtn:hover {
+  background: var(--accent);
+  color: white;
+}

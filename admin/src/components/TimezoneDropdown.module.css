@@ -1,0 +1,210 @@
+.container {
+  position: relative;
+  width: 100%;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 0.9375rem;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.trigger:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 50%, var(--color-border));
+  background: var(--color-hover);
+}
+
+.trigger:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+.triggerOpen {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+.triggerContent {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.triggerContent > i {
+  flex-shrink: 0;
+  color: var(--color-primary);
+  font-size: 0.9rem;
+}
+
+.triggerText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  transition: transform 0.2s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md), 0 8px 24px -4px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  animation: dropdownSlide 0.15s ease-out;
+}
+
+@keyframes dropdownSlide {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.searchWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-hover);
+}
+
+.searchWrap > i {
+  position: absolute;
+  left: 1.25rem;
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  pointer-events: none;
+}
+
+.search {
+  flex: 1;
+  width: 100%;
+  padding: 0.5rem 0.75rem 0.5rem 2rem;
+  font-size: 0.9375rem;
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.search::placeholder {
+  color: var(--color-muted);
+}
+
+.search:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 15%, transparent);
+}
+
+.clearBtn {
+  position: absolute;
+  right: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  background: var(--color-hover);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.clearBtn:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0.375rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.9375rem;
+  color: var(--color-text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+
+.option:hover,
+.optionHighlighted {
+  background: var(--color-hover);
+}
+
+.optionSelected {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.optionSelected > i {
+  color: var(--color-primary);
+  font-size: 0.8rem;
+}
+
+.optionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noResults {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.5rem 1rem;
+  font-size: 0.9375rem;
+  color: var(--color-muted);
+}
+
+.noResults > i {
+  font-size: 0.9rem;
+}

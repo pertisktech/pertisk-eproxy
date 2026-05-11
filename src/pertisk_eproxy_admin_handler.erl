@@ -23,11 +23,163 @@
 
 init(Req, Resource) ->
     Method = cowboy_req:method(Req),
-    handle(Method, Resource, Req).
+    case auth_public(Method, Resource) of
+        true ->
+            handle(Method, Resource, Req);
+        false ->
+            case pertisk_eproxy_auth:auth_mode() of
+                disabled ->
+                    handle(Method, Resource, Req);
+                local ->
+                    case pertisk_eproxy_auth:verify_request(Req) of
+                        ok ->
+                            handle(Method, Resource, Req);
+                        {error, _} ->
+                            json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
+                    end
+            end
+    end.
+
+auth_public(<<"GET">>, root) -> true;
+auth_public(<<"GET">>, version) -> true;
+auth_public(<<"GET">>, auth_config) -> true;
+auth_public(<<"POST">>, auth_login) -> true;
+auth_public(<<"POST">>, auth_logout) -> true;
+auth_public(<<"GET">>, metrics) -> true;
+auth_public(<<"GET">>, health) -> true;
+auth_public(_, _) -> false.
 
 %% ---------------------------------------------------------------------------
 %% Route dispatch
 %% ---------------------------------------------------------------------------
+
+handle(<<"GET">>, version, Req) ->
+    json_reply(200, #{<<"version">> => app_version()}, Req);
+
+handle(<<"GET">>, management, Req) ->
+    json_reply(200, management_info(), Req);
+
+handle(<<"GET">>, stats, Req) ->
+    json_reply(200, pertisk_eproxy_stats:snapshot(), Req);
+
+handle(<<"GET">>, logs, Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    Type = maps:get(<<"type">>, Qs, undefined),
+    Host = maps:get(<<"host">>, Qs, undefined),
+    Entries = pertisk_eproxy_access_log:list(Type, Host),
+    json_reply(200, Entries, Req);
+
+handle(<<"GET">>, auth_config, Req) ->
+    json_reply(200, pertisk_eproxy_auth:auth_config_map(), Req);
+
+handle(<<"POST">>, auth_login, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        case pertisk_eproxy_auth:auth_mode() of
+            local ->
+                User = bin_field(maps:get(<<"username">>, Body, <<>>)),
+                Pass = bin_field(maps:get(<<"password">>, Body, <<>>)),
+                case pertisk_eproxy_auth:login(User, Pass) of
+                    {ok, #{token := T, username := U, expires_in := E}} ->
+                        json_reply(200, #{<<"token">> => T, <<"username">> => U, <<"expires_in">> => E}, Req2);
+                    {error, invalid_credentials} ->
+                        json_reply(401, #{<<"error">> => <<"Invalid credentials">>}, Req2);
+                    {error, login_disabled} ->
+                        json_reply(400, #{<<"error">> => <<"login not configured">>}, Req2)
+                end;
+            _ ->
+                json_reply(400, #{<<"error">> => <<"login not configured">>}, Req2)
+        end
+    end);
+
+handle(<<"POST">>, auth_refresh, Req) ->
+    case pertisk_eproxy_auth:auth_mode() of
+        disabled ->
+            json_reply(200, #{<<"token">> => <<"guest">>, <<"username">> => <<"operator">>, <<"expires_in">> => 86400}, Req);
+        local ->
+            case cowboy_req:parse_header(<<"authorization">>, Req) of
+                {bearer, Token} ->
+                    case pertisk_eproxy_auth:refresh(Token) of
+                        {ok, #{token := T, username := U, expires_in := E}} ->
+                            json_reply(200, #{<<"token">> => T, <<"username">> => U, <<"expires_in">> => E}, Req);
+                        {error, _} ->
+                            json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
+                    end;
+                _ ->
+                    json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
+            end
+    end;
+
+handle(<<"GET">>, auth_check, Req) ->
+    case pertisk_eproxy_auth:auth_mode() of
+        disabled ->
+            json_reply(200, #{<<"authenticated">> => true, <<"username">> => <<"operator">>}, Req);
+        local ->
+            case cowboy_req:parse_header(<<"authorization">>, Req) of
+                {bearer, Token} ->
+                    case pertisk_eproxy_auth:verify_token(Token) of
+                        {ok, U} ->
+                            json_reply(200, #{<<"authenticated">> => true, <<"username">> => U}, Req);
+                        {error, _} ->
+                            json_reply(200, #{<<"authenticated">> => false}, Req)
+                    end;
+                _ ->
+                    json_reply(200, #{<<"authenticated">> => false}, Req)
+            end
+    end;
+
+handle(<<"POST">>, auth_logout, Req) ->
+    case cowboy_req:parse_header(<<"authorization">>, Req) of
+        {bearer, Token} -> pertisk_eproxy_auth:logout(Token);
+        _ -> ok
+    end,
+    json_reply(200, #{<<"success">> => true}, Req);
+
+handle(<<"POST">>, admin_change_password, Req) ->
+    json_reply(501, #{<<"error">> => <<"Password change is not implemented for eProxy">>}, Req);
+
+handle(<<"GET">>, admin_api_token, Req) ->
+    json_reply(200, #{<<"has_token">> => false}, Req);
+
+handle(<<"POST">>, admin_api_token, Req) ->
+    json_reply(501, #{<<"error">> => <<"API tokens are not implemented for eProxy">>}, Req);
+
+handle(<<"GET">>, backup_export, Req) ->
+    Config = pertisk_eproxy_config:get_config(),
+    Body = thoas:encode(config_to_json(Config)),
+    Headers = #{
+        <<"content-type">> => <<"application/json">>,
+        <<"content-disposition">> => <<"attachment; filename=\"eproxy-config.json\"">>
+    },
+    Req2 = cowboy_req:reply(200, Headers, Body, Req),
+    {ok, Req2, undefined};
+
+handle(<<"POST">>, backup_restore, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        Data0 = maps:get(<<"data">>, Body, <<>>),
+        JsonBin = bin_field(Data0),
+        case thoas:decode(JsonBin) of
+            {ok, Json} ->
+                case pertisk_eproxy_config:json_to_config_pub(Json) of
+                    Config when is_map(Config) ->
+                        ok = pertisk_eproxy_config:put_config(Config),
+                        json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                    {error, R} ->
+                        error_reply(400, R, Req2)
+                end;
+            {error, _} ->
+                json_reply(400, #{<<"error">> => <<"invalid json in data">>}, Req2)
+        end
+    end);
+
+handle(<<"GET">>, helm_history, Req) ->
+    json_reply(200, #{<<"release">> => <<>>, <<"namespace">> => <<>>, <<"history">> => []}, Req);
+
+handle(<<"GET">>, helm_values, Req) ->
+    _Rev = cowboy_req:binding(revision, Req),
+    json_reply(404, #{<<"error">> => <<"Helm is not available on eProxy">>}, Req);
+
+handle(<<"GET">>, certificates, Req) ->
+    json_reply(200, [], Req);
 
 handle(<<"GET">>, root, Req) ->
     API = #{
@@ -301,3 +453,43 @@ optional_string(_) -> undefined.
 json_text(V) when is_binary(V) -> V;
 json_text(V) when is_list(V) -> list_to_binary(V);
 json_text(V) -> V.
+
+%% ---------------------------------------------------------------------------
+%% Misc
+%% ---------------------------------------------------------------------------
+
+app_version() ->
+    case application:get_key(pertisk_eproxy, vsn) of
+        {ok, V} when is_list(V) -> list_to_binary(V);
+        {ok, V} when is_binary(V) -> V;
+        _ -> <<"0.1.0">>
+    end.
+
+management_info() ->
+    C = pertisk_eproxy_config:get_config(),
+    HttpPort = maps:get(http_port, C, 8080),
+    MgmtPort = maps:get(management_port, C, 9080),
+    MgmtAddr = maps:get(management_addr, C, {127, 0, 0, 1}),
+    Mode0 = maps:get(mode, C, proxy_admin),
+    ModeBin = case Mode0 of
+        proxy_admin -> <<"proxy">>;
+        proxy -> <<"proxy">>;
+        M -> atom_to_binary(M, utf8)
+    end,
+    HttpsAddr = case maps:find(https_port, C) of
+        {ok, Hp} -> iolist_to_binary(io_lib:format("0.0.0.0:~w", [Hp]));
+        _ -> <<>>
+    end,
+    #{
+        <<"version">> => app_version(),
+        <<"mode">> => ModeBin,
+        <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
+        <<"https_addr">> => HttpsAddr,
+        <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
+        <<"db_path">> => null,
+        <<"http_versions">> => [<<"1.1">>, <<"2">>]
+    }.
+
+bin_field(V) when is_binary(V) -> V;
+bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).

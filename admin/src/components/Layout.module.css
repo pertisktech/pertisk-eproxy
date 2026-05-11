@@ -1,121 +1,798 @@
-.root {
+/* Redesigned application shell */
+
+.wrap {
   display: flex;
   height: 100vh;
+  min-height: 0;
   overflow: hidden;
+  --sidebar-width: 302px;
+  --sidebar-width-collapsed: 82px;
+  --header-h: 3.75rem;
+  background: var(--color-bg);
+}
+
+.wrapResizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.wrapResizing .sidebar {
+  transition: none;
+}
+
+.wrapCollapsed .sidebar {
+  width: var(--sidebar-width-collapsed);
+}
+
+.wrapCollapsed .sidebarBrandText {
+  display: none;
+}
+
+.wrapCollapsed .sidebarLinkText {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  margin: 0;
+  padding: 0;
 }
 
 .sidebar {
-  width: 240px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
-  background: var(--color-sidebar);
-  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  padding: 0;
+  gap: 0.5rem;
+  padding: 0 0.9rem 1rem;
+  background: var(--color-sidebar);
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  overflow: hidden;
+  transition: width var(--transition-sidebar, 200ms) ease;
+  box-shadow: none;
+}
+
+.sidebarResizeHandle {
+  width: 14px;
+  margin-left: -7px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  position: relative;
+  z-index: 45;
+  touch-action: none;
+}
+
+.sidebarResizeHandle::before {
+  content: '';
+  position: absolute;
+  top: 1rem;
+  bottom: 1rem;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+  opacity: 0.25;
+  transition: opacity 0.15s ease;
+}
+
+.sidebarResizeHandle:hover::before,
+.wrapResizing .sidebarResizeHandle::before {
+  opacity: 0.9;
+}
+
+.sidebarResizeHandleHidden {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.sidebarBrand {
+  flex-shrink: 0;
+  display: flex;
+  padding: 0.75rem 1rem;
+  margin: 0 -0.9rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+}
+
+.sidebarBrandMain {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.wrapCollapsed .sidebarBrand {
+  justify-content: center;
+  padding: 0 0.5rem;
+}
+
+.wrapCollapsed .sidebarBrandMain {
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wrapCollapsed .sidebarLogo {
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebarLogo {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.sidebarBrandText {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
   overflow: hidden;
 }
 
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 20px;
-  border-bottom: 1px solid var(--color-border);
-}
-.logoIcon {
-  width: 32px; height: 32px;
-  background: var(--color-primary-dim);
-  border-radius: var(--radius-sm);
-  display: flex; align-items: center; justify-content: center;
-  color: var(--color-primary);
-  font-size: 14px;
-}
-.logoText {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--color-text);
-}
-.logoSub {
-  font-size: 10px;
-  color: var(--color-muted);
-  font-weight: 400;
-  letter-spacing: 0;
+.logoImg {
+  display: block;
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0.45rem;
+  object-fit: contain;
+  border-radius: var(--radius-xl);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 30%, transparent), color-mix(in srgb, var(--color-blue-b1) 20%, transparent));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
-.nav {
-  flex: 1;
-  padding: 12px 8px;
-  overflow-y: auto;
+.sidebarLogoText {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebarVersionInline {
+  color: var(--color-text-secondary);
+  font-size: 0.88rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.logoAccent {
+  color: var(--color-primary);
+}
+
+.sidebarTopToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.sidebarTopToggle:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
 }
 
 .navSection {
-  margin-bottom: 4px;
-}
-.navSectionLabel {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-  padding: 8px 12px 4px;
+  min-height: 0;
+  padding-top: 0.5rem;
+  margin-top: 0.25rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
 }
 
-.navLink {
+/* First nav block sits directly under the brand; do not use :first-of-type on .navSection
+   (the first sibling div is .sidebarBrand, so :first-of-type never matched). */
+.sidebarBrand + .navSection {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.utilityBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background 0.12s, color 0.12s;
-  text-decoration: none;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0 1.25rem;
+  height: var(--header-h);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
 }
-.navLink:hover {
-  background: var(--color-hover);
+
+.utilityBarRight {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+}
+
+.breadcrumb {
+  min-width: 0;
+}
+
+.breadcrumbList {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.breadcrumbItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+.breadcrumbSep {
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.breadcrumbIcon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.breadcrumbLink {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.breadcrumbLink:hover {
   color: var(--color-text);
 }
-.navLink.active {
-  background: var(--color-primary-dim);
-  color: var(--color-primary);
-}
-.navLink i {
-  width: 16px;
-  text-align: center;
-  font-size: 13px;
+
+.breadcrumbCurrent {
+  color: var(--color-text);
+  font-weight: 500;
 }
 
-.main {
-  flex: 1;
+.navSectionLabel {
+  display: block;
+  margin: 0 0 0.4rem 1rem;
+  padding-top: 0.15rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.wrapCollapsed .navSectionLabel {
+  display: none;
+}
+
+.sidebarNav,
+.sidebarNavBottom {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  gap: 0.25rem;
 }
 
-.topbar {
-  height: 56px;
-  border-bottom: 1px solid var(--color-border);
-  display: flex;
+.sidebarNav {
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebarNavBottom {
+  margin-top: 0.2rem;
+}
+
+.wrapCollapsed .sidebarNav,
+.wrapCollapsed .sidebarNavBottom {
   align-items: center;
-  padding: 0 24px;
+}
+
+.sidebarIcon {
   flex-shrink: 0;
-  background: var(--color-surface);
-  gap: 8px;
+  color: inherit;
+  display: block;
 }
-.breadcrumb {
+
+.sidebarLink {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
   color: var(--color-text-secondary);
-  font-size: 13px;
+  text-decoration: none;
+  border-radius: var(--radius-lg);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
-.breadcrumb i { color: var(--color-primary); font-size: 12px; }
-.breadcrumb span { color: var(--color-text); font-weight: 500; }
+
+.sidebarLink:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.wrapCollapsed .sidebarLink {
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+}
+
+.active,
+.sidebarLink.active {
+  color: var(--color-primary);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.active:hover,
+.sidebarLink.active:hover {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+
+.sidebarLink.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-primary);
+}
+
+
+.sidebarLinkText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .content {
   flex: 1;
-  overflow-y: auto;
-  padding: 28px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.modeBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-hover) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.headerLink,
+.themeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.35rem;
+  padding: 0 0.8rem;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: var(--radius-xl);
+  text-decoration: none;
+}
+
+.headerLink:hover,
+.themeBtn:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.userMenuWrap {
+  position: relative;
+  z-index: 55;
+}
+
+.userButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.45rem;
+  padding: 0.35rem 0.75rem 0.35rem 0.45rem;
+  font-weight: 600;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: var(--radius-xl);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.userButton:hover {
+  background: var(--color-hover);
+}
+
+.userButtonOpen,
+.userButton:focus-visible {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  outline: none;
+}
+
+.userAvatar {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary), color-mix(in srgb, var(--color-blue-b1) 50%, var(--color-primary)));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.userAvatarImg {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: var(--radius-lg);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.userName {
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userChevron {
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.userButtonOpen .userChevron {
+  transform: rotate(180deg);
+}
+
+.userDropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  min-width: 13rem;
+  padding: 0.4rem;
+  background: color-mix(in srgb, var(--color-surface-elevated) 96%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: var(--radius-2xl);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.36);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  pointer-events: none;
+}
+
+.userDropdownOpen {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.userDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.9rem;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xl);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.userDropdownItem:hover,
+.userDropdownItem:focus {
+  background: var(--color-hover);
+  outline: none;
+}
+
+.userDropdownDivider {
+  height: 1px;
+  margin: 0.3rem 0;
+  background: var(--color-border);
+}
+
+.userDropdownProfile {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem 0.55rem;
+}
+
+.userDropdownAvatar {
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: var(--radius-lg);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.userDropdownAvatarInitial {
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary), color-mix(in srgb, var(--color-blue-b1) 50%, var(--color-primary)));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.userDropdownProfileInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.userDropdownName {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userDropdownEmail {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--header-h) 1.25rem 1.25rem;
+  background: var(--color-bg);
+}
+
+.mainAmbient {
+  display: none;
+}
+
+.mainContent {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.mainContentInner {
+  width: 100%;
+  min-width: 0;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 16, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 1rem;
+}
+
+.modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  max-width: 24rem;
+  width: 100%;
+  box-shadow: var(--shadow-md);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.modalClose {
+  padding: 0.25rem;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--color-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-lg);
+}
+
+.modalClose:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.modalForm {
+  padding: 1.25rem;
+}
+
+.modalFormRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.modalLabelInline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 100px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.modalLabelText {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+
+.modalInput {
+  display: block;
+  width: 100%;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.modalInput:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.modalActionsInline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.modalError {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--error);
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.modalCancel,
+.modalSubmit {
+  min-height: 2.6rem;
+  padding: 0 1rem;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.modalCancel {
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+}
+
+.modalCancel:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
+}
+
+.modalSubmit {
+  font-weight: 600;
+  color: white;
+  background: var(--color-primary);
+  border: none;
+}
+
+.modalSubmit:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.modalSubmit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 960px) {
+  .headerLink span,
+  .userName {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    --sidebar-width: 260px;
+  }
+
+  .sidebar {
+    padding: 0 0.7rem 0.85rem;
+  }
+
+  .sidebarBrand {
+    margin: 0 -0.7rem 0.5rem;
+    padding: 0 0.8rem;
+  }
+
+  .utilityBar {
+    padding: 0 0.75rem;
+  }
+
+  .main {
+    padding: var(--header-h) 0.75rem 0.75rem;
+  }
 }

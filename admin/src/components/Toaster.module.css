@@ -1,0 +1,100 @@
+.container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(24rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.container > * {
+  pointer-events: auto;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0, 0, 0, 0.1);
+  background: var(--color-surface-elevated, #131421);
+  border: 1px solid var(--color-border, #23253c);
+  animation: toastIn 0.25s ease-out;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--color-text, #e6e7f0);
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast.success {
+  background: var(--color-surface-elevated, #131421);
+  border-color: var(--color-primary, #9a7bf7);
+  color: var(--color-text, #e6e7f0);
+}
+
+.toast.success .icon {
+  color: var(--color-icon-success, #4ade9b);
+}
+
+.toast.error {
+  background: var(--color-surface-elevated, #131421);
+  border-color: var(--color-icon-danger, #f87171);
+  color: var(--color-text, #e6e7f0);
+}
+
+.toast.error .icon {
+  color: var(--color-icon-danger, #f87171);
+}
+
+.toast.info {
+  background: var(--color-surface-elevated, #131421);
+  border-color: var(--color-primary, #9a7bf7);
+  color: var(--color-text, #e6e7f0);
+}
+
+.toast.info .icon {
+  color: var(--color-primary, #9a7bf7);
+}
+
+.icon {
+  flex-shrink: 0;
+  font-size: 1.125rem;
+  margin-top: 0.05rem;
+}
+
+.message {
+  flex: 1;
+  min-width: 0;
+}
+
+.close {
+  flex-shrink: 0;
+  padding: 0.2rem;
+  margin: -0.2rem -0.2rem -0.2rem 0;
+  font-size: 0.875rem;
+  color: inherit;
+  opacity: 0.7;
+  background: none;
+  border: none;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.close:hover {
+  opacity: 1;
+}

@@ -1,572 +1,897 @@
-import { useEffect, useState, useCallback } from 'react';
+import FaIcon from '@/components/FaIcon';
+import { useEffect, useState, FormEvent, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { api, type Site, type PathRewrite, type PathType } from '@/api/client';
+import { api, type ProxyConfig, type Site, type PathRewrite, type Backend } from '@/api/client';
+import { getCookieValue, setCookieValue } from '@/auth';
+import { useToast } from '@/context/ToastContext';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import Pagination from '@/components/Pagination';
+import { usePageSize } from '@/utils/usePageSize';
 import styles from './Sites.module.css';
 
-const EMPTY_ROUTE: PathRewrite = { path: '/', path_type: 'prefix' };
+const PATH_TYPES = ['Prefix', 'Exact', 'ImplementationSpecific'];
+const VIEW_MODE_COOKIE = 'pertisk_sites_view';
+const VIEW_MODE_MAX_AGE_SECS = 60 * 60 * 24 * 365;
+const EMPTY_SITES: Site[] = [];
+const EMPTY_BACKENDS: Backend[] = [];
 
-function uniq(items: string[]) {
-  return Array.from(new Set(items.map(s => s.trim()).filter(Boolean)));
+function normalizeViewMode(value: string | null): 'card' | 'list' {
+  return value === 'card' ? 'card' : 'list';
 }
 
-function SiteModal({
-  site,
-  onClose,
-  onSaved,
-  certificates,
-  dnsProviders,
-}: {
-  site?: Site;
-  onClose: () => void;
-  onSaved: () => void;
-  certificates: string[];
-  dnsProviders: string[];
-}) {
-  const [host, setHost]       = useState(site?.host ?? '');
-  const [backend, setBackend] = useState(site?.backend ?? '');
-  const [certificate, setCertificate] = useState(site?.certificate ?? '');
-  const [dnsProvider, setDnsProvider] = useState(site?.dns_provider ?? '');
-  const [certOptions, setCertOptions] = useState<string[]>(uniq([...(site?.certificate ? [site.certificate] : []), ...certificates]));
-  const [dnsOptions, setDnsOptions] = useState<string[]>(uniq([...(site?.dns_provider ? [site.dns_provider] : []), ...dnsProviders]));
-  const [editingCertIndex, setEditingCertIndex] = useState<number | null>(null);
-  const [editingCertValue, setEditingCertValue] = useState('');
-  const [editingDnsIndex, setEditingDnsIndex] = useState<number | null>(null);
-  const [editingDnsValue, setEditingDnsValue] = useState('');
-  const [routes, setRoutes]   = useState<PathRewrite[]>(site?.routes?.length ? site.routes : [{ ...EMPTY_ROUTE }]);
-  const [showAdvancedRoutes, setShowAdvancedRoutes] = useState(!!site);
-  const [saving, setSaving]   = useState(false);
-  const [updatingRecords, setUpdatingRecords] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+function domainUrl(host: string): string {
+  const h = host?.trim() || '';
+  if (!h || h === '—') return '';
+  const base = h.startsWith('*.') ? h.slice(2) : h;
+  return 'https://' + base;
+}
 
-  const isEditing = !!site;
+function routeLabel(route: PathRewrite): string {
+  const pt = route.path_type || 'prefix';
+  const ptDisp = typeof pt === 'string' ? pt.charAt(0).toUpperCase() + pt.slice(1) : String(pt);
+  return `${ptDisp} ${route.path}${route.rewrite != null && route.rewrite !== '' ? ` → ${route.rewrite}` : ''}`;
+}
+
+function normalizeUpstream(url: string): string {
+  const s = url.trim();
+  if (!s) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  return 'http://' + s;
+}
+
+/** Map UI path type to eProxy API (lowercase). */
+function toApiPathType(pt: string): 'prefix' | 'exact' {
+  const u = (pt || 'Prefix').toLowerCase();
+  if (u === 'exact') return 'exact';
+  return 'prefix';
+}
+
+/** Display path type in form (Title Case). */
+function toFormPathType(pt: string | undefined): string {
+  if (!pt) return 'Prefix';
+  const s = String(pt).toLowerCase();
+  if (s === 'exact') return 'Exact';
+  if (s === 'prefix') return 'Prefix';
+  return 'ImplementationSpecific';
+}
+
+type DisplaySiteItem = {
+  key: string;
+  site: Site;
+  index: number;
+};
+
+type SslMode = 'none' | 'from_list';
+
+export default function Sites() {
+  const [config, setConfig] = useState<ProxyConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [formHost, setFormHost] = useState('');
+  const [formUpstream, setFormUpstream] = useState('');
+  const [formRoutes, setFormRoutes] = useState<{ path: string; path_type: string; rewrite: string }[]>([
+    { path: '/', path_type: 'Prefix', rewrite: '/' },
+  ]);
+  const [formSslMode, setFormSslMode] = useState<SslMode>('none');
+  const [formCertName, setFormCertName] = useState('');
+  const [formDnsProviderName, setFormDnsProviderName] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
+    normalizeViewMode(getCookieValue(VIEW_MODE_COOKIE)),
+  );
+  const pageSize = usePageSize();
+  const [page, setPage] = useState(1);
+  type SortKey = 'domain' | 'upstream' | 'routes' | 'ssl';
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
+  const toast = useToast();
+
+  const sites = config?.sites ?? EMPTY_SITES;
+  const backends = config?.backends ?? EMPTY_BACKENDS;
+  const certNames = config?.certificates ?? [];
+  const dnsNames = config?.dns_providers ?? [];
+
+  const displaySiteItems: DisplaySiteItem[] = useMemo(
+    () =>
+      sites.map((site, index) => ({
+        key: `${site.host}-${index}`,
+        site,
+        index,
+      })),
+    [sites],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(displaySiteItems.length / pageSize));
+  useEffect(() => {
+    setPage((p) => Math.max(1, Math.min(totalPages, p)));
+  }, [totalPages]);
+
+  const startIndex = (page - 1) * pageSize;
+  const endIndexExclusive = startIndex + pageSize;
+
+  function upstreamForSite(site: Site): string {
+    const be = backends.find((b) => b.name === site.backend);
+    return be?.upstreams?.[0]?.addr ?? site.backend;
+  }
+
+  function sslLabelForSite(site: Site): string {
+    if (site.certificate?.trim()) return site.certificate.trim();
+    return '—';
+  }
+
+  function compareStrings(a: string, b: string): number {
+    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  }
+
+  function toggleSort(nextKey: SortKey) {
+    setPage(1);
+    setSortKey((prev) => {
+      if (prev === nextKey) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+        return prev;
+      }
+      setSortDir('asc');
+      return nextKey;
+    });
+  }
+
+  function sortIcon(key: SortKey) {
+    const active = sortKey === key;
+    const cls = !active ? 'fas fa-sort' : sortDir === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
+    return <FaIcon className={cls} aria-hidden />;
+  }
+
+  const sortedSiteItems = sortKey
+    ? [...displaySiteItems].sort((a, b) => {
+        const dir = sortDir === 'asc' ? 1 : -1;
+        if (sortKey === 'domain') return dir * compareStrings(a.site.host ?? '', b.site.host ?? '');
+        if (sortKey === 'upstream') return dir * compareStrings(upstreamForSite(a.site), upstreamForSite(b.site));
+        if (sortKey === 'routes') return dir * ((a.site.routes?.length ?? 0) - (b.site.routes?.length ?? 0));
+        return dir * compareStrings(sslLabelForSite(a.site), sslLabelForSite(b.site));
+      })
+    : displaySiteItems;
+
+  const pagedSiteItems = sortedSiteItems.slice(startIndex, endIndexExclusive);
+
+  function updateViewMode(next: 'card' | 'list') {
+    setViewMode(next);
+    setCookieValue(VIEW_MODE_COOKIE, next, VIEW_MODE_MAX_AGE_SECS);
+  }
+
+  function load() {
+    api
+      .config()
+      .then(setConfig)
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load config'));
+  }
 
   useEffect(() => {
-    setHost(site?.host ?? '');
-    setBackend(site?.backend ?? '');
-    setCertificate(site?.certificate ?? '');
-    setDnsProvider(site?.dns_provider ?? '');
-    setCertOptions(uniq([...(site?.certificate ? [site.certificate] : []), ...certificates]));
-    setDnsOptions(uniq([...(site?.dns_provider ? [site.dns_provider] : []), ...dnsProviders]));
-    setRoutes(site?.routes?.length ? site.routes : [{ ...EMPTY_ROUTE }]);
-    setShowAdvancedRoutes(!!site);
-    setError(null);
-    setSaving(false);
-    setUpdatingRecords(false);
-    setEditingCertIndex(null);
-    setEditingCertValue('');
-    setEditingDnsIndex(null);
-    setEditingDnsValue('');
-  }, [site, certificates, dnsProviders]);
+    load();
+  }, []);
 
-  const updateRoute = (i: number, key: keyof PathRewrite, value: string) =>
-    setRoutes(rs => rs.map((r, idx) => idx === i ? { ...r, [key]: value || undefined } : r));
+  useEffect(() => {
+    if (!showForm) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [showForm]);
 
-  const addCertificateToList = async () => {
-    const nextValue = certificate.trim();
-    if (!nextValue || certOptions.includes(nextValue)) return;
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      await api.putConfig({ ...c, certificates: uniq([...c.certificates, nextValue]) });
-      setCertOptions(opts => uniq([...opts, nextValue]));
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
-    }
-  };
+  function addRoute() {
+    setFormRoutes((r) => [...r, { path: '', path_type: 'Prefix', rewrite: '' }]);
+  }
 
-  const addDnsToList = async () => {
-    const nextValue = dnsProvider.trim();
-    if (!nextValue || dnsOptions.includes(nextValue)) return;
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      await api.putConfig({ ...c, dns_providers: uniq([...c.dns_providers, nextValue]) });
-      setDnsOptions(opts => uniq([...opts, nextValue]));
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
-    }
-  };
+  function removeRoute(i: number) {
+    setFormRoutes((r) => r.filter((_, idx) => idx !== i));
+  }
 
-  const removeCertificateFromList = async (idx: number) => {
-    const value = certOptions[idx];
-    if (!value) return;
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      await api.putConfig({ ...c, certificates: c.certificates.filter(v => v !== value) });
-      setCertOptions(opts => opts.filter((_, i) => i !== idx));
-      if (certificate === value) setCertificate('');
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
-    }
-  };
+  function updateRoute(i: number, field: 'path' | 'path_type' | 'rewrite', value: string) {
+    setFormRoutes((r) => {
+      const next = [...r];
+      const cur = { ...next[i] };
+      if (field === 'path') cur.path = value;
+      else if (field === 'path_type') cur.path_type = value;
+      else cur.rewrite = value;
+      next[i] = cur;
+      return next;
+    });
+  }
 
-  const removeDnsFromList = async (idx: number) => {
-    const value = dnsOptions[idx];
-    if (!value) return;
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      await api.putConfig({ ...c, dns_providers: c.dns_providers.filter(v => v !== value) });
-      setDnsOptions(opts => opts.filter((_, i) => i !== idx));
-      if (dnsProvider === value) setDnsProvider('');
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
-    }
-  };
+  function openAdd() {
+    setEditingIndex(null);
+    setFormHost('');
+    setFormUpstream('');
+    setFormRoutes([{ path: '/', path_type: 'Prefix', rewrite: '/' }]);
+    setFormSslMode('none');
+    setFormCertName('');
+    setFormDnsProviderName('');
+    setFormError(null);
+    setShowForm(true);
+  }
 
-  const saveEditedCertificate = async () => {
-    if (editingCertIndex === null) return;
-    const oldValue = certOptions[editingCertIndex];
-    const newValue = editingCertValue.trim();
-    if (!oldValue || !newValue) return;
-    if (certOptions.some((c, i) => c === newValue && i !== editingCertIndex)) {
-      setError('Certificate already exists');
+  function openEdit(index: number) {
+    const site = sites[index];
+    if (!site) return;
+    setEditingIndex(index);
+    setFormHost(site.host);
+    const be = backends.find((b) => b.name === site.backend);
+    setFormUpstream(be?.upstreams?.[0]?.addr ?? '');
+    setFormRoutes(
+      site.routes?.length
+        ? site.routes.map((r) => ({
+            path: r.path ?? '/',
+            path_type: toFormPathType(r.path_type),
+            rewrite: r.rewrite ?? '',
+          }))
+        : [{ path: '/', path_type: 'Prefix', rewrite: '/' }],
+    );
+    setFormSslMode(site.certificate?.trim() ? 'from_list' : 'none');
+    setFormCertName(site.certificate?.trim() ?? '');
+    setFormDnsProviderName(site.dns_provider?.trim() ?? '');
+    setFormError(null);
+    setShowForm(true);
+  }
+
+  function openDuplicate(index: number) {
+    const site = sites[index];
+    if (!site) return;
+    setEditingIndex(null);
+    setFormHost(`${site.host}-copy`);
+    const be = backends.find((b) => b.name === site.backend);
+    setFormUpstream(be?.upstreams?.[0]?.addr ?? '');
+    setFormRoutes(
+      site.routes?.length
+        ? site.routes.map((r) => ({
+            path: r.path ?? '/',
+            path_type: toFormPathType(r.path_type),
+            rewrite: r.rewrite ?? '',
+          }))
+        : [{ path: '/', path_type: 'Prefix', rewrite: '/' }],
+    );
+    setFormSslMode('none');
+    setFormCertName('');
+    setFormDnsProviderName(site.dns_provider?.trim() ?? '');
+    setFormError(null);
+    setShowForm(true);
+  }
+
+  function buildRoutes(): PathRewrite[] {
+    return formRoutes
+      .map((r) => ({
+        path: r.path.trim(),
+        path_type: toApiPathType(r.path_type),
+        rewrite: r.rewrite?.trim() || undefined,
+      }))
+      .filter((r) => r.path);
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    const host = formHost.trim();
+    if (!host) {
+      setFormError('Domain is required');
       return;
     }
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      const next = c.certificates.map(v => (v === oldValue ? newValue : v));
-      await api.putConfig({ ...c, certificates: uniq(next) });
-      setCertOptions(opts => opts.map((v, i) => (i === editingCertIndex ? newValue : v)));
-      if (certificate === oldValue) setCertificate(newValue);
-      setEditingCertIndex(null);
-      setEditingCertValue('');
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
-    }
-  };
-
-  const saveEditedDns = async () => {
-    if (editingDnsIndex === null) return;
-    const oldValue = dnsOptions[editingDnsIndex];
-    const newValue = editingDnsValue.trim();
-    if (!oldValue || !newValue) return;
-    if (dnsOptions.some((d, i) => d === newValue && i !== editingDnsIndex)) {
-      setError('DNS provider already exists');
+    const rawUpstream = formUpstream.trim();
+    if (!rawUpstream) {
+      setFormError('Upstream URL is required');
       return;
     }
-    setUpdatingRecords(true);
-    setError(null);
-    try {
-      const c = await api.config();
-      const next = c.dns_providers.map(v => (v === oldValue ? newValue : v));
-      await api.putConfig({ ...c, dns_providers: uniq(next) });
-      setDnsOptions(opts => opts.map((v, i) => (i === editingDnsIndex ? newValue : v)));
-      if (dnsProvider === oldValue) setDnsProvider(newValue);
-      setEditingDnsIndex(null);
-      setEditingDnsValue('');
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setUpdatingRecords(false);
+    const routes = buildRoutes();
+    if (routes.length === 0) {
+      setFormError('At least one route with a path is required');
+      return;
     }
-  };
+    if (!config) return;
 
-  const save = async () => {
-    if (!host.trim()) { setError('Host is required'); return; }
-    if (!backend.trim()) { setError('Backend is required'); return; }
+    if (formSslMode === 'from_list' && !formCertName.trim()) {
+      setFormError('Select or enter a certificate name when using “Existing certificate label”.');
+      return;
+    }
+
+    const addr = normalizeUpstream(rawUpstream);
+    let newBackends = [...backends];
+    const baseName =
+      'inline-' +
+        host
+          .replace(/[^a-z0-9.-]/gi, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '') || 'site';
+    let backendName: string;
+    if (editingIndex !== null) {
+      const existingSite = sites[editingIndex];
+      const existingBackend = existingSite && newBackends.find((b) => b.name === existingSite.backend);
+      if (existingBackend?.upstreams?.length === 1) {
+        newBackends = newBackends.map((b) =>
+          b.name === existingSite!.backend
+            ? {
+                ...b,
+                upstreams: [{ ...b.upstreams[0], addr }],
+                algorithm: b.algorithm ?? 'round_robin',
+              }
+            : b,
+        );
+        backendName = existingSite!.backend;
+      } else {
+        backendName = baseName;
+        let n = 1;
+        while (newBackends.some((b) => b.name === backendName)) backendName = `${baseName}-${n++}`;
+        newBackends = [
+          ...newBackends,
+          {
+            name: backendName,
+            upstreams: [{ addr, weight: 1 }],
+            algorithm: 'round_robin',
+            health_interval_secs: 30,
+          },
+        ];
+      }
+    } else {
+      backendName = baseName;
+      let n = 1;
+      while (newBackends.some((b) => b.name === backendName)) backendName = `${baseName}-${n++}`;
+      newBackends = [
+        ...newBackends,
+        {
+          name: backendName,
+          upstreams: [{ addr, weight: 1 }],
+          algorithm: 'round_robin',
+          health_interval_secs: 30,
+        },
+      ];
+    }
+
+    const certificate = formSslMode === 'from_list' ? formCertName.trim() || null : null;
+    const dns_provider = formDnsProviderName.trim() || null;
+
+    const newSite: Site = {
+      host,
+      backend: backendName,
+      routes,
+      certificate,
+      dns_provider,
+    };
+
+    const newSites =
+      editingIndex !== null ? sites.map((s, i) => (i === editingIndex ? newSite : s)) : [...sites, newSite];
+
     setSaving(true);
     try {
-      const draft: Site = {
-        host: host.trim(),
-        backend: backend.trim(),
-        certificate: certificate.trim() || null,
-        dns_provider: dnsProvider.trim() || null,
-        routes: routes.length === 0 ? [{ ...EMPTY_ROUTE }] : routes,
-      };
-      if (isEditing && site?.host) {
-        await api.updateSite(site.host, draft);
-      } else {
-        await api.addSite(draft);
-      }
-      onSaved();
-      onClose();
-    } catch (e: unknown) { setError(String(e)); }
-    finally { setSaving(false); }
-  };
+      await api.putConfig({
+        ...config,
+        backends: newBackends,
+        sites: newSites,
+      });
+      setConfig({ ...config, backends: newBackends, sites: newSites });
+      setShowForm(false);
+      setEditingIndex(null);
+      toast.success(editingIndex !== null ? 'Site updated.' : 'Site added.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save';
+      setFormError(msg);
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeSite(index: number) {
+    if (!config) return;
+    const site = sites[index];
+    if (!site) return;
+    setDeleteConfirmIndex(null);
+    setSaving(true);
+    try {
+      await api.deleteSite(site.host);
+      const newSites = sites.filter((_, i) => i !== index);
+      setConfig({ ...config, sites: newSites });
+      toast.success('Site removed.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to remove site');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const isEditing = editingIndex !== null;
+
+  if (error) {
+    return (
+      <section className={styles.section}>
+        <p className={styles.error}>{error}</p>
+        <button type="button" className={styles.btnSecondary} onClick={() => { setError(null); load(); }}>
+          Retry
+        </button>
+      </section>
+    );
+  }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header">
-          <div className="modal-title"><i className="fas fa-globe" /> {isEditing ? 'Edit Site' : 'Add Site'}</div>
-          <button className="modal-close btn" onClick={onClose}><i className="fas fa-times" /></button>
-        </div>
-
-        {error && <div className="error-banner"><i className="fas fa-exclamation-circle" />{error}</div>}
-
-        <div className="form-group">
-          <label>Domain</label>
-          <input value={host} onChange={e => setHost(e.target.value)} placeholder="example.com" />
-        </div>
-
-        <div className="form-group">
-          <label>Backend</label>
-          <input value={backend} onChange={e => setBackend(e.target.value)} placeholder="backend name or target" />
-        </div>
-
-        <div className="form-group">
-          <label>SSL Certificate</label>
-          <div className={styles.optionInputRow}>
-            <input
-              value={certificate}
-              onChange={e => setCertificate(e.target.value)}
-              list="site-cert-options"
-              placeholder="example-wildcard-cert"
-            />
+    <section className={styles.section}>
+      <div className={styles.header}>
+        <div className={styles.headerActions}>
+          <div className={styles.viewToggle}>
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={addCertificateToList}
-              disabled={updatingRecords || !certificate.trim() || certOptions.includes(certificate.trim())}
+              className={viewMode === 'card' ? styles.viewBtnActive : styles.viewBtn}
+              onClick={() => updateViewMode('card')}
             >
-              Add
+              <FaIcon className="fas fa-th" aria-hidden /> Cards
             </button>
-          </div>
-          <datalist id="site-cert-options">
-            {certOptions.map(cert => <option key={cert} value={cert} />)}
-          </datalist>
-          <div className={styles.modalRecordTable}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th style={{ width: 130 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {certOptions.map((cert, idx) => (
-                  <tr key={`${cert}-${idx}`}>
-                    <td>
-                      {editingCertIndex === idx ? (
-                        <input
-                          className={styles.recordEditInput}
-                          value={editingCertValue}
-                          onChange={e => setEditingCertValue(e.target.value)}
-                        />
-                      ) : (
-                        <button type="button" className={`badge badge-purple ${styles.optionChipBtn}`} onClick={() => setCertificate(cert)}>{cert}</button>
-                      )}
-                    </td>
-                    <td>
-                      {editingCertIndex === idx ? (
-                        <>
-                          <button type="button" className="btn btn-primary btn-sm" onClick={saveEditedCertificate} disabled={updatingRecords}><i className="fas fa-check" /></button>
-                          <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => { setEditingCertIndex(null); setEditingCertValue(''); }} disabled={updatingRecords}><i className="fas fa-times" /></button>
-                        </>
-                      ) : (
-                        <>
-                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setEditingCertIndex(idx); setEditingCertValue(cert); }} disabled={updatingRecords}><i className="fas fa-pen" /></button>
-                          <button type="button" className="btn btn-danger btn-sm" style={{ marginLeft: 8 }} onClick={() => removeCertificateFromList(idx)} disabled={updatingRecords}><i className="fas fa-trash" /></button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label>DNS Provider</label>
-          <div className={styles.optionInputRow}>
-            <input
-              value={dnsProvider}
-              onChange={e => setDnsProvider(e.target.value)}
-              list="site-dns-options"
-              placeholder="cloudflare"
-            />
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={addDnsToList}
-              disabled={updatingRecords || !dnsProvider.trim() || dnsOptions.includes(dnsProvider.trim())}
+              className={viewMode === 'list' ? styles.viewBtnActive : styles.viewBtn}
+              onClick={() => updateViewMode('list')}
             >
-              Add
+              <FaIcon className="fas fa-list" aria-hidden /> List
             </button>
           </div>
-          <datalist id="site-dns-options">
-            {dnsOptions.map(dns => <option key={dns} value={dns} />)}
-          </datalist>
-          <div className={styles.modalRecordTable}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th style={{ width: 130 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {dnsOptions.map((dns, idx) => (
-                  <tr key={`${dns}-${idx}`}>
-                    <td>
-                      {editingDnsIndex === idx ? (
-                        <input
-                          className={styles.recordEditInput}
-                          value={editingDnsValue}
-                          onChange={e => setEditingDnsValue(e.target.value)}
-                        />
-                      ) : (
-                        <button type="button" className={`badge badge-purple ${styles.optionChipBtn}`} onClick={() => setDnsProvider(dns)}>{dns}</button>
-                      )}
-                    </td>
-                    <td>
-                      {editingDnsIndex === idx ? (
-                        <>
-                          <button type="button" className="btn btn-primary btn-sm" onClick={saveEditedDns} disabled={updatingRecords}><i className="fas fa-check" /></button>
-                          <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => { setEditingDnsIndex(null); setEditingDnsValue(''); }} disabled={updatingRecords}><i className="fas fa-times" /></button>
-                        </>
-                      ) : (
-                        <>
-                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setEditingDnsIndex(idx); setEditingDnsValue(dns); }} disabled={updatingRecords}><i className="fas fa-pen" /></button>
-                          <button type="button" className="btn btn-danger btn-sm" style={{ marginLeft: 8 }} onClick={() => removeDnsFromList(idx)} disabled={updatingRecords}><i className="fas fa-trash" /></button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving}>
+            <FaIcon className="fas fa-plus" aria-hidden /> Add Site
+          </button>
         </div>
+      </div>
 
-        <div className="card" style={{ marginBottom: 16, padding: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div>
-              <strong>Reverse Proxy Rule</strong>
-              <div style={{ color: 'var(--color-muted)', fontSize: 12 }}>
-                Default: forward all paths from this domain to the selected backend.
-              </div>
+      {config && (
+        <>
+          {sites.length === 0 ? (
+            <div className={styles.emptyState}>
+              <FaIcon className="fas fa-globe" size={48} aria-hidden />
+              <h3 className={styles.emptyTitle}>No sites configured</h3>
+              <p className={styles.emptyText}>Get started by adding your first reverse proxy site</p>
+              <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving}>
+                <FaIcon className="fas fa-plus" aria-hidden /> Add Your First Site
+              </button>
             </div>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAdvancedRoutes(v => !v)}>
-              {showAdvancedRoutes ? 'Hide Advanced Routes' : 'Show Advanced Routes'}
-            </button>
-          </div>
-
-          {!showAdvancedRoutes && (
-            <div style={{ marginTop: 8 }} className="mono">
-              <span style={{ color: 'var(--color-text-secondary)' }}>/[all paths]</span> → <span style={{ color: 'var(--color-text)' }}>{backend || 'select backend'}</span>
+          ) : viewMode === 'card' ? (
+            <div className={styles.cardGrid}>
+              {pagedSiteItems.map((item) => {
+                const { site, index: i } = item;
+                const up = upstreamForSite(site);
+                const routes = site.routes ?? [];
+                const ssl = sslLabelForSite(site);
+                return (
+                  <div key={item.key} className={styles.siteCard}>
+                    <div className={styles.siteCardHeader}>
+                      <h3 className={styles.siteCardDomain}>
+                        <FaIcon className="fas fa-globe" aria-hidden />
+                        <Link to={`/sites/${encodeURIComponent(site.host)}`} className={styles.hostText}>
+                          {site.host}
+                        </Link>
+                        {domainUrl(site.host) && (
+                          <a
+                            href={domainUrl(site.host)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={styles.domainLinkIcon}
+                            title="Open in new tab"
+                            aria-label={`Open ${site.host} in new tab`}
+                          >
+                            <FaIcon className="fas fa-external-link-alt" aria-hidden />
+                          </a>
+                        )}
+                      </h3>
+                    </div>
+                    <div className={styles.siteCardBody}>
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Upstream</span>
+                        <span className={styles.metaValue}>{up || '—'}</span>
+                      </div>
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Backend</span>
+                        <span className={styles.metaValue}>{site.backend}</span>
+                      </div>
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Routes</span>
+                        <div className={styles.routes}>
+                          {routes.map((r, j) => (
+                            <span key={`${routeLabel(r)}-${j}`} className={styles.routeChip}>
+                              {routeLabel(r)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Certificate</span>
+                        <span className={styles.metaValue}>{ssl}</span>
+                      </div>
+                      {site.dns_provider && (
+                        <div className={styles.siteCardMeta}>
+                          <span className={styles.metaLabel}>DNS provider</span>
+                          <span className={styles.metaValue}>{site.dns_provider}</span>
+                        </div>
+                      )}
+                      <div className={styles.siteCardActions}>
+                        <button
+                          type="button"
+                          className={styles.btnEdit}
+                          onClick={() => openEdit(i)}
+                          disabled={saving}
+                          title="Edit"
+                        >
+                          <FaIcon className="fas fa-edit" aria-hidden /> Edit
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.btnDuplicate}
+                          onClick={() => openDuplicate(i)}
+                          disabled={saving}
+                          title="Duplicate"
+                        >
+                          <FaIcon className="fas fa-copy" aria-hidden /> Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.btnDanger}
+                          onClick={() => setDeleteConfirmIndex(i)}
+                          disabled={saving}
+                          title="Delete"
+                        >
+                          <FaIcon className="fas fa-trash" aria-hidden /> Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th aria-sort={sortKey === 'domain' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" className={styles.sortBtn} onClick={() => toggleSort('domain')}>
+                        Domain {sortIcon('domain')}
+                      </button>
+                    </th>
+                    <th aria-sort={sortKey === 'upstream' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" className={styles.sortBtn} onClick={() => toggleSort('upstream')}>
+                        Upstream {sortIcon('upstream')}
+                      </button>
+                    </th>
+                    <th aria-sort={sortKey === 'routes' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" className={styles.sortBtn} onClick={() => toggleSort('routes')}>
+                        Routes {sortIcon('routes')}
+                      </button>
+                    </th>
+                    <th aria-sort={sortKey === 'ssl' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" className={styles.sortBtn} onClick={() => toggleSort('ssl')}>
+                        Certificate {sortIcon('ssl')}
+                      </button>
+                    </th>
+                    <th className={styles.actionsCol}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedSiteItems.map((item) => {
+                    const { site, index: i } = item;
+                    const up = upstreamForSite(site);
+                    const routes = site.routes ?? [];
+                    const ssl = sslLabelForSite(site);
+                    return (
+                      <tr key={item.key} className={styles.tableRow}>
+                        <td className={styles.host}>
+                          <div className={styles.primaryCell}>
+                            <div className={styles.hostInner}>
+                              <span className={styles.hostBadge}>
+                                <FaIcon className="fas fa-globe" aria-hidden />
+                              </span>
+                              <span className={styles.hostTextGroup}>
+                                <Link to={`/sites/${encodeURIComponent(site.host)}`} className={styles.hostText}>
+                                  {site.host}
+                                </Link>
+                                <span className={styles.cellSubtle}>Cert {ssl}</span>
+                              </span>
+                            </div>
+                            {domainUrl(site.host) && (
+                              <a
+                                href={domainUrl(site.host)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={styles.domainLinkIcon}
+                                title="Open in new tab"
+                                aria-label={`Open ${site.host} in new tab`}
+                              >
+                                <FaIcon className="fas fa-external-link-alt" aria-hidden />
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                        <td className={styles.upstream}>
+                          <div className={styles.cellStack}>
+                            <span className={styles.monoPrimary}>{up || '—'}</span>
+                            <span className={styles.cellSubtle}>{site.backend}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className={styles.cellStack}>
+                            <div className={styles.routeListModern}>
+                              {routes.slice(0, 3).map((route, routeIndex) => (
+                                <span key={`${routeLabel(route)}-${routeIndex}`} className={styles.routeChip}>
+                                  {routeLabel(route)}
+                                </span>
+                              ))}
+                              {routes.length > 3 && <span className={styles.routeMore}>+{routes.length - 3}</span>}
+                            </div>
+                          </div>
+                        </td>
+                        <td className={styles.sslCol}>
+                          <span className={styles.statusPill}>{ssl}</span>
+                        </td>
+                        <td>
+                          <div className={styles.rowActions}>
+                            <button type="button" className={styles.btnEdit} onClick={() => openEdit(i)} disabled={saving}>
+                              <FaIcon className="fas fa-edit" aria-hidden /> Edit
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnDuplicate}
+                              onClick={() => openDuplicate(i)}
+                              disabled={saving}
+                            >
+                              <FaIcon className="fas fa-copy" aria-hidden /> Duplicate
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnDanger}
+                              onClick={() => setDeleteConfirmIndex(i)}
+                              disabled={saving}
+                            >
+                              <FaIcon className="fas fa-trash" aria-hidden /> Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
 
-          {showAdvancedRoutes && (
-            <div className="form-group" style={{ marginTop: 10, marginBottom: 0 }}>
-              <label>Routes</label>
-              <div className={styles.routeList}>
-                {routes.map((r, i) => (
-                  <div key={i} className={styles.routeRow}>
+          {sites.length > 0 && (
+            <Pagination
+              totalItems={displaySiteItems.length}
+              pageSize={pageSize}
+              page={page}
+              onPageChange={setPage}
+              ariaLabel="Sites pagination"
+            />
+          )}
+        </>
+      )}
+
+      {showForm &&
+        createPortal(
+          <div
+            className={styles.modalBackdrop}
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowForm(false);
+            }}
+          >
+            <div className={`${styles.modal} ${styles.modalSite}`} role="dialog" aria-modal="true">
+            <div className={styles.modalHeader}>
+              <h2>
+                <FaIcon className={isEditing ? 'fas fa-pen-to-square' : 'fas fa-plus'} aria-hidden />{' '}
+                {isEditing ? 'Edit Site' : 'Add Site'}
+              </h2>
+              <button type="button" className={styles.modalClose} onClick={() => setShowForm(false)} aria-label="Close">
+                <FaIcon className="fas fa-times" aria-hidden />
+              </button>
+            </div>
+            <form onSubmit={handleSubmit} className={styles.modalForm}>
+              <div className={styles.formSection}>
+                <h3 className={styles.sectionTitle}>Basics</h3>
+                <div className={styles.formGrid}>
+                  <label className={styles.label}>
+                    Domain
                     <input
-                      value={r.path}
-                      onChange={e => updateRoute(i, 'path', e.target.value)}
-                      placeholder="/path"
+                      type="text"
+                      value={formHost}
+                      onChange={(e) => setFormHost(e.target.value)}
+                      placeholder="example.com"
+                      className={styles.input}
+                      required
                     />
-                    <select
-                      value={r.path_type}
-                      onChange={e => updateRoute(i, 'path_type', e.target.value as PathType)}
-                      style={{ width: 'auto' }}
-                    >
-                      <option value="prefix">prefix</option>
-                      <option value="exact">exact</option>
-                    </select>
+                  </label>
+                  <label className={styles.label}>
+                    Upstream
                     <input
+                      type="text"
+                      value={formUpstream}
+                      onChange={(e) => setFormUpstream(e.target.value)}
+                      placeholder="http://localhost:8080 or 127.0.0.1:3000"
+                      className={styles.input}
+                      required
+                    />
+                  </label>
+                </div>
+                <p className={styles.hint}>
+                  <FaIcon className="fas fa-info-circle" aria-hidden /> A backend entry is created or updated
+                  automatically from this upstream URL.
+                </p>
+              </div>
+
+              <div className={styles.formSection}>
+                <h3 className={styles.sectionTitle}>
+                  <FaIcon className={`fas fa-lock ${styles.sectionIcon}`} aria-hidden />
+                  TLS labels
+                </h3>
+                <p className={styles.hint}>
+                  eProxy uses certificate and DNS provider <strong>names</strong> from your config (for your own
+                  tooling). Automatic Let&apos;s Encrypt is not wired here.
+                </p>
+                <div className={styles.sslChoices}>
+                  <label className={formSslMode === 'none' ? styles.sslChoiceActive : styles.sslChoice}>
+                    <input
+                      type="radio"
+                      name="sslMode"
+                      checked={formSslMode === 'none'}
+                      onChange={() => setFormSslMode('none')}
+                      className={styles.radioInput}
+                    />
+                    <span className={styles.sslChoiceIcon}>
+                      <FaIcon className="fas fa-lock-open" aria-hidden />
+                    </span>
+                    <span>
+                      <span className={styles.sslChoiceTitle}>None</span>
+                      <span className={styles.sslChoiceText}>No certificate label on this site</span>
+                    </span>
+                  </label>
+                  <label className={formSslMode === 'from_list' ? styles.sslChoiceActive : styles.sslChoice}>
+                    <input
+                      type="radio"
+                      name="sslMode"
+                      checked={formSslMode === 'from_list'}
+                      onChange={() => setFormSslMode('from_list')}
+                      className={styles.radioInput}
+                    />
+                    <span className={styles.sslChoiceIcon}>
+                      <FaIcon className="fas fa-certificate" aria-hidden />
+                    </span>
+                    <span>
+                      <span className={styles.sslChoiceTitle}>Certificate label</span>
+                      <span className={styles.sslChoiceText}>Match a name from Certificates</span>
+                    </span>
+                  </label>
+                </div>
+                {formSslMode === 'from_list' && (
+                  <label className={styles.label}>
+                    Certificate name
+                    <input
+                      type="text"
+                      value={formCertName}
+                      onChange={(e) => setFormCertName(e.target.value)}
+                      list="sites-cert-datalist"
+                      placeholder="Pick or type a certificate label"
+                      className={styles.input}
+                    />
+                    <datalist id="sites-cert-datalist">
+                      {certNames.map((c) => (
+                        <option key={c} value={c} />
+                      ))}
+                    </datalist>
+                  </label>
+                )}
+                <label className={styles.label}>
+                  DNS provider label (optional)
+                  <input
+                    type="text"
+                    value={formDnsProviderName}
+                    onChange={(e) => setFormDnsProviderName(e.target.value)}
+                    list="sites-dns-datalist"
+                    placeholder="Pick or type a DNS provider label"
+                    className={styles.input}
+                  />
+                  <datalist id="sites-dns-datalist">
+                    {dnsNames.map((d) => (
+                      <option key={d} value={d} />
+                    ))}
+                  </datalist>
+                </label>
+              </div>
+
+              <div className={styles.formSection}>
+                <div className={styles.routesHeader}>
+                  <h3 className={styles.sectionTitle}>
+                    <FaIcon className={`fas fa-route ${styles.sectionIcon}`} aria-hidden />
+                    Routes
+                  </h3>
+                  <button type="button" className={styles.btnSecondary} onClick={addRoute}>
+                    <FaIcon className="fas fa-plus" aria-hidden /> Add route
+                  </button>
+                </div>
+                {formRoutes.map((r, i) => (
+                  <div key={i} className={styles.routeRow}>
+                    <div className={styles.selectWrapSm}>
+                      <FaIcon className={`fas fa-code-branch ${styles.selectLeadIconSm}`} aria-hidden />
+                      <select
+                        value={r.path_type ?? 'Prefix'}
+                        onChange={(e) => updateRoute(i, 'path_type', e.target.value)}
+                        className={`${styles.selectSm} ${styles.selectSmWithLead}`}
+                      >
+                        {PATH_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                      <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                    </div>
+                    <input
+                      type="text"
+                      value={r.path}
+                      onChange={(e) => updateRoute(i, 'path', e.target.value)}
+                      placeholder="/api"
+                      className={styles.inputFlex}
+                    />
+                    <input
+                      type="text"
                       value={r.rewrite ?? ''}
-                      onChange={e => updateRoute(i, 'rewrite', e.target.value)}
+                      onChange={(e) => updateRoute(i, 'rewrite', e.target.value)}
                       placeholder="rewrite (optional)"
+                      className={styles.inputFlex}
                     />
                     <button
                       type="button"
-                      className={styles.routeRemove}
-                      onClick={() => setRoutes(rs => rs.filter((_, idx) => idx !== i))}
-                      title="Remove"
+                      className={styles.btnIconDanger}
+                      onClick={() => removeRoute(i)}
+                      title="Remove route"
                     >
-                      <i className="fas fa-minus-circle" />
+                      <FaIcon className="fas fa-times" aria-hidden />
                     </button>
                   </div>
                 ))}
               </div>
-              <button
-                type="button"
-                className={styles.addRouteBtn}
-                onClick={() => setRoutes(rs => [...rs, { ...EMPTY_ROUTE }])}
-              >
-                <i className="fas fa-plus" /> Add route
-              </button>
-            </div>
-          )}
-        </div>
 
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Saving…</> : (isEditing ? 'Update Site' : 'Save Site')}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+              {formError && <p className={styles.formError}>{formError}</p>}
 
-export default function Sites() {
-  const [sites, setSites]       = useState<Site[]>([]);
-  const [certificates, setCertificates] = useState<string[]>([]);
-  const [dnsProviders, setDnsProviders] = useState<string[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState<string | null>(null);
-  const [showAdd, setShowAdd]   = useState(false);
-  const [editingSite, setEditingSite] = useState<Site | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
+              <div className={styles.modalActions}>
+                <button type="button" className={styles.btnSecondary} onClick={() => setShowForm(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className={styles.btnPrimary} disabled={saving}>
+                  {saving ? (
+                    <>
+                      <FaIcon className="fas fa-spinner fa-spin" aria-hidden /> Saving…
+                    </>
+                  ) : isEditing ? (
+                    'Save changes'
+                  ) : (
+                    'Add site'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+          document.body,
+        )}
 
-  const load = useCallback(async () => {
-    try {
-      const [c, s] = await Promise.all([api.config(), api.sites()]);
-      setCertificates(c.certificates ?? []);
-      setDnsProviders(c.dns_providers ?? []);
-      setSites(s);
-      setError(null);
-    } catch (e: unknown) { setError(String(e)); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const deleteSite = async (host: string) => {
-    if (!confirm(`Delete site "${host}"?`)) return;
-    setDeleting(host);
-    try { await api.deleteSite(host); await load(); }
-    catch (e: unknown) { setError(String(e)); }
-    finally { setDeleting(null); }
-  };
-
-  return (
-    <div>
-      <div className="page-header">
-        <div className="page-title">
-          <i className="fas fa-globe" />
-          <h1>Sites</h1>
-        </div>
-        <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-          <i className="fas fa-plus" /> Add Site
-        </button>
-      </div>
-
-      {error && <div className="error-banner"><i className="fas fa-exclamation-circle" />{error}</div>}
-
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}>
-          <div className="spinner" />
-        </div>
-      ) : (
-        <div className="card" style={{ padding: 0 }}>
-          {sites.length === 0 ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: 'var(--color-muted)' }}>
-              No sites yet. Click <strong>Add Site</strong> to get started.
-            </div>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Host</th>
-                  <th>Backend</th>
-                  <th>Certificate</th>
-                  <th>DNS Provider</th>
-                  <th>Routes</th>
-                  <th style={{ width: 60 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sites.map(s => (
-                  <tr key={s.host}>
-                    <td>
-                      <Link to={`/sites/${encodeURIComponent(s.host)}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                        <span className="mono" style={{ color: 'var(--color-text)', fontWeight: 600 }}>{s.host}</span>
-                      </Link>
-                    </td>
-                    <td><span className="badge badge-purple">{s.backend}</span></td>
-                    <td>
-                      {s.certificate ? (
-                        <div className={styles.fitWidthList}>
-                          <span className="badge badge-purple">{s.certificate}</span>
-                        </div>
-                      ) : <span style={{ color: 'var(--color-muted)' }}>—</span>}
-                    </td>
-                    <td>
-                      {s.dns_provider ? (
-                        <div className={styles.fitWidthList}>
-                          <span className="badge badge-purple">{s.dns_provider}</span>
-                        </div>
-                      ) : <span style={{ color: 'var(--color-muted)' }}>—</span>}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        {s.routes.map((r, i) => (
-                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <span className="mono" style={{ color: 'var(--color-text)' }}>{r.path}</span>
-                            <span className="badge badge-purple" style={{ fontSize: 10 }}>{r.path_type}</span>
-                            {r.rewrite && <span className="mono" style={{ color: 'var(--color-muted)' }}>→ {r.rewrite}</span>}
-                          </div>
-                        ))}
-                      </div>
-                    </td>
-                    <td>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => deleteSite(s.host)}
-                        disabled={deleting === s.host}
-                      >
-                        {deleting === s.host ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <i className="fas fa-trash" />}
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ marginLeft: 8 }}
-                        onClick={() => setEditingSite(s)}
-                      >
-                        <i className="fas fa-pen" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {showAdd && (
-        <SiteModal
-          onClose={() => setShowAdd(false)}
-          onSaved={load}
-          certificates={certificates}
-          dnsProviders={dnsProviders}
-        />
-      )}
-
-      {editingSite && (
-        <SiteModal
-          site={editingSite}
-          onClose={() => setEditingSite(null)}
-          onSaved={load}
-          certificates={certificates}
-          dnsProviders={dnsProviders}
-        />
-      )}
-    </div>
+      <ConfirmDialog
+        open={deleteConfirmIndex !== null}
+        title="Delete site"
+        message={
+          deleteConfirmIndex !== null && sites[deleteConfirmIndex]
+            ? `Remove ${sites[deleteConfirmIndex].host} from configuration?`
+            : ''
+        }
+        primaryLabel="Delete"
+        variant="danger"
+        onCancel={() => setDeleteConfirmIndex(null)}
+        onConfirm={() => {
+          if (deleteConfirmIndex !== null) void removeSite(deleteConfirmIndex);
+        }}
+      />
+    </section>
   );
 }

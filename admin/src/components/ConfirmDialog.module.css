@@ -1,0 +1,120 @@
+/* Confirm dialog overlay + panel */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  max-width: 24rem;
+  width: 100%;
+  padding: 1.5rem 1.75rem;
+  animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.title {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.message {
+  margin: 0 0 1.5rem;
+  font-size: 0.9375rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.cancelBtn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.cancelBtn:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-hover);
+  border-color: var(--color-border);
+}
+
+.primaryBtn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.primaryBtn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.primaryBtn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.dangerBtn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--error, #ef4444);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.dangerBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error, #ef4444) 85%, black);
+}
+
+.dangerBtn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

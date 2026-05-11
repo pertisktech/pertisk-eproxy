@@ -35,11 +35,14 @@ init(Req, State) ->
     end.
 
 handle_http(Req, State, Method, Host, Path, Qs) ->
+    T0 = erlang:monotonic_time(millisecond),
+    Vsn = cowboy_req:version(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>),
             Req2 = cowboy_req:reply(404, #{<<"content-type">> => <<"text/plain">>},
                                     <<"No route found for host: ", Host/binary>>, Req),
+            log_access(Host, Method, Path, 404, T0, Vsn),
             {ok, Req2, State};
         {ok, #{upstream_path := UpstreamPath, backend := BackendName}} ->
             ClientIp = client_ip(Req),
@@ -48,6 +51,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                     pertisk_eproxy_metrics:inc_request(Host, <<"502">>),
                     Req2 = cowboy_req:reply(502, #{<<"content-type">> => <<"text/plain">>},
                                             <<"Bad Gateway: no healthy upstream">>, Req),
+                    log_access(Host, Method, Path, 502, T0, Vsn),
                     {ok, Req2, State};
                 {ok, UpstreamAddr} ->
                     Result = proxy_request(Req, Method, Host, UpstreamPath, Qs,
@@ -57,6 +61,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             StatusBin = integer_to_binary(StatusCode),
                             pertisk_eproxy_metrics:inc_request(Host, StatusBin),
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
+                            log_access(Host, Method, Path, StatusCode, T0, Vsn),
                             {ok, Req2, State};
                         {error, Reason} ->
                             pertisk_eproxy_metrics:inc_request(Host, <<"502">>),
@@ -65,10 +70,15 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                           [Reason, Host, Path, UpstreamAddr]),
                             Req2 = cowboy_req:reply(502, #{<<"content-type">> => <<"text/plain">>},
                                                     <<"Bad Gateway">>, Req),
+                            log_access(Host, Method, Path, 502, T0, Vsn),
                             {ok, Req2, State}
                     end
             end
     end.
+
+log_access(Host, Method, Path, Status, T0, Vsn) ->
+    Dt = max(0, erlang:monotonic_time(millisecond) - T0),
+    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, Vsn).
 
 %% -------------------------------------------------------------------------
 %% Core proxy logic using gun

@@ -1,0 +1,263 @@
+/* Logs page: modern dropdowns, table with protocol/encoding */
+
+.section {
+  margin-top: 0;
+  padding: 0.75rem 0 1.5rem;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.title i {
+  color: var(--color-icon-primary);
+}
+
+/* Modern filter row */
+.filters {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* Dropdown wrapper: label + styled select */
+.dropdownWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.dropdownInner {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdownLabel {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.dropdown {
+  appearance: none;
+  font-size: 0.875rem;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  min-width: 10rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-card);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.dropdown:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+}
+
+.dropdown:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+
+.dropdownChevron {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+  font-size: 0.5rem;
+}
+
+.hostInput {
+  font-size: 0.875rem;
+  padding: 0.5rem 0.75rem;
+  min-width: 12rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--color-card);
+  color: var(--text);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.hostInput::placeholder {
+  color: var(--text-muted);
+}
+
+.hostInput:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+}
+
+.hostInput:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-primary);
+}
+
+.checkbox span {
+  white-space: nowrap;
+}
+
+/* Table container */
+.wrap {
+  background: var(--color-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+  box-shadow: var(--shadow-sm);
+}
+
+.table {
+  width: 100%;
+  min-width: 42rem;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  vertical-align: top;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+.method {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.colProtoEnc {
+  width: 6rem;
+  white-space: nowrap;
+}
+
+.protoEnc {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* HTTP protocol colors */
+.proto11 {
+  color: var(--color-icon-info);
+}
+
+.proto2 {
+  color: var(--color-icon-primary);
+}
+
+.proto3 {
+  color: var(--color-icon-success);
+}
+
+.ts {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.levelInfo {
+  color: var(--accent);
+}
+
+.levelWarn {
+  color: var(--warn);
+}
+
+.levelError {
+  color: var(--error);
+}
+
+.loading {
+  color: var(--text-muted);
+  padding: 1.5rem !important;
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .filters {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .dropdownWrap {
+    width: 100%;
+  }
+
+  .dropdown {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .hostInput {
+    min-width: 0;
+    width: 100%;
+  }
+}

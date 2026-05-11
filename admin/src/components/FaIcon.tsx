@@ -1,0 +1,188 @@
+import type { CSSProperties, SVGProps } from 'react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Asterisk,
+  BookOpen,
+  Box,
+  ChartColumnIncreasing,
+  ChartPie,
+  Check,
+  CheckCircle,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
+  Clock3,
+  Code,
+  Copy,
+  Cpu,
+  Database,
+  Download,
+  Edit,
+  FileCode2,
+  FileDown,
+  FileText,
+  Folder,
+  GitBranch,
+  Globe,
+  HardDrive,
+  History,
+  Home,
+  Hourglass,
+  Inbox,
+  Info,
+  KeyRound,
+  Layers,
+  LayoutGrid,
+  Lightbulb,
+  List,
+  LoaderCircle,
+  Lock,
+  LogIn,
+  LogOut,
+  LucideIcon,
+  MemoryStick,
+  Monitor,
+  Moon,
+  Network,
+  Pencil,
+  Plus,
+  Route,
+  Search,
+  Server,
+  Settings,
+  Shield,
+  Sparkles,
+  Sun,
+  Tag,
+  Trash2,
+  TriangleAlert,
+  Upload,
+  User,
+  X,
+  CircleAlert,
+  ExternalLink,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+
+const STYLE_TOKENS = new Set([
+  'fas',
+  'far',
+  'fal',
+  'fab',
+  'fat',
+  'fa-solid',
+  'fa-regular',
+  'fa-light',
+  'fa-thin',
+  'fa-duotone',
+]);
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  'fa-asterisk': Asterisk,
+  'fa-book': BookOpen,
+  'fa-box': Box,
+  'fa-certificate': Shield,
+  'fa-chart-line': ChartColumnIncreasing,
+  'fa-chart-pie': ChartPie,
+  'fa-check': Check,
+  'fa-check-circle': CheckCircle,
+  'fa-chevron-down': ChevronDown,
+  'fa-chevron-left': ChevronLeft,
+  'fa-chevron-right': ChevronRight,
+  'fa-circle': Circle,
+  'fa-clock': Clock3,
+  'fa-code': Code,
+  'fa-code-branch': GitBranch,
+  'fa-cog': Settings,
+  'fa-computer': Monitor,
+  'fa-copy': Copy,
+  'fa-cpu': Cpu,
+  'fa-cube': Box,
+  'fa-database': Database,
+  'fa-download': Download,
+  'fa-earth-americas': Globe,
+  'fa-edit': Edit,
+  'fa-exclamation-circle': CircleAlert,
+  'fa-exclamation-triangle': TriangleAlert,
+  'fa-external-link-alt': ExternalLink,
+  'fa-eye': Eye,
+  'fa-eye-slash': EyeOff,
+  'fa-file-alt': FileText,
+  'fa-file-code': FileCode2,
+  'fa-file-import': FileDown,
+  'fa-folder': Folder,
+  'fa-gears': Settings,
+  'fa-globe': Globe,
+  'fa-hdd': HardDrive,
+  'fa-history': History,
+  'fa-home': Home,
+  'fa-hourglass-end': Hourglass,
+  'fa-inbox': Inbox,
+  'fa-info-circle': Info,
+  'fa-key': KeyRound,
+  'fa-layer-group': Layers,
+  'fa-lightbulb': Lightbulb,
+  'fa-list': List,
+  'fa-lock': Lock,
+  'fa-magic': Sparkles,
+  'fa-memory': MemoryStick,
+  'fa-microchip': Cpu,
+  'fa-moon': Moon,
+  'fa-network-wired': Network,
+  'fa-pen-to-square': Pencil,
+  'fa-plus': Plus,
+  'fa-ram': MemoryStick,
+  'fa-route': Route,
+  'fa-search': Search,
+  'fa-sitemap': Network,
+  'fa-server': Server,
+  'fa-shield-alt': Shield,
+  'fa-shield-halved': Shield,
+  'fa-sign-in-alt': LogIn,
+  'fa-sign-out-alt': LogOut,
+  'fa-sort': ArrowUpDown,
+  'fa-sort-down': ArrowDown,
+  'fa-sort-up': ArrowUp,
+  'fa-spinner': LoaderCircle,
+  'fa-sun': Sun,
+  'fa-sync-alt': LoaderCircle,
+  'fa-tag': Tag,
+  'fa-th': LayoutGrid,
+  'fa-th-large': LayoutGrid,
+  'fa-times': X,
+  'fa-trash': Trash2,
+  'fa-trash-alt': Trash2,
+  'fa-upload': Upload,
+  'fa-user': User,
+};
+
+type FaIconProps = SVGProps<SVGSVGElement> & {
+  size?: number;
+};
+
+function splitClasses(className?: string) {
+  return (className ?? '').split(/\s+/).filter(Boolean);
+}
+
+export default function FaIcon({ className, size = 16, style, ...rest }: FaIconProps) {
+  const tokens = splitClasses(className);
+  const iconToken = tokens.find((token) => token.startsWith('fa-') && token !== 'fa-spin' && token !== 'fa-chevron-');
+  const Icon = (iconToken && ICON_MAP[iconToken]) || Circle;
+
+  const spin = tokens.includes('fa-spin') || iconToken === 'fa-spinner' || iconToken === 'fa-sync-alt';
+  const passthroughClasses = tokens.filter((token) => !STYLE_TOKENS.has(token) && !token.startsWith('fa-'));
+  const mergedClassName = spin ? [...passthroughClasses, 'fa-spin'].join(' ') : passthroughClasses.join(' ');
+
+  return (
+    <Icon
+      size={size}
+      className={mergedClassName || undefined}
+      style={style as CSSProperties}
+      {...rest}
+    />
+  );
+}

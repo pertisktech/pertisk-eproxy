@@ -1,0 +1,167 @@
+import FaIcon from "@/components/FaIcon";
+import { useEffect, useState } from 'react';
+import { api, type LogEntry } from '@/api/client';
+import { formatDateTime } from '@/utils/dateFormat';
+import styles from './Logs.module.css';
+
+function levelClass(level?: string): string {
+  if (!level) return '';
+  const l = level.toLowerCase();
+  if (l === 'error') return styles.levelError;
+  if (l === 'warn') return styles.levelWarn;
+  return styles.levelInfo;
+}
+
+/** Display protocol as HTTP/1.1, HTTP/2, HTTP/3; append encoding if present. */
+function protoEncDisplay(e: LogEntry): string {
+  const p = e.protocol?.trim() || '';
+  const enc = e.encoding?.trim().toLowerCase() || '';
+  const protocolLabel =
+    p === '1.1' ? 'HTTP/1.1' : p === '2' ? 'HTTP/2' : p === '3' ? 'HTTP/3' : p || '—';
+  if (enc && protocolLabel !== '—') return `${protocolLabel} · ${enc}`;
+  return protocolLabel;
+}
+
+/** CSS class for protocol color (HTTP/1.1, HTTP/2, HTTP/3). */
+function protoColorClass(e: LogEntry): string {
+  const p = e.protocol?.trim() || '';
+  if (p === '1.1') return styles.proto11;
+  if (p === '2') return styles.proto2;
+  if (p === '3') return styles.proto3;
+  return '';
+}
+
+type LogFilterType = 'all' | 'system' | 'proxy';
+
+export default function Logs() {
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [logType, setLogType] = useState<LogFilterType>('all');
+  const [hostFilter, setHostFilter] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await api.logs({
+          type: logType === 'all' ? undefined : logType,
+          host: hostFilter.trim() || undefined,
+        });
+        if (!cancelled) setEntries(Array.isArray(data) ? data : []);
+      } catch {
+        if (!cancelled) setEntries([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    if (!autoRefresh) return;
+    const t = setInterval(load, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [autoRefresh, logType, hostFilter]);
+
+  return (
+    <section className={styles.section}>
+      <div className={styles.header}>
+        <div className={styles.filters}>
+          <div className={styles.dropdownWrap}>
+            <label className={styles.dropdownLabel}>Type</label>
+            <div className={styles.dropdownInner}>
+              <select
+                className={styles.dropdown}
+                value={logType}
+                onChange={(e) => setLogType(e.target.value as LogFilterType)}
+                title="Filter by log type"
+                aria-label="Log type filter"
+              >
+                <option value="all">All logs</option>
+                <option value="system">System logs</option>
+                <option value="proxy">Domain logs</option>
+              </select>
+              <span className={styles.dropdownChevron} aria-hidden>
+                <FaIcon className="fas fa-chevron-down" />
+              </span>
+            </div>
+          </div>
+          {(logType === 'proxy' || logType === 'all') && (
+            <div className={styles.dropdownWrap}>
+              <label className={styles.dropdownLabel}>Host</label>
+              <input
+                type="text"
+                className={styles.hostInput}
+                placeholder="Filter by host…"
+                value={hostFilter}
+                onChange={(e) => setHostFilter(e.target.value)}
+                title="Filter by domain/host name"
+                aria-label="Host filter"
+              />
+            </div>
+          )}
+          <label className={styles.checkbox}>
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              aria-label="Auto-refresh every 3 seconds"
+            />
+            <span>Auto-refresh 3s</span>
+          </label>
+        </div>
+      </div>
+      <div className={styles.wrap}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Level</th>
+              <th>Method</th>
+              <th className={styles.colProtoEnc}>Protocol</th>
+              <th>Host</th>
+              <th>Path</th>
+              <th>Upstream</th>
+              <th>Status</th>
+              <th>Duration</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && entries.length === 0 ? (
+              <tr>
+                <td colSpan={10} className={styles.loading}>
+                  Loading…
+                </td>
+              </tr>
+            ) : entries.length === 0 ? (
+              <tr>
+                <td colSpan={10} className={styles.loading}>
+                  No log entries yet.
+                </td>
+              </tr>
+            ) : (
+              entries.map((e, i) => (
+                <tr key={i}>
+                  <td className={styles.ts}>
+                    {e.timestamp ? formatDateTime(e.timestamp) : '—'}
+                  </td>
+                  <td className={levelClass(e.level)}>{e.level ?? '—'}</td>
+                  <td className={styles.method}>{e.method ?? '—'}</td>
+                  <td className={`${styles.protoEnc} ${protoColorClass(e)}`}>{protoEncDisplay(e)}</td>
+                  <td>{e.host ?? '—'}</td>
+                  <td>{e.path ?? '—'}</td>
+                  <td>{e.upstream ?? '—'}</td>
+                  <td>{e.status ?? '—'}</td>
+                  <td>{e.duration_ms != null ? `${e.duration_ms} ms` : '—'}</td>
+                  <td>{e.message || '—'}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
