@@ -43,6 +43,7 @@ init(Req, Resource) ->
 auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
+auth_public(<<"HEAD">>, auth_config) -> true;
 auth_public(<<"POST">>, auth_login) -> true;
 auth_public(<<"POST">>, auth_logout) -> true;
 auth_public(<<"GET">>, metrics) -> true;
@@ -71,6 +72,8 @@ handle(<<"GET">>, logs, Req) ->
 
 handle(<<"GET">>, auth_config, Req) ->
     json_reply(200, pertisk_eproxy_auth:auth_config_map(), Req);
+handle(<<"HEAD">>, auth_config, Req) ->
+    json_reply(200, #{}, Req);
 
 handle(<<"POST">>, auth_login, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
