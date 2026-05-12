@@ -207,8 +207,10 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
-    %% Require an inet6 listener so UDP/443 is definitely reachable via IPv6.
-    %% Do not silently fall back to inet-only; that masks production IPv6 outages.
+    %% QUIC UDP: prefer an IPv6 socket on :: with dual-stack where supported
+    %% (extra_socket_opts inet6 + ipv6_v6only false). On Linux with the OTP
+    %% socket backend, quic_socket binds inet6 and clears IPV6_V6ONLY so IPv4
+    %% clients can connect; on other OSes gen_udp receives the same options.
     V6Opts = BaseOpts#{
         quic_opts => maps:merge(
             maps:get(quic_opts, BaseOpts, #{}),
@@ -217,16 +219,16 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
                 backend => socket,
                 reuseport => false,
                 pool_size => 0,
-                extra_socket_opts => [inet6]
+                extra_socket_opts => [inet6, {ipv6_v6only, false}]
             }
         )
     },
-    error_logger:info_msg("H3 v6 quic_opts: ~p~n", [maps:get(quic_opts, V6Opts, #{})]),
+    error_logger:info_msg("H3 QUIC quic_opts: ~p~n", [maps:get(quic_opts, V6Opts, #{})]),
     case quic_h3:start_server(ServerName, Port, V6Opts) of
         {ok, _Pid} = Ok ->
             Ok;
         {error, V6Reason} ->
-            {error, {failed_ipv6_listener, V6Reason}}
+            {error, {failed_quic_udp_listener, V6Reason}}
     end.
 
 load_cert_and_key(Config) ->

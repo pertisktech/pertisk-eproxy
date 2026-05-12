@@ -617,18 +617,40 @@ detect_capabilities() ->
 %%====================================================================
 
 open_socket_backend(Port, Opts, BatchConfig) ->
-    case socket:open(inet, dgram, udp) of
+    Family = listener_inet_family(Opts),
+    case socket:open(Family, dgram, udp) of
         {ok, Socket} ->
             configure_and_bind_socket(Socket, Port, Opts, BatchConfig);
         {error, _} = Error ->
             Error
     end.
 
+%% extra_socket_opts => [inet6] selects an IPv6 socket bound to ::. When the
+%% platform allows it, IPV6_V6ONLY=0 is set so IPv4 peers can use IPv4-mapped
+%% addresses (dual-stack UDP), matching gen_udp + inet6 behaviour.
+listener_inet_family(Opts) ->
+    case lists:member(inet6, maps:get(extra_socket_opts, Opts, [])) of
+        true -> inet6;
+        false -> inet
+    end.
+
 configure_and_bind_socket(Socket, Port, Opts, BatchConfig) ->
     ok = socket:setopt(Socket, {socket, reuseaddr}, true),
+    ok = maybe_ipv6_dual_stack_bind_prep(Socket, Opts),
     set_socket_buffer_sizes(Socket, Opts),
     maybe_set_reuseport(Socket, Opts),
-    bind_and_finalize_socket(Socket, Port, BatchConfig).
+    bind_and_finalize_socket(Socket, Port, Opts, BatchConfig).
+
+maybe_ipv6_dual_stack_bind_prep(Socket, Opts) ->
+    case listener_inet_family(Opts) of
+        inet6 ->
+            case socket:setopt(Socket, {ipv6, v6only}, false) of
+                ok -> ok;
+                {error, _} -> ok
+            end;
+        inet ->
+            ok
+    end.
 
 set_socket_buffer_sizes(Socket, Opts) ->
     RecBuf = maps:get(recbuf, Opts, ?DEFAULT_UDP_RECBUF),
@@ -643,8 +665,12 @@ maybe_set_reuseport(Socket, Opts) ->
         false -> ok
     end.
 
-bind_and_finalize_socket(Socket, Port, BatchConfig) ->
-    Addr = #{family => inet, addr => any, port => Port},
+bind_and_finalize_socket(Socket, Port, Opts, BatchConfig) ->
+    Addr =
+        case listener_inet_family(Opts) of
+            inet -> #{family => inet, addr => any, port => Port};
+            inet6 -> #{family => inet6, addr => any, port => Port}
+        end,
     case socket:bind(Socket, Addr) of
         ok ->
             build_socket_state(Socket, BatchConfig);
