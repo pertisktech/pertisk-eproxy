@@ -14,6 +14,8 @@
 -export([websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
 -define(CONNECT_TIMEOUT, 10000).
+%% Gun keeps protocol=gun_http until the WS handshake finishes; ws_send goes to gun_ws only after.
+-define(MAX_WS_OUT_BUFFER, 64).
 
 %% Called from pertisk_eproxy_handler when a WebSocket upgrade is detected.
 init(Req, _State) ->
@@ -37,12 +39,14 @@ init(Req, _State) ->
                         _    -> <<UpPath/binary, "?", Qs/binary>>
                     end,
                     WsState = #{
-                        host          => Host,
-                        backend       => BackendName,
-                        upstream_addr => UpstreamAddr,
-                        upstream_path => FullPath,
-                        conn_pid      => undefined,
-                        stream_ref    => undefined
+                        host                => Host,
+                        backend             => BackendName,
+                        upstream_addr       => UpstreamAddr,
+                        upstream_path       => FullPath,
+                        conn_pid            => undefined,
+                        stream_ref          => undefined,
+                        upstream_ws_ready   => false,
+                        ws_out_buffer       => []
                     },
                     %% Upgrade the cowboy connection to WebSocket.
                     {cowboy_websocket, Req, WsState,
@@ -59,7 +63,12 @@ websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, host 
                 {ok, _} ->
                     Headers = [{<<"host">>, Host}],
                     StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers),
-                    {ok, State#{conn_pid => ConnPid, stream_ref => StreamRef}};
+                    {ok, State#{
+                        conn_pid => ConnPid,
+                        stream_ref => StreamRef,
+                        upstream_ws_ready => false,
+                        ws_out_buffer => []
+                    }};
                 {error, Reason} ->
                     lager:warning("WS upstream connect failed: ~p", [Reason]),
                     gun:close(ConnPid),
@@ -70,11 +79,20 @@ websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, host 
             {stop, State}
     end.
 
-%% Frame from client → forward to upstream.
-websocket_handle(Frame, State = #{conn_pid := ConnPid, stream_ref := SRef})
+%% Frame from client → forward to upstream (only after Gun has switched to gun_ws).
+websocket_handle(Frame, State = #{conn_pid := ConnPid, stream_ref := SRef, upstream_ws_ready := true})
     when ConnPid =/= undefined ->
     gun:ws_send(ConnPid, SRef, Frame),
     {ok, State};
+websocket_handle(Frame, State = #{conn_pid := ConnPid, ws_out_buffer := Buf})
+    when ConnPid =/= undefined ->
+    case length(Buf) >= ?MAX_WS_OUT_BUFFER of
+        true ->
+            lager:warning("WS outbound buffer full during upstream upgrade (~p frames)", [?MAX_WS_OUT_BUFFER]),
+            {ok, State};
+        false ->
+            {ok, State#{ws_out_buffer => Buf ++ [Frame]}}
+    end;
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
@@ -85,9 +103,12 @@ websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
 websocket_info({gun_ws, _ConnPid, _SRef, close}, State) ->
     {[close], State};
 
-websocket_info({gun_upgrade, _ConnPid, _SRef, [<<"websocket">>], _Headers}, State) ->
-    %% Upgrade to upstream WS confirmed.
-    {ok, State};
+websocket_info(
+    {gun_upgrade, ConnPid, SRef, [<<"websocket">>], _Headers},
+    State = #{conn_pid := ConnPid, stream_ref := SRef, ws_out_buffer := Buf}
+) ->
+    lists:foreach(fun(F) -> gun:ws_send(ConnPid, SRef, F) end, Buf),
+    {ok, State#{upstream_ws_ready => true, ws_out_buffer => []}};
 
 websocket_info({gun_error, _ConnPid, _SRef, Reason}, State) ->
     lager:warning("WS upstream error: ~p", [Reason]),

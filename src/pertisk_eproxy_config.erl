@@ -20,6 +20,7 @@
 -export([get_config/0, get_sites/0, get_backends/0,
          get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
+         management_upstream_bin/0,
          reload/0, put_config/1, json_to_config_pub/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -41,6 +42,14 @@ get_config() ->
         [{config, C}] -> C;
         []            -> #{}
     end.
+
+%% @doc `Host:port` for the management listener (for access logs when forwarding to it).
+-spec management_upstream_bin() -> binary().
+management_upstream_bin() ->
+    C = get_config(),
+    Port = maps:get(management_port, C, 9080),
+    Addr = maps:get(management_addr, C, {127, 0, 0, 1}),
+    iolist_to_binary([inet:ntoa(Addr), $:, integer_to_list(Port)]).
 
 %% Return list of site maps.
 -spec get_sites() -> [map()].

@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([log_proxy/6, list/2, count/0]).
+-export([log_proxy/6, log_proxy/7, list/2, count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -21,7 +21,11 @@ start_link() ->
 
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto) ->
-    gen_server:cast(?SERVER, {push, Host, Method, Path, Status, DurationMs, ClientProto}).
+    log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, <<>>).
+
+-spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary()) -> ok.
+log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream) ->
+    gen_server:cast(?SERVER, {push, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}).
 
 -spec list(binary() | undefined, binary() | undefined) -> [map()].
 list(Type, HostFilter) ->
@@ -65,7 +69,7 @@ handle_call(count, _From, #st{entries = Es} = St) ->
 handle_call(_Req, _From, St) ->
     {reply, {error, unknown}, St}.
 
-handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto}, #st{entries = Es}) ->
+handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}, #st{entries = Es}) ->
     Ts = iolist_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])),
     Level = case Status of
         S when S >= 500 -> <<"error">>;
@@ -75,7 +79,7 @@ handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto}, #st{ent
     ProtoShort = protocol_short(ClientProto),
     Msg = iolist_to_binary(io_lib:format("~s ~s ~w ~wms", [Method, Path, Status, DurationMs])),
     lager_http_log(Level, ProtoShort, Host, Method, Path, Status, DurationMs),
-    Entry = #{
+    Base = #{
         <<"timestamp">> => Ts,
         <<"level">> => Level,
         <<"type">> => <<"proxy">>,
@@ -87,6 +91,11 @@ handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto}, #st{ent
         <<"message">> => Msg,
         <<"protocol">> => ProtoShort
     },
+    Entry =
+        case Upstream of
+            U when is_binary(U), byte_size(U) > 0 -> Base#{<<"upstream">> => U};
+            _ -> Base
+        end,
     Es2 = trim([Entry | Es], ?MAX),
     {noreply, #st{entries = Es2}};
 

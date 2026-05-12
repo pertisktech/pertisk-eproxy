@@ -213,15 +213,23 @@ export default function Layout() {
   useEffect(() => {
     let cancelled = false;
     api
-      .management()
-      .then((info) => {
-        if (!cancelled) {
-          if (info.mode === 'proxy' || info.mode === 'ingress') {
-            setMode(info.mode);
-          }
-          if (info.version) {
-            setAppVersion(info.version.startsWith('v') ? info.version : `v${info.version}`);
-          }
+      .authConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        const dm = cfg.deployment_mode;
+        if (dm === 'proxy' || dm === 'proxy_admin') {
+          setMode(dm);
+        }
+      })
+      .catch(() => {});
+
+    api
+      .version()
+      .then((v) => {
+        if (cancelled) return;
+        const ver = v.version;
+        if (ver) {
+          setAppVersion(ver.startsWith('v') ? ver : `v${ver}`);
         }
       })
       .catch(() => {});
@@ -403,7 +411,14 @@ export default function Layout() {
   }
 
   const initial = currentUser ? currentUser.charAt(0).toUpperCase() : 'U';
-  const modeLabel = mode === 'ingress' ? 'Ingress mode' : 'Erlang proxy';
+  const modeLabel =
+    mode === 'ingress'
+      ? 'Ingress mode'
+      : mode === 'proxy'
+        ? 'Reverse proxy'
+        : mode === 'proxy_admin'
+          ? 'Proxy + Admin UI'
+          : 'Erlang proxy';
   const breadcrumbs = useBreadcrumbs(pathname);
   const effectiveAuthMethod = authMethod ?? detectAuthMethodFromToken(getToken());
   const canChangePassword = mode !== 'ingress' && effectiveAuthMethod !== 'sso';

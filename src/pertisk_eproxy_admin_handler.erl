@@ -807,9 +807,10 @@ management_info() ->
     MgmtPort = maps:get(management_port, C, 9080),
     MgmtAddr = maps:get(management_addr, C, {127, 0, 0, 1}),
     Mode0 = maps:get(mode, C, proxy_admin),
+    %% Expose real mode: `proxy` = reverse-proxy only (no SPA on :9080), `proxy_admin` = + embedded admin UI.
     ModeBin = case Mode0 of
-        proxy_admin -> <<"proxy">>;
         proxy -> <<"proxy">>;
+        proxy_admin -> <<"proxy_admin">>;
         M -> atom_to_binary(M, utf8)
     end,
     HttpsAddr = case maps:find(https_port, C) of

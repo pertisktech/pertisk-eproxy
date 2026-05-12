@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 
-/** "proxy" = full management with DB; "ingress" = viewer-only, no DNS providers. */
-export type ApiMode = 'proxy' | 'ingress';
+/** `proxy` = reverse-proxy only; `proxy_admin` = same + embedded admin SPA on :9080; `ingress` = viewer-only. */
+export type ApiMode = 'proxy' | 'proxy_admin' | 'ingress';
 
 const ModeContext = createContext<ApiMode | undefined>(undefined);
 
@@ -14,9 +14,10 @@ export function useIsIngressMode(): boolean {
   return useMode() === 'ingress';
 }
 
-/** True when mode is known and is proxy (so DNS providers API is available). */
+/** True when mode is known and is proxy or proxy_admin (DNS providers API available). */
 export function useIsProxyMode(): boolean {
-  return useMode() === 'proxy';
+  const m = useMode();
+  return m === 'proxy' || m === 'proxy_admin';
 }
 
 export { ModeContext };

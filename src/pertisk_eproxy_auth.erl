@@ -20,21 +20,32 @@ auth_mode() ->
     application:get_env(pertisk_eproxy, admin_auth, disabled).
 
 auth_config_map() ->
+    Dm = deployment_mode_bin(),
     case auth_mode() of
         local ->
             #{
                 <<"supports_local">> => true,
                 <<"supports_sso">> => false,
                 <<"guest_mode">> => false,
-                <<"mode">> => <<"local">>
+                <<"mode">> => <<"local">>,
+                <<"deployment_mode">> => Dm
             };
         _ ->
             #{
                 <<"supports_local">> => false,
                 <<"supports_sso">> => false,
                 <<"guest_mode">> => true,
-                <<"mode">> => <<"local">>
+                <<"mode">> => <<"local">>,
+                <<"deployment_mode">> => Dm
             }
+    end.
+
+deployment_mode_bin() ->
+    C = pertisk_eproxy_config:get_config(),
+    case maps:get(mode, C, proxy_admin) of
+        proxy -> <<"proxy">>;
+        proxy_admin -> <<"proxy_admin">>;
+        M -> atom_to_binary(M, utf8)
     end.
 
 login(User, Pass) ->
