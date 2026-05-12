@@ -11,13 +11,16 @@ function normalizeRow(r: Partial<SslJobRow> & { host?: string }): SslJobRow {
   };
 }
 
-type SslJobContextValue = {
+export type SslJobContextValue = {
   jobsByHost: Record<string, SslJobRow>;
   mergeFromSnapshot: (rows: unknown) => void;
   applySslJobPush: (ev: SslJobPush) => void;
 };
 
-const SslJobContext = createContext<SslJobContextValue | null>(null);
+export type SslJobActionsValue = Pick<SslJobContextValue, 'mergeFromSnapshot' | 'applySslJobPush'>;
+
+const SslJobActionsContext = createContext<SslJobActionsValue | null>(null);
+const SslJobJobsContext = createContext<Record<string, SslJobRow>>({});
 
 export function SslJobProvider({ children }: { children: ReactNode }) {
   const [jobsByHost, setJobsByHost] = useState<Record<string, SslJobRow>>({});
@@ -58,20 +61,34 @@ export function SslJobProvider({ children }: { children: ReactNode }) {
     setJobsByHost((prev) => ({ ...prev, [host]: row }));
   }, []);
 
-  const value = useMemo(
-    () => ({ jobsByHost, mergeFromSnapshot, applySslJobPush }),
-    [jobsByHost, mergeFromSnapshot, applySslJobPush]
+  const actions = useMemo(
+    () => ({ mergeFromSnapshot, applySslJobPush }),
+    [mergeFromSnapshot, applySslJobPush]
   );
 
-  return <SslJobContext.Provider value={value}>{children}</SslJobContext.Provider>;
+  return (
+    <SslJobActionsContext.Provider value={actions}>
+      <SslJobJobsContext.Provider value={jobsByHost}>{children}</SslJobJobsContext.Provider>
+    </SslJobActionsContext.Provider>
+  );
+}
+
+/** Stable actions only — Layout shell can subscribe without re-rendering on every SSL job snapshot. */
+export function useSslJobActions(): SslJobActionsValue {
+  const ctx = useContext(SslJobActionsContext);
+  if (!ctx) {
+    throw new Error('useSslJobActions must be used within SslJobProvider');
+  }
+  return ctx;
 }
 
 export function useSslJobs(): SslJobContextValue {
-  const ctx = useContext(SslJobContext);
-  if (!ctx) {
-    throw new Error('useSslJobs must be used within SslJobProvider');
-  }
-  return ctx;
+  const jobsByHost = useContext(SslJobJobsContext);
+  const { mergeFromSnapshot, applySslJobPush } = useSslJobActions();
+  return useMemo(
+    () => ({ jobsByHost, mergeFromSnapshot, applySslJobPush }),
+    [jobsByHost, mergeFromSnapshot, applySslJobPush]
+  );
 }
 
 /** Human-readable ACME phase labels for the admin UI. */

@@ -4,6 +4,12 @@ import { useToast } from '@/context/ToastContext';
 import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import styles from './Certificates.module.css';
 
+type CertificatesCache = {
+  rows: CertificateRow[];
+};
+
+let certificatesCache: CertificatesCache | null = null;
+
 function em(value: string | undefined | null): string {
   const s = (value ?? '').trim();
   return s.length ? s : '—';
@@ -26,8 +32,8 @@ export default function Certificates() {
     () => Object.values(jobsByHost).sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0)),
     [jobsByHost]
   );
-  const [rows, setRows] = useState<CertificateRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<CertificateRow[]>(() => certificatesCache?.rows ?? []);
+  const [loading, setLoading] = useState(() => certificatesCache == null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [certPem, setCertPem] = useState('');
@@ -42,23 +48,34 @@ export default function Certificates() {
   const [labelError, setLabelError] = useState<string | null>(null);
   const [labelSaving, setLabelSaving] = useState(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
+  const load = useCallback((opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setLoading(true);
+    }
     setLoadError(null);
     api.certificates
       .list()
       .then((list) => {
-        setRows(Array.isArray(list) ? list : []);
+        const nextRows = Array.isArray(list) ? list : [];
+        setRows(nextRows);
+        certificatesCache = { rows: nextRows };
       })
       .catch((e: unknown) => {
         setLoadError(e instanceof Error ? e.message : 'Failed to load certificates');
-        setRows([]);
+        if (certificatesCache == null) {
+          setRows([]);
+        }
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!silent) {
+          setLoading(false);
+        }
+      });
   }, []);
 
   useEffect(() => {
-    load();
+    load({ silent: certificatesCache != null });
   }, [load]);
 
   const closeImportModal = useCallback(() => {
@@ -209,7 +226,7 @@ export default function Certificates() {
             <button
               type="button"
               className={styles.btnSecondary}
-              onClick={load}
+              onClick={() => load()}
               disabled={loading}
             >
               <i className="fas fa-sync-alt" aria-hidden /> Refresh

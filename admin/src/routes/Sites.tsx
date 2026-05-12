@@ -1,5 +1,5 @@
 import FaIcon from '@/components/FaIcon';
-import { useEffect, useState, FormEvent, useMemo } from 'react';
+import { useEffect, useState, FormEvent, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   api,
@@ -23,6 +23,13 @@ const VIEW_MODE_COOKIE = 'pertisk_sites_view';
 const VIEW_MODE_MAX_AGE_SECS = 60 * 60 * 24 * 365;
 const EMPTY_SITES: Site[] = [];
 const EMPTY_BACKENDS: Backend[] = [];
+
+type SitesCache = {
+  config: ProxyConfig | null;
+  issuedTlsCerts: CertificateRow[];
+};
+
+let sitesCache: SitesCache | null = null;
 
 function normalizeViewMode(value: string | null): 'card' | 'list' {
   return value === 'card' ? 'card' : 'list';
@@ -89,7 +96,8 @@ type ChallengeType = 'http-01' | 'dns-01';
 
 export default function Sites() {
   const { jobsByHost } = useSslJobs();
-  const [config, setConfig] = useState<ProxyConfig | null>(null);
+  const [config, setConfig] = useState<ProxyConfig | null>(() => sitesCache?.config ?? null);
+  const [loading, setLoading] = useState(() => sitesCache == null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
@@ -117,7 +125,7 @@ export default function Sites() {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
-  const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>([]);
+  const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
   const toast = useToast();
   const wildcardLabel = wildcardDomainFromHost(formHost);
 
@@ -198,23 +206,40 @@ export default function Sites() {
     setCookieValue(VIEW_MODE_COOKIE, next, VIEW_MODE_MAX_AGE_SECS);
   }
 
-  function load() {
-    api
-      .config()
-      .then(setConfig)
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load config'));
-  }
-
-  useEffect(() => {
-    load();
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setLoading(true);
+    }
+    setError(null);
+    try {
+      const [nextConfig, certList] = await Promise.all([
+        api.config(),
+        api.certificates.list().catch(() => [] as CertificateRow[]),
+      ]);
+      const certs = Array.isArray(certList) ? certList : [];
+      setConfig(nextConfig);
+      setIssuedTlsCerts(certs);
+      sitesCache = {
+        config: nextConfig,
+        issuedTlsCerts: certs,
+      };
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load config');
+      if (sitesCache == null) {
+        setConfig(null);
+        setIssuedTlsCerts([]);
+      }
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
   }, []);
 
   useEffect(() => {
-    api.certificates
-      .list()
-      .then((r) => setIssuedTlsCerts(Array.isArray(r) ? r : []))
-      .catch(() => setIssuedTlsCerts([]));
-  }, []);
+    load({ silent: sitesCache != null });
+  }, [load]);
 
   useEffect(() => {
     if (!showForm) return;
@@ -496,6 +521,7 @@ export default function Sites() {
 
   return (
     <section className={styles.section}>
+      {loading && !config ? <div className="spinner" /> : null}
       <div className="page-actions">
         <div className={styles.headerActions}>
           <div className={styles.viewToggle}>

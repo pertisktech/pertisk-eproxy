@@ -9,6 +9,15 @@ import {
 } from '@/api/client';
 import styles from './Dashboard.module.css';
 
+type DashboardCache = {
+  config: ProxyConfig | null;
+  health: HealthReport | null;
+  management: ManagementInfo | null;
+  stats: Metrics | null;
+};
+
+let dashboardCache: DashboardCache | null = null;
+
 function formatBytes(n: number | undefined | null): string {
   if (n == null || !Number.isFinite(n) || n < 0) return '—';
   if (n < 1024) return `${n} B`;
@@ -54,15 +63,18 @@ function upstreamForSite(config: ProxyConfig | null, host: string, backendName: 
 }
 
 export default function Dashboard() {
-  const [config, setConfig] = useState<ProxyConfig | null>(null);
-  const [health, setHealth] = useState<HealthReport | null>(null);
-  const [management, setManagement] = useState<ManagementInfo | null>(null);
-  const [stats, setStats] = useState<Metrics | null>(null);
+  const [config, setConfig] = useState<ProxyConfig | null>(() => dashboardCache?.config ?? null);
+  const [health, setHealth] = useState<HealthReport | null>(() => dashboardCache?.health ?? null);
+  const [management, setManagement] = useState<ManagementInfo | null>(() => dashboardCache?.management ?? null);
+  const [stats, setStats] = useState<Metrics | null>(() => dashboardCache?.stats ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => dashboardCache == null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const [c, h, m, st] = await Promise.all([
         api.config(),
@@ -74,16 +86,19 @@ export default function Dashboard() {
       setHealth(h);
       setManagement(m);
       setStats(st);
+      dashboardCache = { config: c, health: h, management: m, stats: st };
       setError(null);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    void load();
+    void load({ silent: dashboardCache != null });
   }, [load]);
 
   const pi = management?.process_info;

@@ -1,5 +1,4 @@
 import FaIcon from "@/components/FaIcon";
-import brandMarkUrl from '@/assets/brand-mark.svg?url';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { api, openRealtimeStream, type CertificateRow, type LogEntry, type RealtimeSnapshot } from '@/api/client';
@@ -19,8 +18,9 @@ import { AuthProvider } from '@/context/AuthContext';
 import { ModeContext, type ApiMode } from '@/context/ModeContext';
 import { useTheme } from '@/context/ThemeContext';
 import { useToast } from '@/context/ToastContext';
-import { SslJobProvider, useSslJobs } from '@/context/SslJobContext';
+import { SslJobProvider, useSslJobActions } from '@/context/SslJobContext';
 import ChangePasswordDialog from './ChangePasswordDialog';
+import { ALL_NAV, MainSidebar } from './MainSidebar';
 import styles from './Layout.module.css';
 
 const SIDEBAR_STORAGE_KEY = 'pertisk_sidebar_collapsed';
@@ -53,32 +53,6 @@ function getSidebarWidth(): number {
     return SIDEBAR_DEFAULT_WIDTH;
   }
 }
-
-const NAV_MAIN_ALL = [
-  { to: '/', end: true, label: 'Dashboard', icon: 'fa-home' },
-  { to: '/sites', end: false, label: 'Sites', icon: 'fa-globe' },
-  { to: '/certificates', end: false, label: 'Certificates', icon: 'fa-certificate' },
-  { to: '/dns-providers', end: false, label: 'DNS providers', icon: 'fa-server' },
-] as const;
-
-type NavMainItem = (typeof NAV_MAIN_ALL)[number];
-
-/** eProxy: always full proxy nav (no Helm / no ingress-only views). */
-function getNavMain(_mode: string): readonly NavMainItem[] {
-  return NAV_MAIN_ALL;
-}
-
-const NAV_BOTTOM = [
-  { to: '/backup', end: false, label: 'Backup', icon: 'fa-download' },
-  { to: '/metrics', end: false, label: 'Metrics', icon: 'fa-chart-line' },
-  { to: '/logs', end: false, label: 'Logs', icon: 'fa-file-alt' },
-  { to: '/settings', end: false, label: 'Settings', icon: 'fa-cog' },
-];
-
-const ALL_NAV = [
-  ...NAV_MAIN_ALL,
-  ...NAV_BOTTOM,
-];
 
 interface BreadcrumbItem {
   label: string;
@@ -117,11 +91,11 @@ export default function Layout() {
 }
 
 function LayoutShell() {
-  const { mergeFromSnapshot, applySslJobPush } = useSslJobs();
+  const { mergeFromSnapshot, applySslJobPush } = useSslJobActions();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const theme = useTheme();
-  const toast = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getSidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(getSidebarWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
@@ -141,6 +115,17 @@ function LayoutShell() {
   const refreshTimerRef = useRef<number | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const mergeFromSnapshotRef = useRef(mergeFromSnapshot);
+  const applySslJobPushRef = useRef(applySslJobPush);
+  const toastSuccessRef = useRef(toastSuccess);
+  const toastErrorRef = useRef(toastError);
+  const navigateRef = useRef(navigate);
+  const hasCheckedSessionRef = useRef(false);
+  mergeFromSnapshotRef.current = mergeFromSnapshot;
+  applySslJobPushRef.current = applySslJobPush;
+  toastSuccessRef.current = toastSuccess;
+  toastErrorRef.current = toastError;
+  navigateRef.current = navigate;
 
   const loggedIn = isLoggedIn();
   /** When a token exists client-side, wait for auth/check before child routes hit protected APIs or refresh runs. */
@@ -148,10 +133,13 @@ function LayoutShell() {
 
   useEffect(() => {
     if (!loggedIn) {
+      hasCheckedSessionRef.current = false;
       setSessionVerified(true);
       return;
     }
-    setSessionVerified(false);
+    if (!hasCheckedSessionRef.current) {
+      setSessionVerified(false);
+    }
     let cancelled = false;
     api
       .authCheck()
@@ -159,7 +147,7 @@ function LayoutShell() {
         if (cancelled) return;
         if (!data.authenticated && getToken()) {
           clearAuth();
-          navigate('/login', { replace: true });
+          navigateRef.current('/login', { replace: true });
           return;
         }
         if (data.authenticated && data.username) {
@@ -171,15 +159,19 @@ function LayoutShell() {
         const em = getEmail();
         if (em) setCurrentEmail(em);
         setCurrentAuthMethod(getAuthMethod());
+        hasCheckedSessionRef.current = true;
         setSessionVerified(true);
       })
       .catch(() => {
-        if (!cancelled) setSessionVerified(true);
+        if (!cancelled) {
+          hasCheckedSessionRef.current = true;
+          setSessionVerified(true);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [loggedIn, navigate]);
+  }, [loggedIn]);
 
   useEffect(() => {
     const effectiveAuthMethod = authMethod ?? detectAuthMethodFromToken(getToken());
@@ -277,7 +269,7 @@ function LayoutShell() {
     }
 
     function onRealtime(snapshot: RealtimeSnapshot) {
-      mergeFromSnapshot(snapshot.ssl_jobs);
+      mergeFromSnapshotRef.current(snapshot.ssl_jobs);
       const certRows = Array.isArray(snapshot.certificates) ? snapshot.certificates : [];
       if (!certsInitializedRef.current) {
         certsInitializedRef.current = true;
@@ -291,7 +283,7 @@ function LayoutShell() {
           if (row.id === 'listener-tls' || row.source_type === 'tls_listener' || row.challenge === 'static PEM') {
             return;
           }
-          toast.success(`SSL certificate issued for ${formatCertHosts(row.hosts)}.`);
+          toastSuccessRef.current(`SSL certificate issued for ${formatCertHosts(row.hosts)}.`);
         });
       }
 
@@ -317,16 +309,16 @@ function LayoutShell() {
 
       newErrors.forEach(({ entry }) => {
         const message = entry.message?.trim() || 'System error occurred.';
-        toast.error(`System error: ${message}`);
+        toastErrorRef.current(`System error: ${message}`);
       });
       lastErrorTsRef.current = Math.max(last, maxTs);
     }
 
-    const stop = openRealtimeStream(onRealtime, undefined, applySslJobPush);
+    const stop = openRealtimeStream(onRealtime, undefined, (ev) => applySslJobPushRef.current(ev));
     return () => {
       stop();
     };
-  }, [loggedIn, sessionVerified, toast, mergeFromSnapshot, applySslJobPush]);
+  }, [loggedIn, sessionVerified]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -383,13 +375,15 @@ function LayoutShell() {
     setShowPasswordModal(false);
   }
 
-  function toggleSidebar() {
-    const next = !sidebarCollapsed;
-    setSidebarCollapsed(next);
-    try {
-      localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
-    } catch {}
-  }
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   function startSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
     if (sidebarCollapsed) return;
@@ -455,64 +449,13 @@ function LayoutShell() {
       className={`${styles.wrap} ${sidebarCollapsed ? styles.wrapCollapsed : ''} ${isSidebarResizing ? styles.wrapResizing : ''}`}
       style={{ '--sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}
     >
-      <aside ref={sidebarRef} className={styles.sidebar} aria-label="Main navigation">
-        <div className={styles.sidebarBrand}>
-          <div className={styles.sidebarBrandMain}>
-            <NavLink to="/" end className={styles.sidebarLogo} title="eProxy">
-              <img src={brandMarkUrl} alt="" className={styles.logoImg} width={32} height={32} />
-              <span className={styles.sidebarBrandText}>
-                <span className={styles.sidebarLogoText}>
-                  e<span className={styles.logoAccent}>Proxy</span>
-                  {!sidebarCollapsed && appVersion ? <span className={styles.sidebarVersionInline}> {appVersion}</span> : null}
-                </span>
-              </span>
-            </NavLink>
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              className={styles.sidebarTopToggle}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              <FaIcon className={`fas ${sidebarCollapsed ? 'fa-chevron-right' : 'fa-chevron-left'}`} aria-hidden />
-            </button>
-          </div>
-        </div>
-        <div className={styles.navSection}>
-          <div className={styles.navSectionLabel}>Configuration</div>
-          <nav className={styles.sidebarNav}>
-        {getNavMain(mode ?? 'proxy').map(({ to, end, label, icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={end}
-                title={sidebarCollapsed ? label : undefined}
-                className={({ isActive }) => (isActive ? `${styles.sidebarLink} ${styles.active}` : styles.sidebarLink)}
-              >
-                <FaIcon className={`fas ${icon} ${styles.sidebarIcon}`} size={18} aria-hidden />
-                <span className={styles.sidebarLinkText}>{label}</span>
-              </NavLink>
-            ))}
-          </nav>
-        </div>
-        <div className={styles.navSection}>
-          <div className={styles.navSectionLabel}>Operations</div>
-          <nav className={styles.sidebarNavBottom}>
-            {NAV_BOTTOM.map(({ to, end, label, icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                end={end}
-                title={sidebarCollapsed ? label : undefined}
-                className={({ isActive }) => (isActive ? `${styles.sidebarLink} ${styles.active}` : styles.sidebarLink)}
-              >
-                <FaIcon className={`fas ${icon} ${styles.sidebarIcon}`} size={18} aria-hidden />
-                <span className={styles.sidebarLinkText}>{label}</span>
-              </NavLink>
-            ))}
-          </nav>
-        </div>
-      </aside>
+      <MainSidebar
+        sidebarRef={sidebarRef}
+        collapsed={sidebarCollapsed}
+        appVersion={appVersion}
+        mode={mode}
+        onToggleSidebar={toggleSidebar}
+      />
       <div
         role="separator"
         aria-orientation="vertical"
@@ -528,7 +471,7 @@ function LayoutShell() {
               {breadcrumbs.map((crumb, index) => {
                 const isLast = index === breadcrumbs.length - 1;
                 return (
-                  <li key={crumb.label} className={styles.breadcrumbItem}>
+                  <li key={`${index}-${crumb.label}`} className={styles.breadcrumbItem}>
                     {index > 0 && <span className={styles.breadcrumbSep}>/</span>}
                     <FaIcon className={`fas ${crumb.icon} ${styles.breadcrumbIcon}`} size={14} aria-hidden />
                     {crumb.path && !isLast ? (
