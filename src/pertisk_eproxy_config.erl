@@ -21,12 +21,15 @@
          get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
          management_upstream_bin/0,
-         reload/0, put_config/1, json_to_config_pub/1]).
+         reload/0, put_config/1, json_to_config_pub/1,
+         db_file/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(TAB, pertisk_eproxy_config_tab).
 -define(SERVER, ?MODULE).
+%% Saves can block on SQLite (shell sqlite3) and backend supervisor sync; 15s was too tight in the field.
+-define(CONFIG_CALL_TIMEOUT_MS, 60000).
 
 %% ---------------------------------------------------------------------------
 %% Public API
@@ -104,13 +107,13 @@ get_router() ->
 %% Trigger a hot-reload from the config file.
 -spec reload() -> ok | {error, term()}.
 reload() ->
-    gen_server:call(?SERVER, reload, 15000).
+    gen_server:call(?SERVER, reload, ?CONFIG_CALL_TIMEOUT_MS).
 
 %% Replace the in-memory config with a new map (does NOT write to file).
 %% Spawns/stops backend workers as needed and refreshes the router.
 -spec put_config(map()) -> ok | {error, term()}.
 put_config(Config) ->
-    gen_server:call(?SERVER, {put_config, Config}, 15000).
+    gen_server:call(?SERVER, {put_config, Config}, ?CONFIG_CALL_TIMEOUT_MS).
 
 %% ---------------------------------------------------------------------------
 %% gen_server callbacks
@@ -129,15 +132,34 @@ init([]) ->
 
 handle_call(reload, _From, State) ->
     Reply = case load_config() of
-        {ok, Config} -> apply_config(Config), ok;
+        {ok, Config} ->
+            apply_config(Config),
+            _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
+            ok;
         {error, R}   -> {error, R}
     end,
     {reply, Reply, State};
 
 handle_call({put_config, Config}, _From, State) ->
+    T0 = erlang:monotonic_time(millisecond),
     case persist_runtime_config(Config) of
         ok ->
+            T1 = erlang:monotonic_time(millisecond),
             apply_config(Config),
+            T2 = erlang:monotonic_time(millisecond),
+            PersistMs = T1 - T0,
+            ApplyMs = T2 - T1,
+            TotalMs = T2 - T0,
+            case TotalMs > 1000 of
+                true ->
+                    lager:info(
+                        "put_config timing: persist=~wms apply=~wms total=~wms",
+                        [PersistMs, ApplyMs, TotalMs]
+                    );
+                false ->
+                    ok
+            end,
+            _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
             {reply, ok, State};
         {error, R} ->
             {reply, {error, {persist_runtime_config, R}}, State}

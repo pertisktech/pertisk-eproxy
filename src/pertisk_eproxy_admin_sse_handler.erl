@@ -66,7 +66,8 @@ snapshot_json() ->
         <<"stats">> => pertisk_eproxy_stats:snapshot(),
         <<"management">> => management_info(),
         <<"logs">> => pertisk_eproxy_access_log:list(undefined, undefined),
-        <<"certificates">> => certificate_rows()
+        <<"certificates">> => certificate_rows(),
+        <<"ssl_jobs">> => pertisk_eproxy_admin_realtime:ssl_jobs_snapshot()
     },
     thoas:encode(Data).
 

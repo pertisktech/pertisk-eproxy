@@ -12,6 +12,7 @@ import {
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
 import { useToast } from '@/context/ToastContext';
+import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import Pagination from '@/components/Pagination';
 import { usePageSize } from '@/utils/usePageSize';
@@ -87,6 +88,7 @@ type SslMode = 'none' | 'existing_cert' | 'auto_ssl';
 type ChallengeType = 'http-01' | 'dns-01';
 
 export default function Sites() {
+  const { jobsByHost } = useSslJobs();
   const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -576,7 +578,23 @@ export default function Sites() {
                       </div>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Certificate</span>
-                        <span className={styles.metaValue}>{ssl}</span>
+                        <div className={styles.certMetaStack}>
+                          <span>{ssl}</span>
+                          {jobsByHost[site.host] ? (
+                            <span
+                              className={
+                                jobsByHost[site.host].phase === 'error'
+                                  ? styles.sslAcmeLiveErr
+                                  : styles.sslAcmeLive
+                              }
+                              title={jobsByHost[site.host].message}
+                              role="status"
+                            >
+                              <FaIcon className="fas fa-spinner" aria-hidden />{' '}
+                              {formatAcmeSslPhase(jobsByHost[site.host].phase)}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                       {site.dns_provider && (
                         <div className={styles.siteCardMeta}>
@@ -652,6 +670,7 @@ export default function Sites() {
                     const up = upstreamForSite(site);
                     const routes = site.routes ?? [];
                     const ssl = sslLabelForSite(site);
+                    const sslLive = jobsByHost[site.host];
                     return (
                       <tr key={item.key} className={styles.tableRow}>
                         <td className={styles.host}>
@@ -698,7 +717,19 @@ export default function Sites() {
                           </div>
                         </td>
                         <td className={styles.sslCol}>
-                          <span className={styles.statusPill}>{ssl}</span>
+                          <div className={styles.sslColStack}>
+                            <span className={styles.statusPill}>{ssl}</span>
+                            {sslLive ? (
+                              <span
+                                className={sslLive.phase === 'error' ? styles.sslAcmeLiveErr : styles.sslAcmeLive}
+                                title={sslLive.message}
+                                role="status"
+                              >
+                                <FaIcon className="fas fa-spinner" aria-hidden />{' '}
+                                {formatAcmeSslPhase(sslLive.phase)}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td>
                           <div className={styles.rowActions}>

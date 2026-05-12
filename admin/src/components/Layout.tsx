@@ -19,6 +19,7 @@ import { AuthProvider } from '@/context/AuthContext';
 import { ModeContext, type ApiMode } from '@/context/ModeContext';
 import { useTheme } from '@/context/ThemeContext';
 import { useToast } from '@/context/ToastContext';
+import { SslJobProvider, useSslJobs } from '@/context/SslJobContext';
 import ChangePasswordDialog from './ChangePasswordDialog';
 import styles from './Layout.module.css';
 
@@ -112,6 +113,15 @@ function useBreadcrumbs(pathname: string): BreadcrumbItem[] {
 }
 
 export default function Layout() {
+  return (
+    <SslJobProvider>
+      <LayoutShell />
+    </SslJobProvider>
+  );
+}
+
+function LayoutShell() {
+  const { mergeFromSnapshot, applySslJobPush } = useSslJobs();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const theme = useTheme();
@@ -253,6 +263,7 @@ export default function Layout() {
     }
 
     function onRealtime(snapshot: RealtimeSnapshot) {
+      mergeFromSnapshot(snapshot.ssl_jobs);
       const certRows = Array.isArray(snapshot.certificates) ? snapshot.certificates : [];
       if (!certsInitializedRef.current) {
         certsInitializedRef.current = true;
@@ -297,11 +308,11 @@ export default function Layout() {
       lastErrorTsRef.current = Math.max(last, maxTs);
     }
 
-    const stop = openRealtimeStream(onRealtime);
+    const stop = openRealtimeStream(onRealtime, undefined, applySslJobPush);
     return () => {
       stop();
     };
-  }, [loggedIn, toast]);
+  }, [loggedIn, toast, mergeFromSnapshot, applySslJobPush]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {

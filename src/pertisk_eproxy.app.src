@@ -5,7 +5,9 @@
         pertisk_eproxy_sup,
         pertisk_eproxy_config,
         pertisk_eproxy_metrics,
-        pertisk_eproxy_backend_sup
+        pertisk_eproxy_backend_sup,
+        pertisk_eproxy_admin_realtime,
+        pertisk_eproxy_acme_dns
     ]},
     {mod, {pertisk_eproxy_app, []}},
     {applications, [
@@ -16,6 +18,7 @@
         cowboy,
         gun,
         thoas,
+        jose,
         lager,
         prometheus,
         prometheus_cowboy

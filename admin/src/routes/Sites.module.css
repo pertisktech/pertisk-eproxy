@@ -194,6 +194,16 @@
   word-break: break-all;
 }
 
+.siteCardMeta .certMetaStack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  color: var(--text);
+  word-break: break-all;
+}
+
 .dnsValue {
   font-family: var(--font-mono);
   font-size: 0.875rem;
@@ -527,6 +537,36 @@
 
 .sslCol {
   font-size: 0.875rem;
+}
+
+.sslColStack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.sslAcmeLive,
+.sslAcmeLiveErr {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  max-width: 100%;
+}
+
+.sslAcmeLive {
+  color: var(--accent, #2563eb);
+}
+
+.sslAcmeLiveErr {
+  color: #b91c1c;
+}
+
+[data-theme='dark'] .sslAcmeLiveErr {
+  color: #fca5a5;
 }
 
 .dnsCol {

@@ -294,6 +294,27 @@ export interface RealtimeSnapshot {
   management: ManagementInfo;
   logs: LogEntry[];
   certificates: CertificateRow[];
+  /** Active ACME / auto-SSL jobs (from periodic snapshot). */
+  ssl_jobs?: SslJobRow[];
+}
+
+/** One site’s auto-SSL / ACME progress (snapshot row or WS push). */
+export interface SslJobRow {
+  host: string;
+  phase: string;
+  message: string;
+  error?: string | null;
+  updated_at_ms?: number;
+}
+
+/** Immediate WS frame when issuance phase changes. */
+export interface SslJobPush {
+  type: 'ssl_job';
+  host: string;
+  phase: string;
+  message?: string;
+  error?: string | null;
+  updated_at_ms?: number;
 }
 
 export interface CertificateRow {
@@ -398,7 +419,8 @@ async function del<T>(path: string): Promise<T> {
 
 export function openRealtimeStream(
   onMessage: (snapshot: RealtimeSnapshot) => void,
-  onError?: (event: Event) => void
+  onError?: (event: Event) => void,
+  onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const baseUrl = new URL(`${proto}://${window.location.host}${API}/realtime`);
@@ -445,10 +467,17 @@ export function openRealtimeStream(
     ws.onmessage = (event) => {
       const parseAndDispatch = (raw: string) => {
         try {
-          const parsed = JSON.parse(raw) as RealtimeSnapshot;
-          const logsLen = Array.isArray(parsed.logs) ? parsed.logs.length : -1;
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          if (parsed && parsed.type === 'ssl_job') {
+            if (onSslJobPush) {
+              onSslJobPush(parsed as unknown as SslJobPush);
+            }
+            return;
+          }
+          const snap = parsed as unknown as RealtimeSnapshot;
+          const logsLen = Array.isArray(snap.logs) ? snap.logs.length : -1;
           console.debug('[realtime-ws] message', { logs: logsLen });
-          onMessage(parsed);
+          onMessage(snap);
         } catch {
           console.error('[realtime-ws] message parse failed');
           // ignore malformed frames

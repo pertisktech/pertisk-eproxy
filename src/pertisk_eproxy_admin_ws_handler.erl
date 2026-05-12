@@ -20,6 +20,7 @@ init(Req, _State) ->
     end.
 
 websocket_init(State) ->
+    ok = pertisk_eproxy_admin_realtime:subscribe(self()),
     TRef = erlang:send_after(?TICK_MS, self(), tick),
     Msg = snapshot_json(),
     {[{text, Msg}], State#{timer_ref => TRef}}.
@@ -27,6 +28,8 @@ websocket_init(State) ->
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
+websocket_info({admin_ws_push, Bin}, State) when is_binary(Bin) ->
+    {[{text, Bin}], State};
 websocket_info(tick, State) ->
     Msg = snapshot_json(),
     TRef = erlang:send_after(?TICK_MS, self(), tick),
@@ -35,6 +38,7 @@ websocket_info(_Info, State) ->
     {ok, State}.
 
 terminate(_Reason, _Req, State) ->
+    ok = pertisk_eproxy_admin_realtime:unsubscribe(self()),
     case maps:get(timer_ref, State, undefined) of
         undefined -> ok;
         TRef -> erlang:cancel_timer(TRef), ok
@@ -62,7 +66,8 @@ snapshot_json() ->
         <<"stats">> => pertisk_eproxy_stats:snapshot(),
         <<"management">> => management_info(),
         <<"logs">> => pertisk_eproxy_access_log:list(undefined, undefined),
-        <<"certificates">> => certificate_rows()
+        <<"certificates">> => certificate_rows(),
+        <<"ssl_jobs">> => pertisk_eproxy_admin_realtime:ssl_jobs_snapshot()
     },
     thoas:encode(Data).
 

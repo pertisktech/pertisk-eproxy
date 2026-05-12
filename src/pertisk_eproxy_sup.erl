@@ -41,6 +41,18 @@ init([]) ->
           shutdown => 5000,
           type     => worker},
 
+        #{id       => pertisk_eproxy_admin_realtime,
+          start    => {pertisk_eproxy_admin_realtime, start_link, []},
+          restart  => permanent,
+          shutdown => 5000,
+          type     => worker},
+
+        #{id       => pertisk_eproxy_acme_dns,
+          start    => {pertisk_eproxy_acme_dns, start_link, []},
+          restart  => permanent,
+          shutdown => 5000,
+          type     => worker},
+
         %% Metrics server
         #{id       => pertisk_eproxy_metrics,
           start    => {pertisk_eproxy_metrics, start_link, []},

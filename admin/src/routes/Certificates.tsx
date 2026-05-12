@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, ChangeEvent } from 'react';
+import { useCallback, useEffect, useState, ChangeEvent, useMemo } from 'react';
 import { api, type CertificateRow } from '@/api/client';
 import { useToast } from '@/context/ToastContext';
+import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import styles from './Certificates.module.css';
 
 function em(value: string | undefined | null): string {
@@ -20,6 +21,11 @@ function readFileAsText(file: File | null): Promise<string> {
 
 export default function Certificates() {
   const toast = useToast();
+  const { jobsByHost } = useSslJobs();
+  const sslJobEntries = useMemo(
+    () => Object.values(jobsByHost).sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0)),
+    [jobsByHost]
+  );
   const [rows, setRows] = useState<CertificateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -219,6 +225,27 @@ export default function Certificates() {
         </div>
       </div>
 
+      {sslJobEntries.length > 0 && (
+        <div className={styles.sslJobsLive} role="status" aria-live="polite">
+          <div className={styles.sslJobsLiveTitle}>
+            <i className="fas fa-bolt" aria-hidden /> Auto-SSL in progress
+          </div>
+          <ul className={styles.sslJobsLiveList}>
+            {sslJobEntries.map((j) => (
+              <li key={j.host} className={styles.sslJobsLiveItem}>
+                <span className={styles.sslJobsHost}>{j.host}</span>
+                <span className={j.phase === 'error' ? styles.sslJobsPhaseErr : styles.sslJobsPhase}>
+                  {formatAcmeSslPhase(j.phase)}
+                </span>
+                <span className={styles.sslJobsMsg} title={j.message}>
+                  {j.message?.trim() ? j.message : '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {loading ? (
         <div className="spinner" />
       ) : rows.length === 0 ? (
@@ -275,9 +302,11 @@ export default function Certificates() {
                         </>
                       ) : (
                         <>
-                          <button type="button" className={styles.btnSecondary} onClick={() => openImportModal('existing', row.id)}>
-                            <i className="fas fa-sync-alt" aria-hidden /> Update PEM…
-                          </button>
+                          {row.source_type === 'imported_pem' && (
+                            <button type="button" className={styles.btnSecondary} onClick={() => openImportModal('existing', row.id)}>
+                              <i className="fas fa-sync-alt" aria-hidden /> Update PEM…
+                            </button>
+                          )}
                           <button type="button" className={styles.btnSecondary} onClick={() => void deleteLabel(row)}>
                             <i className="fas fa-trash" aria-hidden /> Delete
                           </button>

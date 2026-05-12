@@ -11,6 +11,8 @@
     list_certificates/1,
     insert_certificate/2,
     insert_certificate_pem/4,
+    insert_certificate_pem/5,
+    upsert_acme_certificate_pem/4,
     update_certificate_pem/4,
     update_certificate/3,
     delete_certificate/2,
@@ -289,6 +291,45 @@ insert_certificate(DbPath, Name0) ->
 
 -spec insert_certificate_pem(string(), binary() | list(), binary() | list(), binary() | list()) -> {ok, integer()} | {error, term()}.
 insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
+    insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0, <<"imported_pem">>).
+
+-spec insert_certificate_pem(string(), binary() | list(), binary() | list(), binary() | list(), binary() | list()) ->
+    {ok, integer()} | {error, term()}.
+insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0, SourceType0) ->
+    Name = string:trim(to_list(Name0)),
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
+    SourceType = sql_escape(to_list(SourceType0)),
+    case {Name, CertFile, KeyFile} of
+        {[], _, _} ->
+            {error, empty_name};
+        {_, [], _} ->
+            {error, empty_cert_file};
+        {_, _, []} ->
+            {error, empty_key_file};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    SQL = "INSERT INTO certificates(name, cert_file, key_file, source_type) VALUES('" ++
+                        sql_escape(Name) ++ "','" ++ sql_escape(CertFile) ++ "','" ++ sql_escape(KeyFile) ++ "','" ++ SourceType ++ "')",
+                    case sqlite_exec(DbPath, SQL) of
+                        ok ->
+                            IdSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' ORDER BY id DESC LIMIT 1",
+                            case sqlite_query(DbPath, IdSQL) of
+                                {ok, [Row | _]} -> {ok, maps:get(<<"id">>, Row)};
+                                _ -> {error, insert_failed}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec upsert_acme_certificate_pem(string(), binary() | list(), binary() | list(), binary() | list()) ->
+    {ok, integer()} | {error, term()}.
+upsert_acme_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
     Name = string:trim(to_list(Name0)),
     CertFile = string:trim(to_list(CertFile0)),
     KeyFile = string:trim(to_list(KeyFile0)),
@@ -302,17 +343,21 @@ insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
         _ ->
             case ensure_certificates_table(DbPath) of
                 ok ->
-                    SQL = "INSERT INTO certificates(name, cert_file, key_file, source_type) VALUES('" ++
-                        sql_escape(Name) ++ "','" ++ sql_escape(CertFile) ++ "','" ++ sql_escape(KeyFile) ++ "','imported_pem')",
-                    case sqlite_exec(DbPath, SQL) of
-                        ok ->
-                            IdSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' ORDER BY id DESC LIMIT 1",
-                            case sqlite_query(DbPath, IdSQL) of
-                                {ok, [Row | _]} -> {ok, maps:get(<<"id">>, Row)};
-                                _ -> {error, insert_failed}
+                    Sel = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' LIMIT 1",
+                    case sqlite_query(DbPath, Sel) of
+                        {ok, [Row | _]} ->
+                            Id = maps:get(<<"id">>, Row),
+                            Upd = "UPDATE certificates SET cert_file='" ++ sql_escape(CertFile) ++
+                                "', key_file='" ++ sql_escape(KeyFile) ++
+                                "', source_type='acme' WHERE id = " ++ integer_to_list(Id),
+                            case sqlite_exec(DbPath, Upd) of
+                                ok -> {ok, Id};
+                                {error, R} -> {error, R}
                             end;
-                        {error, Reason} ->
-                            {error, Reason}
+                        {ok, []} ->
+                            insert_certificate_pem(DbPath, Name, CertFile, KeyFile, <<"acme">>);
+                        {error, R} ->
+                            {error, R}
                     end;
                 {error, Reason} ->
                     {error, Reason}
