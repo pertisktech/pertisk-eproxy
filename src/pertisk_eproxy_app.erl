@@ -75,32 +75,41 @@ start_listeners() ->
     lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
     %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS
-    case maps:find(https_port, Config) of
+    case resolve_https_listen(Config) of
         {ok, HttpsPort} ->
             TlsOpts = tls_opts(Config),
-            TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
-            TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
-            {ok, _} = cowboy:start_tls(https4,
-                #{
-                    num_acceptors => 100,
-                    socket_opts => TlsSocketOpts4
-                },
-                #{
-                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                    logger => pertisk_eproxy_cowboy_logger
-                }
-            ),
-            {ok, _} = cowboy:start_tls(https6,
-                #{
-                    num_acceptors => 100,
-                    socket_opts => TlsSocketOpts6
-                },
-                #{
-                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                    logger => pertisk_eproxy_cowboy_logger
-                }
-            ),
-            lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
+            case TlsOpts of
+                [] ->
+                    lager:warning(
+                        "HTTPS TCP not started on port ~w: tls_cert_file / tls_key_file missing or invalid. "
+                        "Browsers need TCP TLS for https:// (HTTP/2); QUIC alone is not enough.",
+                        [HttpsPort]
+                    );
+                _ ->
+                    TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
+                    TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
+                    {ok, _} = cowboy:start_tls(https4,
+                        #{
+                            num_acceptors => 100,
+                            socket_opts => TlsSocketOpts4
+                        },
+                        #{
+                            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                            logger => pertisk_eproxy_cowboy_logger
+                        }
+                    ),
+                    {ok, _} = cowboy:start_tls(https6,
+                        #{
+                            num_acceptors => 100,
+                            socket_opts => TlsSocketOpts6
+                        },
+                        #{
+                            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+                            logger => pertisk_eproxy_cowboy_logger
+                        }
+                    ),
+                    lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort])
+            end;
         error ->
             ok
     end,
@@ -297,6 +306,22 @@ build_admin_api_routes() ->
         {"/api/metrics",            pertisk_eproxy_admin_handler, metrics},
         {"/api/reload",             pertisk_eproxy_admin_handler, reload}
     ].
+
+%% @doc TCP TLS port: use persisted {@code https_port} when present; if omitted but listener PEM paths exist,
+%% default to 443 so {@code https://} + HTTP/2 match HTTP/3 QUIC on the same port number.
+-spec resolve_https_listen(map()) -> {ok, pos_integer()} | error.
+resolve_https_listen(Config) ->
+    case maps:find(https_port, Config) of
+        {ok, P} when is_integer(P), P > 0 ->
+            {ok, P};
+        _ ->
+            case tls_opts(Config) of
+                [] ->
+                    error;
+                _ ->
+                    {ok, maps:get(https_port, Config, 443)}
+            end
+    end.
 
 tls_opts(Config) ->
     CertFile = maps:get(tls_cert_file, Config, undefined),
