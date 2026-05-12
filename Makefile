@@ -1,4 +1,4 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi docker-harbor-multi tls-smoke package-deb-amd64 quic-upstream-local
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi docker-harbor-multi tls-smoke package-deb-amd64 package-rpm-amd64 quic-upstream-local
 
 REBAR = rebar3
 IMAGE ?= harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
@@ -90,4 +90,8 @@ tls-smoke: compile
 ## Build Linux x86_64 Debian package into release/
 package-deb-amd64: release
 	@bash scripts/build-deb-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
+
+## Build Linux x86_64 RPM package into release/
+package-rpm-amd64: release
+	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 

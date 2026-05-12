@@ -10,6 +10,8 @@
 
 -define(SERVER, pertisk_eproxy_h3_api).
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
+-define(SERVER_V6, pertisk_eproxy_h3_api_v6).
+-define(PROBE_SERVER_V6, pertisk_eproxy_h3_probe_v6).
 %% Max wait per read_request_body (H3 client request DATA). Was a flat 15s and matched ~15003ms access-log timings for small API POSTs (e.g. /api/auth/refresh).
 -define(H3_BODY_TIMEOUT_UNKNOWN_CL_MS, 3500).
 -define(H3_BODY_TIMEOUT_SMALL_POST_MS, 4000).
@@ -42,6 +44,7 @@ start(Config) ->
 
 stop() ->
     catch quic_h3:stop_server(?SERVER),
+    catch quic_h3:stop_server(?SERVER_V6),
     ok.
 
 start_probe(Config) ->
@@ -63,6 +66,7 @@ start_probe(Config) ->
 
 stop_probe() ->
     catch quic_h3:stop_server(?PROBE_SERVER),
+    catch quic_h3:stop_server(?PROBE_SERVER_V6),
     ok.
 
 handle_request(H3Conn, StreamId, Method, Path, Headers) ->
@@ -448,12 +452,18 @@ ensure_quic_started() ->
 management_listener_bind_stack() ->
     case os:type() of
         {unix, linux} ->
-            %% UDP/IPv6 :: with IPV6_V6ONLY=0 → accept IPv4 and IPv6 clients.
+            %% UDP/IPv6 :: with IPV6_V6ONLY=0 -> accept IPv4 and IPv6 clients.
             {<<"::">>, <<"dual_stack">>};
         {unix, _} ->
-            {<<"0.0.0.0">>, <<"ipv4">>};
+            case non_linux_h3_ipv6_enabled() of
+                true -> {<<"0.0.0.0 and ::">>, <<"dual_stack">>};
+                false -> {<<"0.0.0.0">>, <<"ipv4">>}
+            end;
         win32 ->
-            {<<"0.0.0.0">>, <<"ipv4">>};
+            case non_linux_h3_ipv6_enabled() of
+                true -> {<<"0.0.0.0 and ::">>, <<"dual_stack">>};
+                false -> {<<"0.0.0.0">>, <<"ipv4">>}
+            end;
         _ ->
             {<<"0.0.0.0">>, <<"ipv4">>}
     end.
@@ -483,14 +493,69 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
                 },
                 {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p"};
             _ ->
-                {BaseOpts, "H3 QUIC: default listener opts (non-linux, no inet6 extra_socket_opts)"}
+                {BaseOpts, "H3 QUIC: starting dual listeners (IPv4 + IPv6) on non-linux"}
         end,
     lager:debug(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
-    case quic_h3:start_server(ServerName, Port, ServerOpts) of
+    case os:type() of
+        {unix, linux} ->
+            case quic_h3:start_server(ServerName, Port, ServerOpts) of
+                {ok, _Pid} = Ok ->
+                    Ok;
+                {error, V6Reason} ->
+                    {error, {failed_quic_udp_listener, V6Reason}}
+            end;
+        _ ->
+            case non_linux_h3_ipv6_enabled() of
+                true ->
+                    start_non_linux_dual_stack(ServerName, Port, ServerOpts);
+                false ->
+                    lager:info("H3 QUIC non-linux IPv6 companion listener disabled (set {h3_ipv6_non_linux,true} in sys.config to enable)."),
+                    case quic_h3:start_server(ServerName, Port, ServerOpts) of
+                        {ok, _Pid} = Ok -> Ok;
+                        {error, Reason} -> {error, {failed_quic_udp_listener, Reason}}
+                    end
+            end
+    end.
+
+start_non_linux_dual_stack(ServerName, Port, V4Opts) ->
+    case quic_h3:start_server(ServerName, Port, V4Opts) of
         {ok, _Pid} = Ok ->
-            Ok;
-        {error, V6Reason} ->
-            {error, {failed_quic_udp_listener, V6Reason}}
+            V6Name = v6_server_name(ServerName),
+            V6Opts = non_linux_v6_opts(V4Opts),
+            case quic_h3:start_server(V6Name, Port, V6Opts) of
+                {ok, _V6Pid} ->
+                    Ok;
+                {error, Reason} ->
+                    lager:warning("H3 QUIC IPv6 listener failed on udp/:~w (~p). Continuing with IPv4 only.", [Port, Reason]),
+                    Ok
+            end;
+        {error, Reason} ->
+            {error, {failed_quic_udp_listener, Reason}}
+    end.
+
+v6_server_name(?SERVER) ->
+    ?SERVER_V6;
+v6_server_name(?PROBE_SERVER) ->
+    ?PROBE_SERVER_V6.
+
+non_linux_v6_opts(BaseOpts) ->
+    BaseOpts#{
+        quic_opts => maps:merge(
+            maps:get(quic_opts, BaseOpts, #{}),
+            #{
+                socket_backend => socket,
+                backend => socket,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => [inet6, {ipv6_v6only, true}]
+            }
+        )
+    }.
+
+non_linux_h3_ipv6_enabled() ->
+    case application:get_env(pertisk_eproxy, h3_ipv6_non_linux) of
+        {ok, true} -> true;
+        _ -> false
     end.
 
 load_cert_and_key(Config) ->
