@@ -1,12 +1,20 @@
 %% @doc Admin REST API handler for pertisk_eproxy.
 %%
-%% Served on the management listener (default `127.0.0.1:9080`, see `management_addr` / `management_port`).
+%% Endpoints (served on the management listener, default 127.0.0.1:9080):
 %%
-%% Machine-readable catalog: `api_catalog_map/0` is returned by `GET /api` and, in `proxy` mode only,
-%% `GET /` on the management listener. See repository `README.md` for overview and authentication.
-%%
-%% Public without admin login (when auth is enabled): `GET /api`, `GET /api/version`, `GET /api/auth/config`,
-%% `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/health`, `GET /api/metrics`.
+%%   GET  /api/config              — Return full proxy config as JSON
+%%   PUT  /api/config              — Replace proxy config (hot-reload)
+%%   GET  /api/sites               — List all sites
+%%   POST /api/sites               — Add a site
+%%   GET  /api/sites/:host         — Get a site by host
+%%   DELETE /api/sites/:host       — Remove a site
+%%   GET  /api/backends            — List all backends
+%%   POST /api/backends            — Add a backend
+%%   GET  /api/backends/:name      — Get backend + live status
+%%   DELETE /api/backends/:name    — Remove a backend
+%%   GET  /api/health              — Overall health (counts)
+%%   GET  /api/metrics             — Prometheus text metrics
+%%   POST /api/reload              — Reload config from file
 
 -module(pertisk_eproxy_admin_handler).
 -behaviour(cowboy_handler).
@@ -33,7 +41,6 @@ init(Req, Resource) ->
     end.
 
 auth_public(<<"GET">>, root) -> true;
-auth_public(<<"GET">>, api_catalog) -> true;
 auth_public(<<"GET">>, version) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
 auth_public(<<"HEAD">>, auth_config) -> true;
@@ -42,67 +49,6 @@ auth_public(<<"POST">>, auth_logout) -> true;
 auth_public(<<"GET">>, metrics) -> true;
 auth_public(<<"GET">>, health) -> true;
 auth_public(_, _) -> false.
-
-%% ---------------------------------------------------------------------------
-%% API catalog (GET /api and GET / in proxy-only management mode)
-%% ---------------------------------------------------------------------------
-
-api_catalog_map() ->
-    Vsn = pertisk_eproxy_admin_management_snapshot:app_version(),
-    #{
-        status => <<"ok">>,
-        name => <<"Pertisk eProxy">>,
-        version => Vsn,
-        documentation => <<"See README.md in the project root for authentication, build, and JSON field notes.">>,
-        endpoints => [
-            #{method => <<"GET">>, path => <<"/api">>, description => <<"This endpoint list (JSON)">>},
-            #{method => <<"GET">>, path => <<"/">>, description => <<"Same catalog as /api when mode=proxy (not in proxy_admin)">>},
-            #{method => <<"GET">>, path => <<"/api/version">>, description => <<"Application version">>},
-            #{method => <<"GET">>, path => <<"/api/management">>, description => <<"Node, listeners, BEAM process_info, process_cpu_usage_percent, process_memory_bytes">>},
-            #{method => <<"GET">>, path => <<"/api/stats">>, description => <<"Counters for admin UI: requests by protocol, bytes, connections, log buffer">>},
-            #{method => <<"GET">>, path => <<"/api/realtime">>, description => <<"WebSocket: stats + management + logs snapshot">>},
-            #{method => <<"GET">>, path => <<"/api/realtime-sse">>, description => <<"Server-Sent Events stream (same payload shape as WS)">>},
-            #{method => <<"GET">>, path => <<"/api/logs">>, description => <<"Access log ring; query type, host">>},
-            #{method => <<"GET">>, path => <<"/api/auth/config">>, description => <<"Auth mode and login hints">>},
-            #{method => <<"HEAD">>, path => <<"/api/auth/config">>, description => <<"Same as GET">>},
-            #{method => <<"POST">>, path => <<"/api/auth/login">>, description => <<"Obtain session token">>},
-            #{method => <<"POST">>, path => <<"/api/auth/refresh">>, description => <<"Refresh session token">>},
-            #{method => <<"GET">>, path => <<"/api/auth/check">>, description => <<"Session status">>},
-            #{method => <<"POST">>, path => <<"/api/auth/logout">>, description => <<"End session">>},
-            #{method => <<"POST">>, path => <<"/api/admin/change-password">>, description => <<"Change password (stub)">>},
-            #{method => <<"GET">>, path => <<"/api/admin/api-token">>, description => <<"API token status (stub)">>},
-            #{method => <<"POST">>, path => <<"/api/admin/api-token">>, description => <<"API token (stub)">>},
-            #{method => <<"GET">>, path => <<"/api/backup/export">>, description => <<"Export config backup">>},
-            #{method => <<"POST">>, path => <<"/api/backup/restore">>, description => <<"Restore config from backup">>},
-            #{method => <<"GET">>, path => <<"/api/helm/history">>, description => <<"Helm history (stub)">>},
-            #{method => <<"GET">>, path => <<"/api/helm/values/:revision">>, description => <<"Helm values (stub)">>},
-            #{method => <<"GET">>, path => <<"/api/certificates">>, description => <<"List TLS certificates">>},
-            #{method => <<"POST">>, path => <<"/api/certificates">>, description => <<"Create certificate row">>},
-            #{method => <<"POST">>, path => <<"/api/certificates/import">>, description => <<"Import PEM bundle">>},
-            #{method => <<"PUT">>, path => <<"/api/certificates/:id/import">>, description => <<"Import PEM for certificate id">>},
-            #{method => <<"PUT">>, path => <<"/api/certificates/:id">>, description => <<"Update certificate">>},
-            #{method => <<"DELETE">>, path => <<"/api/certificates/:id">>, description => <<"Delete certificate">>},
-            #{method => <<"GET">>, path => <<"/api/dns-providers">>, description => <<"List DNS providers (ACME DNS-01)">>},
-            #{method => <<"POST">>, path => <<"/api/dns-providers">>, description => <<"Create DNS provider">>},
-            #{method => <<"PUT">>, path => <<"/api/dns-providers/:id">>, description => <<"Update DNS provider">>},
-            #{method => <<"DELETE">>, path => <<"/api/dns-providers/:id">>, description => <<"Delete DNS provider">>},
-            #{method => <<"POST">>, path => <<"/api/tls/listener">>, description => <<"Set TLS cert paths on running config">>},
-            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Full proxy configuration JSON">>},
-            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace configuration (hot reload)">>},
-            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List sites">>},
-            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add site">>},
-            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get site by host">>},
-            #{method => <<"PUT">>, path => <<"/api/sites/:host">>, description => <<"Replace site">>},
-            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete site">>},
-            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List backends">>},
-            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add backend">>},
-            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Backend detail and health">>},
-            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete backend">>},
-            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Aggregated health">>},
-            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus exposition format">>},
-            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload configuration from disk">>}
-        ]
-    }.
 
 %% ---------------------------------------------------------------------------
 %% Route dispatch
@@ -472,10 +418,27 @@ handle(<<"POST">>, tls_listener, Req) ->
     end);
 
 handle(<<"GET">>, root, Req) ->
-    json_reply(200, api_catalog_map(), Req);
-
-handle(<<"GET">>, api_catalog, Req) ->
-    json_reply(200, api_catalog_map(), Req);
+    API = #{
+        status => <<"ok">>,
+        name => <<"Pertisk eProxy">>,
+        version => <<"1.0.0">>,
+        endpoints => [
+            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
+            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
+            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
+            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
+            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
+            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete a site">>},
+            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List all backends">>},
+            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add a backend">>},
+            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Get backend status">>},
+            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete a backend">>},
+            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Overall health">>},
+            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus metrics">>},
+            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload config">>}
+        ]
+    },
+    json_reply(200, API, Req);
 
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
