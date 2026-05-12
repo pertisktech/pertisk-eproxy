@@ -13,6 +13,7 @@ import {
   setToken,
   setUsername as setAuthUsername,
 } from '@/auth';
+import type { Auth0Client } from '@auth0/auth0-spa-js';
 import { getAuth0Client } from '@/sso';
 import { useTheme } from '@/context/ThemeContext';
 import { useToast } from '@/context/ToastContext';
@@ -48,6 +49,47 @@ function isAuth0Configured(config: AuthConfigResponse | null): config is Auth0En
   return !!config?.auth0_domain && !!config?.auth0_client_id;
 }
 
+/** Auth0 often returns an opaque access token without an API audience; eProxy verifies JWTs only, so prefer the ID token. */
+function isLikelyJwt(token: string): boolean {
+  return token.split('.').length === 3;
+}
+
+async function getBearerJwtForApi(client: Auth0Client, cfg: Auth0EnabledConfig): Promise<string> {
+  if (cfg.auth0_audience) {
+    try {
+      const access = await client.getTokenSilently({
+        authorizationParams: { audience: cfg.auth0_audience },
+      });
+      if (access && isLikelyJwt(access)) {
+        return access;
+      }
+    } catch {
+      /* try id token below */
+    }
+  }
+
+  const idClaims = await client.getIdTokenClaims();
+  const rawId = idClaims?.__raw;
+  if (rawId && isLikelyJwt(rawId)) {
+    return rawId;
+  }
+
+  const access = await client.getTokenSilently(
+    cfg.auth0_audience ? { authorizationParams: { audience: cfg.auth0_audience } } : {},
+  );
+  if (access && isLikelyJwt(access)) {
+    return access;
+  }
+
+  if (rawId) {
+    return rawId;
+  }
+
+  throw new Error(
+    'Auth0 did not return a JWT for API calls. Create an Auth0 API, set admin_auth0_audience on the server, or ensure OpenID returns an ID token.',
+  );
+}
+
 export default function Login() {
   const navigate = useNavigate();
   const theme = useTheme();
@@ -61,6 +103,10 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.has('code') && qs.has('state')) {
+      return;
+    }
     if (isLoggedIn()) navigate('/', { replace: true });
   }, [navigate]);
 
@@ -76,6 +122,16 @@ export default function Login() {
       const params = new URLSearchParams(window.location.search);
       if (!params.has('code') || !params.has('state')) return;
 
+      const state = params.get('state')!;
+      const dedupeKey = `eproxy_auth0_cb_ok_${state}`;
+      if (sessionStorage.getItem(dedupeKey) === '1') {
+        window.history.replaceState({}, document.title, `${window.location.pathname}`);
+        if (isLoggedIn()) {
+          navigate('/', { replace: true });
+        }
+        return;
+      }
+
       setSsoLoading(true);
       setError(null);
       try {
@@ -84,12 +140,12 @@ export default function Login() {
           clientId: authConfig.auth0_client_id!,
           audience: authConfig.auth0_audience,
         });
-        await client.handleRedirectCallback();
-        const token = await client.getTokenSilently({
-          authorizationParams: { audience: authConfig.auth0_audience },
-        });
+        await client.handleRedirectCallback(window.location.href);
+        const token = await getBearerJwtForApi(client, authConfig);
         if (cancelled) return;
         setToken(token, tokenTtlSeconds(token));
+        sessionStorage.setItem(dedupeKey, '1');
+        window.history.replaceState({}, document.title, `${window.location.pathname}`);
         setAuthMethod('sso');
         const user = await client.getUser();
         if (user?.email || user?.name || user?.sub) {
@@ -156,7 +212,9 @@ export default function Login() {
         audience: authConfig.auth0_audience,
       });
       await client.loginWithRedirect({
-        authorizationParams: { audience: authConfig.auth0_audience },
+        ...(authConfig.auth0_audience
+          ? { authorizationParams: { audience: authConfig.auth0_audience } }
+          : {}),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'SSO login failed';

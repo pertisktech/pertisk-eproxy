@@ -17,7 +17,7 @@ export function getAuth0Client(config: Auth0ClientConfig): Promise<Auth0Client> 
       domain: config.domain,
       clientId: config.clientId,
       authorizationParams: {
-        audience: config.audience,
+        ...(config.audience ? { audience: config.audience } : {}),
         redirect_uri: `${window.location.origin}/login`,
       },
       cacheLocation: 'memory',

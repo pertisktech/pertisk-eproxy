@@ -143,14 +143,26 @@ function LayoutShell() {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
   const loggedIn = isLoggedIn();
+  /** When a token exists client-side, wait for auth/check before child routes hit protected APIs or refresh runs. */
+  const [sessionVerified, setSessionVerified] = useState(!loggedIn);
 
   useEffect(() => {
-    if (!loggedIn) return;
+    if (!loggedIn) {
+      setSessionVerified(true);
+      return;
+    }
+    setSessionVerified(false);
     let cancelled = false;
     api
       .authCheck()
       .then((data) => {
-        if (!cancelled && data.authenticated && data.username) {
+        if (cancelled) return;
+        if (!data.authenticated && getToken()) {
+          clearAuth();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (data.authenticated && data.username) {
           setCurrentUser(data.username);
           setUsername(data.username);
         }
@@ -159,16 +171,22 @@ function LayoutShell() {
         const em = getEmail();
         if (em) setCurrentEmail(em);
         setCurrentAuthMethod(getAuthMethod());
+        setSessionVerified(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setSessionVerified(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, [loggedIn]);
+  }, [loggedIn, navigate]);
 
   useEffect(() => {
     const effectiveAuthMethod = authMethod ?? detectAuthMethodFromToken(getToken());
-    if (!loggedIn || effectiveAuthMethod !== 'local') {
+    /* Match pertisk-rproxy: only opaque local sessions use POST /api/auth/refresh. SSO uses the Auth0 JWT as-is;
+       periodic backend refresh for JWTs can 401 (verify/JWKS edge cases) and clear the session → login loop. */
+    const useBackendRefresh = effectiveAuthMethod === 'local';
+    if (!loggedIn || !sessionVerified || !useBackendRefresh) {
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -214,7 +232,7 @@ function LayoutShell() {
         refreshTimerRef.current = null;
       }
     };
-  }, [loggedIn, authMethod]);
+  }, [loggedIn, sessionVerified, authMethod]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,7 +263,7 @@ function LayoutShell() {
   }, []);
 
   useEffect(() => {
-    if (!loggedIn) return;
+    if (!loggedIn || !sessionVerified) return;
 
     function formatCertHosts(hosts: CertificateRow['hosts']): string {
       if (!hosts?.length) return 'unknown host';
@@ -308,7 +326,7 @@ function LayoutShell() {
     return () => {
       stop();
     };
-  }, [loggedIn, toast, mergeFromSnapshot, applySslJobPush]);
+  }, [loggedIn, sessionVerified, toast, mergeFromSnapshot, applySslJobPush]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -625,7 +643,7 @@ function LayoutShell() {
           <div className={styles.mainContent}>
             <div className={styles.mainContentInner}>
               <AuthProvider value={{ openPasswordModal }}>
-                <Outlet />
+                {sessionVerified ? <Outlet /> : <div className={styles.authGate}>Checking session…</div>}
               </AuthProvider>
             </div>
           </div>

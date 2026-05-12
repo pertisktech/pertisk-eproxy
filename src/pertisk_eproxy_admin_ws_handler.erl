@@ -38,11 +38,13 @@ websocket_info(_Info, State) ->
     {ok, State}.
 
 terminate(_Reason, _Req, State) ->
-    ok = pertisk_eproxy_admin_realtime:unsubscribe(self()),
-    case maps:get(timer_ref, State, undefined) of
-        undefined -> ok;
-        TRef -> erlang:cancel_timer(TRef), ok
-    end.
+    %% Dispatch passes route opts (atom `realtime`) as State if upgrade aborted early — only treat maps as WS state.
+    _ = catch pertisk_eproxy_admin_realtime:unsubscribe(self()),
+    case State of
+        #{timer_ref := TRef} -> erlang:cancel_timer(TRef);
+        _ -> ok
+    end,
+    ok.
 
 authorize(Req) ->
     case pertisk_eproxy_auth:auth_mode() of

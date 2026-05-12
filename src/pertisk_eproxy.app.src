@@ -16,6 +16,7 @@
         stdlib,
         crypto,
         ssl,
+        inets,
         cowboy,
         gun,
         thoas,

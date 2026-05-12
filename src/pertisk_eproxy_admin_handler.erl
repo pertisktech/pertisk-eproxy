@@ -44,7 +44,9 @@ auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
 auth_public(<<"HEAD">>, auth_config) -> true;
+auth_public(<<"GET">>, auth_check) -> true;
 auth_public(<<"POST">>, auth_login) -> true;
+auth_public(<<"POST">>, auth_refresh) -> true;
 auth_public(<<"POST">>, auth_logout) -> true;
 auth_public(<<"GET">>, metrics) -> true;
 auth_public(<<"GET">>, health) -> true;
@@ -99,15 +101,15 @@ handle(<<"POST">>, auth_refresh, Req) ->
         disabled ->
             json_reply(200, #{<<"token">> => <<"guest">>, <<"username">> => <<"operator">>, <<"expires_in">> => 86400}, Req);
         local ->
-            case cowboy_req:parse_header(<<"authorization">>, Req) of
-                {bearer, Token} ->
+            case pertisk_eproxy_auth:bearer_from_request(Req) of
+                {ok, Token} ->
                     case pertisk_eproxy_auth:refresh(Token) of
                         {ok, #{token := T, username := U, expires_in := E}} ->
                             json_reply(200, #{<<"token">> => T, <<"username">> => U, <<"expires_in">> => E}, Req);
                         {error, _} ->
                             json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
                     end;
-                _ ->
+                error ->
                     json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
             end
     end;
@@ -117,23 +119,23 @@ handle(<<"GET">>, auth_check, Req) ->
         disabled ->
             json_reply(200, #{<<"authenticated">> => true, <<"username">> => <<"operator">>}, Req);
         local ->
-            case cowboy_req:parse_header(<<"authorization">>, Req) of
-                {bearer, Token} ->
+            case pertisk_eproxy_auth:bearer_from_request(Req) of
+                {ok, Token} ->
                     case pertisk_eproxy_auth:verify_token(Token) of
                         {ok, U} ->
                             json_reply(200, #{<<"authenticated">> => true, <<"username">> => U}, Req);
                         {error, _} ->
                             json_reply(200, #{<<"authenticated">> => false}, Req)
                     end;
-                _ ->
+                error ->
                     json_reply(200, #{<<"authenticated">> => false}, Req)
             end
     end;
 
 handle(<<"POST">>, auth_logout, Req) ->
-    case cowboy_req:parse_header(<<"authorization">>, Req) of
-        {bearer, Token} -> pertisk_eproxy_auth:logout(Token);
-        _ -> ok
+    case pertisk_eproxy_auth:bearer_from_request(Req) of
+        {ok, Token} -> pertisk_eproxy_auth:logout(Token);
+        error -> ok
     end,
     json_reply(200, #{<<"success">> => true}, Req);
 

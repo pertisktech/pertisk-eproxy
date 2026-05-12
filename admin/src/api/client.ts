@@ -417,7 +417,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+    /* Some reverse proxies strip Authorization; backend also reads X-Eproxy-Bearer. */
+    headers['X-Eproxy-Bearer'] = token;
+  }
 
   const res = await fetch(`${API}${path}`, {
     ...options,

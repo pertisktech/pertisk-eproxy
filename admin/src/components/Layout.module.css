@@ -622,6 +622,12 @@
   min-height: 100%;
 }
 
+.authGate {
+  padding: 2rem 1.5rem;
+  color: var(--color-text-muted, var(--color-text-secondary, #64748b));
+  font-size: 0.95rem;
+}
+
 .mainContentInner {
   width: 100%;
   min-width: 0;

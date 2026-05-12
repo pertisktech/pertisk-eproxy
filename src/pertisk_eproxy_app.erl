@@ -13,6 +13,7 @@ start(_StartType, _StartArgs) ->
     ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = start_listeners(),
+    ok = pertisk_eproxy_auth0:maybe_prefetch_jwks(),
     {ok, Sup}.
 
 stop(_State) ->

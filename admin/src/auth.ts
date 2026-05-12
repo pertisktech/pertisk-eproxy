@@ -1,4 +1,6 @@
 const TOKEN_KEY = 'pertisk_token';
+/** Large Auth0 JWTs exceed ~4KB cookie limits; store JWTs here instead of document.cookie. */
+const TOKEN_SESSION_KEY = 'pertisk_token_jwt';
 const USERNAME_KEY = 'pertisk_username';
 const EMAIL_KEY = 'pertisk_email';
 const PICTURE_KEY = 'pertisk_picture';
@@ -38,16 +40,41 @@ export function setCookieValue(name: string, value: string, maxAgeSecs: number):
   setCookie(name, value, maxAgeSecs);
 }
 
+function isCompactJwt(token: string): boolean {
+  return token.split('.').length === 3;
+}
+
 export function getToken(): string | null {
+  try {
+    const fromSession = sessionStorage.getItem(TOKEN_SESSION_KEY);
+    if (fromSession) return fromSession;
+  } catch {
+    /* storage blocked */
+  }
   return getCookie(TOKEN_KEY);
 }
 
 export function setToken(token: string, maxAgeSecs: number = SESSION_MAX_AGE_SECS): void {
+  try {
+    if (isCompactJwt(token)) {
+      sessionStorage.setItem(TOKEN_SESSION_KEY, token);
+      setCookie(TOKEN_KEY, '', 0);
+      return;
+    }
+    sessionStorage.removeItem(TOKEN_SESSION_KEY);
+  } catch {
+    /* fall through to cookie-only */
+  }
   setCookie(TOKEN_KEY, token, maxAgeSecs);
 }
 
 export function clearToken(): void {
   setCookie(TOKEN_KEY, '', 0);
+  try {
+    sessionStorage.removeItem(TOKEN_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function getUsername(): string | null {

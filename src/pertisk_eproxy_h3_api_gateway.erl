@@ -10,7 +10,11 @@
 
 -define(SERVER, pertisk_eproxy_h3_api).
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
--define(BODY_TIMEOUT, 15000).
+%% Max wait per read_request_body (H3 client request DATA). Was a flat 15s and matched ~15003ms access-log timings for small API POSTs (e.g. /api/auth/refresh).
+-define(H3_BODY_TIMEOUT_UNKNOWN_CL_MS, 3500).
+-define(H3_BODY_TIMEOUT_SMALL_POST_MS, 4000).
+-define(H3_BODY_TIMEOUT_LARGE_CAP_MS, 120000).
+-define(H3_BODY_AUTH_CAP_MS, 3000).
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
 
@@ -65,7 +69,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     LogHost = host_for_route(Auth),
     {PathOnly, Qs} = split_path_query(Path),
     try
-        Body = read_request_body(H3Conn, StreamId, Method),
+        Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
@@ -92,10 +96,11 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                         case proxy_via_gun(
                             Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
                         ) of
-                            {ok, Status, RespHeaders, RespBody} ->
+                            {ok, Status0, RespHeaders, RespBody} ->
+                                Status = gun_response_status_int(Status0),
                                 StatusBin = integer_to_binary(Status),
                                 pertisk_eproxy_metrics:inc_request(LogHost, StatusBin, <<"h3">>),
-                                RespBin = iolist_to_binary(RespBody),
+                                RespBin = safe_iolist_to_binary(RespBody),
                                 ok = pertisk_eproxy_metrics:record_proxy_bytes(
                                     LogHost, byte_size(Body), byte_size(RespBin)
                                 ),
@@ -103,7 +108,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     BackendName, UpstreamAddr, ok
                                 ),
                                 ok = quic_h3:send_response(H3Conn, StreamId, Status, RespHeaders),
-                                _ = quic_h3:send_data(H3Conn, StreamId, RespBody, true),
+                                _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
                                 ok;
                             {error, ProxyReason} ->
@@ -246,7 +251,7 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                             case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
                                 {ok, RespBody} ->
                                     {ok, Status, gun_resp_headers_to_h3(RespHeaders),
-                                        iolist_to_binary(RespBody)};
+                                        safe_iolist_to_binary(RespBody)};
                                 {error, R} ->
                                     {error, R}
                             end;
@@ -267,7 +272,24 @@ method_to_gun(<<"PATCH">>) -> <<"PATCH">>;
 method_to_gun(<<"DELETE">>) -> <<"DELETE">>;
 method_to_gun(<<"HEAD">>) -> <<"HEAD">>;
 method_to_gun(<<"OPTIONS">>) -> <<"OPTIONS">>;
-method_to_gun(M) -> M.
+method_to_gun(M) when is_binary(M) -> string:uppercase(M);
+method_to_gun(M) when is_list(M) -> string:uppercase(unicode:characters_to_binary(M));
+method_to_gun(M) when is_atom(M) -> method_to_gun(atom_to_binary(M, utf8));
+method_to_gun(M) -> unicode:characters_to_binary(io_lib:format("~p", [M])).
+
+gun_response_status_int(S) when is_integer(S), S >= 100, S < 600 ->
+    S;
+gun_response_status_int(S) when is_binary(S) ->
+    try
+        case binary_to_integer(S) of
+            I when I >= 100, I < 600 -> I;
+            _ -> 502
+        end
+    catch
+        _:_ -> 502
+    end;
+gun_response_status_int(_) ->
+    502.
 
 gun_resp_headers_to_h3(Headers) ->
     Blocked = [
@@ -275,41 +297,129 @@ gun_resp_headers_to_h3(Headers) ->
         "te", "trailers", "transfer-encoding", "upgrade",
         "date", "server", "content-length"
     ],
-    [
-        {list_to_binary(string:lowercase(header_name_str(K))), iolist_to_binary(V)}
-        || {K, V} <- Headers,
-           not lists:member(string:lowercase(header_name_str(K)), Blocked)
-    ].
+    lists:filtermap(
+        fun({K, V}) ->
+            try
+                Kl = string:lowercase(header_name_str(K)),
+                case lists:member(Kl, Blocked) of
+                    true ->
+                        false;
+                    false ->
+                        {true, {list_to_binary(Kl), safe_iolist_to_binary(V)}}
+                end
+            catch
+                _:_ ->
+                    false
+            end
+        end,
+        Headers
+    ).
 
-header_name_str(K) when is_binary(K) -> binary_to_list(K);
-header_name_str(K) when is_list(K) -> K.
+header_name_str(K) when is_atom(K) -> atom_to_list(K);
+header_name_str(K) when is_binary(K) -> unicode:characters_to_list(K, utf8);
+header_name_str(K) when is_list(K) -> K;
+header_name_str(K) -> unicode:characters_to_list(iolist_to_binary(io_lib:format("~p", [K])), utf8).
+
+safe_iolist_to_binary(V) ->
+    try
+        iolist_to_binary(V)
+    catch
+        _:_ ->
+            <<>>
+    end.
 
 log_h3_access(Host, Method, Path, Status, T0, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
     catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3', Upstream).
 
-read_request_body(_Conn, _StreamId, <<"GET">>) -> <<>>;
-read_request_body(_Conn, _StreamId, <<"HEAD">>) -> <<>>;
-read_request_body(Conn, StreamId, _Method) ->
+read_request_body(Conn, StreamId, Method0, Headers, PathOnly) ->
+    Method = normalize_h3_method(Method0),
+    case Method of
+        <<"GET">> -> <<>>;
+        <<"HEAD">> -> <<>>;
+        _ -> read_request_body_post(Conn, StreamId, Headers, PathOnly)
+    end.
+
+read_request_body_post(Conn, StreamId, Headers, PathOnly) ->
+    TimeoutMs = h3_body_collect_timeout_ms(Headers, PathOnly),
     case quic_h3:set_stream_handler(Conn, StreamId, self()) of
         {ok, Buffered} ->
-            collect_body(Conn, StreamId, chunks_to_binary(Buffered));
+            collect_body(Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs);
         ok ->
-            collect_body(Conn, StreamId, <<>>);
+            collect_body(Conn, StreamId, <<>>, TimeoutMs);
         _ ->
             <<>>
     end.
 
-chunks_to_binary(Chunks) ->
-    iolist_to_binary([D || {D, _Fin} <- Chunks]).
+normalize_h3_method(M) when is_binary(M) ->
+    string:uppercase(M);
+normalize_h3_method(M) when is_list(M) ->
+    string:uppercase(unicode:characters_to_binary(M));
+normalize_h3_method(M) when is_atom(M) ->
+    normalize_h3_method(atom_to_binary(M, utf8));
+normalize_h3_method(M) ->
+    unicode:characters_to_binary(io_lib:format("~p", [M])).
 
-collect_body(Conn, StreamId, Acc) ->
+chunks_to_binary(Chunks) ->
+    try
+        iolist_to_binary([D || {D, _Fin} <- Chunks])
+    catch
+        _:_ ->
+            <<>>
+    end.
+
+-spec h3_body_collect_timeout_ms([{binary(), binary()}], binary()) -> pos_integer().
+h3_body_collect_timeout_ms(Headers, PathOnly) ->
+    T =
+        case header_content_length_bytes(Headers) of
+            {ok, N} when N =:= 0 ->
+                %% Empty body still waits for stream end in some stacks — keep this tight.
+                2500;
+            {ok, N} when N < 1048576 ->
+                ?H3_BODY_TIMEOUT_SMALL_POST_MS;
+            {ok, N} ->
+                %% Large uploads: scale with declared size (never floor at 15s — that hid QUIC stalls behind a fixed wait).
+                min(?H3_BODY_TIMEOUT_LARGE_CAP_MS, max(8000, (N div 4096) + 6000));
+            undefined ->
+                %% No Content-Length: small JSON / API control frames should finish quickly.
+                ?H3_BODY_TIMEOUT_UNKNOWN_CL_MS
+        end,
+    h3_auth_route_body_cap(PathOnly, T).
+
+%% Login/refresh/logout bodies are tiny; cap QUIC DATA wait so logs never show ~15s from idle streams alone.
+h3_auth_route_body_cap(<<"/api/auth/", _/binary>>, T) ->
+    min(T, ?H3_BODY_AUTH_CAP_MS);
+h3_auth_route_body_cap(_, T) ->
+    T.
+
+header_content_length_bytes(Headers) ->
+    Map = h3_req_headers_map(Headers),
+    case maps:get(<<"content-length">>, Map, undefined) of
+        Bin when is_binary(Bin) ->
+            Trim =
+                re:replace(Bin, <<"^\\s+|\\s+$">>, <<>>, [{return, binary}, global]),
+            try
+                {ok, binary_to_integer(Trim)}
+            catch
+                error:badarg ->
+                    undefined
+            end;
+        _ ->
+            undefined
+    end.
+
+collect_body(_Conn, _StreamId, Acc, TimeoutMs) when TimeoutMs =< 0 ->
+    Acc;
+collect_body(Conn, StreamId, Acc, TimeoutMs) ->
+    T0 = erlang:monotonic_time(millisecond),
     receive
         {quic_h3, Conn, {data, StreamId, Data, true}} ->
             <<Acc/binary, Data/binary>>;
         {quic_h3, Conn, {data, StreamId, Data, false}} ->
-            collect_body(Conn, StreamId, <<Acc/binary, Data/binary>>)
-    after ?BODY_TIMEOUT ->
+            Elapsed = erlang:monotonic_time(millisecond) - T0,
+            Remaining = TimeoutMs - Elapsed,
+            collect_body(Conn, StreamId, <<Acc/binary, Data/binary>>, Remaining)
+    after TimeoutMs ->
         Acc
     end.
 
