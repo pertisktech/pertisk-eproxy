@@ -555,7 +555,11 @@ awaiting_quic(cast, close, State) ->
 awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
     {next_state, closing, State};
 awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
-    {stop, quic_closed, State};
+    %% QUIC transport exited (peer close, idle, etc.): use closing so owner
+    %% gets {quic_h3, _, closed} and gen_statem does not log quic_closed as error.
+    {next_state, closing, State};
+awaiting_quic(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
+    {next_state, closing, State};
 awaiting_quic(_EventType, _Event, _State) ->
     keep_state_and_data.
 
@@ -627,7 +631,9 @@ h3_connecting(cast, close, State) ->
 h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
     {next_state, closing, State};
 h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
-    {stop, quic_closed, State};
+    {next_state, closing, State};
+h3_connecting(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
+    {next_state, closing, State};
 h3_connecting(_EventType, _Event, _State) ->
     keep_state_and_data.
 
@@ -838,7 +844,9 @@ connected(cast, close, State) ->
 connected(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
     {next_state, closing, State};
 connected(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
-    {stop, quic_closed, State};
+    {next_state, closing, State};
+connected(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
+    {next_state, closing, State};
 connected(info, {'DOWN', Ref, process, _Pid, _Reason}, #state{stream_handlers = Handlers} = State) ->
     %% Check if this is a stream handler going down
     case find_handler_by_ref(Ref, Handlers) of
@@ -897,7 +905,9 @@ goaway_sent(cast, close, State) ->
 goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
     {next_state, closing, State};
 goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
-    {stop, quic_closed, State};
+    {next_state, closing, State};
+goaway_sent(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
+    {next_state, closing, State};
 goaway_sent(_EventType, _Event, _State) ->
     keep_state_and_data.
 
@@ -942,7 +952,9 @@ goaway_received(cast, close, State) ->
 goaway_received(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
     {next_state, closing, State};
 goaway_received(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
-    {stop, quic_closed, State};
+    {next_state, closing, State};
+goaway_received(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
+    {next_state, closing, State};
 goaway_received(_EventType, _Event, _State) ->
     keep_state_and_data.
 

@@ -207,24 +207,31 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
-    %% QUIC UDP: prefer an IPv6 socket on :: with dual-stack where supported
-    %% (extra_socket_opts inet6 + ipv6_v6only false). On Linux with the OTP
-    %% socket backend, quic_socket binds inet6 and clears IPV6_V6ONLY so IPv4
-    %% clients can connect; on other OSes gen_udp receives the same options.
-    V6Opts = BaseOpts#{
-        quic_opts => maps:merge(
-            maps:get(quic_opts, BaseOpts, #{}),
-            #{
-                socket_backend => socket,
-                backend => socket,
-                reuseport => false,
-                pool_size => 0,
-                extra_socket_opts => [inet6, {ipv6_v6only, false}]
-            }
-        )
-    },
-    error_logger:info_msg("H3 QUIC quic_opts: ~p~n", [maps:get(quic_opts, V6Opts, #{})]),
-    case quic_h3:start_server(ServerName, Port, V6Opts) of
+    %% On Linux: bind UDP over IPv6 (::) with IPV6_V6ONLY=0 so IPv4 clients work.
+    %% On macOS/BSD/Windows: quic_socket falls back to gen_udp, whose option list
+    %% always includes `inet` then appends extra_socket_opts; adding `inet6`
+    %% yields inet+inet6 together and gen_udp:open returns einval.
+    {ServerOpts, LogLabel} =
+        case os:type() of
+            {unix, linux} ->
+                V6Opts = BaseOpts#{
+                    quic_opts => maps:merge(
+                        maps:get(quic_opts, BaseOpts, #{}),
+                        #{
+                            socket_backend => socket,
+                            backend => socket,
+                            reuseport => false,
+                            pool_size => 0,
+                            extra_socket_opts => [inet6, {ipv6_v6only, false}]
+                        }
+                    )
+                },
+                {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p~n"};
+            _ ->
+                {BaseOpts, "H3 QUIC: default listener opts (non-linux, no inet6 extra_socket_opts)~n"}
+        end,
+    error_logger:info_msg(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
+    case quic_h3:start_server(ServerName, Port, ServerOpts) of
         {ok, _Pid} = Ok ->
             Ok;
         {error, V6Reason} ->
