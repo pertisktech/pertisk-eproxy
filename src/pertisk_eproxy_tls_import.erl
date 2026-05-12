@@ -1,4 +1,4 @@
-%% @doc Write listener TLS PEM material to disk and return absolute paths.
+%% @doc Write listener TLS PEM material to stable data directory and return relative paths.
 -module(pertisk_eproxy_tls_import).
 
 -export([save_listener_pem/2]).
@@ -12,18 +12,15 @@ save_listener_pem(CertIn, KeyIn) ->
         {error, Msg} ->
             {error, Msg};
         ok ->
-            Priv = code:priv_dir(pertisk_eproxy),
-            Dir = filename:join(Priv, "tls"),
+            Dir = tls_data_dir(),
             case ensure_dir(Dir) of
                 ok ->
                     CertPath0 = filename:join(Dir, "listener.pem"),
                     KeyPath0 = filename:join(Dir, "listener.key"),
                     case {file:write_file(CertPath0, CertBin), file:write_file(KeyPath0, KeyBin)} of
                         {ok, ok} ->
-                            CertAbs = iolist_to_binary(filename:absname(CertPath0)),
-                            KeyAbs = iolist_to_binary(filename:absname(KeyPath0)),
                             _ = try file:change_mode(KeyPath0, 8#600) catch _:_ -> ok end,
-                            {ok, {CertAbs, KeyAbs}};
+                            {ok, {iolist_to_binary(CertPath0), iolist_to_binary(KeyPath0)}};
                         _ ->
                             {error, <<"failed to write PEM files">>}
                     end;
@@ -32,16 +29,19 @@ save_listener_pem(CertIn, KeyIn) ->
             end
     end.
 
+tls_data_dir() ->
+    case application:get_env(pertisk_eproxy, tls_data_dir) of
+        {ok, D} when is_list(D), D =/= [] -> D;
+        {ok, D} when is_binary(D), byte_size(D) > 0 -> binary_to_list(D);
+        _ -> filename:join("data", "tls")
+    end.
+
 ensure_dir(Dir) ->
-    case filelib:is_dir(Dir) of
-        true ->
+    case filelib:ensure_dir(filename:join(Dir, "x")) of
+        ok ->
             ok;
-        false ->
-            case file:make_dir(Dir) of
-                ok -> ok;
-                {error, eexist} -> ok;
-                {error, R} -> {error, R}
-            end
+        {error, R} ->
+            {error, R}
     end.
 
 validate(Cert, Key) when byte_size(Cert) < 32; byte_size(Key) < 32 ->

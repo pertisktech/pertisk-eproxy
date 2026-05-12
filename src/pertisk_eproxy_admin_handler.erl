@@ -842,7 +842,7 @@ effective_cert_pem_path(CertRow) ->
     CF = normalize_cert_file_value(CF0),
     case cert_file_path_ok(CF) of
         true ->
-            CF;
+            resolve_cert_path(CF);
         false ->
             case json_text(maps:get(source_type, CertRow, <<"acme">>)) of
                 <<"acme">> -> acme_stored_pem_path_from_name(maps:get(name, CertRow));
@@ -913,6 +913,29 @@ cert_file_path_ok(null) -> false;
 cert_file_path_ok(<<>>) -> false;
 cert_file_path_ok([]) -> false;
 cert_file_path_ok(_) -> true.
+
+resolve_cert_path(P0) when is_binary(P0) ->
+    resolve_cert_path(binary_to_list(P0));
+resolve_cert_path(P0) when is_list(P0) ->
+    case filelib:is_file(P0) of
+        true ->
+            P0;
+        false ->
+            %% Backward-compat for old DB rows that stored absolute _build/.../listener.pem paths.
+            %% After deploy/migration, prefer stable data/tls listener path.
+            case filename:basename(P0) of
+                "listener.pem" ->
+                    Fallback = filename:join(["data", "tls", "listener.pem"]),
+                    case filelib:is_file(Fallback) of
+                        true -> Fallback;
+                        false -> P0
+                    end;
+                _ ->
+                    P0
+            end
+    end;
+resolve_cert_path(P0) ->
+    P0.
 
 %% Challenge column text for ACME rows; includes staging hint when directory URL is LE staging.
 acme_dns_challenge_label() ->
