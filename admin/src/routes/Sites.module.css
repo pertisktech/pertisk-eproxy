@@ -686,6 +686,33 @@
   margin: 0;
 }
 
+.altSvcSupportBox {
+  margin-bottom: 0.85rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  border: 1px solid var(--border);
+}
+
+.altSvcSupportOk {
+  background: color-mix(in srgb, var(--color-green, #22c55e) 10%, var(--bg));
+  border-color: color-mix(in srgb, var(--color-green, #22c55e) 32%, var(--border));
+  color: var(--text);
+}
+
+.altSvcSupportWarn {
+  background: color-mix(in srgb, var(--color-yellow, #eab308) 14%, var(--bg));
+  border-color: color-mix(in srgb, var(--color-yellow, #eab308) 38%, var(--border));
+  color: var(--text);
+}
+
+.altSvcSupportMuted {
+  background: var(--bg-card);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
 .securitySectionWrap {
   display: grid;
   gap: 0.7rem;

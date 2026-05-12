@@ -8,6 +8,7 @@ import {
   type PathRewrite,
   type Backend,
   type CertificateRow,
+  type ManagementInfo,
   normalizeDnsProviders,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
@@ -90,6 +91,31 @@ function toFormPathType(pt: string | undefined): string {
   return 'ImplementationSpecific';
 }
 
+/** Same header-line format as pertisk-rproxy Settings / Sites. */
+function formatHeaderLines(headers: Record<string, string> | null | undefined): string {
+  if (!headers) return '';
+  return Object.entries(headers)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\n');
+}
+
+function parseHeaderLines(input: string): { headers: Record<string, string>; error?: string } {
+  const headers: Record<string, string> = {};
+  const lines = input.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf(':');
+    if (idx <= 0) {
+      return { headers, error: `Invalid header line: "${line}"` };
+    }
+    const name = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    headers[name] = value;
+  }
+  return { headers };
+}
+
 type DisplaySiteItem = {
   key: string;
   site: Site;
@@ -119,7 +145,8 @@ export default function Sites() {
   const [formChallengeType, setFormChallengeType] = useState<ChallengeType>('http-01');
   const [formWildcard, setFormWildcard] = useState(false);
   const [formAdvertiseHttp3, setFormAdvertiseHttp3] = useState(true);
-  const [formOverrideSecurityHeaders, setFormOverrideSecurityHeaders] = useState(false);
+  const [formSecurityMode, setFormSecurityMode] = useState<'inherit' | 'override'>('inherit');
+  const [formSecurityHeadersText, setFormSecurityHeadersText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
     normalizeViewMode(getCookieValue(VIEW_MODE_COOKIE)),
@@ -131,8 +158,17 @@ export default function Sites() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
   const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
+  const [managementInfo, setManagementInfo] = useState<ManagementInfo | null>(null);
   const toast = useToast();
   const wildcardLabel = wildcardDomainFromHost(formHost);
+
+  const altSvcSupport = useMemo(() => {
+    const caps = managementInfo?.runtime_capabilities;
+    const httpsPort = config?.https_port;
+    const hasHttps = typeof httpsPort === 'number' && httpsPort > 0;
+    const h3Listeners = Boolean(caps?.h3_api_gateway_config) || Boolean(caps?.proxy_http3_udp);
+    return { hasHttps, httpsPort: hasHttps ? httpsPort : null, h3Listeners };
+  }, [config?.https_port, managementInfo?.runtime_capabilities]);
 
   const sites = config?.sites ?? EMPTY_SITES;
   const backends = config?.backends ?? EMPTY_BACKENDS;
@@ -218,13 +254,15 @@ export default function Sites() {
     }
     setError(null);
     try {
-      const [nextConfig, certList] = await Promise.all([
+      const [nextConfig, certList, mgmt] = await Promise.all([
         api.config(),
         api.certificates.list().catch(() => [] as CertificateRow[]),
+        api.management().catch(() => null),
       ]);
       const certs = Array.isArray(certList) ? certList : [];
       setConfig(nextConfig);
       setIssuedTlsCerts(certs);
+      setManagementInfo(mgmt);
       sitesCache = {
         config: nextConfig,
         issuedTlsCerts: certs,
@@ -296,7 +334,8 @@ export default function Sites() {
     setFormChallengeType('http-01');
     setFormWildcard(false);
     setFormAdvertiseHttp3(true);
-    setFormOverrideSecurityHeaders(false);
+    setFormSecurityMode('inherit');
+    setFormSecurityHeadersText('');
     setFormError(null);
     setShowForm(true);
   }
@@ -329,7 +368,8 @@ export default function Sites() {
     setFormChallengeType(site.challenge_type === 'dns-01' ? 'dns-01' : 'http-01');
     setFormWildcard(Boolean(site.wildcard));
     setFormAdvertiseHttp3(site.advertise_http3 !== false);
-    setFormOverrideSecurityHeaders(false);
+    setFormSecurityMode(site.security_headers != null ? 'override' : 'inherit');
+    setFormSecurityHeadersText(formatHeaderLines(site.security_headers ?? undefined));
     setFormError(null);
     setShowForm(true);
   }
@@ -357,7 +397,8 @@ export default function Sites() {
     setFormChallengeType('http-01');
     setFormWildcard(false);
     setFormAdvertiseHttp3(true);
-    setFormOverrideSecurityHeaders(false);
+    setFormSecurityMode(site.security_headers != null ? 'override' : 'inherit');
+    setFormSecurityHeadersText(formatHeaderLines(site.security_headers ?? undefined));
     setFormError(null);
     setShowForm(true);
   }
@@ -411,6 +452,15 @@ export default function Sites() {
     if (formSslMode === 'auto_ssl' && formWildcard && formChallengeType !== 'dns-01') {
       setFormError('Wildcard certificate requires DNS-01 challenge.');
       return;
+    }
+    let securityHeaders: Record<string, string> | undefined;
+    if (formSecurityMode === 'override') {
+      const parsed = parseHeaderLines(formSecurityHeadersText);
+      if (parsed.error) {
+        setFormError(parsed.error);
+        return;
+      }
+      securityHeaders = parsed.headers;
     }
     const addr = normalizeUpstream(rawUpstream);
     let newBackends = [...backends];
@@ -483,6 +533,7 @@ export default function Sites() {
       acme_wildcard_base,
       advertise_http3: formAdvertiseHttp3,
       acme_contact_email,
+      ...(formSecurityMode === 'override' ? { security_headers: securityHeaders ?? {} } : {}),
     };
 
     const newSites =
@@ -1090,6 +1141,40 @@ export default function Sites() {
 
               <div className={styles.formSection}>
                 <h3 className={styles.sectionTitle}>Security headers</h3>
+                <div
+                  className={`${styles.altSvcSupportBox} ${
+                    !altSvcSupport.hasHttps
+                      ? styles.altSvcSupportWarn
+                      : !altSvcSupport.h3Listeners
+                        ? styles.altSvcSupportMuted
+                        : styles.altSvcSupportOk
+                  }`}
+                  role="status"
+                >
+                  {!altSvcSupport.hasHttps ? (
+                    <>
+                      <strong>No HTTPS listener configured.</strong> The <span className="mono">Alt-Svc</span> header is
+                      only attached to <strong>HTTPS</strong> responses. Enable TLS / an HTTPS port in Settings before
+                      this option can take effect.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Alt-Svc supported.</strong> With the option below on, HTTPS responses include{' '}
+                      <span className="mono">
+                        Alt-Svc: h3=&quot;:{altSvcSupport.httpsPort}&quot;; ma=86400
+                      </span>{' '}
+                      (HTTP/3 on the same TLS port).{' '}
+                      {altSvcSupport.h3Listeners ? (
+                        <>This node exposes HTTP/3 (QUIC), so clients can upgrade.</>
+                      ) : (
+                        <>
+                          QUIC HTTP/3 is not enabled in this deployment — clients may not successfully use HTTP/3 even if
+                          they see the header.
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
                 <div className={styles.securitySectionWrap}>
                   <label className={styles.securityOption}>
                     <input
@@ -1100,21 +1185,40 @@ export default function Sites() {
                     <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
                   </label>
                   <p className={styles.securityHintText}>
-                    Turn this off to force clients to stay on HTTP/1.1 or HTTP/2 for this host.
+                    <strong>Unchecked</strong>: no <span className="mono">Alt-Svc</span> header — traffic stays on{' '}
+                    <strong>HTTP/1.1</strong> or <strong>HTTP/2</strong> over TLS (ALPN: <span className="mono">http/1.1</span>{' '}
+                    or <span className="mono">h2</span>), not HTTP/3 from this host. Clients that cached a previous Alt-Svc
+                    may retry HTTP/3 until that cache expires.
                   </p>
                   <label className={styles.securityOption}>
                     <input
                       type="checkbox"
-                      checked={formOverrideSecurityHeaders}
-                      onChange={(e) => setFormOverrideSecurityHeaders(e.target.checked)}
+                      checked={formSecurityMode === 'override'}
+                      onChange={(e) => setFormSecurityMode(e.target.checked ? 'override' : 'inherit')}
                     />
                     <span className={styles.securityOptionTitle}>Override global security headers for this site</span>
                   </label>
-                  <p className={styles.securityHintText}>
-                    {formOverrideSecurityHeaders
-                      ? 'Custom per-site security headers are not yet persisted in eProxy.'
-                      : 'Using global security headers from Settings.'}
-                  </p>
+                  {formSecurityMode === 'override' ? (
+                    <>
+                      <textarea
+                        className={styles.textarea}
+                        value={formSecurityHeadersText}
+                        onChange={(e) => setFormSecurityHeadersText(e.target.value)}
+                        spellCheck={false}
+                        rows={8}
+                        placeholder="Strict-Transport-Security: max-age=63072000; includeSubDomains"
+                      />
+                      <p className={styles.securityHintText}>
+                        One header per line (<span className="mono">Name: value</span>). Use an empty value to remove a
+                        global header for this host. Per-site headers are merged on top of globals (same as pertisk-rproxy).
+                      </p>
+                    </>
+                  ) : (
+                    <p className={styles.securityHintText}>
+                      Using global security headers from config. Add per-site lines above when you need an overlay for this
+                      host only.
+                    </p>
+                  )}
                 </div>
               </div>
 

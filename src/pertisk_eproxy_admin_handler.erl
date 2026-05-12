@@ -665,15 +665,19 @@ config_to_json(Config) ->
         P when is_integer(P) -> Base#{<<"https_port">> => P};
         _ -> Base
     end,
-    WithQuic = case maps:get(quic_enabled, Config, undefined) of
-        V when is_boolean(V) -> WithHttps#{<<"quic_enabled">> => V};
+    WithAltSvc = case maps:get(alt_svc_port, Config, undefined) of
+        Pa when is_integer(Pa) -> WithHttps#{<<"alt_svc_port">> => Pa};
         _ -> WithHttps
+    end,
+    WithQuic = case maps:get(quic_enabled, Config, undefined) of
+        V when is_boolean(V) -> WithAltSvc#{<<"quic_enabled">> => V};
+        _ -> WithAltSvc
     end,
     WithQuicPort = case maps:get(quic_port, Config, undefined) of
         Pq when is_integer(Pq) -> WithQuic#{<<"quic_port">> => Pq};
         _ -> WithQuic
     end,
-    case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
+    WithTls = case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
         {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->
             WithQuicPort#{
                 <<"tls_cert_file">> => json_text(Cf),
@@ -681,6 +685,12 @@ config_to_json(Config) ->
             };
         _ ->
             WithQuicPort
+    end,
+    case maps:get(security_headers, Config, #{}) of
+        G when is_map(G), map_size(G) > 0 ->
+            WithTls#{<<"security_headers">> => G};
+        _ ->
+            WithTls
     end.
 
 site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
@@ -715,9 +725,20 @@ site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
         undefined -> WithHttp3;
         WB -> WithHttp3#{acme_wildcard_base => json_text(WB)}
     end,
-    case maps:get(acme_contact_email, Site, undefined) of
+    WithContact = case maps:get(acme_contact_email, Site, undefined) of
         undefined -> WithWildcardBase;
         E -> WithWildcardBase#{acme_contact_email => json_text(E)}
+    end,
+    WithOverride = case maps:get(override_security_headers, Site, undefined) of
+        undefined -> WithContact;
+        Ov when is_boolean(Ov) -> WithContact#{override_security_headers => Ov};
+        _ -> WithContact
+    end,
+    case maps:find(security_headers, Site) of
+        {ok, SH} when is_map(SH) ->
+            WithOverride#{security_headers => SH};
+        _ ->
+            WithOverride
     end.
 
 route_to_json(R) ->
@@ -764,7 +785,7 @@ parse_site(Body) ->
         path_type => parse_path_type(maps:get(<<"path_type">>, R, <<"prefix">>)),
         rewrite   => maps:get(<<"rewrite">>, R, undefined)
     } || R <- maps:get(<<"routes">>, Body, [])],
-    #{
+    Base = #{
         host    => maps:get(<<"host">>, Body),
         backend => maps:get(<<"backend">>, Body),
         certificate => optional_string(maps:get(<<"certificate">>, Body, null)),
@@ -775,7 +796,27 @@ parse_site(Body) ->
         advertise_http3 => optional_bool(maps:get(<<"advertise_http3">>, Body, true)),
         acme_contact_email => optional_string(maps:get(<<"acme_contact_email">>, Body, null)),
         routes  => Routes
-    }.
+    },
+    WithLegacy = case maps:get(<<"override_security_headers">>, Body, undefined) of
+        undefined ->
+            Base;
+        V ->
+            Ov = case V of
+                true -> true;
+                _ -> false
+            end,
+            Base#{override_security_headers => Ov}
+    end,
+    case maps:get(<<"security_headers">>, Body, undefined) of
+        undefined ->
+            WithLegacy;
+        null ->
+            WithLegacy;
+        M when is_map(M) ->
+            WithLegacy#{security_headers => pertisk_eproxy_security_headers:parse_json_object(M)};
+        _ ->
+            WithLegacy
+    end.
 
 parse_backend(Body) ->
     #{
@@ -1093,7 +1134,17 @@ bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
 bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).
 
 with_alt_svc(Req, Headers) ->
-    case cowboy_req:port(Req) of
-        443 -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
-        _ -> Headers
+    Scheme = cowboy_req:scheme(Req),
+    Https = Scheme =:= https orelse Scheme =:= <<"https">>,
+    case Https of
+        false ->
+            Headers;
+        true ->
+            case pertisk_eproxy_handler:alt_svc_advertised_port(Req) of
+                P when is_integer(P), P > 0 ->
+                    Alt = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [P])),
+                    Headers#{<<"alt-svc">> => Alt};
+                _ ->
+                    Headers
+            end
     end.

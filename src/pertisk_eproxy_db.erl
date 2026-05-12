@@ -73,6 +73,8 @@ init_schema(DbPath) ->
         acme_wildcard_base TEXT,
         advertise_http3 INTEGER DEFAULT 1,
         acme_contact_email TEXT,
+        override_security_headers INTEGER DEFAULT 0,
+        security_headers_json TEXT NOT NULL DEFAULT '{}',
         routes_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE IF NOT EXISTS certificates (
@@ -264,9 +266,23 @@ ensure_sites_projection_table(DbPath) ->
         "acme_wildcard_base TEXT,"
         "advertise_http3 INTEGER DEFAULT 1,"
         "acme_contact_email TEXT,"
+        "override_security_headers INTEGER DEFAULT 0,"
+        "security_headers_json TEXT NOT NULL DEFAULT '{}',"
         "routes_json TEXT NOT NULL DEFAULT '[]'"
         ");",
-    sqlite_exec(DbPath, SQL).
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            ensure_sites_security_headers_columns(DbPath);
+        Err ->
+            Err
+    end.
+
+ensure_sites_security_headers_columns(DbPath) ->
+    _ = sqlite_exec_ignore_duplicate_column(DbPath,
+        "ALTER TABLE sites ADD COLUMN override_security_headers INTEGER DEFAULT 0"),
+    _ = sqlite_exec_ignore_duplicate_column(DbPath,
+        "ALTER TABLE sites ADD COLUMN security_headers_json TEXT NOT NULL DEFAULT '{}'"),
+    ok.
 
 sync_sites_projection(DbPath, Sites) when is_list(Sites) ->
     case ensure_sites_projection_table(DbPath) of
@@ -290,12 +306,15 @@ insert_site_projection(DbPath, S) when is_map(S) ->
     WildcardBase = sql_escape(opt_text(maps:get(acme_wildcard_base, S, undefined))),
     AdvertiseHttp3 = bool_to_int(maps:get(advertise_http3, S, true)),
     ContactEmail = sql_escape(opt_text(maps:get(acme_contact_email, S, undefined))),
+    OverrideSec = bool_to_int(maps:get(override_security_headers, S, false)),
+    SecHeaders = maps:get(security_headers, S, #{}),
+    SecJson = sql_escape(binary_to_list(thoas:encode(SecHeaders))),
     RoutesJson = sql_escape(binary_to_list(thoas:encode(maps:get(routes, S, [])))),
     SQL =
-        "INSERT INTO sites(host,backend,certificate,dns_provider,challenge_type,wildcard,acme_wildcard_base,advertise_http3,acme_contact_email,routes_json) VALUES('" ++
+        "INSERT INTO sites(host,backend,certificate,dns_provider,challenge_type,wildcard,acme_wildcard_base,advertise_http3,acme_contact_email,override_security_headers,security_headers_json,routes_json) VALUES('" ++
         Host ++ "','" ++ Backend ++ "','" ++ Certificate ++ "','" ++ DnsProvider ++ "','" ++ ChallengeType ++ "'," ++
         integer_to_list(Wildcard) ++ ",'" ++ WildcardBase ++ "'," ++ integer_to_list(AdvertiseHttp3) ++ ",'" ++
-        ContactEmail ++ "','" ++ RoutesJson ++ "')",
+        ContactEmail ++ "'," ++ integer_to_list(OverrideSec) ++ ",'" ++ SecJson ++ "','" ++ RoutesJson ++ "')",
     sqlite_exec(DbPath, SQL);
 insert_site_projection(_DbPath, _) ->
     ok.

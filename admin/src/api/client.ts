@@ -36,6 +36,13 @@ export interface Site {
   acme_wildcard_base?: string | null;
   advertise_http3?: boolean | null;
   acme_contact_email?: string | null;
+  /**
+   * Optional per-site overlay on global `security_headers` (same as pertisk-rproxy).
+   * Omit to inherit only globals. Empty string value removes that global header for this site.
+   */
+  security_headers?: Record<string, string> | null;
+  /** @deprecated Legacy: when true, only this map applies (no global merge). Prefer overlay-only `security_headers`. */
+  override_security_headers?: boolean | null;
   routes: PathRewrite[];
 }
 
@@ -77,6 +84,8 @@ export interface ProxyConfig {
   quic_port?: number | null;
   tls_cert_file?: string | null;
   tls_key_file?: string | null;
+  /** Global security headers merged onto proxied responses unless a site sets `override_security_headers`. */
+  security_headers?: Record<string, string>;
 }
 
 /** DNS provider row (rproxy-compatible shape; eProxy stores names in `dns_providers` only). */

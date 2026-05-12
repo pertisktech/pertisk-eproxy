@@ -470,6 +470,9 @@
     server_cert :: binary() | undefined,
     server_cert_chain = [] :: [binary()],
     server_private_key :: term() | undefined,
+    %% Optional: pick cert/key after parsing ClientHello SNI (eProxy / multi-tenant H3).
+    sni_cert_selector = undefined ::
+        undefined | fun((binary() | undefined) -> {binary(), [binary()], term()} | undefined),
     %% Server preferred address config (RFC 9000 Section 9.6)
     %% Set from listener options: {IPv4, IPv6} where each is {Addr, Port} | undefined
     server_preferred_address :: #preferred_address{} | undefined,
@@ -996,6 +999,7 @@ init({server, Opts}) ->
         server_cert = Cert,
         server_cert_chain = CertChain,
         server_private_key = PrivateKey,
+        sni_cert_selector = maps:get(sni_cert_selector, Opts, undefined),
         server_preferred_address = build_server_preferred_address(Opts),
         cid_config = maps:get(cid_config, Opts, undefined),
         congestion_threshold = maps:get(congestion_threshold, Opts, 2),
@@ -4348,6 +4352,33 @@ process_tls_data(Level, Data, State) ->
     State1 = State#state{tls_buffer = maps:put(Level, <<>>, State#state.tls_buffer)},
     process_tls_messages(Level, FullData, State1).
 
+%% Apply per-connection QUIC server certificate based on TLS ClientHello SNI.
+apply_quic_sni_cert(State, ClientHelloInfo) ->
+    Sn = maps:get(server_name, ClientHelloInfo, undefined),
+    case State#state.sni_cert_selector of
+        undefined ->
+            State#state{server_name = Sn};
+        Fun when is_function(Fun, 1) ->
+            try Fun(Sn) of
+                undefined ->
+                    State#state{server_name = Sn};
+                {CertDer, Chain, PrivKey} when is_binary(CertDer), is_list(Chain) ->
+                    State#state{
+                        server_cert = CertDer,
+                        server_cert_chain = Chain,
+                        server_private_key = PrivKey,
+                        server_name = Sn
+                    };
+                _ ->
+                    State#state{server_name = Sn}
+            catch
+                _:_ ->
+                    State#state{server_name = Sn}
+            end;
+        _ ->
+            State#state{server_name = Sn}
+    end.
+
 %% Process TLS messages
 process_tls_messages(_Level, <<>>, State) ->
     State;
@@ -4498,6 +4529,7 @@ process_tls_message(
                 early_keys = EarlyKeys,
                 early_data_accepted = (EarlyKeys =/= undefined andalso WantsEarlyData)
             },
+            State0a = apply_quic_sni_cert(State0, ClientHelloInfo),
             %% Apply peer transport params (extracts active_connection_id_limit).
             %% Always send ServerHello + handshake flight so the peer can
             %% derive handshake keys; if a TP violation was flagged,
@@ -4505,7 +4537,7 @@ process_tls_message(
             %% Always send ServerHello + handshake flight so the peer can
             %% derive handshake keys; if a TP violation was flagged,
             %% maybe_emit_pending_close/1 emits CONNECTION_CLOSE afterward.
-            State1 = apply_peer_transport_params(TP, State0),
+            State1 = apply_peer_transport_params(TP, State0a),
             State2 = send_server_hello(ServerHello, State1),
             State3 = send_server_handshake_flight(Cipher, TranscriptHash, State2),
             maybe_emit_pending_close(State3);

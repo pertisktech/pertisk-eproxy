@@ -259,6 +259,8 @@ json_to_config(Json) ->
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
         http_port       => maps:get(<<"http_port">>, Json, 8080),
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
+        %% Optional: port in Alt-Svc for HTTP/3 when it differs from the TLS bind port (e.g. LB publishes 443, container listens on 8443).
+        alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"127.0.0.1">>)),
@@ -268,7 +270,8 @@ json_to_config(Json) ->
         sites           => Sites,
         backends        => Backends,
         certificates    => Certificates,
-        dns_providers   => DnsProviders
+        dns_providers   => DnsProviders,
+        security_headers => pertisk_eproxy_security_headers:parse_json_object(maps:get(<<"security_headers">>, Json, null))
     },
     maps:filter(fun(_K, V) -> V =/= undefined end, Config).
 
@@ -279,7 +282,7 @@ parse_sites(In) ->
     [parse_site(S) || S <- json_as_list(In), is_map(S)].
 
 parse_site(S) ->
-    #{
+    Base = #{
         host    => maps:get(<<"host">>,    S),
         backend => maps:get(<<"backend">>, S),
         certificate => parse_opt_str(maps:get(<<"certificate">>, S, null)),
@@ -290,7 +293,27 @@ parse_site(S) ->
         acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
         advertise_http3 => parse_opt_bool(maps:get(<<"advertise_http3">>, S, true)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
-    }.
+    },
+    WithLegacy = case maps:get(<<"override_security_headers">>, S, undefined) of
+        undefined ->
+            Base;
+        V ->
+            Base#{override_security_headers => parse_override_security_headers(V)}
+    end,
+    case maps:get(<<"security_headers">>, S, undefined) of
+        undefined ->
+            WithLegacy;
+        null ->
+            WithLegacy;
+        M when is_map(M) ->
+            WithLegacy#{security_headers => pertisk_eproxy_security_headers:parse_json_object(M)};
+        _ ->
+            WithLegacy
+    end.
+
+parse_override_security_headers(true) -> true;
+parse_override_security_headers(false) -> false;
+parse_override_security_headers(_) -> false.
 
 parse_routes(In) ->
     [parse_route(R) || R <- json_as_list(In), is_map(R)].

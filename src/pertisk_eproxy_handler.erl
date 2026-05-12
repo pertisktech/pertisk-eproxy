@@ -15,7 +15,7 @@
 -module(pertisk_eproxy_handler).
 -behaviour(cowboy_handler).
 
--export([init/2, parse_upstream/1]).
+-export([init/2, parse_upstream/1, alt_svc_advertised_port/1]).
 
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
@@ -57,10 +57,13 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
     T0 = erlang:monotonic_time(millisecond),
     Vsn = cowboy_req:version(Req),
     Proto = cowboy_req_proto_metric(Req),
+    Scheme = cowboy_req:scheme(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
-            H404 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+            H404 = maybe_add_alt_svc(Req, Host,
+                pertisk_eproxy_security_headers:merge_response_headers(Host,
+                    #{<<"content-type">> => <<"text/plain">>}, Scheme)),
             Req2 = cowboy_req:reply(404, H404,
                                     <<"No route found for host: ", Host/binary>>, Req),
             log_access(Host, Method, Path, 404, T0, Vsn, <<>>),
@@ -70,7 +73,9 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
                     pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
-                    H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                    H502 = maybe_add_alt_svc(Req, Host,
+                        pertisk_eproxy_security_headers:merge_response_headers(Host,
+                            #{<<"content-type">> => <<"text/plain">>}, Scheme)),
                     Req2 = cowboy_req:reply(502, H502,
                                             <<"Bad Gateway: no healthy upstream">>, Req),
                     log_access(Host, Method, Path, 502, T0, Vsn, <<>>),
@@ -90,7 +95,9 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
                             lager:warning("Proxy error ~p for ~s~s -> ~s",
                                           [Reason, Host, Path, UpstreamAddr]),
-                            H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                            H502 = maybe_add_alt_svc(Req, Host,
+                                pertisk_eproxy_security_headers:merge_response_headers(Host,
+                                    #{<<"content-type">> => <<"text/plain">>}, Scheme)),
                             Req2 = cowboy_req:reply(502, H502,
                                                     <<"Bad Gateway">>, Req),
                             log_access(Host, Method, Path, 502, T0, Vsn, UpstreamAddr),
@@ -134,6 +141,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
     end.
 
 do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
+    Scheme = cowboy_req:scheme(Req),
     HeadersMap = forward_headers(Req, Host, ClientIp),
     Headers = maps:to_list(HeadersMap),
     {ok, Body} = read_body(Req),
@@ -147,13 +155,15 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
             RespBin = iolist_to_binary(RespBody),
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
             RawHeaders  = headers_to_map(RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
+            SecHeaders = pertisk_eproxy_security_headers:merge_response_headers(Host, RawHeaders, Scheme),
+            CowboyHeaders = maybe_add_alt_svc(Req, Host, SecHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req),
             {ok, Status, Req2};
         {response, fin, Status, RespHeaders} ->
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
             RawHeaders = headers_to_map(RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
+            SecHeaders = pertisk_eproxy_security_headers:merge_response_headers(Host, RawHeaders, Scheme),
+            CowboyHeaders = maybe_add_alt_svc(Req, Host, SecHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),
             {ok, Status, Req2};
         {error, Reason} ->
@@ -263,33 +273,37 @@ method_to_gun(<<"OPTIONS">>) -> <<"OPTIONS">>;
 method_to_gun(M)             -> M.
 
 maybe_add_alt_svc(Req, Host, Headers) ->
-    case {cowboy_req:port(Req), site_advertise_http3(Host)} of
-        {443, true} -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
-        _ -> Headers
+    Scheme = cowboy_req:scheme(Req),
+    Https = Scheme =:= https orelse Scheme =:= <<"https">>,
+    Port = alt_svc_advertised_port(Req),
+    case {Https, Port, site_advertise_http3(Host)} of
+        {true, P, true} when is_integer(P), P > 0 ->
+            Alt = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [P])),
+            Headers#{<<"alt-svc">> => Alt};
+        _ ->
+            Headers
+    end.
+
+%% @doc Port advertised in {@code Alt-Svc} for QUIC (may differ from {@link cowboy_req:port/1} behind a reverse proxy).
+-spec alt_svc_advertised_port(cowboy_req:req()) -> pos_integer().
+alt_svc_advertised_port(Req) ->
+    Cfg = pertisk_eproxy_config:get_config(),
+    case maps:get(alt_svc_port, Cfg, undefined) of
+        P when is_integer(P), P > 0 ->
+            P;
+        _ ->
+            case maps:get(https_port, Cfg, undefined) of
+                P2 when is_integer(P2), P2 > 0 ->
+                    P2;
+                _ ->
+                    cowboy_req:port(Req)
+            end
     end.
 
 site_advertise_http3(Host) ->
     Config = pertisk_eproxy_config:get_config(),
     Sites = maps:get(sites, Config, []),
-    case find_site_for_host(Sites, string:lowercase(Host)) of
+    case pertisk_eproxy_router:match_best_site(Sites, Host) of
         undefined -> true;
         Site -> maps:get(advertise_http3, Site, true) =/= false
     end.
-
-find_site_for_host([], _Host) -> undefined;
-find_site_for_host([Site | Rest], Host) ->
-    SiteHost = string:lowercase(maps:get(host, Site, <<>>)),
-    case host_matches(Host, SiteHost) of
-        true -> Site;
-        false -> find_site_for_host(Rest, Host)
-    end.
-
-host_matches(Host, <<"*.", Suffix/binary>>) ->
-    case binary:match(Host, <<".">>) of
-        nomatch -> false;
-        {Pos, _} ->
-            HostSuffix = binary:part(Host, Pos + 1, byte_size(Host) - Pos - 1),
-            HostSuffix =:= Suffix
-    end;
-host_matches(Host, SiteHost) ->
-    Host =:= SiteHost.

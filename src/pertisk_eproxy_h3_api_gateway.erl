@@ -29,6 +29,7 @@ start(Config) ->
     BaseOpts = #{
         cert => CertDer,
         key => KeyTerm,
+        sni_cert_selector => pertisk_eproxy_app:quic_sni_cert_selector(Config),
         settings => #{
             %% Force static QPACK to avoid dynamic table/base calculation
             %% interoperability failures seen from external clients.
@@ -55,6 +56,7 @@ start_probe(Config) ->
     ProbeOpts = #{
         cert => CertDer,
         key => KeyTerm,
+        sni_cert_selector => pertisk_eproxy_app:quic_sni_cert_selector(Config),
         handler => pertisk_eproxy_h3_probe_handler
     },
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
@@ -107,7 +109,13 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
-                                ok = quic_h3:send_response(H3Conn, StreamId, Status, RespHeaders),
+                                H3Hdrs0 = gun_resp_headers_to_h3(RespHeaders),
+                                H3HdrsMap = maps:from_list(H3Hdrs0),
+                                H3HdrsMergedMap = pertisk_eproxy_security_headers:merge_response_headers(
+                                    LogHost, H3HdrsMap, <<"https">>
+                                ),
+                                H3Hdrs = maps:to_list(H3HdrsMergedMap),
+                                ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Hdrs),
                                 _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
                                 ok;

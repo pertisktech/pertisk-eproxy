@@ -27,7 +27,10 @@ COPY --chown=pertisk:pertisk --from=builder /src/_build/prod/rel/pertisk_eproxy/
 
 USER pertisk
 
-EXPOSE 8080 8443 9080
+# TCP: HTTP / HTTPS / management. UDP on the HTTPS port is required for HTTP/3 (QUIC); map it explicitly, e.g.
+#   -p 8443:8443/tcp -p 8443:8443/udp
+# EXPOSE documents ports for orchestration; it does not open the firewall.
+EXPOSE 8080/tcp 8443/tcp 8443/udp 9080/tcp
 
 # Uses management listener (default 127.0.0.1:9080). Override in Compose/K8s if `management_port` differs.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \

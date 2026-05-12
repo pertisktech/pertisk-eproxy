@@ -722,7 +722,7 @@ build_server_quic_opts(Opts) ->
         alpn => [<<"h3">>]
     },
     %% TLS options (required for server)
-    TlsOpts = maps:with([cert, key, cacerts], Opts),
+    TlsOpts = maps:with([cert, key, cacerts, sni_cert_selector], Opts),
     %% Custom QUIC options
     QuicOpts = maps:get(quic_opts, Opts, #{}),
     Merged = maps:merge(maps:merge(BaseOpts, TlsOpts), QuicOpts),

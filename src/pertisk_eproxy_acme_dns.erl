@@ -94,11 +94,32 @@ acme_should_replace_site_certificate(Ref) ->
         Path ->
             case pertisk_eproxy_tls_cert_info:describe_listener_pem(Path) of
                 {ok, #{issuer := Iss}} ->
+                    %% Production / non-staging: keep existing cert (updates to routes etc. must not re-run ACME).
                     issuer_is_le_staging(Iss);
+                {ok, _} ->
+                    %% PEM decoded but no issuer field — still treat as present, do not re-issue.
+                    false;
                 _ ->
-                    ref_looks_like_acme_store(Ref)
+                    %% Parse/metadata failed: if fullchain.pem exists and looks valid, skip ACME on config saves.
+                    case pem_chain_file_looks_present(Path) of
+                        true ->
+                            false;
+                        false ->
+                            ref_looks_like_acme_store(Ref)
+                    end
             end
     end.
+
+%% Avoid spurious DNS-01 runs after auto-TLS already wrote certs (or openssl/public_key quirks hide issuer).
+pem_chain_file_looks_present(Path) when is_list(Path); is_binary(Path) ->
+    case file:read_file(Path) of
+        {ok, Bin} when byte_size(Bin) > 200 ->
+            binary:match(Bin, <<"BEGIN CERTIFICATE">>) =/= nomatch;
+        _ ->
+            false
+    end;
+pem_chain_file_looks_present(_) ->
+    false.
 
 ref_looks_like_acme_store(Ref) ->
     case ref_to_binary(Ref) of

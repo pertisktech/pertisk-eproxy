@@ -12,7 +12,7 @@
 
 -module(pertisk_eproxy_router).
 
--export([empty/0, build/1, route/2]).
+-export([empty/0, build/1, route/2, match_site_for_sni/2, match_best_site/2]).
 
 -export_type([router/0, route_match/0]).
 
@@ -61,6 +61,23 @@ build(Sites) ->
 
 %% Find the backend and upstream path for a (Host, Path) pair.
 %% Returns {ok, route_match()} or {error, no_route}.
+%% TLS/SNI and site-scoped policy use {@link match_best_site/2} so overlapping hosts resolve predictably.
+-spec match_site_for_sni([map()], binary()) -> {ok, map()} | error.
+match_site_for_sni(Sites, HostLower) when is_list(Sites), is_binary(HostLower) ->
+    case match_best_site(Sites, HostLower) of
+        undefined -> error;
+        Site -> {ok, Site}
+    end.
+
+%% @doc Pick the site row that best matches {@code Host}: exact hostname wins; otherwise the most specific
+%% wildcard ({@code *.a.b} beats {@code *.b}). Matches {@link route/2} host rules but avoids “first row in the
+%% config list wins” for overlapping patterns (e.g. HTTP/3 Alt-Svc toggles on a broad wildcard).
+-spec match_best_site([map()], binary()) -> map() | undefined.
+match_best_site(Sites, Host0) when is_list(Sites), is_binary(Host0) ->
+    Host = string:lowercase(Host0),
+    Matching = [S || S <- Sites, host_matches(Host, site_host_lower(S))],
+    rank_matching_sites(Host, Matching).
+
 -spec route(binary(), binary()) -> {ok, route_match()} | {error, no_route}.
 route(Host, Path0) ->
     Router = pertisk_eproxy_config:get_router(),
@@ -132,6 +149,42 @@ ensure_trailing_mode(Bin) ->
 
 to_binary(Bin) when is_binary(Bin) -> Bin;
 to_binary(List) when is_list(List) -> list_to_binary(List).
+
+site_host_lower(S) ->
+    string:lowercase(maps:get(host, S, <<>>)).
+
+rank_matching_sites(_Host, []) ->
+    undefined;
+rank_matching_sites(Host, Matches) ->
+    case [S || S <- Matches, site_host_lower(S) =:= Host] of
+        [S | _] ->
+            S;
+        [] ->
+            Ws = [S || S <- Matches, is_wildcard_host(site_host_lower(S))],
+            pick_longest_wildcard(Ws)
+    end.
+
+is_wildcard_host(<<"*.", _/binary>>) -> true;
+is_wildcard_host(_) -> false.
+
+pick_longest_wildcard([]) ->
+    undefined;
+pick_longest_wildcard([W]) ->
+    W;
+pick_longest_wildcard(Ws) ->
+    lists:foldl(
+        fun(Best, C) ->
+            case wildcard_suffix_len(site_host_lower(C)) > wildcard_suffix_len(site_host_lower(Best)) of
+                true -> C;
+                false -> Best
+            end
+        end,
+        hd(Ws),
+        tl(Ws)
+    ).
+
+wildcard_suffix_len(<<"*.", Suf/binary>>) -> byte_size(Suf);
+wildcard_suffix_len(_) -> 0.
 
 %% Host matching: exact or wildcard (*.example.com).
 host_matches(Host, <<"*.", Suffix/binary>>) ->

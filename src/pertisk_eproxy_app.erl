@@ -3,7 +3,7 @@
 -behaviour(application).
 
 -export([start/2, stop/1]).
--export([quic_noise_filter/2, reload_tls_listeners/0]).
+-export([quic_noise_filter/2, reload_tls_listeners/0, quic_sni_cert_selector/1]).
 
 start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
@@ -308,37 +308,91 @@ tls_opts(Config) ->
             Base = [{certfile, CertFile}, {keyfile, KeyFile},
              {versions, ['tlsv1.2', 'tlsv1.3']},
              {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}],
-            SniHosts = build_sni_hosts(Config),
-            case SniHosts of
-                [] -> Base;
-                _ -> Base ++ [{sni_hosts, SniHosts}]
-            end
-    end.
-
-build_sni_hosts(Config) ->
-    Sites = maps:get(sites, Config, []),
-    DbPath = pertisk_eproxy_config:db_file(),
-    CertRowsById = cert_rows_by_id(DbPath),
-    lists:reverse(
-        lists:foldl(
-            fun(Site, Acc) ->
-                Host = site_host_to_list(maps:get(host, Site, <<>>)),
-                case {Host, resolve_site_cert_paths(Site, CertRowsById)} of
-                    {[], _} ->
-                        Acc;
-                    {_, undefined} ->
-                        Acc;
-                    {H, {CertPath, KeyPath}} ->
-                        case lists:keymember(H, 1, Acc) of
-                            true -> Acc;
-                            false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+            %% sni_fun matches client SNI hostnames (including subdomains for wildcard sites).
+            %% Mutually exclusive with sni_hosts — required so "*.domain" sites work (static sni_hosts keys are literal).
+            DbPath = pertisk_eproxy_config:db_file(),
+            SniFun = fun(ServerName) ->
+                %% Fresh sites + cert rows on every handshake so hot `put_config` matches TCP TLS.
+                Sites = pertisk_eproxy_config:get_sites(),
+                CertRowsById = cert_rows_by_id(DbPath),
+                case ServerName of
+                    [] ->
+                        undefined;
+                    Name ->
+                        HostBin = server_name_to_host_bin(Name),
+                        case pertisk_eproxy_router:match_site_for_sni(Sites, HostBin) of
+                            error ->
+                                undefined;
+                            {ok, Site} ->
+                                case resolve_site_cert_paths(Site, CertRowsById) of
+                                    undefined ->
+                                        undefined;
+                                    {CertPath, KeyPath} ->
+                                        [{certfile, CertPath}, {keyfile, KeyPath}]
+                                end
                         end
                 end
             end,
-            [],
-            Sites
-        )
-    ).
+            Base ++ [{sni_fun, SniFun}]
+    end.
+
+server_name_to_host_bin(Name) when is_list(Name) ->
+    try
+        string:lowercase(unicode:characters_to_binary(Name, utf8))
+    catch _:_ ->
+        string:lowercase(list_to_binary(Name))
+    end;
+server_name_to_host_bin(Name) when is_binary(Name) ->
+    string:lowercase(Name);
+server_name_to_host_bin(_) ->
+    <<>>.
+
+%% @doc QUIC listener hook: return `{LeafDer, IntermediateDers, PrivateKey}' for ClientHello SNI, or `undefined' for default cert.
+-spec quic_sni_cert_selector(map()) ->
+    fun((binary() | undefined) -> {binary(), [binary()], term()} | undefined).
+quic_sni_cert_selector(_Config) ->
+    %% Do not capture sites/cert rows from startup: HTTP/3 must follow hot `put_config` like TCP TLS.
+    fun(Sni) ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Sites = pertisk_eproxy_config:get_sites(),
+        CertRowsById = cert_rows_by_id(DbPath),
+        HostBin = quic_sni_to_host(Sni),
+        case HostBin of
+            <<>> ->
+                undefined;
+            _ ->
+                case pertisk_eproxy_router:match_site_for_sni(Sites, HostBin) of
+                    error ->
+                        undefined;
+                    {ok, Site} ->
+                        case resolve_site_cert_paths(Site, CertRowsById) of
+                            undefined ->
+                                undefined;
+                            {Cp, Kp} ->
+                                case pertisk_eproxy_tls_import:pem_paths_to_quic_server_material(Cp, Kp) of
+                                    {ok, Triple} ->
+                                        Triple;
+                                    _ ->
+                                        undefined
+                                end
+                        end
+                end
+        end
+    end.
+
+quic_sni_to_host(undefined) ->
+    <<>>;
+quic_sni_to_host(B) when is_binary(B) ->
+    string:lowercase(B);
+quic_sni_to_host(L) when is_list(L) ->
+    try
+        string:lowercase(unicode:characters_to_binary(L, utf8))
+    catch
+        _:_ ->
+            string:lowercase(list_to_binary(L))
+    end;
+quic_sni_to_host(_) ->
+    <<>>.
 
 cert_rows_by_id(DbPath) ->
     case pertisk_eproxy_db:list_certificates(DbPath) of
@@ -356,13 +410,20 @@ resolve_site_cert_paths(Site, CertRowsById) ->
             acme_paths_for_name(Name);
         IdRef ->
             case maps:get(IdRef, CertRowsById, undefined) of
-                #{name := Name0} ->
-                    case cert_ref_to_binary(Name0) of
-                        <<"acme/", _/binary>> = Name1 -> acme_paths_for_name(Name1);
-                        _ -> undefined
-                    end;
-                _ ->
-                    undefined
+                undefined ->
+                    undefined;
+                Row ->
+                    case cert_ref_to_binary(maps:get(name, Row)) of
+                        <<"acme/", _/binary>> = Name1 ->
+                            acme_paths_for_name(Name1);
+                        _ ->
+                            case pertisk_eproxy_tls_import:ensure_certificate_row_pem_files(Row) of
+                                undefined ->
+                                    undefined;
+                                {ok, {CertPath, KeyPath}} ->
+                                    {CertPath, KeyPath}
+                            end
+                    end
             end
     end.
 
@@ -385,7 +446,3 @@ cert_ref_to_binary(V) when is_binary(V) -> V;
 cert_ref_to_binary(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
 cert_ref_to_binary(V) when is_integer(V) -> integer_to_binary(V);
 cert_ref_to_binary(_) -> undefined.
-
-site_host_to_list(H) when is_list(H) -> H;
-site_host_to_list(H) when is_binary(H) -> binary_to_list(H);
-site_host_to_list(_) -> [].
