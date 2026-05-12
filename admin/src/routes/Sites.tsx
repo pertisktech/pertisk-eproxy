@@ -317,7 +317,12 @@ export default function Sites() {
           }))
         : [{ path: '/', path_type: 'Prefix', rewrite: '/' }],
     );
-    setFormSslMode(site.certificate?.trim() ? 'existing_cert' : site.dns_provider?.trim() ? 'auto_ssl' : 'none');
+    const certRef = site.certificate?.trim() ?? '';
+    const hasAutoSslSignals =
+      Boolean(site.dns_provider?.trim()) ||
+      site.challenge_type === 'dns-01' ||
+      certRef.startsWith('acme/');
+    setFormSslMode(hasAutoSslSignals ? 'auto_ssl' : certRef ? 'existing_cert' : 'none');
     setFormCertName(site.certificate?.trim() ?? '');
     setFormDnsProviderName(site.dns_provider?.trim() ?? '');
     setFormContactEmail(site.acme_contact_email?.trim() ?? '');
@@ -392,11 +397,11 @@ export default function Sites() {
       return;
     }
     if (formSslMode === 'auto_ssl' && !formDnsProviderName.trim()) {
-      setFormError('Choose a DNS provider for Auto SSL.');
+      setFormError('Choose a DNS provider for Auto Generate SSL.');
       return;
     }
     if (formSslMode === 'auto_ssl' && !formContactEmail.trim()) {
-      setFormError('Contact email is required for Auto SSL.');
+      setFormError('Contact email is required for Auto Generate SSL.');
       return;
     }
     if (formSslMode === 'auto_ssl' && !formContactEmail.includes('@')) {
@@ -925,7 +930,7 @@ export default function Sites() {
                       <FaIcon className="fas fa-magic" aria-hidden />
                     </span>
                     <span>
-                      <span className={styles.sslChoiceTitle}>Auto SSL</span>
+                      <span className={styles.sslChoiceTitle}>Auto Generate SSL</span>
                       <span className={styles.sslChoiceText}>ACME / Let&apos;s Encrypt</span>
                     </span>
                   </label>
@@ -953,7 +958,7 @@ export default function Sites() {
                 )}
                 {formSslMode === 'auto_ssl' && (
                   <>
-                    <p className={styles.hint}>Certificate is issued automatically when you save (no restart).</p>
+                    <p className={styles.hint}>Certificate is generated automatically when you save (no restart).</p>
                     <label className={styles.label}>
                       Contact email (Let&apos;s Encrypt)
                       <input
