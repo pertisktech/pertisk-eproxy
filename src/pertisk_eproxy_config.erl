@@ -284,6 +284,7 @@ parse_site(S) ->
         dns_provider => parse_opt_str(maps:get(<<"dns_provider">>, S, null)),
         challenge_type => parse_opt_challenge_type(maps:get(<<"challenge_type">>, S, null)),
         wildcard => parse_opt_bool(maps:get(<<"wildcard">>, S, null)),
+        acme_wildcard_base => parse_opt_str(maps:get(<<"acme_wildcard_base">>, S, null)),
         acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
         advertise_http3 => parse_opt_bool(maps:get(<<"advertise_http3">>, S, true)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))

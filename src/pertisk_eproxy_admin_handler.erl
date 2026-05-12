@@ -711,9 +711,13 @@ site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
         V2 when is_boolean(V2) -> WithWildcard#{advertise_http3 => V2};
         _ -> WithWildcard
     end,
-    case maps:get(acme_contact_email, Site, undefined) of
+    WithWildcardBase = case maps:get(acme_wildcard_base, Site, undefined) of
         undefined -> WithHttp3;
-        E -> WithHttp3#{acme_contact_email => json_text(E)}
+        WB -> WithHttp3#{acme_wildcard_base => json_text(WB)}
+    end,
+    case maps:get(acme_contact_email, Site, undefined) of
+        undefined -> WithWildcardBase;
+        E -> WithWildcardBase#{acme_contact_email => json_text(E)}
     end.
 
 route_to_json(R) ->
@@ -767,6 +771,7 @@ parse_site(Body) ->
         dns_provider => optional_string(maps:get(<<"dns_provider">>, Body, null)),
         challenge_type => optional_challenge_type(maps:get(<<"challenge_type">>, Body, null)),
         wildcard => optional_bool(maps:get(<<"wildcard">>, Body, null)),
+        acme_wildcard_base => optional_string(maps:get(<<"acme_wildcard_base">>, Body, null)),
         advertise_http3 => optional_bool(maps:get(<<"advertise_http3">>, Body, true)),
         acme_contact_email => optional_string(maps:get(<<"acme_contact_email">>, Body, null)),
         routes  => Routes

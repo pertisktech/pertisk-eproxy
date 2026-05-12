@@ -424,16 +424,26 @@ zone_lookup_host(<<$*, $., Rest/binary>>) ->
 zone_lookup_host(H) ->
     H.
 
-%% Wildcard + apex: identifiers *.HOST and HOST (DNS-01 for both uses _acme-challenge.<HOST>).
-%% For a cert covering *.arm.example.com, set site host to arm.example.com with wildcard true
-%% (not admin.arm.example.com unless you only want *.admin.arm.example.com).
+%% Wildcard + apex: identifiers *.BASE and BASE (DNS-01 for both uses _acme-challenge.<BASE>).
+%% BASE defaults to site host, and can be overridden with site.acme_wildcard_base from admin UI.
 site_identifiers(Site, Host) ->
     case maps:get(wildcard, Site, false) of
         true ->
-            Base = zone_lookup_host(Host),
+            Base0 = maps:get(acme_wildcard_base, Site, wildcard_default_base(Host)),
+            Base = zone_lookup_host(iolist_to_binary(Base0)),
             [<<"*.", Base/binary>>, Base];
         _ ->
             [Host]
+    end.
+
+wildcard_default_base(Host) when is_binary(Host) ->
+    H = zone_lookup_host(Host),
+    Parts = [P || P <- binary:split(H, <<".">>, [global]), P =/= <<>>],
+    case length(Parts) >= 3 of
+        true ->
+            iolist_to_binary(lists:join(<<".">>, tl(Parts)));
+        false ->
+            H
     end.
 
 acme_directory() ->

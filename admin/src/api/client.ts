@@ -33,6 +33,7 @@ export interface Site {
   dns_provider?: string | null;
   challenge_type?: 'http-01' | 'dns-01' | null;
   wildcard?: boolean | null;
+  acme_wildcard_base?: string | null;
   advertise_http3?: boolean | null;
   acme_contact_email?: string | null;
   routes: PathRewrite[];

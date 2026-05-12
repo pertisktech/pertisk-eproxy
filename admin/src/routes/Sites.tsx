@@ -69,6 +69,11 @@ function wildcardDomainFromHost(host: string): string {
   return `*.${h}`;
 }
 
+function wildcardBaseFromHost(host: string): string {
+  const wildcard = wildcardDomainFromHost(host);
+  return wildcard.startsWith('*.') ? wildcard.slice(2) : wildcard;
+}
+
 /** Map UI path type to eProxy API (lowercase). */
 function toApiPathType(pt: string): 'prefix' | 'exact' {
   const u = (pt || 'Prefix').toLowerCase();
@@ -393,7 +398,6 @@ export default function Sites() {
       setFormError('Wildcard certificate requires DNS-01 challenge.');
       return;
     }
-
     const addr = normalizeUpstream(rawUpstream);
     let newBackends = [...backends];
     const baseName =
@@ -450,6 +454,8 @@ export default function Sites() {
     const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : null;
     const challenge_type = formSslMode === 'auto_ssl' ? formChallengeType : null;
     const wildcard = formSslMode === 'auto_ssl' ? formWildcard : false;
+    const acme_wildcard_base =
+      formSslMode === 'auto_ssl' && formWildcard ? wildcardBaseFromHost(host) : null;
     const acme_contact_email = formSslMode === 'auto_ssl' ? formContactEmail.trim() || null : null;
 
     const newSite: Site = {
@@ -460,6 +466,7 @@ export default function Sites() {
       dns_provider,
       challenge_type,
       wildcard,
+      acme_wildcard_base,
       advertise_http3: formAdvertiseHttp3,
       acme_contact_email,
     };
@@ -986,11 +993,19 @@ export default function Sites() {
                         onChange={(e) => {
                           const checked = e.target.checked;
                           setFormWildcard(checked);
-                          if (checked) setFormChallengeType('dns-01');
+                          if (checked) {
+                            setFormChallengeType('dns-01');
+                          }
                         }}
                       />
                       {`Wildcard certificate (${wildcardLabel})`}
                     </label>
+                    {formWildcard && (
+                      <p className={styles.hint}>
+                        Wildcard is auto-generated for <code>*.{wildcardBaseFromHost(formHost)}</code> and{' '}
+                        <code>{wildcardBaseFromHost(formHost)}</code>.
+                      </p>
+                    )}
                   </>
                 )}
               </div>
