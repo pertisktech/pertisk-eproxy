@@ -605,6 +605,11 @@
   background: var(--color-bg);
 }
 
+/* Settings: extra gap below utility bar; slightly tighter horizontal padding for wide API table */
+.mainSettings {
+  padding: calc(var(--header-h) + 1rem) 0.65rem 0.75rem;
+}
+
 .mainAmbient {
   display: none;
 }
@@ -801,5 +806,9 @@
 
   .main {
     padding: var(--header-h) 0.75rem 0.75rem;
+  }
+
+  .mainSettings {
+    padding: calc(var(--header-h) + 0.85rem) 0.5rem 0.65rem;
   }
 }

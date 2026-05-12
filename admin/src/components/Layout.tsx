@@ -75,10 +75,6 @@ const NAV_BOTTOM = [
   { to: '/settings', end: false, label: 'Settings', icon: 'fa-cog' },
 ];
 
-const NAV_DOCS = [
-  { href: '/api/docs', label: 'API docs', icon: 'fa-book' },
-];
-
 const ALL_NAV = [
   ...NAV_MAIN_ALL,
   ...NAV_BOTTOM,
@@ -498,24 +494,6 @@ function LayoutShell() {
             ))}
           </nav>
         </div>
-        <div className={styles.navSection}>
-          <div className={styles.navSectionLabel}>Reference</div>
-          <nav className={styles.sidebarNavBottom}>
-            {NAV_DOCS.map(({ href, label, icon }) => (
-              <a
-                key={href}
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={sidebarCollapsed ? label : undefined}
-                className={styles.sidebarLink}
-              >
-                <FaIcon className={`fas ${icon} ${styles.sidebarIcon}`} size={18} aria-hidden />
-                <span className={styles.sidebarLinkText}>{label}</span>
-              </a>
-            ))}
-          </nav>
-        </div>
       </aside>
       <div
         role="separator"
@@ -639,7 +617,10 @@ function LayoutShell() {
           )}
           </div>
         </div>
-        <main id="layout-main-scroll" className={styles.main}>
+        <main
+          id="layout-main-scroll"
+          className={`${styles.main} ${pathname === '/settings' ? styles.mainSettings : ''}`}
+        >
           <div className={styles.mainAmbient} aria-hidden />
           <div className={styles.mainContent}>
             <div className={styles.mainContentInner}>

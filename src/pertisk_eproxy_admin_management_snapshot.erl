@@ -40,6 +40,7 @@ snapshot() ->
         <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
         <<"https_addr">> => HttpsAddr,
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
+        <<"config_file">> => config_file_path_bin(),
         <<"db_path">> => iolist_to_binary(db_file_path()),
         <<"http_versions">> => http_versions_list(C),
         <<"loaded_tls_cert_info_beam">> => TlsInfoBeam,
@@ -63,6 +64,13 @@ db_file_path() ->
         {ok, F} when is_list(F) -> F;
         {ok, F} when is_binary(F) -> binary_to_list(F);
         _ -> "data/proxy.db"
+    end.
+
+config_file_path_bin() ->
+    case application:get_env(pertisk_eproxy, config_file) of
+        {ok, F} when is_list(F) -> list_to_binary(F);
+        {ok, F} when is_binary(F) -> F;
+        undefined -> <<"config/proxy.json">>
     end.
 
 http_versions_list(C) ->

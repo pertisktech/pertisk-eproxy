@@ -59,6 +59,35 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Scrollbar (aligned with pertisk-rproxy admin) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
+
+/* Firefox / standard track (WebKit rules above) */
+html,
+body,
+#layout-main-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
 a { color: var(--color-primary); text-decoration: none; }
 a:hover { color: var(--color-primary-hover); }
 
