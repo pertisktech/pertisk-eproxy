@@ -29,5 +29,9 @@ USER pertisk
 
 EXPOSE 8080 8443 9080
 
+# Uses management listener (default 127.0.0.1:9080). Override in Compose/K8s if `management_port` differs.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:9080/api/health || exit 1
+
 ENTRYPOINT ["bin/pertisk_eproxy"]
 CMD ["foreground"]

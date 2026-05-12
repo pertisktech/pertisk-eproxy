@@ -76,11 +76,12 @@ init(Backend = #{name := Name}) ->
     State2 = schedule_health_check(State),
     {ok, State2}.
 
-handle_call({pick, ClientIp}, _From, State = #{lb := LbState, algorithm := Algo}) ->
+handle_call({pick, ClientIp}, _From, State = #{lb := LbState, algorithm := Algo, name := Name}) ->
     case pertisk_eproxy_lb:next(LbState, Algo, ClientIp) of
         {ok, #{addr := Addr}, NewLb} ->
             %% Increment active connection count
             NewLb2 = increment_conns(Addr, NewLb),
+            ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb2, Addr)),
             {reply, {ok, Addr}, State#{lb => NewLb2}};
         {error, _} = Err ->
             {reply, Err, State}
@@ -97,8 +98,9 @@ handle_call(status, _From, State = #{lb := #{upstreams := Ups}, name := Name}) -
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
-handle_cast({done, Addr, _Result}, State = #{lb := LbState}) ->
+handle_cast({done, Addr, _Result}, State = #{lb := LbState, name := Name}) ->
     NewLb = decrement_conns(Addr, LbState),
+    ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb, Addr)),
     {noreply, State#{lb => NewLb}};
 
 handle_cast({update, NewBackend}, State) ->
@@ -217,6 +219,17 @@ parse_addr(Addr) ->
             {Host, Port};
         [Host] ->
             {Host, 80}
+    end.
+
+conn_for_addr(#{upstreams := Upstreams}, Addr) ->
+    conn_for_addr_scan(Upstreams, Addr).
+
+conn_for_addr_scan([], _Addr) -> 0;
+conn_for_addr_scan([U | Rest], Addr) ->
+    case U of
+        #{addr := A, conns := C} when A =:= Addr -> C;
+        #{addr := A} when A =:= Addr -> maps:get(conns, U, 0);
+        _ -> conn_for_addr_scan(Rest, Addr)
     end.
 
 increment_conns(Addr, LbState = #{upstreams := Upstreams}) ->

@@ -17,6 +17,7 @@
 -export([setup/0, start_link/0]).
 -export([inc_request/3, observe_duration/2,
          record_proxy_bytes/3,
+         set_upstream_conn/3,
          set_upstream_conns/2, set_upstream_healthy/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -86,6 +87,14 @@ record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Rec
     ok.
 observe_duration(Host, DurationMs) ->
     prometheus_histogram:observe(pertisk_eproxy_request_duration_ms, [Host], DurationMs).
+
+%% @doc Push one upstream's in-flight count immediately (pick/done path). Periodic
+%% {@link set_upstream_conns/2} from the metrics gen_server still reconciles drift.
+-spec set_upstream_conn(binary(), binary(), non_neg_integer()) -> ok.
+set_upstream_conn(Backend, Addr, Count) when is_binary(Backend), is_binary(Addr),
+                                               is_integer(Count), Count >= 0 ->
+    prometheus_gauge:set(pertisk_eproxy_upstream_connections, [Backend, Addr], Count),
+    ok.
 
 -spec set_upstream_conns(binary(), [{binary(), non_neg_integer()}]) -> ok.
 set_upstream_conns(Backend, UpstreamConns) ->

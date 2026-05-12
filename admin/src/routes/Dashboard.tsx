@@ -7,6 +7,7 @@ import {
   type ManagementInfo,
   type Metrics,
 } from '@/api/client';
+import { formatBeamCpuPct, formatPertiskVmCpuLine, pertiskVmCpuTooltip } from '@/utils/beamCpu';
 import styles from './Dashboard.module.css';
 
 type DashboardCache = {
@@ -26,24 +27,6 @@ function formatBytes(n: number | undefined | null): string {
   const mb = kb / 1024;
   if (mb < 1024) return `${mb.toFixed(1)} MiB`;
   return `${(mb / 1024).toFixed(2)} GiB`;
-}
-
-function formatBeamCpuPct(n: number | undefined | null): string {
-  if (n == null || !Number.isFinite(n)) return '—';
-  return `${n.toFixed(1)}%`;
-}
-
-function formatUptime(secs: number | undefined): string {
-  if (secs == null || !Number.isFinite(secs) || secs < 0) return '—';
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  const parts: string[] = [];
-  if (d) parts.push(`${d}d`);
-  if (h || d) parts.push(`${h}h`);
-  parts.push(`${m}m ${s}s`);
-  return parts.join(' ');
 }
 
 function formatTs(ms: number | null | undefined): string {
@@ -121,15 +104,6 @@ export default function Dashboard() {
       <div className={styles.hero}>
         <div>
           <h1 className={styles.heroTitle}>Dashboard</h1>
-          <p className={styles.heroSub}>
-            pertisk_eproxy <span className="mono">{management?.version ?? '—'}</span>
-            {management?.mode ? (
-              <>
-                {' '}
-                · mode <span className="mono">{management.mode}</span>
-              </>
-            ) : null}
-          </p>
         </div>
         <div className={styles.heroMeta}>
           <button
@@ -142,22 +116,9 @@ export default function Dashboard() {
           >
             <i className={`fas fa-sync-alt ${loading ? styles.heroRefreshSpin : ''}`} aria-hidden /> Refresh
           </button>
-          <span className={styles.heroPill} title="Wall-clock uptime since BEAM start">
-            <i className="fas fa-clock" aria-hidden /> {formatUptime(stats?.uptime_secs)}
-          </span>
-          {beamCpu != null && Number.isFinite(beamCpu) ? (
-            <span
-              className={styles.heroPill}
-              title="BEAM CPU: scheduler runtime ÷ wall time since the last sample. Can exceed 100% when using several cores."
-            >
-              <i className="fas fa-microchip" aria-hidden /> {formatBeamCpuPct(beamCpu)}
-            </span>
-          ) : null}
-          {memBytes != null ? (
-            <span className={styles.heroPill} title="BEAM total allocated memory (erlang:memory(total))">
-              <i className="fas fa-memory" aria-hidden /> {formatBytes(memBytes)}
-            </span>
-          ) : null}
+          <Link to="/metrics" className={styles.metricsLink}>
+            <i className="fas fa-chart-line" aria-hidden /> Metrics
+          </Link>
         </div>
       </div>
 
@@ -167,48 +128,64 @@ export default function Dashboard() {
         </div>
       ) : (
         <>
-          <div className={styles.grid}>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.purple}`}>
-                <i className="fas fa-globe" aria-hidden />
+          <div className={styles.glance}>
+            <div className={styles.glanceMetrics} role="group" aria-label="Key proxy metrics">
+              <div className={styles.metricTile}>
+                <div className={styles.metricTileVal}>{config?.sites?.length ?? 0}</div>
+                <div className={styles.metricTileLabel}>Sites</div>
               </div>
-              <div className={styles.statValue}>{config?.sites?.length ?? 0}</div>
-              <div className={styles.statLabel}>Sites</div>
+              <div className={styles.metricTile}>
+                <div className={styles.metricTileVal}>{config?.backends?.length ?? 0}</div>
+                <div className={styles.metricTileLabel}>Backends</div>
+              </div>
+              <div className={styles.metricTile}>
+                <div className={styles.metricTileVal}>{(stats?.http_requests_total ?? 0).toLocaleString()}</div>
+                <div className={styles.metricTileLabel}>Proxy requests (total)</div>
+              </div>
+              <div
+                className={`${styles.metricTile} ${styles.metricTileHint}`}
+                title="In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle."
+              >
+                <div className={styles.metricTileVal}>{stats?.active_connections ?? 0}</div>
+                <div className={styles.metricTileLabel}>Upstream in flight</div>
+              </div>
             </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.blue}`}>
-                <i className="fas fa-server" aria-hidden />
+
+            <div className={styles.glanceBottom}>
+              <div className={`card ${styles.panel}`}>
+                <h2 className={styles.panelTitle}>
+                  <i className="fas fa-memory" aria-hidden /> VM resources
+                </h2>
+                <dl className={styles.kv}>
+                  <dt>CPU</dt>
+                  <dd title={pertiskVmCpuTooltip(pi?.logical_processors)}>
+                    {beamCpu != null && Number.isFinite(beamCpu) ? (
+                      <>
+                        <div>{formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)}</div>
+                        <div className={styles.kvMuted}>Scheduler sample (internal): {formatBeamCpuPct(beamCpu)}</div>
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </dd>
+                  <dt>Memory</dt>
+                  <dd title="erlang:memory(total) — total allocated by the runtime.">
+                    {memBytes != null ? `${formatBytes(memBytes)} allocated` : '—'}
+                  </dd>
+                </dl>
               </div>
-              <div className={styles.statValue}>{config?.backends?.length ?? 0}</div>
-              <div className={styles.statLabel}>Backends</div>
-            </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.yellow}`}>
-                <i className="fas fa-exchange-alt" aria-hidden />
+
+              <div className={`card ${styles.panel}`}>
+                <h2 className={styles.panelTitle}>
+                  <i className="fas fa-plug" aria-hidden /> Runtime
+                </h2>
+                <dl className={styles.kv}>
+                  <dt>Hostname</dt>
+                  <dd className="mono">{pi?.hostname ?? '—'}</dd>
+                  <dt>Node</dt>
+                  <dd className="mono">{pi?.node ?? '—'}</dd>
+                </dl>
               </div>
-              <div className={styles.statValue}>{stats?.http_requests_total ?? 0}</div>
-              <div className={styles.statLabel}>HTTP requests (total)</div>
-            </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.green}`}>
-                <i className="fas fa-link" aria-hidden />
-              </div>
-              <div className={styles.statValue}>{stats?.active_connections ?? 0}</div>
-              <div className={styles.statLabel}>Upstream connections</div>
-            </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.orange}`}>
-                <i className="fas fa-microchip" aria-hidden />
-              </div>
-              <div className={styles.statValue}>{formatBeamCpuPct(beamCpu ?? null)}</div>
-              <div className={styles.statLabel}>BEAM CPU (recent)</div>
-            </div>
-            <div className={`card ${styles.statCard}`}>
-              <div className={`${styles.statIcon} ${styles.teal}`}>
-                <i className="fas fa-memory" aria-hidden />
-              </div>
-              <div className={styles.statValue}>{formatBytes(memBytes)}</div>
-              <div className={styles.statLabel}>BEAM memory</div>
             </div>
           </div>
 
@@ -254,12 +231,6 @@ export default function Dashboard() {
                 <dd>
                   {pi?.process_count ?? '—'} / {pi?.process_limit ?? '—'}
                 </dd>
-                <dt>CPU (BEAM)</dt>
-                <dd title="Scheduler runtime ÷ wall time since last sample; can exceed 100% on multi-core.">
-                  {formatBeamCpuPct(beamCpu ?? null)}
-                </dd>
-                <dt>Memory (allocated)</dt>
-                <dd title="erlang:memory(total) — total allocated by the runtime.">{formatBytes(memBytes)}</dd>
                 <dt>SMP / async threads</dt>
                 <dd>
                   {pi?.smp_enabled === true ? 'yes' : pi?.smp_enabled === false ? 'no' : '—'} · pool{' '}
@@ -428,7 +399,7 @@ export default function Dashboard() {
 
           <div className={styles.section}>
             <div className={styles.sectionTitle}>Sites</div>
-            <div className="card" style={{ padding: 0 }}>
+            <div className={`card ${styles.sitesCard}`}>
               {config?.sites?.length === 0 ? (
                 <div className={styles.emptySites}>
                   No sites configured. <Link to="/sites">Add one →</Link>

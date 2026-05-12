@@ -19,6 +19,7 @@ import {
   type ManagementInfo,
 } from '@/api/client';
 import { formatTimeOnly } from '@/utils/dateFormat';
+import { formatPertiskVmCpuLine } from '@/utils/beamCpu';
 import styles from './Metrics.module.css';
 
 const MAX_POINTS = 60; // 5 min at 5s interval
@@ -59,7 +60,10 @@ export interface MetricPoint {
   site_h3_requests_total: Record<string, number>;
   site_h3_vs_h2_ratio: Record<string, number>;
   cpu_percent: number | null;
+  /** Same source as Dashboard: erlang:memory(total) / process_memory_bytes. */
+  memory_bytes: number | null;
   memory_used_mb: number | null;
+  logical_processors: number | null;
 }
 
 interface HostProtocolRow {
@@ -88,10 +92,6 @@ interface ThroughputTrendPoint {
 
 function formatTime(ms: number): string {
   return formatTimeOnly(new Date(ms).toISOString());
-}
-
-function formatMemoryMb(value: number): string {
-  return `${value.toFixed(2)} MB`;
 }
 
 function formatThroughputKiB(value: number): string {
@@ -167,21 +167,18 @@ function localeInt(n: number | null | undefined): string {
   return num(n, 0).toLocaleString();
 }
 
-function selectBaselinePoint(history: MetricPoint[], windowMs: number): MetricPoint | null {
-  if (history.length < 2) return null;
-  const latest = history[history.length - 1];
-  for (let i = history.length - 2; i >= 0; i -= 1) {
-    if (latest.t - history[i].t >= windowMs) return history[i];
-  }
-  return history[history.length - 2] ?? null;
-}
-
-function memoryMbFromMgmt(mgmt: ManagementInfo): number | null {
+function memoryBytesFromMgmt(mgmt: ManagementInfo): number | null {
   const raw =
     mgmt.process_memory_bytes ??
     (typeof mgmt.process_info?.memory_total_bytes === 'number' ? mgmt.process_info.memory_total_bytes : null);
   if (raw == null || !Number.isFinite(Number(raw))) return null;
-  return Math.round((num(raw) / (1024 * 1024)) * 100) / 100;
+  return num(raw);
+}
+
+function memoryMbFromMgmt(mgmt: ManagementInfo): number | null {
+  const b = memoryBytesFromMgmt(mgmt);
+  if (b == null) return null;
+  return Math.round((b / (1024 * 1024)) * 100) / 100;
 }
 
 function buildMetricPoint(m: Metrics, mgmt: ManagementInfo, t: number): MetricPoint {
@@ -212,7 +209,10 @@ function buildMetricPoint(m: Metrics, mgmt: ManagementInfo, t: number): MetricPo
     site_h3_requests_total: m.site_h3_requests_total ?? {},
     site_h3_vs_h2_ratio: m.site_h3_vs_h2_ratio ?? {},
     cpu_percent: mgmt.process_cpu_usage_percent ?? null,
+    memory_bytes: memoryBytesFromMgmt(mgmt),
     memory_used_mb: memoryMbFromMgmt(mgmt),
+    logical_processors:
+      typeof mgmt.process_info?.logical_processors === 'number' ? mgmt.process_info.logical_processors : null,
   };
 }
 
@@ -400,53 +400,6 @@ export default function Metrics() {
       });
   }, [history]);
 
-  const currentSnapshot = useMemo(() => {
-    if (history.length === 0) return null;
-    const latest = history[history.length - 1];
-    const baseline = selectBaselinePoint(history, 30_000);
-
-    if (!baseline) {
-      return {
-        latest,
-        req_total_rps: null as number | null,
-        h2_rps: null as number | null,
-        h3_rps: null as number | null,
-        sent_kibps: null as number | null,
-        recv_kibps: null as number | null,
-        sampleWindowSec: null as number | null,
-      };
-    }
-
-    const seconds = (latest.t - baseline.t) / 1000;
-    const req_total_rps = deltaRate(
-      latest.http_requests_total + latest.https_requests_total + latest.grpc_requests_total,
-      baseline.http_requests_total + baseline.https_requests_total + baseline.grpc_requests_total,
-      seconds
-    );
-    const h2_rps = deltaRate(latest.h2_requests_total, baseline.h2_requests_total, seconds);
-    const h3_rps = deltaRate(latest.h3_requests_total, baseline.h3_requests_total, seconds);
-    const sent_kibps = deltaRate(latest.bytes_sent_total, baseline.bytes_sent_total, seconds) / 1024;
-    const recv_kibps = deltaRate(latest.bytes_received_total, baseline.bytes_received_total, seconds) / 1024;
-
-    return {
-      latest,
-      req_total_rps,
-      h2_rps,
-      h3_rps,
-      sent_kibps,
-      recv_kibps,
-      sampleWindowSec: seconds,
-    };
-  }, [history]);
-
-  const noProxyTrafficObserved = useMemo(() => {
-    if (!currentSnapshot) return false;
-    const latest = currentSnapshot.latest;
-    const total =
-      num(latest.http_requests_total) + num(latest.https_requests_total) + num(latest.grpc_requests_total);
-    return num(latest.uptime_secs) > 60 && total === 0;
-  }, [currentSnapshot]);
-
   if (error && history.length === 0) {
     return (
       <div className={styles.page}>
@@ -468,113 +421,6 @@ export default function Metrics() {
             backend exposes full counters.
           </span>
         </div>
-      )}
-
-      {currentSnapshot && (
-        <section className={styles.summarySection}>
-          <h2 className={styles.sectionTitle}>Current snapshot</h2>
-          <p className={styles.sectionSubtitle}>
-            {currentSnapshot.sampleWindowSec == null
-              ? 'Collecting traffic sample window…'
-              : `Rates are averaged over the last ${Math.max(1, Math.round(currentSnapshot.sampleWindowSec))}s`}
-          </p>
-          <div className={styles.summaryGrid}>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Uptime</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.uptime_secs)} s</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Active connections</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.active_connections)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>HTTP total</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.http_requests_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>HTTPS total</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.https_requests_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>gRPC total</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.grpc_requests_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Request rate</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.req_total_rps == null ? 'Collecting…' : formatRate(currentSnapshot.req_total_rps)}
-              </span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>H2 total</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.h2_requests_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>H3 total</span>
-              <span className={styles.summaryValue}>{localeInt(currentSnapshot.latest.h3_requests_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>H2 rate</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.h2_rps == null ? 'Collecting…' : formatRate(currentSnapshot.h2_rps)}
-              </span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>H3 rate</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.h3_rps == null ? 'Collecting…' : formatRate(currentSnapshot.h3_rps)}
-              </span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>H3/H2 ratio</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.h2_rps == null
-                  ? 'Collecting…'
-                  : currentSnapshot.h2_rps <= 0
-                    ? '—'
-                    : ((currentSnapshot.h3_rps ?? 0) / currentSnapshot.h2_rps).toFixed(3)}
-              </span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Sent total</span>
-              <span className={styles.summaryValue}>{formatBytes(currentSnapshot.latest.bytes_sent_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Received total</span>
-              <span className={styles.summaryValue}>{formatBytes(currentSnapshot.latest.bytes_received_total)}</span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Sent throughput</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.sent_kibps == null ? 'Collecting…' : formatThroughputKiB(currentSnapshot.sent_kibps)}
-              </span>
-            </div>
-            <div className={styles.summaryCard}>
-              <span className={styles.summaryLabel}>Received throughput</span>
-              <span className={styles.summaryValue}>
-                {currentSnapshot.recv_kibps == null ? 'Collecting…' : formatThroughputKiB(currentSnapshot.recv_kibps)}
-              </span>
-            </div>
-            {currentSnapshot.latest.cpu_percent != null && (
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>CPU</span>
-                <span className={styles.summaryValue}>{currentSnapshot.latest.cpu_percent.toFixed(2)}%</span>
-              </div>
-            )}
-            {currentSnapshot.latest.memory_used_mb != null && (
-              <div className={styles.summaryCard}>
-                <span className={styles.summaryLabel}>Memory</span>
-                <span className={styles.summaryValue}>{formatMemoryMb(currentSnapshot.latest.memory_used_mb)}</span>
-              </div>
-            )}
-          </div>
-          {noProxyTrafficObserved && (
-            <p className={styles.sectionSubtitle}>
-              No proxied traffic observed yet. Request totals count traffic through the reverse proxy (not the admin UI
-              or management API).
-            </p>
-          )}
-        </section>
       )}
 
       <section className={styles.chartSection}>
@@ -781,10 +627,21 @@ export default function Metrics() {
                   labelStyle={METRICS_TOOLTIP_LABEL}
                   itemStyle={METRICS_TOOLTIP_ITEM}
                   formatter={(value: unknown, name: string) => {
-                    if (name === 'CPU %')
-                      return [typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : '—', name];
-                    if (name === 'Memory (MB)')
-                      return [typeof value === 'number' && Number.isFinite(value) ? formatMemoryMb(value) : '—', name];
+                    if (name === 'CPU %') {
+                      const lp =
+                        history.length > 0 ? history[history.length - 1]?.logical_processors ?? null : null;
+                      return [
+                        typeof value === 'number' && Number.isFinite(value)
+                          ? `${value.toFixed(2)}% — ${formatPertiskVmCpuLine(value, lp)}`
+                          : '—',
+                        name,
+                      ];
+                    }
+                    if (name === 'Memory (MiB)')
+                      return [
+                        typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)} MiB` : '—',
+                        name,
+                      ];
                     return [
                       typeof value === 'number' && Number.isFinite(value) ? formatTooltipMetricValue(value) : '—',
                       name,
@@ -799,7 +656,7 @@ export default function Metrics() {
                   <Line yAxisId="left" type="monotone" dataKey="cpu_percent" name="CPU %" stroke="var(--color-dashboard-warning)" strokeWidth={2} dot={false} isAnimationActive={false} />
                 )}
                 {hasMemory && (
-                  <Line yAxisId="right" type="monotone" dataKey="memory_used_mb" name="Memory (MB)" stroke="var(--color-dashboard-metric-tertiary)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="memory_used_mb" name="Memory (MiB)" stroke="var(--color-dashboard-metric-tertiary)" strokeWidth={2} dot={false} isAnimationActive={false} />
                 )}
               </AreaChart>
             </ResponsiveContainer>

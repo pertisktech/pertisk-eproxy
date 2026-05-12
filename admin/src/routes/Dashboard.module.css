@@ -1,6 +1,10 @@
 .page {
   margin-top: 0;
-  padding-top: 0.75rem;
+  padding-top: 0.5rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .loadingWrap {
@@ -9,26 +13,25 @@
   padding: 3.75rem 1rem;
 }
 
+/* ---------- Hero ---------- */
 .hero {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 1rem 1.5rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
 }
 
 .heroTitle {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   font-weight: 700;
+  letter-spacing: -0.03em;
   color: var(--color-text);
-}
-
-.heroSub {
-  margin: 0.35rem 0 0;
-  font-size: 0.9375rem;
-  color: var(--color-muted);
+  line-height: 1.2;
 }
 
 .heroMeta {
@@ -41,30 +44,31 @@
 .heroRefresh {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.85rem;
-  border-radius: var(--radius-lg, 10px);
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius-md);
   font-family: inherit;
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   color: var(--color-text);
   background: var(--color-surface-elevated);
   border: 1px solid var(--color-border);
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .heroRefresh:hover:not(:disabled) {
-  background: var(--color-hover, color-mix(in srgb, var(--color-text) 6%, var(--color-surface-elevated)));
-  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
+  background: var(--color-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
 }
 
 .heroRefresh:disabled {
-  opacity: 0.65;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
 .heroRefreshSpin {
-  animation: heroSpin 0.8s linear infinite;
+  animation: heroSpin 0.75s linear infinite;
 }
 
 @keyframes heroSpin {
@@ -73,113 +77,147 @@
   }
 }
 
-.heroPill {
+.metricsLink {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: var(--radius-lg, 10px);
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-elevated));
-  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
   font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--color-text);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.statCard {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.statIcon {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  margin-bottom: 4px;
-}
-
-.statIcon.purple {
-  background: var(--color-primary-dim);
+.metricsLink:hover {
   color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
-.statIcon.green {
-  background: var(--color-green-dim);
-  color: var(--color-green);
+/* ---------- At a glance ---------- */
+.glance {
+  margin-bottom: 1.5rem;
 }
 
-.statIcon.yellow {
-  background: var(--color-yellow-dim);
-  color: var(--color-yellow);
+.glanceMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin-bottom: 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-elevated);
+  overflow: hidden;
 }
 
-.statIcon.blue {
-  background: rgba(96, 165, 250, 0.12);
-  color: var(--color-blue);
+.metricTile {
+  padding: 1rem 1.1rem;
+  min-width: 0;
+  border-right: 1px solid var(--color-border);
 }
 
-.statIcon.orange {
-  background: color-mix(in srgb, var(--color-warning, #f59e0b) 14%, transparent);
-  color: var(--color-warning, #f59e0b);
+.metricTile:last-child {
+  border-right: none;
 }
 
-.statIcon.teal {
-  background: rgba(45, 212, 191, 0.12);
-  color: #14b8a6;
-}
-
-.statValue {
-  font-size: 2rem;
+.metricTileVal {
+  font-size: 1.75rem;
   font-weight: 700;
-  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
   color: var(--color-text);
+  line-height: 1.15;
 }
 
-.statLabel {
-  font-size: 12px;
-  color: var(--color-muted);
+.metricTileLabel {
+  margin-top: 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.07em;
+  color: var(--color-muted);
 }
 
+.metricTileHint {
+  cursor: help;
+}
+
+.glanceBottom {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: stretch;
+}
+
+@media (max-width: 820px) {
+  .glanceMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metricTile:nth-child(2) {
+    border-right: none;
+  }
+
+  .metricTile:nth-child(1),
+  .metricTile:nth-child(2) {
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .glanceBottom {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Same shell as System / Process: global `.card` + `.panel` */
+
+.glanceBottom .panel {
+  min-width: 0;
+  height: 100%;
+}
+
+.kvMuted {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-muted);
+  line-height: 1.35;
+}
+
+/* ---------- Panels ---------- */
 .twoCol {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
 }
 
 .panel {
-  padding: 1.1rem 1.25rem;
+  padding: 1.15rem 1.35rem;
 }
 
 .panelTitle {
-  margin: 0 0 0.75rem;
-  font-size: 0.9375rem;
+  margin: 0 0 1rem;
+  font-size: 1rem;
   font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--color-text);
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
+.panelTitle i {
+  opacity: 0.65;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+}
+
 .panelHint {
   margin: 0 0 1rem;
   font-size: 0.8125rem;
   color: var(--color-muted);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .panelFoot {
@@ -191,9 +229,10 @@
 .kv {
   margin: 0;
   display: grid;
-  grid-template-columns: minmax(7rem, 32%) 1fr;
-  gap: 0.35rem 1rem;
-  font-size: 0.875rem;
+  grid-template-columns: minmax(6.5rem, 30%) 1fr;
+  gap: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  align-items: baseline;
 }
 
 .kv dt {
@@ -212,8 +251,8 @@
   padding-top: 1rem;
   border-top: 1px solid var(--color-border);
   display: grid;
-  grid-template-columns: minmax(8rem, 34%) 1fr;
-  gap: 0.35rem 1rem;
+  grid-template-columns: minmax(7rem, 32%) 1fr;
+  gap: 0.4rem 1rem;
   font-size: 0.8125rem;
 }
 
@@ -230,12 +269,12 @@
 .ipRow {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  gap: 0.75rem;
 }
 
 .ipBox {
-  padding: 0.65rem 0.85rem;
-  border-radius: var(--radius-md, 8px);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-surface-elevated);
 }
@@ -247,18 +286,18 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-muted);
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.4rem;
 }
 
 .ipValue {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   word-break: break-all;
 }
 
 .ipWarn {
   margin: 0.75rem 0 0;
   font-size: 0.8125rem;
-  color: var(--color-yellow, #b45309);
+  color: var(--color-yellow);
 }
 
 .tableScroll {
@@ -274,7 +313,7 @@
 
 .table th,
 .table td {
-  padding: 0.6rem 0.75rem;
+  padding: 0.65rem 0.85rem;
   text-align: left;
   border-bottom: 1px solid var(--color-border);
 }
@@ -290,11 +329,11 @@
 .emptyCell {
   text-align: center;
   color: var(--color-muted);
-  padding: 1.25rem;
+  padding: 1.5rem;
 }
 
 .svcId {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--color-text);
@@ -310,7 +349,7 @@
 .capGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 0.65rem;
+  gap: 0.6rem;
 }
 
 .capItem,
@@ -319,10 +358,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  border-radius: var(--radius-md, 8px);
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   font-size: 0.8125rem;
+  background: var(--color-surface-elevated);
 }
 
 .capItemWide {
@@ -337,7 +377,7 @@
 
 .capOn {
   font-weight: 600;
-  color: var(--color-green, #15803d);
+  color: var(--color-green);
 }
 
 .capOff {
@@ -350,32 +390,33 @@
 }
 
 .section {
-  margin-bottom: 28px;
+  margin-bottom: 1.75rem;
 }
 
-/** Extra space above Backend health (after runtime capabilities / panels). */
 .healthSection {
-  padding-top: 1.25rem;
+  padding-top: 0.25rem;
 }
 
 .sectionTitle {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 0.6875rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--color-muted);
-  margin-bottom: 12px;
+  margin-bottom: 0.65rem;
 }
 
 .healthCard {
   padding: 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 .backendRow {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 0.75rem;
+  padding: 0.85rem 1.1rem;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -387,24 +428,25 @@
   flex: 1;
   font-weight: 600;
   color: var(--color-text);
-  font-size: 13px;
+  font-size: 0.8125rem;
+  min-width: 0;
 }
 
 .backendStat {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--color-muted);
   white-space: nowrap;
 }
 
 .upBar {
   display: flex;
-  gap: 4px;
+  gap: 3px;
   align-items: center;
 }
 
 .upDot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
 }
 
@@ -417,7 +459,14 @@
 }
 
 .emptySites {
-  padding: 20px;
+  padding: 1.75rem 1rem;
   color: var(--color-muted);
   text-align: center;
+  font-size: 0.875rem;
+}
+
+.sitesCard {
+  padding: 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
