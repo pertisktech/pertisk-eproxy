@@ -835,60 +835,37 @@ parse_int_param(Bin) when is_binary(Bin) ->
 parse_int_param(_) ->
     {error, bad_id}.
 
-%% Prefer DB cert_file; for ACME rows if it is missing (legacy rows) try canonical disk path
-%% data/acme/certs/<slug>/fullchain.pem matching name acme/<slug>.
-effective_cert_pem_path(CertRow) ->
-    CF0 = maps:get(cert_file, CertRow, undefined),
-    CF = normalize_cert_file_value(CF0),
-    case cert_file_path_ok(CF) of
-        true ->
-            resolve_cert_path(CF);
-        false ->
-            case json_text(maps:get(source_type, CertRow, <<"acme">>)) of
-                <<"acme">> -> acme_stored_pem_path_from_name(maps:get(name, CertRow));
-                _ -> undefined
-            end
+effective_cert_pem(CertRow) ->
+    Pem0 = maps:get(cert_pem, CertRow, undefined),
+    case normalize_cert_pem_value(Pem0) of
+        undefined ->
+            undefined;
+        V ->
+            iolist_to_binary(V)
     end.
 
-normalize_cert_file_value(undefined) -> undefined;
-normalize_cert_file_value(null) -> undefined;
-normalize_cert_file_value(<<"">>) -> undefined;
-normalize_cert_file_value([]) -> undefined;
-normalize_cert_file_value(V) -> V.
-
-acme_stored_pem_path_from_name(Name0) ->
-    case json_text(Name0) of
-        <<"acme/", Slug/binary>> ->
-            Base = case application:get_env(pertisk_eproxy, acme_data_dir) of
-                {ok, D} when is_list(D) -> D;
-                {ok, D} when is_binary(D) -> binary_to_list(D);
-                _ -> "data/acme"
-            end,
-            Path = filename:join([Base, "certs", binary_to_list(Slug), "fullchain.pem"]),
-            case filelib:is_file(Path) of
-                true -> Path;
-                false -> undefined
-            end;
-        _ ->
-            undefined
-    end.
+normalize_cert_pem_value(undefined) -> undefined;
+normalize_cert_pem_value(null) -> undefined;
+normalize_cert_pem_value(<<"">>) -> undefined;
+normalize_cert_pem_value([]) -> undefined;
+normalize_cert_pem_value(V) -> V.
 
 certificate_row_json(#{id := Id, name := Name} = CertRow, Sites) ->
     IdBin = integer_to_binary(Id),
     NameBin = json_text(Name),
     Source0 = maps:get(source_type, CertRow, <<"acme">>),
     Source = json_text(Source0),
-    CertPath = effective_cert_pem_path(CertRow),
-    case {Source, cert_file_path_ok(CertPath)} of
+    CertPem = effective_cert_pem(CertRow),
+    case {Source, CertPem =/= undefined} of
         {<<"imported_pem">>, true} ->
-            stored_pem_cert_row_json(IdBin, NameBin, CertPath, Sites, <<"imported_pem">>, <<"imported PEM">>);
+            stored_pem_cert_row_json(IdBin, NameBin, CertPem, Sites, <<"imported_pem">>, <<"imported PEM">>);
         {_, true} ->
             Chal =
                 case Source of
                     <<"acme">> -> acme_dns_challenge_label();
                     _ -> <<"PEM">>
                 end,
-            stored_pem_cert_row_json(IdBin, NameBin, CertPath, Sites, Source, Chal);
+            stored_pem_cert_row_json(IdBin, NameBin, CertPem, Sites, Source, Chal);
         _ ->
             #{
                 <<"id">> => IdBin,
@@ -908,35 +885,6 @@ certificate_row_json(#{id := Id, name := Name} = CertRow, Sites) ->
             }
     end.
 
-cert_file_path_ok(undefined) -> false;
-cert_file_path_ok(null) -> false;
-cert_file_path_ok(<<>>) -> false;
-cert_file_path_ok([]) -> false;
-cert_file_path_ok(_) -> true.
-
-resolve_cert_path(P0) when is_binary(P0) ->
-    resolve_cert_path(binary_to_list(P0));
-resolve_cert_path(P0) when is_list(P0) ->
-    case filelib:is_file(P0) of
-        true ->
-            P0;
-        false ->
-            %% Backward-compat for old DB rows that stored absolute _build/.../listener.pem paths.
-            %% After deploy/migration, prefer stable data/tls listener path.
-            case filename:basename(P0) of
-                "listener.pem" ->
-                    Fallback = filename:join(["data", "tls", "listener.pem"]),
-                    case filelib:is_file(Fallback) of
-                        true -> Fallback;
-                        false -> P0
-                    end;
-                _ ->
-                    P0
-            end
-    end;
-resolve_cert_path(P0) ->
-    P0.
-
 %% Challenge column text for ACME rows; includes staging hint when directory URL is LE staging.
 acme_dns_challenge_label() ->
     case application:get_env(pertisk_eproxy, acme_directory_url) of
@@ -953,13 +901,8 @@ acme_dns_challenge_label() ->
             <<"dns-01">>
     end.
 
-stored_pem_cert_row_json(IdBin, NameBin, CertFile0, Sites, SourceTypeBin, ChallengeBin) ->
-    CertFile = case CertFile0 of
-        B when is_binary(B) -> binary_to_list(B);
-        L when is_list(L) -> L;
-        _ -> ""
-    end,
-    case pertisk_eproxy_tls_cert_info:describe_listener_pem(CertFile) of
+stored_pem_cert_row_json(IdBin, NameBin, CertPem, Sites, SourceTypeBin, ChallengeBin) ->
+    case pertisk_eproxy_tls_cert_info:describe_pem_data(CertPem) of
         {ok, #{hosts := Hosts, not_before := NB, not_after := NA, issuer := Issuer}} ->
             Domain = case Hosts of
                 [H | _] -> H;

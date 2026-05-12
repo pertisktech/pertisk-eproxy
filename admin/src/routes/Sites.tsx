@@ -764,26 +764,37 @@ export default function Sites() {
                             ) : null}
                           </div>
                         </td>
-                        <td>
+                        <td className={styles.actionsCell}>
                           <div className={styles.rowActions}>
-                            <button type="button" className={styles.btnEdit} onClick={() => openEdit(i)} disabled={saving}>
-                              <FaIcon className="fas fa-edit" aria-hidden /> Edit
+                            <button
+                              type="button"
+                              className={styles.rowActionBtn}
+                              onClick={() => openEdit(i)}
+                              disabled={saving}
+                              title="Edit"
+                              aria-label={`Edit ${site.host}`}
+                            >
+                              <FaIcon className="fas fa-edit" aria-hidden />
                             </button>
                             <button
                               type="button"
-                              className={styles.btnDuplicate}
+                              className={styles.rowActionBtn}
                               onClick={() => openDuplicate(i)}
                               disabled={saving}
+                              title="Duplicate"
+                              aria-label={`Duplicate ${site.host}`}
                             >
-                              <FaIcon className="fas fa-copy" aria-hidden /> Duplicate
+                              <FaIcon className="fas fa-copy" aria-hidden />
                             </button>
                             <button
                               type="button"
-                              className={styles.btnDanger}
+                              className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
                               onClick={() => setDeleteConfirmIndex(i)}
                               disabled={saving}
+                              title="Delete"
+                              aria-label={`Delete ${site.host}`}
                             >
-                              <FaIcon className="fas fa-trash" aria-hidden /> Delete
+                              <FaIcon className="fas fa-trash" aria-hidden />
                             </button>
                           </div>
                         </td>

@@ -274,7 +274,7 @@ export default function DnsProviders() {
                           aria-label={`Edit ${row.name}`}
                           title="Edit"
                         >
-                          <FaIcon className="fas fa-pen" aria-hidden />
+                          <FaIcon className="fas fa-edit" aria-hidden />
                         </button>
                         <button
                           type="button"

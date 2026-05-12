@@ -159,33 +159,11 @@ acme_binary_to_int_id(_) ->
     error.
 
 acme_cert_row_effective_pem_path(Row) ->
-    CF0 = maps:get(cert_file, Row, undefined),
-    CF = acme_normalize_cert_file(CF0),
-    case acme_cert_path_nonempty(CF) of
-        true ->
-            acme_path_to_list(CF);
-        false ->
-            NameB = acme_name_to_binary(maps:get(name, Row)),
-            case NameB of
-                <<"acme/", _/binary>> -> acme_pem_disk_path_for_name(NameB);
-                _ -> undefined
-            end
+    NameB = acme_name_to_binary(maps:get(name, Row)),
+    case NameB of
+        <<"acme/", _/binary>> -> acme_pem_disk_path_for_name(NameB);
+        _ -> undefined
     end.
-
-acme_normalize_cert_file(undefined) -> undefined;
-acme_normalize_cert_file(null) -> undefined;
-acme_normalize_cert_file(<<>>) -> undefined;
-acme_normalize_cert_file([]) -> undefined;
-acme_normalize_cert_file(V) -> V.
-
-acme_cert_path_nonempty(undefined) -> false;
-acme_cert_path_nonempty(null) -> false;
-acme_cert_path_nonempty(<<>>) -> false;
-acme_cert_path_nonempty([]) -> false;
-acme_cert_path_nonempty(_) -> true.
-
-acme_path_to_list(B) when is_binary(B) -> binary_to_list(B);
-acme_path_to_list(L) when is_list(L) -> L.
 
 acme_name_to_binary(N) when is_binary(N) -> N;
 acme_name_to_binary(N) when is_list(N) -> unicode:characters_to_binary(N, utf8);

@@ -1,12 +1,18 @@
 %% @doc Read listener TLS certificate PEM and extract metadata for GET /api/certificates.
 -module(pertisk_eproxy_tls_cert_info).
 
--export([listener_cert_rows/0, describe_listener_pem/1]).
+-export([listener_cert_rows/0, describe_listener_pem/1, describe_pem_data/1]).
 
 %% @doc Decode listener PEM at Path (troubleshooting). Same logic as GET /api/certificates.
 -spec describe_listener_pem(string() | binary()) -> {ok, map()} | error.
 describe_listener_pem(Path) when is_list(Path); is_binary(Path) ->
     describe_pem_file(Path).
+
+-spec describe_pem_data(binary() | iolist()) -> {ok, map()} | error.
+describe_pem_data(PemBin0) ->
+    PemBin = iolist_to_binary(PemBin0),
+    Ders = [D || {'Certificate', D, not_encrypted} <- public_key:pem_decode(PemBin)],
+    describe_pem_chain(Ders).
 
 -include_lib("public_key/include/public_key.hrl").
 

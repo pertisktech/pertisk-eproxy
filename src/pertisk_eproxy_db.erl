@@ -59,41 +59,27 @@ init(DbPath) ->
 
 %% Create tables if they don't exist
 init_schema(DbPath) ->
-    SQL = "CREATE TABLE IF NOT EXISTS backends (
-        name TEXT PRIMARY KEY,
-        algorithm TEXT NOT NULL,
-        health_path TEXT,
-        health_interval_secs INTEGER DEFAULT 30
-    );
-    CREATE TABLE IF NOT EXISTS upstreams (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        backend_name TEXT NOT NULL,
-        addr TEXT NOT NULL,
-        weight INTEGER DEFAULT 1,
-        FOREIGN KEY(backend_name) REFERENCES backends(name)
+    SQL = "CREATE TABLE IF NOT EXISTS runtime_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sites (
         host TEXT PRIMARY KEY,
         backend TEXT NOT NULL,
-        FOREIGN KEY(backend) REFERENCES backends(name)
-    );
-    CREATE TABLE IF NOT EXISTS path_rewrites (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        site_host TEXT NOT NULL,
-        path TEXT NOT NULL,
-        path_type TEXT DEFAULT 'prefix',
-        rewrite TEXT,
-        FOREIGN KEY(site_host) REFERENCES sites(host)
-    );
-    CREATE TABLE IF NOT EXISTS runtime_state (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
+        certificate TEXT,
+        dns_provider TEXT,
+        challenge_type TEXT,
+        wildcard INTEGER DEFAULT 0,
+        acme_wildcard_base TEXT,
+        advertise_http3 INTEGER DEFAULT 1,
+        acme_contact_email TEXT,
+        routes_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE IF NOT EXISTS certificates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        cert_file TEXT,
-        key_file TEXT,
+        cert_pem TEXT,
+        key_pem TEXT,
         source_type TEXT NOT NULL DEFAULT 'acme'
     );
     CREATE TABLE IF NOT EXISTS dns_providers (
@@ -165,57 +151,11 @@ escape_double_quotes([C | Rest], Acc) ->
 to_list(B) when is_binary(B) -> binary_to_list(B);
 to_list(L) when is_list(L) -> L.
 
-normalize_stored_pem_path(Path0) when is_list(Path0) ->
-    %% Persist relative paths when under current project root to keep DB portable.
-    P = string:trim(Path0),
-    case {P, file:get_cwd()} of
-        {[], _} ->
-            [];
-        {_, {ok, Root}} ->
-            Prefix = filename:join(Root, ""),
-            case lists:prefix(Prefix, P) of
-                true -> string:slice(P, length(Prefix));
-                false -> P
-            end;
-        _ ->
-            P
-    end.
-
 normalize_db_text(undefined) -> "";
 normalize_db_text(null) -> "";
 normalize_db_text(B) when is_binary(B) -> binary_to_list(B);
 normalize_db_text(L) when is_list(L) -> L;
 normalize_db_text(_) -> "".
-
-migrate_certificate_paths_to_portable(DbPath) ->
-    SQL = "SELECT id, cert_file, key_file FROM certificates",
-    case sqlite_query(DbPath, SQL) of
-        {ok, Rows} ->
-            lists:foreach(
-                fun(Row) ->
-                    Id = maps:get(<<"id">>, Row),
-                    Cert0 = normalize_db_text(maps:get(<<"cert_file">>, Row, undefined)),
-                    Key0 = normalize_db_text(maps:get(<<"key_file">>, Row, undefined)),
-                    Cert1 = normalize_stored_pem_path(Cert0),
-                    Key1 = normalize_stored_pem_path(Key0),
-                    case {Cert0 =:= Cert1, Key0 =:= Key1} of
-                        {true, true} ->
-                            ok;
-                        _ ->
-                            Upd =
-                                "UPDATE certificates SET cert_file='" ++ sql_escape(Cert1) ++
-                                "', key_file='" ++ sql_escape(Key1) ++
-                                "' WHERE id = " ++ integer_to_list(Id),
-                            _ = sqlite_exec(DbPath, Upd),
-                            ok
-                    end
-                end,
-                Rows
-            ),
-            ok;
-        _ ->
-            ok
-    end.
 
 read_file_text(Path) when is_list(Path), Path =/= [] ->
     case file:read_file(Path) of
@@ -226,18 +166,16 @@ read_file_text(_) ->
     "".
 
 backfill_certificate_pem_content(DbPath) ->
-    SQL = "SELECT id, cert_file, key_file, cert_pem, key_pem FROM certificates",
+    SQL = "SELECT id, cert_pem, key_pem FROM certificates",
     case sqlite_query(DbPath, SQL) of
         {ok, Rows} ->
             lists:foreach(
                 fun(Row) ->
                     Id = maps:get(<<"id">>, Row),
-                    CertFile = normalize_db_text(maps:get(<<"cert_file">>, Row, undefined)),
-                    KeyFile = normalize_db_text(maps:get(<<"key_file">>, Row, undefined)),
                     CertPem0 = normalize_db_text(maps:get(<<"cert_pem">>, Row, undefined)),
                     KeyPem0 = normalize_db_text(maps:get(<<"key_pem">>, Row, undefined)),
-                    CertPem = case CertPem0 of [] -> read_file_text(CertFile); _ -> CertPem0 end,
-                    KeyPem = case KeyPem0 of [] -> read_file_text(KeyFile); _ -> KeyPem0 end,
+                    CertPem = CertPem0,
+                    KeyPem = KeyPem0,
                     case {CertPem =:= CertPem0, KeyPem =:= KeyPem0} of
                         {true, true} ->
                             ok;
@@ -300,7 +238,12 @@ put_runtime_config(DbPath, Config) when is_map(Config) ->
             SQL = "INSERT INTO runtime_state(key, value) VALUES('runtime_config', '" ++
                 sql_escape(Enc) ++
                 "') ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
-            sqlite_exec(DbPath, SQL);
+            case sqlite_exec(DbPath, SQL) of
+                ok ->
+                    sync_sites_projection(DbPath, maps:get(sites, Config, []));
+                {error, Reason} ->
+                    {error, Reason}
+            end;
         {error, Reason} ->
             {error, Reason}
     end.
@@ -309,16 +252,72 @@ ensure_runtime_state_table(DbPath) ->
     SQL = "CREATE TABLE IF NOT EXISTS runtime_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     sqlite_exec(DbPath, SQL).
 
+ensure_sites_projection_table(DbPath) ->
+    SQL =
+        "CREATE TABLE IF NOT EXISTS sites ("
+        "host TEXT PRIMARY KEY,"
+        "backend TEXT NOT NULL,"
+        "certificate TEXT,"
+        "dns_provider TEXT,"
+        "challenge_type TEXT,"
+        "wildcard INTEGER DEFAULT 0,"
+        "acme_wildcard_base TEXT,"
+        "advertise_http3 INTEGER DEFAULT 1,"
+        "acme_contact_email TEXT,"
+        "routes_json TEXT NOT NULL DEFAULT '[]'"
+        ");",
+    sqlite_exec(DbPath, SQL).
+
+sync_sites_projection(DbPath, Sites) when is_list(Sites) ->
+    case ensure_sites_projection_table(DbPath) of
+        ok ->
+            _ = sqlite_exec(DbPath, "DELETE FROM sites"),
+            lists:foreach(fun(S) -> _ = insert_site_projection(DbPath, S) end, Sites),
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+sync_sites_projection(_DbPath, _) ->
+    ok.
+
+insert_site_projection(DbPath, S) when is_map(S) ->
+    Host = sql_escape(to_list(maps:get(host, S, ""))),
+    Backend = sql_escape(to_list(maps:get(backend, S, ""))),
+    Certificate = sql_escape(opt_text(maps:get(certificate, S, undefined))),
+    DnsProvider = sql_escape(opt_text(maps:get(dns_provider, S, undefined))),
+    ChallengeType = sql_escape(opt_text(maps:get(challenge_type, S, undefined))),
+    Wildcard = bool_to_int(maps:get(wildcard, S, false)),
+    WildcardBase = sql_escape(opt_text(maps:get(acme_wildcard_base, S, undefined))),
+    AdvertiseHttp3 = bool_to_int(maps:get(advertise_http3, S, true)),
+    ContactEmail = sql_escape(opt_text(maps:get(acme_contact_email, S, undefined))),
+    RoutesJson = sql_escape(binary_to_list(thoas:encode(maps:get(routes, S, [])))),
+    SQL =
+        "INSERT INTO sites(host,backend,certificate,dns_provider,challenge_type,wildcard,acme_wildcard_base,advertise_http3,acme_contact_email,routes_json) VALUES('" ++
+        Host ++ "','" ++ Backend ++ "','" ++ Certificate ++ "','" ++ DnsProvider ++ "','" ++ ChallengeType ++ "'," ++
+        integer_to_list(Wildcard) ++ ",'" ++ WildcardBase ++ "'," ++ integer_to_list(AdvertiseHttp3) ++ ",'" ++
+        ContactEmail ++ "','" ++ RoutesJson ++ "')",
+    sqlite_exec(DbPath, SQL);
+insert_site_projection(_DbPath, _) ->
+    ok.
+
+opt_text(undefined) -> "";
+opt_text(null) -> "";
+opt_text(V) when is_binary(V) -> binary_to_list(V);
+opt_text(V) when is_list(V) -> V;
+opt_text(V) when is_atom(V) -> atom_to_list(V);
+opt_text(V) when is_integer(V) -> integer_to_list(V);
+opt_text(_) -> "".
+
+bool_to_int(true) -> 1;
+bool_to_int(_) -> 0.
+
 ensure_certificates_table(DbPath) ->
-    SQL = "CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, cert_file TEXT, key_file TEXT, cert_pem TEXT, key_pem TEXT, source_type TEXT NOT NULL DEFAULT 'acme');",
+    SQL = "CREATE TABLE IF NOT EXISTS certificates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, cert_pem TEXT, key_pem TEXT, source_type TEXT NOT NULL DEFAULT 'acme');",
     case sqlite_exec(DbPath, SQL) of
         ok ->
-            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN cert_file TEXT"),
-            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN key_file TEXT"),
             _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN cert_pem TEXT"),
             _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN key_pem TEXT"),
             _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE certificates ADD COLUMN source_type TEXT NOT NULL DEFAULT 'acme'"),
-            _ = migrate_certificate_paths_to_portable(DbPath),
             _ = backfill_certificate_pem_content(DbPath),
             ok;
         Err ->
@@ -442,15 +441,13 @@ verify_admin_login(_DbPath, _, _) ->
 list_certificates(DbPath) ->
     case ensure_certificates_table(DbPath) of
         ok ->
-            SQL = "SELECT id, name, cert_file, key_file, cert_pem, key_pem, source_type FROM certificates ORDER BY id",
+            SQL = "SELECT id, name, cert_pem, key_pem, source_type FROM certificates ORDER BY id",
             case sqlite_query(DbPath, SQL) of
                 {ok, Rows} ->
                     {ok, [
                         #{
                             id => maps:get(<<"id">>, Row),
                             name => maps:get(<<"name">>, Row),
-                            cert_file => maps:get(<<"cert_file">>, Row, undefined),
-                            key_file => maps:get(<<"key_file">>, Row, undefined),
                             cert_pem => maps:get(<<"cert_pem">>, Row, undefined),
                             key_pem => maps:get(<<"key_pem">>, Row, undefined),
                             source_type => maps:get(<<"source_type">>, Row, <<"acme">>)
@@ -499,8 +496,8 @@ insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
     {ok, integer()} | {error, term()}.
 insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0, SourceType0) ->
     Name = string:trim(to_list(Name0)),
-    CertFile = normalize_stored_pem_path(string:trim(to_list(CertFile0))),
-    KeyFile = normalize_stored_pem_path(string:trim(to_list(KeyFile0))),
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
     CertPem = read_file_text(CertFile),
     KeyPem = read_file_text(KeyFile),
     SourceType = sql_escape(to_list(SourceType0)),
@@ -514,8 +511,8 @@ insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0, SourceType0) ->
         _ ->
             case ensure_certificates_table(DbPath) of
                 ok ->
-                    SQL = "INSERT INTO certificates(name, cert_file, key_file, cert_pem, key_pem, source_type) VALUES('" ++
-                        sql_escape(Name) ++ "','" ++ sql_escape(CertFile) ++ "','" ++ sql_escape(KeyFile) ++ "','" ++
+                    SQL = "INSERT INTO certificates(name, cert_pem, key_pem, source_type) VALUES('" ++
+                        sql_escape(Name) ++ "','" ++
                         sql_escape(CertPem) ++ "','" ++ sql_escape(KeyPem) ++ "','" ++ SourceType ++ "')",
                     case sqlite_exec(DbPath, SQL) of
                         ok ->
@@ -536,8 +533,8 @@ insert_certificate_pem(DbPath, Name0, CertFile0, KeyFile0, SourceType0) ->
     {ok, integer()} | {error, term()}.
 upsert_acme_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
     Name = string:trim(to_list(Name0)),
-    CertFile = normalize_stored_pem_path(string:trim(to_list(CertFile0))),
-    KeyFile = normalize_stored_pem_path(string:trim(to_list(KeyFile0))),
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
     CertPem = read_file_text(CertFile),
     KeyPem = read_file_text(KeyFile),
     case {Name, CertFile, KeyFile} of
@@ -554,9 +551,7 @@ upsert_acme_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
                     case sqlite_query(DbPath, Sel) of
                         {ok, [Row | _]} ->
                             Id = maps:get(<<"id">>, Row),
-                            Upd = "UPDATE certificates SET cert_file='" ++ sql_escape(CertFile) ++
-                                "', key_file='" ++ sql_escape(KeyFile) ++
-                                "', cert_pem='" ++ sql_escape(CertPem) ++
+                            Upd = "UPDATE certificates SET cert_pem='" ++ sql_escape(CertPem) ++
                                 "', key_pem='" ++ sql_escape(KeyPem) ++
                                 "', source_type='acme' WHERE id = " ++ integer_to_list(Id),
                             case sqlite_exec(DbPath, Upd) of
@@ -575,8 +570,8 @@ upsert_acme_certificate_pem(DbPath, Name0, CertFile0, KeyFile0) ->
 
 -spec update_certificate_pem(string(), integer(), binary() | list(), binary() | list()) -> ok | {error, term()}.
 update_certificate_pem(DbPath, Id, CertFile0, KeyFile0) ->
-    CertFile = normalize_stored_pem_path(string:trim(to_list(CertFile0))),
-    KeyFile = normalize_stored_pem_path(string:trim(to_list(KeyFile0))),
+    CertFile = string:trim(to_list(CertFile0)),
+    KeyFile = string:trim(to_list(KeyFile0)),
     CertPem = read_file_text(CertFile),
     KeyPem = read_file_text(KeyFile),
     case {CertFile, KeyFile} of
@@ -592,9 +587,7 @@ update_certificate_pem(DbPath, Id, CertFile0, KeyFile0) ->
                         {ok, []} ->
                             {error, not_found};
                         {ok, [_ | _]} ->
-                            SQL = "UPDATE certificates SET cert_file='" ++ sql_escape(CertFile) ++
-                                "', key_file='" ++ sql_escape(KeyFile) ++
-                                "', cert_pem='" ++ sql_escape(CertPem) ++
+                            SQL = "UPDATE certificates SET cert_pem='" ++ sql_escape(CertPem) ++
                                 "', key_pem='" ++ sql_escape(KeyPem) ++
                                 "', source_type='imported_pem' WHERE id = " ++ integer_to_list(Id),
                             sqlite_exec(DbPath, SQL);

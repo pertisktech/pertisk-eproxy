@@ -645,22 +645,27 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   padding: 0;
-  border: none;
-  border-radius: var(--radius-lg);
-  background: transparent;
-  color: var(--text-muted);
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+  color: var(--text);
   cursor: pointer;
 }
 
 .iconBtn:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--bg-hover) 80%, transparent);
   color: var(--text);
 }
 
 .iconBtnDanger:hover {
   background: rgba(248, 81, 73, 0.1);
   color: var(--error);
+}
+
+.iconBtnDanger {
+  color: color-mix(in srgb, var(--error) 85%, var(--text));
+  border-color: color-mix(in srgb, var(--error) 35%, var(--color-border));
 }

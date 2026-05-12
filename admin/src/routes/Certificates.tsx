@@ -308,27 +308,38 @@ export default function Certificates() {
                     <td>{em(row.next_renew)}</td>
                     <td>{!row.sites?.length ? '—' : row.sites.join(', ')}</td>
                     <td className={styles.actionsCell}>
-                      {row.source_type === 'tls_listener' ? (
-                        <>
-                          <button type="button" className={styles.btnSecondary} onClick={() => openImportModal('listener')}>
-                            <i className="fas fa-sync-alt" aria-hidden /> Update TLS…
+                      <div className={styles.rowActions}>
+                        {row.source_type === 'tls_listener' ? (
+                          <button
+                            type="button"
+                            className={styles.rowActionBtn}
+                            onClick={() => openImportModal('listener')}
+                            title="Replace TLS certificate"
+                            aria-label={`Replace TLS certificate ${row.id}`}
+                          >
+                            <i className="fas fa-file-import" aria-hidden />
                           </button>
-                          <button type="button" className={styles.btnSecondary} onClick={() => void deleteListenerTls()}>
-                            <i className="fas fa-trash" aria-hidden /> Delete
+                        ) : row.source_type === 'imported_pem' ? (
+                          <button
+                            type="button"
+                            className={styles.rowActionBtn}
+                            onClick={() => openImportModal('existing', row.id)}
+                            title="Replace certificate PEM"
+                            aria-label={`Replace certificate PEM ${row.id}`}
+                          >
+                            <i className="fas fa-file-import" aria-hidden />
                           </button>
-                        </>
-                      ) : (
-                        <>
-                          {row.source_type === 'imported_pem' && (
-                            <button type="button" className={styles.btnSecondary} onClick={() => openImportModal('existing', row.id)}>
-                              <i className="fas fa-sync-alt" aria-hidden /> Update PEM…
-                            </button>
-                          )}
-                          <button type="button" className={styles.btnSecondary} onClick={() => void deleteLabel(row)}>
-                            <i className="fas fa-trash" aria-hidden /> Delete
-                          </button>
-                        </>
-                      )}
+                        ) : null}
+                        <button
+                          type="button"
+                          className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                          onClick={() => (row.source_type === 'tls_listener' ? void deleteListenerTls() : void deleteLabel(row))}
+                          title="Delete"
+                          aria-label={`Delete certificate ${row.id}`}
+                        >
+                          <i className="fas fa-trash" aria-hidden />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -200,6 +200,8 @@ load_config() ->
         {ok, Cfg} when is_map(Cfg) ->
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+            %% Keep plain sites table in sync from persisted runtime config on every startup.
+            _ = persist_runtime_config(DbPath, Cfg),
             {ok, Cfg};
         not_found ->
             load_config_from_file_and_seed(DbPath);
