@@ -1,4 +1,4 @@
-%% @doc HTTP/3 API gateway using erlang_quic/quic_h3.
+%% @doc HTTP/3 gateway to the management listener (SPA + /api/*), same as TCP :9080.
 -module(pertisk_eproxy_h3_api_gateway).
 
 -export([start/1, stop/0, start_probe/1, stop_probe/0, handle_request/5]).
@@ -55,32 +55,22 @@ handle_request(Conn, StreamId, Method, Path, Headers) ->
     T0 = erlang:monotonic_time(millisecond),
     Host = authority_host(Headers),
     try
-        case is_api_path(Path) of
-            true ->
-                Body = read_request_body(Conn, StreamId, Method),
-                case proxy_to_admin(Method, Path, Headers, Body) of
-                    {ok, Status, RespHeaders, RespBody} ->
-                        ok = quic_h3:send_response(Conn, StreamId, Status, RespHeaders),
-                        _ = quic_h3:send_data(Conn, StreamId, RespBody, true),
-                        log_h3_access(Host, Method, Path, Status, T0),
-                        ok;
-                    {error, ProxyReason} ->
-                        lager:warning("h3 proxy_to_admin failed: ~p host=~s path=~s", [
-                            ProxyReason, Host, Path
-                        ]),
-                        ok = quic_h3:send_response(
-                            Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
-                        ),
-                        _ = quic_h3:send_data(Conn, StreamId, <<"Bad Gateway">>, true),
-                        log_h3_access(Host, Method, Path, 502, T0),
-                        ok
-                end;
-            false ->
+        Body = read_request_body(Conn, StreamId, Method),
+        case proxy_to_admin(Method, Path, Headers, Body) of
+            {ok, Status, RespHeaders, RespBody} ->
+                ok = quic_h3:send_response(Conn, StreamId, Status, RespHeaders),
+                _ = quic_h3:send_data(Conn, StreamId, RespBody, true),
+                log_h3_access(Host, Method, Path, Status, T0),
+                ok;
+            {error, ProxyReason} ->
+                lager:warning("h3 proxy_to_admin failed: ~p host=~s path=~s", [
+                    ProxyReason, Host, Path
+                ]),
                 ok = quic_h3:send_response(
-                    Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
+                    Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
                 ),
-                _ = quic_h3:send_data(Conn, StreamId, <<"Not Found">>, true),
-                log_h3_access(Host, Method, Path, 404, T0),
+                _ = quic_h3:send_data(Conn, StreamId, <<"Bad Gateway">>, true),
+                log_h3_access(Host, Method, Path, 502, T0),
                 ok
         end
     catch
@@ -106,9 +96,6 @@ authority_host(Headers) ->
 log_h3_access(Host, Method, Path, Status, T0) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
     catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3').
-
-is_api_path(<<"/api/", _/binary>>) -> true;
-is_api_path(_) -> false.
 
 read_request_body(_Conn, _StreamId, <<"GET">>) -> <<>>;
 read_request_body(_Conn, _StreamId, <<"HEAD">>) -> <<>>;
@@ -138,7 +125,8 @@ collect_body(Conn, StreamId, Acc) ->
 proxy_to_admin(MethodBin, Path, Headers, Body) ->
     Method = method_to_httpc(MethodBin),
     Url = <<"http://127.0.0.1:9080", Path/binary>>,
-    ReqHeaders = h3_headers_to_httpc(Headers),
+    ReqHeaders0 = h3_headers_to_httpc(Headers),
+    ReqHeaders = ensure_http_host_header(Headers, ReqHeaders0),
     case Method of
         get ->
             case httpc:request(get, {binary_to_list(Url), ReqHeaders}, [{timeout, 15000}], [{body_format, binary}]) of
@@ -183,6 +171,23 @@ h3_headers_to_httpc(Headers) ->
            byte_size(K) > 0,
            binary:at(K, 0) =/= $:
     ].
+
+ensure_http_host_header(H3Headers, ReqHeaders) ->
+    HasHost = lists:any(
+        fun({K, _}) -> string:equal(K, "host", true) end,
+        ReqHeaders
+    ),
+    case HasHost of
+        true ->
+            ReqHeaders;
+        false ->
+            case lists:keyfind(<<":authority">>, 1, H3Headers) of
+                {_, Auth} when is_binary(Auth) ->
+                    [{"host", binary_to_list(Auth)} | ReqHeaders];
+                _ ->
+                    [{"host", "127.0.0.1"} | ReqHeaders]
+            end
+    end.
 
 httpc_headers_to_h3(Headers) ->
     %% Keep only end-to-end headers that are safe for H3 forwarding.
