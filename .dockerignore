@@ -1,0 +1,10 @@
+_build
+.git
+.github
+.cursor
+.DS_Store
+log
+tmp
+data
+release
+*.beam

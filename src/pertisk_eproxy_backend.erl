@@ -12,6 +12,7 @@
 
 -module(pertisk_eproxy_backend).
 -behaviour(gen_server).
+-compile({no_auto_import,[whereis/1]}).
 
 -export([start_link/1]).
 -export([whereis/1, pick_upstream/2, done_upstream/3, update/2, status/1]).

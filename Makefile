@@ -1,8 +1,8 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke package-deb-amd64 quic-upstream-local
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi docker-harbor-multi tls-smoke package-deb-amd64 quic-upstream-local
 
 REBAR = rebar3
-IMAGE ?= harbor.example.com/pertisk-eproxy
-VERSION ?= v1.0.0
+IMAGE ?= harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
+VERSION ?= x.x.x
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 DOCKERFILE ?= Dockerfile
 INGRESS_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
@@ -38,16 +38,16 @@ quic-upstream-local:
 release:
 	$(REBAR) as prod release
 
-docker-release: release
+docker-release:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) .
 
-docker-build: release
+docker-build:
 	docker buildx build --load -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) .
 
-docker-push: release
+docker-push:
 	docker buildx build --push -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
 
-docker-eproxy-multi: release
+docker-eproxy-multi:
 	docker buildx build \
 		--platform "$(INGRESS_BUILD_PLATFORMS)" \
 		--provenance=$(INGRESS_BUILD_PROVENANCE) \
@@ -57,6 +57,9 @@ docker-eproxy-multi: release
 		-t $(IMAGE):$(VERSION) \
 		-t $(IMAGE):latest \
 		.
+
+## Multi-arch build + push to Harbor (override VERSION, IMAGE if needed)
+docker-harbor-multi: docker-eproxy-multi
 
 ## Start the proxy (development — reads config from config/proxy.json)
 run: compile

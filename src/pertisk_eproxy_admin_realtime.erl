@@ -15,20 +15,20 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 subscribe(Pid) when is_pid(Pid) ->
-    case whereis(?SERVER) of
+    case erlang:whereis(?SERVER) of
         undefined -> ok;
         _ -> gen_server:cast(?SERVER, {subscribe, Pid})
     end.
 
 unsubscribe(Pid) when is_pid(Pid) ->
-    case whereis(?SERVER) of
+    case erlang:whereis(?SERVER) of
         undefined -> ok;
         _ -> gen_server:cast(?SERVER, {unsubscribe, Pid})
     end.
 
 -spec ssl_job(map()) -> ok.
 ssl_job(#{host := Host} = M) ->
-    case whereis(?SERVER) of
+    case erlang:whereis(?SERVER) of
         undefined ->
             ok;
         _ ->
@@ -39,7 +39,7 @@ ssl_job(#{host := Host} = M) ->
     end.
 
 clear_ssl_job(Host) ->
-    case whereis(?SERVER) of
+    case erlang:whereis(?SERVER) of
         undefined ->
             ok;
         _ ->
@@ -47,7 +47,7 @@ clear_ssl_job(Host) ->
     end.
 
 ssl_jobs_snapshot() ->
-    case whereis(?SERVER) of
+    case erlang:whereis(?SERVER) of
         undefined -> [];
         _ -> gen_server:call(?SERVER, list_ssl_jobs)
     end.

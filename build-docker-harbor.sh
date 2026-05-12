@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Usage:
 #   ./build-docker-harbor.sh [VERSION]
-#   VERSION=v1.0.0 IMAGE=harbor.example.com/team/pertisk-eproxy ./build-docker-harbor.sh
-VERSION="${VERSION:-${1:-v1.0.0}}"
-IMAGE="${IMAGE:-${HARBOR_IMAGE:-harbor.example.com/pertisk-eproxy}}"
+#   VERSION=1.2.3 IMAGE=harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy ./build-docker-harbor.sh
+VERSION="${VERSION:-${1:-x.x.x}}"
+IMAGE="${IMAGE:-${HARBOR_IMAGE:-harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy}}"
 PLATFORMS="${INGRESS_BUILD_PLATFORMS:-linux/amd64,linux/arm64}"
 PROVENANCE="${INGRESS_BUILD_PROVENANCE:-false}"
 SBOM="${INGRESS_BUILD_SBOM:-false}"
