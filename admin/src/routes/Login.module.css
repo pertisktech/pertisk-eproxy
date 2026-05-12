@@ -1,7 +1,11 @@
 /* Match pertisk-reverse-proxy login: centered card, Omni primary */
 
 .wrap {
+  position: relative;
+  isolation: isolate;
   min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -9,6 +13,13 @@
   padding: 1.5rem;
   padding-top: 4rem;
   gap: 1.5rem;
+  box-sizing: border-box;
+  /* Full-bleed canvas so the page never shows a flat / wrong layer behind the card */
+  background-color: var(--color-bg);
+  background-image:
+    radial-gradient(ellipse 120% 70% at 50% -25%, color-mix(in srgb, var(--color-primary) 26%, transparent), transparent 52%),
+    radial-gradient(ellipse 55% 45% at 100% 100%, color-mix(in srgb, var(--color-primary) 12%, transparent), transparent 50%),
+    radial-gradient(ellipse 50% 40% at 0% 90%, color-mix(in srgb, var(--color-primary) 8%, transparent), transparent 48%);
 }
 
 .topBar {

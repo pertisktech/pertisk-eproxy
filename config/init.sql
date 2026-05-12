@@ -44,3 +44,9 @@ CREATE TABLE IF NOT EXISTS dns_providers (
     provider_type TEXT NOT NULL,
     credentials_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    username TEXT PRIMARY KEY,
+    salt_b64 TEXT NOT NULL,
+    pass_hash_b64 TEXT NOT NULL
+);

@@ -51,16 +51,19 @@ deployment_mode_bin() ->
 login(User, Pass) ->
     case auth_mode() of
         local ->
-            Expected = application:get_env(pertisk_eproxy, admin_password, <<"admin">>),
             UBin = as_bin(User),
             PBin = as_bin(Pass),
-            case PBin =:= Expected of
-                true ->
+            DbPath = pertisk_eproxy_config:db_file(),
+            case pertisk_eproxy_db:verify_admin_login(DbPath, UBin, PBin) of
+                ok ->
                     Token = new_token(),
                     Exp = erlang:system_time(second) + 86400,
                     true = ets:insert(?TAB, #session{token = Token, user = UBin, exp = Exp}),
                     {ok, #{token => Token, username => UBin, expires_in => 86400}};
-                false ->
+                {error, invalid_credentials} ->
+                    {error, invalid_credentials};
+                {error, Reason} ->
+                    lager:warning("admin login DB error: ~p", [Reason]),
                     {error, invalid_credentials}
             end;
         _ ->
@@ -74,7 +77,10 @@ verify_request(Req) ->
         local ->
             case cowboy_req:parse_header(<<"authorization">>, Req) of
                 {bearer, Token} ->
-                    verify_token(Token);
+                    case verify_token(Token) of
+                        {ok, _} -> ok;
+                        Err -> Err
+                    end;
                 _ ->
                     {error, unauthorized}
             end

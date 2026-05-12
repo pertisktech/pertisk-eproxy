@@ -192,6 +192,10 @@ config_file() ->
 
 load_config() ->
     DbPath = db_file(),
+    case pertisk_eproxy_db:ensure_admin_users(DbPath) of
+        ok -> ok;
+        {error, E} -> lager:warning("ensure_admin_users failed: ~p", [E])
+    end,
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg} when is_map(Cfg) ->
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),

@@ -30,7 +30,9 @@
     list_backends/1,
     insert_backend/5,
     insert_upstream/4,
-    delete_backend/2
+    delete_backend/2,
+    ensure_admin_users/1,
+    verify_admin_login/3
 ]).
 
 -include_lib("lager/include/lager.hrl").
@@ -45,8 +47,9 @@ init(DbPath) ->
             {error, is_directory};
         false ->
             case init_schema(DbPath) of
-                ok ->
-                    lager:info("Database initialized at ~s", [DbPath]),
+        ok ->
+            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
+            lager:info("Database initialized at ~s", [DbPath]),
                     {ok, DbPath};
                 {error, Reason} ->
                     lager:error("Failed to initialize schema: ~p", [Reason]),
@@ -98,6 +101,11 @@ init_schema(DbPath) ->
         name TEXT NOT NULL UNIQUE,
         provider_type TEXT NOT NULL,
         credentials_json TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS admin_users (
+        username TEXT PRIMARY KEY,
+        salt_b64 TEXT NOT NULL,
+        pass_hash_b64 TEXT NOT NULL
     );",
     case sqlite_exec(DbPath, SQL) of
         ok -> ok;
@@ -237,6 +245,102 @@ sqlite_exec_ignore_duplicate_column(DbPath, SQL) ->
 ensure_dns_providers_table(DbPath) ->
     SQL = "CREATE TABLE IF NOT EXISTS dns_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, provider_type TEXT NOT NULL, credentials_json TEXT NOT NULL DEFAULT '{}');",
     sqlite_exec(DbPath, SQL).
+
+%% ---------------------------------------------------------------------------
+%% Local admin users (SQLite; Bearer sessions issued by pertisk_eproxy_auth)
+%% ---------------------------------------------------------------------------
+
+-spec ensure_admin_users(string()) -> ok | {error, term()}.
+ensure_admin_users(DbPath) ->
+    SQL =
+        "CREATE TABLE IF NOT EXISTS admin_users ("
+        "username TEXT PRIMARY KEY,"
+        "salt_b64 TEXT NOT NULL,"
+        "pass_hash_b64 TEXT NOT NULL"
+        ");",
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            seed_default_admin_if_empty(DbPath);
+        Err ->
+            Err
+    end.
+
+seed_default_admin_if_empty(DbPath) ->
+    case sqlite_query(DbPath, "SELECT COUNT(*) AS n FROM admin_users") of
+        {ok, [Row | _]} ->
+            case admin_user_count_value(Row) of
+                N when is_integer(N), N > 0 ->
+                    ok;
+                _ ->
+                    insert_default_admin_user(DbPath)
+            end;
+        {ok, []} ->
+            insert_default_admin_user(DbPath);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+admin_user_count_value(Row) ->
+    case maps:get(<<"n">>, Row, 0) of
+        N when is_integer(N) ->
+            N;
+        N when is_float(N) ->
+            erlang:round(N);
+        N when is_binary(N) ->
+            try binary_to_integer(N) of
+                I -> I
+            catch
+                _:_ -> 0
+            end;
+        _ ->
+            0
+    end.
+
+insert_default_admin_user(DbPath) ->
+    Salt = crypto:strong_rand_bytes(16),
+    Pass = <<"admin">>,
+    Hash = crypto:hash(sha256, <<Salt/binary, Pass/binary>>),
+    SaltB64 = binary_to_list(base64:encode(Salt)),
+    HashB64 = binary_to_list(base64:encode(Hash)),
+    Ins =
+        "INSERT INTO admin_users(username, salt_b64, pass_hash_b64) VALUES('admin','" ++
+            sql_escape(SaltB64) ++ "','" ++ sql_escape(HashB64) ++ "');",
+    case sqlite_exec(DbPath, Ins) of
+        ok ->
+            lager:info("Seeded default local admin user (username: admin)", []),
+            ok;
+        Err ->
+            Err
+    end.
+
+-spec verify_admin_login(string(), binary(), binary()) -> ok | {error, invalid_credentials | term()}.
+verify_admin_login(DbPath, Username, Password) when is_binary(Username), is_binary(Password) ->
+    UEsc = sql_escape(binary_to_list(Username)),
+    Sql =
+        "SELECT salt_b64, pass_hash_b64 FROM admin_users WHERE username = '" ++ UEsc ++ "' LIMIT 1",
+    case sqlite_query(DbPath, Sql) of
+        {ok, []} ->
+            {error, invalid_credentials};
+        {ok, [Row | _]} ->
+            try
+                SaltB64 = maps:get(<<"salt_b64">>, Row),
+                WantB64 = maps:get(<<"pass_hash_b64">>, Row),
+                Salt = base64:decode(SaltB64),
+                Want = base64:decode(WantB64),
+                Got = crypto:hash(sha256, <<Salt/binary, Password/binary>>),
+                case crypto:hash_equals(Want, Got) of
+                    true -> ok;
+                    false -> {error, invalid_credentials}
+                end
+            catch
+                _:_ ->
+                    {error, invalid_credentials}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+verify_admin_login(_DbPath, _, _) ->
+    {error, invalid_credentials}.
 
 -spec list_certificates(string()) -> {ok, [map()]} | {error, term()}.
 list_certificates(DbPath) ->

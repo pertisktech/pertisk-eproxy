@@ -131,7 +131,7 @@ export default function Login() {
       const msg = err instanceof Error ? err.message : 'Login failed';
       const displayMsg =
         msg === 'login requires database' || msg === 'login not configured'
-          ? 'Login is unavailable: start the proxy with --db to enable admin auth.'
+          ? 'Login is unavailable: local auth is not enabled on this server.'
           : msg;
       setError(displayMsg);
       toast.error(displayMsg);
