@@ -52,32 +52,27 @@ stop_probe() ->
 
 handle_request(Conn, StreamId, Method, Path, Headers) ->
     _ = ensure_inets_started(),
-    error_logger:info_msg(
-        "h3 request method=~p path=~p stream=~p~n",
-        [Method, Path, StreamId]
-    ),
+    T0 = erlang:monotonic_time(millisecond),
+    Host = authority_host(Headers),
     try
         case is_api_path(Path) of
             true ->
                 Body = read_request_body(Conn, StreamId, Method),
                 case proxy_to_admin(Method, Path, Headers, Body) of
                     {ok, Status, RespHeaders, RespBody} ->
-                        error_logger:info_msg(
-                            "h3 proxy success status=~p headers_count=~p body_bytes=~p~n",
-                            [Status, length(RespHeaders), byte_size(RespBody)]
-                        ),
-                        error_logger:info_msg("h3 response headers=~p~n", [RespHeaders]),
-                        SendRespResult = quic_h3:send_response(Conn, StreamId, Status, RespHeaders),
-                        error_logger:info_msg("h3 send_response result=~p~n", [SendRespResult]),
-                        SendDataResult = quic_h3:send_data(Conn, StreamId, RespBody, true),
-                        error_logger:info_msg("h3 send_data result=~p~n", [SendDataResult]),
+                        ok = quic_h3:send_response(Conn, StreamId, Status, RespHeaders),
+                        _ = quic_h3:send_data(Conn, StreamId, RespBody, true),
+                        log_h3_access(Host, Method, Path, Status, T0),
                         ok;
                     {error, ProxyReason} ->
-                        error_logger:warning_msg("h3 proxy_to_admin failed: ~p~n", [ProxyReason]),
+                        lager:warning("h3 proxy_to_admin failed: ~p host=~s path=~s", [
+                            ProxyReason, Host, Path
+                        ]),
                         ok = quic_h3:send_response(
                             Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
                         ),
                         _ = quic_h3:send_data(Conn, StreamId, <<"Bad Gateway">>, true),
+                        log_h3_access(Host, Method, Path, 502, T0),
                         ok
                 end;
             false ->
@@ -85,20 +80,32 @@ handle_request(Conn, StreamId, Method, Path, Headers) ->
                     Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
                 ),
                 _ = quic_h3:send_data(Conn, StreamId, <<"Not Found">>, true),
+                log_h3_access(Host, Method, Path, 404, T0),
                 ok
         end
     catch
         Class:Reason:Stack ->
-            error_logger:error_msg(
-                "h3 handle_request crash class=~p reason=~p stack=~p~n",
-                [Class, Reason, Stack]
+            lager:error(
+                "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
+                [Class, Reason, Host, Path, Stack]
             ),
             _ = catch quic_h3:send_response(
                 Conn, StreamId, 500, [{<<"content-type">>, <<"text/plain">>}]
             ),
             _ = catch quic_h3:send_data(Conn, StreamId, <<"Internal Server Error">>, true),
+            log_h3_access(Host, Method, Path, 500, T0),
             ok
     end.
+
+authority_host(Headers) ->
+    case lists:keyfind(<<":authority">>, 1, Headers) of
+        {_, V} when is_binary(V) -> V;
+        _ -> <<"-">>
+    end.
+
+log_h3_access(Host, Method, Path, Status, T0) ->
+    Dt = max(0, erlang:monotonic_time(millisecond) - T0),
+    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3').
 
 is_api_path(<<"/api/", _/binary>>) -> true;
 is_api_path(_) -> false.
@@ -226,11 +233,11 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
                         }
                     )
                 },
-                {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p~n"};
+                {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p"};
             _ ->
-                {BaseOpts, "H3 QUIC: default listener opts (non-linux, no inet6 extra_socket_opts)~n"}
+                {BaseOpts, "H3 QUIC: default listener opts (non-linux, no inet6 extra_socket_opts)"}
         end,
-    error_logger:info_msg(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
+    lager:debug(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
     case quic_h3:start_server(ServerName, Port, ServerOpts) of
         {ok, _Pid} = Ok ->
             Ok;
