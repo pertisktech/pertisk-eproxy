@@ -1,4 +1,8 @@
 %% @doc JSON-friendly metrics snapshot for the admin UI (rproxy-compatible subset).
+%%
+%% Request totals are derived from {@link pertisk_eproxy_metrics}: counter labels
+%% include `proto` (http1, tls_h1, h2, h3, grpc) so HTTP/3 and HTTP/2 are visible
+%% in the admin Metrics charts.
 
 -module(pertisk_eproxy_stats).
 
@@ -9,34 +13,57 @@
 snapshot() ->
     WallMs = element(1, erlang:statistics(wall_clock)),
     UptimeSecs = max(0, WallMs div 1000),
-    ReqTotal = sum_counter(pertisk_eproxy_requests_total),
     LogEntries = try pertisk_eproxy_access_log:count() catch _:_ -> 0 end,
     ConnPerSite = connections_per_host(),
     ActiveConn = sum_gauge(pertisk_eproxy_upstream_connections),
+    BytesSent = sum_counter_metric(pertisk_eproxy_bytes_sent_total),
+    BytesRecv = sum_counter_metric(pertisk_eproxy_bytes_received_total),
+    L = counter_values(pertisk_eproxy_requests_total),
+    Http1 = sum_proto(L, <<"http1">>),
+    Admin = sum_proto(L, <<"admin">>),
+    TlsH1 = sum_proto(L, <<"tls_h1">>),
+    H2 = sum_proto(L, <<"h2">>),
+    H3 = sum_proto(L, <<"h3">>),
+    Grpc = sum_proto(L, <<"grpc">>),
+    SiteH2 = host_sums_by_proto(L, <<"h2">>),
+    SiteH3 = host_sums_by_proto(L, <<"h3">>),
+    RatioGlobal = case H2 of
+        0 -> 0.0;
+        _ -> H3 / H2
+    end,
+    RatioByHost = site_h3_vs_h2_ratio_map(SiteH2, SiteH3),
     #{
         <<"log_entries">> => LogEntries,
         <<"uptime_secs">> => UptimeSecs,
-        <<"http_requests_total">> => ReqTotal,
-        <<"https_requests_total">> => 0,
-        <<"grpc_requests_total">> => 0,
-        <<"h2_requests_total">> => 0,
-        <<"h3_requests_total">> => 0,
-        <<"h3_vs_h2_ratio">> => 0.0,
-        <<"site_h2_requests_total">> => #{},
-        <<"site_h3_requests_total">> => #{},
-        <<"site_h3_vs_h2_ratio">> => #{},
+        %% Cleartext HTTP/1.x + management API (same chart line so idle admin shows activity)
+        <<"http_requests_total">> => Http1 + Admin,
+        <<"management_requests_total">> => Admin,
+        %% TLS HTTP/1.x + HTTP/2 on Cowboy HTTPS (chart "HTTPS"); QUIC/H3 is separate
+        <<"https_requests_total">> => TlsH1 + H2,
+        <<"grpc_requests_total">> => Grpc,
+        <<"h2_requests_total">> => H2,
+        <<"h3_requests_total">> => H3,
+        <<"h3_vs_h2_ratio">> => RatioGlobal,
+        <<"site_h2_requests_total">> => SiteH2,
+        <<"site_h3_requests_total">> => SiteH3,
+        <<"site_h3_vs_h2_ratio">> => RatioByHost,
         <<"active_connections">> => ActiveConn,
         <<"connections_per_site">> => ConnPerSite,
-        <<"bytes_sent_total">> => 0,
-        <<"bytes_received_total">> => 0
+        <<"bytes_sent_total">> => BytesSent,
+        <<"bytes_received_total">> => BytesRecv
     }.
 
 connections_per_host() ->
     try
-        L = prometheus_counter:values(?REG, pertisk_eproxy_requests_total),
+        L = counter_values(pertisk_eproxy_requests_total),
         M = lists:foldl(
-            fun({[H, _Status], N}, Acc) ->
-                maps:update_with(H, fun(V) -> V + N end, N, Acc)
+            fun({LP, N}, Acc) when is_list(LP) ->
+                case label_value(LP, host) of
+                    undefined -> Acc;
+                    H -> maps:update_with(H, fun(V) -> V + N end, N, Acc)
+                end;
+               (_, Acc) ->
+                Acc
             end,
             #{},
             L
@@ -51,13 +78,65 @@ connections_per_host() ->
         #{}
     end.
 
-sum_counter(Name) ->
+counter_values(Name) ->
+    try prometheus_counter:values(?REG, Name) of
+        L when is_list(L) -> L
+    catch _:_ ->
+        []
+    end.
+
+sum_counter_metric(Name) ->
     try
         L = prometheus_counter:values(?REG, Name),
-        lists:sum([V || {_Labels, V} <- L])
+        lists:sum([V || {_LP, V} <- L])
     catch _:_ ->
         0
     end.
+
+sum_proto(L, Proto) ->
+    lists:sum([
+        V
+        || {LP, V} <- L,
+           is_list(LP),
+           label_value(LP, proto) =:= Proto
+    ]).
+
+host_sums_by_proto(L, Proto) ->
+    M = lists:foldl(
+        fun({LP, V}, Acc) when is_list(LP) ->
+                case {label_value(LP, host), label_value(LP, proto)} of
+                    {H, P} when H =/= undefined, P =:= Proto ->
+                        maps:update_with(H, fun(Old) -> Old + V end, V, Acc);
+                    _ ->
+                        Acc
+                end;
+           (_, Acc) ->
+                Acc
+        end,
+        #{},
+        L
+    ),
+    maps:fold(
+        fun(K, V, Acc) -> Acc#{iolist_to_binary(io_lib:format("~s", [K])) => V} end,
+        #{},
+        M
+    ).
+
+site_h3_vs_h2_ratio_map(H2Map, H3Map) ->
+    Keys = lists:usort(maps:keys(H2Map) ++ maps:keys(H3Map)),
+    lists:foldl(
+        fun(H, Acc) ->
+            H2 = maps:get(H, H2Map, 0),
+            H3 = maps:get(H, H3Map, 0),
+            R = case H2 of
+                0 -> 0.0;
+                _ -> H3 / H2
+            end,
+            Acc#{H => R}
+        end,
+        #{},
+        Keys
+    ).
 
 sum_gauge(Name) ->
     try
@@ -66,3 +145,33 @@ sum_gauge(Name) ->
     catch _:_ ->
         0
     end.
+
+%% prometheus.erl stores label *names* as printable lists (e.g. `"host"`), not atoms,
+%% so `lists:keyfind(proto, 1, LP)` never matched and all protocol sums stayed 0.
+-spec label_value([{term(), term()}], atom()) -> term() | undefined.
+label_value(LP, Key) when is_list(LP), is_atom(Key) ->
+    KeyStr = atom_to_list(Key),
+    KeyBin = atom_to_binary(Key, utf8),
+    case lists:keyfind(Key, 1, LP) of
+        {Key, Val} -> Val;
+        false ->
+            case lists:keyfind(KeyStr, 1, LP) of
+                {KeyStr, Val} -> Val;
+                false ->
+                    case lists:keyfind(KeyBin, 1, LP) of
+                        {KeyBin, Val} -> Val;
+                        false -> label_value_scan(LP, Key, KeyStr, KeyBin)
+                    end
+            end
+    end.
+
+label_value_scan([], _Key, _KeyStr, _KeyBin) -> undefined;
+label_value_scan([{K, V} | Rest], Key, KeyStr, KeyBin) ->
+    case label_key_matches(K, Key, KeyStr, KeyBin) of
+        true -> V;
+        false -> label_value_scan(Rest, Key, KeyStr, KeyBin)
+    end.
+
+label_key_matches(K, Key, KeyStr, KeyBin) ->
+    K =:= Key orelse K =:= KeyStr orelse K =:= KeyBin
+        orelse (is_binary(K) andalso K =:= KeyBin).

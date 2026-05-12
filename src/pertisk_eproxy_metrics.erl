@@ -1,7 +1,10 @@
 %% @doc Metrics collection for pertisk_eproxy using prometheus.erl.
 %%
 %% Exposes:
-%%   pertisk_eproxy_requests_total{host, status}   — counter
+%%   pertisk_eproxy_requests_total{host, status, proto} — counter
+%%     proto: http1 | tls_h1 | h2 | h3 | grpc
+%%   pertisk_eproxy_bytes_received_total{host} — client → proxy request body bytes
+%%   pertisk_eproxy_bytes_sent_total{host}     — proxy → client response body bytes
 %%   pertisk_eproxy_request_duration_ms{host}      — histogram
 %%   pertisk_eproxy_upstream_connections{backend}  — gauge
 %%   pertisk_eproxy_upstream_healthy{backend}      — gauge
@@ -12,7 +15,8 @@
 -behaviour(gen_server).
 
 -export([setup/0, start_link/0]).
--export([inc_request/2, observe_duration/2,
+-export([inc_request/3, observe_duration/2,
+         record_proxy_bytes/3,
          set_upstream_conns/2, set_upstream_healthy/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -27,7 +31,17 @@ setup() ->
     prometheus_counter:declare([
         {name,   pertisk_eproxy_requests_total},
         {help,   "Total proxy requests"},
-        {labels, [host, status]}
+        {labels, [host, status, proto]}
+    ]),
+    prometheus_counter:declare([
+        {name,   pertisk_eproxy_bytes_received_total},
+        {help,   "Bytes read from clients (proxy request bodies)"},
+        {labels, [host]}
+    ]),
+    prometheus_counter:declare([
+        {name,   pertisk_eproxy_bytes_sent_total},
+        {help,   "Bytes written to clients (proxy response bodies)"},
+        {labels, [host]}
     ]),
     prometheus_histogram:declare([
         {name,    pertisk_eproxy_request_duration_ms},
@@ -54,11 +68,22 @@ setup() ->
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec inc_request(binary(), binary()) -> ok.
-inc_request(Host, StatusCode) ->
-    prometheus_counter:inc(pertisk_eproxy_requests_total, [Host, StatusCode]).
+-spec inc_request(binary(), binary(), binary()) -> ok.
+inc_request(Host, StatusCode, Proto) when is_binary(Proto) ->
+    prometheus_counter:inc(pertisk_eproxy_requests_total, [Host, StatusCode, Proto]).
 
--spec observe_duration(binary(), non_neg_integer()) -> ok.
+%% @doc Add proxied byte volumes for admin `/api/stats` throughput (per virtual host).
+-spec record_proxy_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
+record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
+    case Recv of
+        0 -> ok;
+        _ -> prometheus_counter:inc(pertisk_eproxy_bytes_received_total, [Host], Recv)
+    end,
+    case Sent of
+        0 -> ok;
+        _ -> prometheus_counter:inc(pertisk_eproxy_bytes_sent_total, [Host], Sent)
+    end,
+    ok.
 observe_duration(Host, DurationMs) ->
     prometheus_histogram:observe(pertisk_eproxy_request_duration_ms, [Host], DurationMs).
 

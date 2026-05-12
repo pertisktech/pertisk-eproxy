@@ -7,6 +7,7 @@
         pertisk_eproxy_metrics,
         pertisk_eproxy_backend_sup,
         pertisk_eproxy_admin_realtime,
+        pertisk_eproxy_public_ip,
         pertisk_eproxy_acme_dns
     ]},
     {mod, {pertisk_eproxy_app, []}},

@@ -20,6 +20,25 @@
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
 
+%% @doc Prometheus `proto` label for TCP/TLS Cowboy requests (HTTP/3 uses the QUIC gateway).
+cowboy_req_proto_metric(Req) ->
+    case cowboy_req:version(Req) of
+        'HTTP/3' ->
+            <<"h3">>;
+        'HTTP/2' ->
+            <<"h2">>;
+        'HTTP/1.1' ->
+            http1_proto_bin(cowboy_req:scheme(Req));
+        'HTTP/1.0' ->
+            http1_proto_bin(cowboy_req:scheme(Req));
+        _ ->
+            <<"http1">>
+    end.
+
+http1_proto_bin(https) -> <<"tls_h1">>;
+http1_proto_bin(<<"https">>) -> <<"tls_h1">>;
+http1_proto_bin(_) -> <<"http1">>.
+
 init(Req, State) ->
     Method = cowboy_req:method(Req),
     Host   = cowboy_req:host(Req),
@@ -37,9 +56,10 @@ init(Req, State) ->
 handle_http(Req, State, Method, Host, Path, Qs) ->
     T0 = erlang:monotonic_time(millisecond),
     Vsn = cowboy_req:version(Req),
+    Proto = cowboy_req_proto_metric(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
-            pertisk_eproxy_metrics:inc_request(Host, <<"404">>),
+            pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
             H404 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
             Req2 = cowboy_req:reply(404, H404,
                                     <<"No route found for host: ", Host/binary>>, Req),
@@ -49,7 +69,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             ClientIp = client_ip(Req),
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
-                    pertisk_eproxy_metrics:inc_request(Host, <<"502">>),
+                    pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
                     H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
                     Req2 = cowboy_req:reply(502, H502,
                                             <<"Bad Gateway: no healthy upstream">>, Req),
@@ -61,12 +81,12 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                     case Result of
                         {ok, StatusCode, Req2} ->
                             StatusBin = integer_to_binary(StatusCode),
-                            pertisk_eproxy_metrics:inc_request(Host, StatusBin),
+                            pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
                             log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
                             {ok, Req2, State};
                         {error, Reason} ->
-                            pertisk_eproxy_metrics:inc_request(Host, <<"502">>),
+                            pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
                             lager:warning("Proxy error ~p for ~s~s -> ~s",
                                           [Reason, Host, Path, UpstreamAddr]),
@@ -124,11 +144,14 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
     Result = case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
         {response, nofin, Status, RespHeaders} ->
             {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+            RespBin = iolist_to_binary(RespBody),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
             RawHeaders  = headers_to_map(RespHeaders),
             CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req),
             {ok, Status, Req2};
         {response, fin, Status, RespHeaders} ->
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
             RawHeaders = headers_to_map(RespHeaders),
             CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
             Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),

@@ -6,6 +6,7 @@
 -module(pertisk_eproxy_h3_api_gateway).
 
 -export([start/1, stop/0, start_probe/1, stop_probe/0, handle_request/5]).
+-export([management_listener_bind_stack/0]).
 
 -define(SERVER, pertisk_eproxy_h3_api).
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
@@ -67,7 +68,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         Body = read_request_body(H3Conn, StreamId, Method),
         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
-                pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>),
+                pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
                 ok = quic_h3:send_response(
                     H3Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
                 ),
@@ -83,7 +84,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 ClientIp = client_ip_h3(H3Conn, Headers),
                 case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                     {error, no_healthy_upstream} ->
-                        pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>),
+                        pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
                         reply_502_plain(H3Conn, StreamId),
                         log_h3_access(LogHost, Method, PathOnly, 502, T0, <<>>),
                         ok;
@@ -93,7 +94,11 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                         ) of
                             {ok, Status, RespHeaders, RespBody} ->
                                 StatusBin = integer_to_binary(Status),
-                                pertisk_eproxy_metrics:inc_request(LogHost, StatusBin),
+                                pertisk_eproxy_metrics:inc_request(LogHost, StatusBin, <<"h3">>),
+                                RespBin = iolist_to_binary(RespBody),
+                                ok = pertisk_eproxy_metrics:record_proxy_bytes(
+                                    LogHost, byte_size(Body), byte_size(RespBin)
+                                ),
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
@@ -102,7 +107,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
                                 ok;
                             {error, ProxyReason} ->
-                                pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>),
+                                pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, error
                                 ),
@@ -319,6 +324,21 @@ ensure_quic_started() ->
     _ = application:ensure_all_started(quic),
     _ = application:ensure_all_started(quicer),
     ok.
+
+%% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).
+-spec management_listener_bind_stack() -> {Bind :: binary(), Stack :: binary()}.
+management_listener_bind_stack() ->
+    case os:type() of
+        {unix, linux} ->
+            %% UDP/IPv6 :: with IPV6_V6ONLY=0 → accept IPv4 and IPv6 clients.
+            {<<"::">>, <<"dual_stack">>};
+        {unix, _} ->
+            {<<"0.0.0.0">>, <<"ipv4">>};
+        win32 ->
+            {<<"0.0.0.0">>, <<"ipv4">>};
+        _ ->
+            {<<"0.0.0.0">>, <<"ipv4">>}
+    end.
 
 start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).

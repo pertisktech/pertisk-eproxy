@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, type CSSProperties } from 'react';
 import {
   Area,
   AreaChart,
@@ -11,11 +11,33 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
-import { openRealtimeStream, type RealtimeSnapshot } from '@/api/client';
+import {
+  api,
+  openRealtimeStream,
+  type RealtimeSnapshot,
+  type Metrics,
+  type ManagementInfo,
+} from '@/api/client';
 import { formatTimeOnly } from '@/utils/dateFormat';
 import styles from './Metrics.module.css';
 
 const MAX_POINTS = 60; // 5 min at 5s interval
+
+/** Recharts defaults to a white tooltip box; without explicit colors, labels can match the background. */
+const METRICS_TOOLTIP_CONTENT: CSSProperties = {
+  backgroundColor: 'var(--color-card)',
+  border: '1px solid var(--color-border-light)',
+  borderRadius: 'var(--radius-sm)',
+  boxShadow: 'var(--shadow-sm)',
+  color: 'var(--color-text)',
+};
+const METRICS_TOOLTIP_LABEL: CSSProperties = {
+  color: 'var(--color-text)',
+  fontWeight: 600,
+};
+const METRICS_TOOLTIP_ITEM: CSSProperties = {
+  color: 'var(--color-text)',
+};
 
 export interface MetricPoint {
   t: number;
@@ -49,6 +71,7 @@ interface HostProtocolRow {
 }
 
 interface RequestsTrendPoint {
+  tMs: number;
   timeLabel: string;
   http_rps: number;
   https_rps: number;
@@ -57,6 +80,7 @@ interface RequestsTrendPoint {
 }
 
 interface ThroughputTrendPoint {
+  tMs: number;
   timeLabel: string;
   sent_kibps: number;
   recv_kibps: number;
@@ -67,7 +91,7 @@ function formatTime(ms: number): string {
 }
 
 function formatMemoryMb(value: number): string {
-  return `${value.toFixed(1)} MB`;
+  return `${value.toFixed(2)} MB`;
 }
 
 function formatThroughputKiB(value: number): string {
@@ -96,6 +120,39 @@ function formatRate(value: number): string {
   return `${n.toFixed(2)}/s`;
 }
 
+/** Y-axis numeric ticks — always two fractional digits (with locale grouping). */
+function formatChartAxisNumber(v: number): string {
+  if (!Number.isFinite(v)) return '';
+  return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+}
+
+/** X-axis time ticks — two-digit hour, minute, second (local). */
+function formatChartAxisTimeMs(ms: number): string {
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+/** Tooltip / legend time label when X is epoch ms or a string fallback. */
+function formatChartTooltipXLabel(label: unknown): string {
+  if (typeof label === 'number' && Number.isFinite(label)) return formatChartAxisTimeMs(label);
+  if (typeof label === 'string' && label.trim() !== '' && /^\d+$/.test(label.trim())) {
+    return formatChartAxisTimeMs(Number(label));
+  }
+  if (label == null) return '';
+  return String(label);
+}
+function formatTooltipMetricValue(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  if (Number.isInteger(value) || Math.abs(value - Math.round(value)) < 1e-6) {
+    return Math.round(value).toLocaleString();
+  }
+  return value.toFixed(2);
+}
+
 /** Coerce API / JSON values to a finite number (admin /stats may omit fields). */
 function num(v: unknown, fallback = 0): number {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -119,57 +176,105 @@ function selectBaselinePoint(history: MetricPoint[], windowMs: number): MetricPo
   return history[history.length - 2] ?? null;
 }
 
+function memoryMbFromMgmt(mgmt: ManagementInfo): number | null {
+  const raw =
+    mgmt.process_memory_bytes ??
+    (typeof mgmt.process_info?.memory_total_bytes === 'number' ? mgmt.process_info.memory_total_bytes : null);
+  if (raw == null || !Number.isFinite(Number(raw))) return null;
+  return Math.round((num(raw) / (1024 * 1024)) * 100) / 100;
+}
+
+function buildMetricPoint(m: Metrics, mgmt: ManagementInfo, t: number): MetricPoint {
+  const rec = m as unknown as Record<string, unknown>;
+  const hasRequestTotals =
+    typeof rec.http_requests_total === 'number' &&
+    typeof rec.https_requests_total === 'number' &&
+    typeof rec.grpc_requests_total === 'number';
+  const h2 = num(m.h2_requests_total);
+  const h3 = num(m.h3_requests_total);
+  return {
+    t,
+    timeLabel: formatTime(t),
+    mode: typeof mgmt.mode === 'string' && mgmt.mode ? mgmt.mode : 'proxy',
+    uptime_secs: num(m.uptime_secs),
+    log_entries: num(m.log_entries),
+    active_connections: num(m.active_connections),
+    http_requests_total: hasRequestTotals ? num(m.http_requests_total) : h2 + h3,
+    https_requests_total: hasRequestTotals ? num(m.https_requests_total) : 0,
+    grpc_requests_total: hasRequestTotals ? num(m.grpc_requests_total) : 0,
+    h2_requests_total: h2,
+    h3_requests_total: h3,
+    h3_vs_h2_ratio: num(m.h3_vs_h2_ratio),
+    bytes_sent_total: num(m.bytes_sent_total),
+    bytes_received_total: num(m.bytes_received_total),
+    connections_per_site: m.connections_per_site ?? {},
+    site_h2_requests_total: m.site_h2_requests_total ?? {},
+    site_h3_requests_total: m.site_h3_requests_total ?? {},
+    site_h3_vs_h2_ratio: m.site_h3_vs_h2_ratio ?? {},
+    cpu_percent: mgmt.process_cpu_usage_percent ?? null,
+    memory_used_mb: memoryMbFromMgmt(mgmt),
+  };
+}
+
 export default function Metrics() {
   const [history, setHistory] = useState<MetricPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [missingRequestTotals, setMissingRequestTotals] = useState(false);
 
   useEffect(() => {
-    function onRealtime(snapshot: RealtimeSnapshot) {
+    let cancelled = false;
+    let stopWs: (() => void) | undefined;
+
+    function applySnapshot(snapshot: RealtimeSnapshot) {
       const m = snapshot.stats;
       const mgmt = snapshot.management;
+      const rec = m as unknown as Record<string, unknown>;
       const hasRequestTotals =
-        typeof (m as unknown as Record<string, unknown>).http_requests_total === 'number' &&
-        typeof (m as unknown as Record<string, unknown>).https_requests_total === 'number' &&
-        typeof (m as unknown as Record<string, unknown>).grpc_requests_total === 'number';
+        typeof rec.http_requests_total === 'number' &&
+        typeof rec.https_requests_total === 'number' &&
+        typeof rec.grpc_requests_total === 'number';
       setMissingRequestTotals(!hasRequestTotals);
       const t = Date.now();
-      const h2 = num(m.h2_requests_total);
-      const h3 = num(m.h3_requests_total);
-      const point: MetricPoint = {
-        t,
-        timeLabel: formatTime(t),
-        mode: typeof mgmt.mode === 'string' && mgmt.mode ? mgmt.mode : 'proxy',
-        uptime_secs: num(m.uptime_secs),
-        log_entries: num(m.log_entries),
-        active_connections: num(m.active_connections),
-        http_requests_total: hasRequestTotals ? num(m.http_requests_total) : h2 + h3,
-        https_requests_total: hasRequestTotals ? num(m.https_requests_total) : 0,
-        grpc_requests_total: hasRequestTotals ? num(m.grpc_requests_total) : 0,
-        h2_requests_total: h2,
-        h3_requests_total: h3,
-        h3_vs_h2_ratio: num(m.h3_vs_h2_ratio),
-        bytes_sent_total: num(m.bytes_sent_total),
-        bytes_received_total: num(m.bytes_received_total),
-        connections_per_site: m.connections_per_site ?? {},
-        site_h2_requests_total: m.site_h2_requests_total ?? {},
-        site_h3_requests_total: m.site_h3_requests_total ?? {},
-        site_h3_vs_h2_ratio: m.site_h3_vs_h2_ratio ?? {},
-        cpu_percent: mgmt.process_cpu_usage_percent ?? null,
-        memory_used_mb:
-          mgmt.process_memory_bytes != null
-            ? Math.round(num(mgmt.process_memory_bytes) / (1024 * 1024) * 10) / 10
-            : null,
-      };
-      setHistory((prev) => [...prev, point].slice(-MAX_POINTS));
+      setHistory((prev) => [...prev, buildMetricPoint(m, mgmt, t)].slice(-MAX_POINTS));
       setError(null);
-      setLoading(false);
     }
 
-    const stop = openRealtimeStream(onRealtime, () => setLoading(false));
+    (async () => {
+      try {
+        const [st1, mg1] = await Promise.all([api.metrics(), api.management()]);
+        if (cancelled) return;
+        const t1 = Date.now();
+        const p1 = buildMetricPoint(st1, mg1, t1);
+        await new Promise<void>((r) => {
+          setTimeout(r, 450);
+        });
+        const [st2, mg2] = await Promise.all([api.metrics(), api.management()]);
+        if (cancelled) return;
+        const t2 = Date.now();
+        const p2 = buildMetricPoint(st2, mg2, t2);
+        const rec2 = st2 as unknown as Record<string, unknown>;
+        setMissingRequestTotals(
+          !(
+            typeof rec2.http_requests_total === 'number' &&
+            typeof rec2.https_requests_total === 'number' &&
+            typeof rec2.grpc_requests_total === 'number'
+          )
+        );
+        setHistory([p1, p2]);
+        setError(null);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(String(e));
+        }
+      }
+
+      if (cancelled) return;
+      stopWs = openRealtimeStream(applySnapshot);
+    })();
+
     return () => {
-      stop();
+      cancelled = true;
+      stopWs?.();
     };
   }, []);
 
@@ -184,6 +289,7 @@ export default function Metrics() {
       const curr = history[i];
       const seconds = (curr.t - prev.t) / 1000;
       out.push({
+        tMs: curr.t,
         timeLabel: curr.timeLabel,
         http_rps: deltaRate(curr.http_requests_total, prev.http_requests_total, seconds),
         https_rps: deltaRate(curr.https_requests_total, prev.https_requests_total, seconds),
@@ -204,6 +310,7 @@ export default function Metrics() {
       const sent = deltaRate(curr.bytes_sent_total, prev.bytes_sent_total, seconds) / 1024;
       const recv = deltaRate(curr.bytes_received_total, prev.bytes_received_total, seconds) / 1024;
       out.push({
+        tMs: curr.t,
         timeLabel: curr.timeLabel,
         sent_kibps: sent,
         recv_kibps: recv,
@@ -211,6 +318,62 @@ export default function Metrics() {
     }
     return out;
   }, [history]);
+
+  const requestRateChartMax = useMemo(() => {
+    if (requestsTrend.length === 0) return 1;
+    let mx = 0;
+    for (const p of requestsTrend) {
+      mx = Math.max(mx, p.http_rps, p.https_rps, p.h3_rps, p.grpc_rps);
+    }
+    return mx <= 0 ? 1 : mx * 1.15;
+  }, [requestsTrend]);
+
+  const throughputChartMax = useMemo(() => {
+    if (throughputTrend.length === 0) return 0.5;
+    let mx = 0;
+    for (const p of throughputTrend) {
+      mx = Math.max(mx, p.sent_kibps, p.recv_kibps);
+    }
+    return mx <= 0 ? 0.5 : mx * 1.2;
+  }, [throughputTrend]);
+
+  const runtimeLeftMax = useMemo(() => {
+    if (history.length === 0) return 8;
+    let mx = 2;
+    for (const p of history) {
+      mx = Math.max(mx, p.active_connections, p.cpu_percent ?? 0);
+    }
+    return Math.max(4, Math.ceil(mx * 1.15));
+  }, [history]);
+
+  const runtimeRightMax = useMemo(() => {
+    if (history.length === 0) return 100;
+    let mx = 8;
+    for (const p of history) {
+      mx = Math.max(mx, p.log_entries, p.memory_used_mb ?? 0);
+    }
+    return Math.max(16, Math.ceil(mx * 1.1));
+  }, [history]);
+
+  const ratesAllNearZero = useMemo(
+    () =>
+      requestsTrend.length > 0 &&
+      requestsTrend.every(
+        (p) =>
+          Math.abs(p.http_rps) < 1e-9 &&
+          Math.abs(p.https_rps) < 1e-9 &&
+          Math.abs(p.h3_rps) < 1e-9 &&
+          Math.abs(p.grpc_rps) < 1e-9
+      ),
+    [requestsTrend]
+  );
+
+  const tpAllNearZero = useMemo(
+    () =>
+      throughputTrend.length > 0 &&
+      throughputTrend.every((p) => Math.abs(p.sent_kibps) < 1e-9 && Math.abs(p.recv_kibps) < 1e-9),
+    [throughputTrend]
+  );
 
   const hostProtocolRows = useMemo<HostProtocolRow[]>(() => {
     if (history.length === 0) return [];
@@ -297,19 +460,12 @@ export default function Metrics() {
 
   return (
     <div className={styles.page}>
-      {!loading && history.length > 0 && (
-        <div className="page-actions" style={{ marginBottom: 16 }}>
-          <span className={styles.liveBadge} title="Auto-refresh">
-            Live
-          </span>
-        </div>
-      )}
-
       {missingRequestTotals && (
         <div className={styles.errorCard}>
           <span className={styles.errorIcon} aria-hidden>!</span>
           <span>
-            Ingress backend is missing HTTP/HTTPS request counters in /api/metrics. Showing fallback rates from H2/H3 protocol counters; redeploy ingress with the latest binary for full request totals.
+            Stats payload is missing one or more request total fields. Protocol rate lines may be incomplete until the
+            backend exposes full counters.
           </span>
         </div>
       )}
@@ -402,7 +558,7 @@ export default function Metrics() {
             {currentSnapshot.latest.cpu_percent != null && (
               <div className={styles.summaryCard}>
                 <span className={styles.summaryLabel}>CPU</span>
-                <span className={styles.summaryValue}>{currentSnapshot.latest.cpu_percent.toFixed(1)}%</span>
+                <span className={styles.summaryValue}>{currentSnapshot.latest.cpu_percent.toFixed(2)}%</span>
               </div>
             )}
             {currentSnapshot.latest.memory_used_mb != null && (
@@ -414,7 +570,8 @@ export default function Metrics() {
           </div>
           {noProxyTrafficObserved && (
             <p className={styles.sectionSubtitle}>
-              No proxied traffic observed yet. These counters track requests that pass through PTProxy ingress (not management UI/API calls).
+              No proxied traffic observed yet. Request totals count traffic through the reverse proxy (not the admin UI
+              or management API).
             </p>
           )}
         </section>
@@ -431,18 +588,30 @@ export default function Metrics() {
               <LineChart data={requestsTrend} margin={{ top: 8, right: 16, left: 8, bottom: 8 }} className="chart-theme-text">
                 <CartesianGrid strokeDasharray="3 3" className={styles.grid} />
                 <XAxis
-                  dataKey="timeLabel"
+                  type="number"
+                  dataKey="tMs"
+                  domain={['dataMin', 'dataMax']}
                   tick={{ fontSize: 11 }}
                   className={styles.axis}
                   interval="preserveStartEnd"
+                  tickFormatter={(v) => formatChartAxisTimeMs(Number(v))}
                 />
-                <YAxis tick={{ fontSize: 11 }} className={styles.axis} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  className={styles.axis}
+                  domain={[0, requestRateChartMax]}
+                  allowDataOverflow
+                  tickFormatter={(v) => formatChartAxisNumber(Number(v))}
+                />
                 <Tooltip
+                  contentStyle={METRICS_TOOLTIP_CONTENT}
+                  labelStyle={METRICS_TOOLTIP_LABEL}
+                  itemStyle={METRICS_TOOLTIP_ITEM}
                   formatter={(value: unknown, name: string) => [
                     typeof value === 'number' && Number.isFinite(value) ? formatRate(value) : '—',
                     name,
                   ]}
-                  labelFormatter={(label) => label}
+                  labelFormatter={(label) => formatChartTooltipXLabel(label)}
                 />
                 <Legend />
                 <Line
@@ -485,6 +654,12 @@ export default function Metrics() {
             </ResponsiveContainer>
           )}
         </div>
+        {ratesAllNearZero && requestsTrend.length > 0 && (
+          <p className={styles.chartHint}>
+            Lines are at zero: no proxied request rate in this window, or counters are unchanged between samples. Send
+            traffic through the proxy to see HTTP/1.x move; HTTPS/H3/gRPC stay at zero unless those paths are used.
+          </p>
+        )}
       </section>
 
       <section className={styles.chartSection}>
@@ -498,18 +673,30 @@ export default function Metrics() {
               <LineChart data={throughputTrend} margin={{ top: 8, right: 16, left: 8, bottom: 8 }} className="chart-theme-text">
                 <CartesianGrid strokeDasharray="3 3" className={styles.grid} />
                 <XAxis
-                  dataKey="timeLabel"
+                  type="number"
+                  dataKey="tMs"
+                  domain={['dataMin', 'dataMax']}
                   tick={{ fontSize: 11 }}
                   className={styles.axis}
                   interval="preserveStartEnd"
+                  tickFormatter={(v) => formatChartAxisTimeMs(Number(v))}
                 />
-                <YAxis tick={{ fontSize: 11 }} className={styles.axis} tickFormatter={(v) => `${Number(v).toFixed(1)}`} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  className={styles.axis}
+                  tickFormatter={(v) => formatChartAxisNumber(Number(v))}
+                  domain={[0, throughputChartMax]}
+                  allowDataOverflow
+                />
                 <Tooltip
+                  contentStyle={METRICS_TOOLTIP_CONTENT}
+                  labelStyle={METRICS_TOOLTIP_LABEL}
+                  itemStyle={METRICS_TOOLTIP_ITEM}
                   formatter={(value: unknown, name: string) => [
                     typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)} KiB/s` : '—',
                     name,
                   ]}
-                  labelFormatter={(label) => label}
+                  labelFormatter={(label) => formatChartTooltipXLabel(label)}
                 />
                 <Legend />
                 <Line
@@ -534,6 +721,13 @@ export default function Metrics() {
             </ResponsiveContainer>
           )}
         </div>
+        {tpAllNearZero && throughputTrend.length > 0 && (
+          <p className={styles.chartHint}>
+            Throughput is zero in this window: no proxied traffic with bodies, or only tiny responses. Counts include
+            request/response body bytes through the TCP proxy and HTTP/3 gateway (not headers, WebSocket streams, or
+            management API JSON).
+          </p>
+        )}
       </section>
 
       <section className={styles.chartSection}>
@@ -556,21 +750,47 @@ export default function Metrics() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" className={styles.grid} />
-                <XAxis dataKey="timeLabel" tick={{ fontSize: 11 }} className={styles.axis} interval="preserveStartEnd" />
-                <YAxis yAxisId="left" tick={{ fontSize: 11 }} className={styles.axis} />
-                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} className={styles.axis} />
+                <XAxis
+                  type="number"
+                  dataKey="t"
+                  domain={['dataMin', 'dataMax']}
+                  tick={{ fontSize: 11 }}
+                  className={styles.axis}
+                  interval="preserveStartEnd"
+                  tickFormatter={(v) => formatChartAxisTimeMs(Number(v))}
+                />
+                <YAxis
+                  yAxisId="left"
+                  tick={{ fontSize: 11 }}
+                  className={styles.axis}
+                  domain={[0, runtimeLeftMax]}
+                  allowDataOverflow
+                  tickFormatter={(v) => formatChartAxisNumber(Number(v))}
+                />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize: 11 }}
+                  className={styles.axis}
+                  domain={[0, runtimeRightMax]}
+                  allowDataOverflow
+                  tickFormatter={(v) => formatChartAxisNumber(Number(v))}
+                />
                 <Tooltip
+                  contentStyle={METRICS_TOOLTIP_CONTENT}
+                  labelStyle={METRICS_TOOLTIP_LABEL}
+                  itemStyle={METRICS_TOOLTIP_ITEM}
                   formatter={(value: unknown, name: string) => {
                     if (name === 'CPU %')
-                      return [typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)}%` : '—', name];
+                      return [typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : '—', name];
                     if (name === 'Memory (MB)')
                       return [typeof value === 'number' && Number.isFinite(value) ? formatMemoryMb(value) : '—', name];
                     return [
-                      typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—',
+                      typeof value === 'number' && Number.isFinite(value) ? formatTooltipMetricValue(value) : '—',
                       name,
                     ];
                   }}
-                  labelFormatter={(label) => label}
+                  labelFormatter={(label) => formatChartTooltipXLabel(label)}
                 />
                 <Legend />
                 <Area yAxisId="left" type="monotone" dataKey="active_connections" name="Active connections" stroke="var(--color-dashboard-metric-primary)" fill="url(#connFill)" strokeWidth={2} isAnimationActive={false} />

@@ -215,6 +215,8 @@ export type Metrics = {
   h2_requests_total: number;
   h3_requests_total: number;
   h3_vs_h2_ratio: number;
+  /** Management API JSON responses (proto=admin); included in `http_requests_total` for chart visibility. */
+  management_requests_total?: number;
   site_h2_requests_total: Record<string, number>;
   site_h3_requests_total: Record<string, number>;
   site_h3_vs_h2_ratio: Record<string, number>;
@@ -275,6 +277,45 @@ export interface ApiError {
   error?: string;
 }
 
+export interface ManagementListener {
+  id: string;
+  description: string;
+  protocol: string;
+  bind: string;
+  port: number;
+  tls: boolean;
+  stack: string;
+}
+
+export interface ManagementProcessInfo {
+  node: string;
+  os_pid: string;
+  hostname: string;
+  otp_release: string;
+  erts_version: string;
+  system_architecture: string;
+  word_size: number;
+  schedulers: number;
+  logical_processors: number;
+  smp_enabled: boolean;
+  thread_pool: number;
+  process_count: number;
+  process_limit: number;
+  memory_total_bytes: number;
+  os_type: string;
+  os_version: string;
+}
+
+export interface ManagementRuntimeCapabilities {
+  beam: string;
+  jit: boolean;
+  cowboy_quic: boolean;
+  quicer_application: boolean;
+  h3_api_gateway_config: boolean;
+  tls_listener_configured: boolean;
+  proxy_http3_udp: boolean;
+}
+
 export interface ManagementInfo {
   http_addr: string;
   https_addr: string;
@@ -287,6 +328,13 @@ export interface ManagementInfo {
   process_memory_bytes?: number | null;
   /** Absolute path to loaded pertisk_eproxy_tls_cert_info.beam (debug stale-code issues). */
   loaded_tls_cert_info_beam?: string;
+  listeners?: ManagementListener[];
+  process_info?: ManagementProcessInfo;
+  runtime_capabilities?: ManagementRuntimeCapabilities;
+  public_ipv4?: string | null;
+  public_ipv6?: string | null;
+  public_ip_fetched_at_ms?: number | null;
+  public_ip_error?: string | null;
 }
 
 export interface RealtimeSnapshot {
@@ -422,8 +470,15 @@ export function openRealtimeStream(
   onError?: (event: Event) => void,
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const baseUrl = new URL(`${proto}://${window.location.host}${API}/realtime`);
+  /** Optional full WebSocket URL when `/api/realtime` on the page origin is proxied to something other than the management admin WS (e.g. upstream WS on the same path). */
+  const env = import.meta.env as { VITE_REALTIME_WEBSOCKET_URL?: string };
+  const explicitWs = env.VITE_REALTIME_WEBSOCKET_URL?.trim();
+  const baseUrl = explicitWs
+    ? new URL(explicitWs)
+    : (() => {
+        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return new URL(`${proto}://${window.location.host}${API}/realtime`);
+      })();
   let ws: WebSocket | null = null;
   let closedManually = false;
   let reconnectTimer: number | null = null;

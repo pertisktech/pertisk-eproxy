@@ -64,7 +64,7 @@ authorize(Req) ->
 snapshot_json() ->
     Data = #{
         <<"stats">> => pertisk_eproxy_stats:snapshot(),
-        <<"management">> => management_info(),
+        <<"management">> => pertisk_eproxy_admin_management_snapshot:snapshot(),
         <<"logs">> => pertisk_eproxy_access_log:list(undefined, undefined),
         <<"certificates">> => certificate_rows(),
         <<"ssl_jobs">> => pertisk_eproxy_admin_realtime:ssl_jobs_snapshot()
@@ -89,43 +89,6 @@ challenge_for_source(Src0) ->
     case Src of
         <<"imported_pem">> -> <<"imported PEM">>;
         _ -> <<"acme">>
-    end.
-
-management_info() ->
-    C = pertisk_eproxy_config:get_config(),
-    HttpPort = maps:get(http_port, C, 8080),
-    MgmtPort = maps:get(management_port, C, 9080),
-    MgmtAddr = maps:get(management_addr, C, {127, 0, 0, 1}),
-    Mode0 = maps:get(mode, C, proxy_admin),
-    ModeBin = case Mode0 of
-        proxy_admin -> <<"proxy">>;
-        proxy -> <<"proxy">>;
-        M -> atom_to_binary(M, utf8)
-    end,
-    HttpsAddr = case maps:find(https_port, C) of
-        {ok, Hp} -> iolist_to_binary(io_lib:format("0.0.0.0:~w", [Hp]));
-        _ -> <<>>
-    end,
-    TlsInfoBeam = case code:which(pertisk_eproxy_tls_cert_info) of
-        Path when is_list(Path) -> list_to_binary(Path);
-        _ -> <<>>
-    end,
-    #{
-        <<"version">> => app_version(),
-        <<"mode">> => ModeBin,
-        <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
-        <<"https_addr">> => HttpsAddr,
-        <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
-        <<"db_path">> => iolist_to_binary(db_file_path()),
-        <<"http_versions">> => [<<"1.1">>, <<"2">>],
-        <<"loaded_tls_cert_info_beam">> => TlsInfoBeam
-    }.
-
-app_version() ->
-    case application:get_key(pertisk_eproxy, vsn) of
-        {ok, V} when is_list(V) -> list_to_binary(V);
-        {ok, V} when is_binary(V) -> V;
-        _ -> <<"0.1.0">>
     end.
 
 db_file_path() ->

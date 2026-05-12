@@ -47,6 +47,12 @@ init([]) ->
           shutdown => 5000,
           type     => worker},
 
+        #{id       => pertisk_eproxy_public_ip,
+          start    => {pertisk_eproxy_public_ip, start_link, []},
+          restart  => permanent,
+          shutdown => 5000,
+          type     => worker},
+
         #{id       => pertisk_eproxy_acme_dns,
           start    => {pertisk_eproxy_acme_dns, start_link, []},
           restart  => permanent,

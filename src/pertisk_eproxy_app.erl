@@ -10,6 +10,7 @@ start(_StartType, _StartArgs) ->
     _ = install_quic_log_filter(),
     _ = application:ensure_all_started(inets),
     ok = pertisk_eproxy_metrics:setup(),
+    ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = start_listeners(),
     {ok, Sup}.
@@ -248,6 +249,8 @@ build_admin_routes(proxy_admin) ->
 
 build_admin_api_routes() ->
     [
+        %% Exact /api — API catalog JSON (works in proxy_admin where / is the SPA)
+        {"/api",                    pertisk_eproxy_admin_handler, api_catalog},
         %% REST API (management listener on :9080)
         {"/api/version",            pertisk_eproxy_admin_handler, version},
         {"/api/management",         pertisk_eproxy_admin_handler, management},

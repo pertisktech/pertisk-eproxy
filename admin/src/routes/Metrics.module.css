@@ -39,21 +39,6 @@
   color: var(--color-text-secondary);
 }
 
-.liveBadge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  padding: 0.35rem 0.65rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
-  border-radius: var(--radius-md);
-}
-
 .modeBadge {
   flex-shrink: 0;
   display: inline-flex;
@@ -94,13 +79,19 @@
   border-radius: 50%;
 }
 
-/* Chart colors (set in page so Recharts can use them) */
+/* Chart colors (set on .page so Recharts SVG stroke/fill var() resolves here) */
 .page {
   --chart-uptime: #eab308;
   --chart-logs: var(--color-primary);
   --chart-connections: #0ea5e9;
   --chart-cpu: #10b981;
   --chart-memory: #f59e0b;
+  /* Series colors — were never defined; undefined var() hides SVG strokes entirely */
+  --color-dashboard-metric-primary: #8b5cf6;
+  --color-dashboard-metric-secondary: #0ea5e9;
+  --color-dashboard-metric-tertiary: #10b981;
+  --color-dashboard-metric-quaternary: #f59e0b;
+  --color-dashboard-warning: #fb923c;
 }
 
 html.dark .page {
@@ -109,6 +100,19 @@ html.dark .page {
   --chart-connections: #38bdf8;
   --chart-cpu: #34d399;
   --chart-memory: #fbbf24;
+  --color-dashboard-metric-primary: #a78bfa;
+  --color-dashboard-metric-secondary: #38bdf8;
+  --color-dashboard-metric-tertiary: #34d399;
+  --color-dashboard-metric-quaternary: #fbbf24;
+  --color-dashboard-warning: #fdba74;
+}
+
+html.light .page {
+  --color-dashboard-metric-primary: #6d28d9;
+  --color-dashboard-metric-secondary: #0369a1;
+  --color-dashboard-metric-tertiary: #047857;
+  --color-dashboard-metric-quaternary: #b45309;
+  --color-dashboard-warning: #c2410c;
 }
 
 .chartSection {
@@ -130,6 +134,8 @@ html.dark .page {
 }
 
 .chartWrap {
+  width: 100%;
+  min-width: 0;
   background: var(--color-card);
   border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
   border-radius: var(--radius-lg);
@@ -148,6 +154,17 @@ html.dark .page {
   );
   background-size: 200% 100%;
   animation: skeleton 1.2s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+.chartHint {
+  margin: 0.65rem 0 0;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   border-radius: var(--radius-md);
 }
 

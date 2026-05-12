@@ -291,3 +291,22 @@ html.eproxy-scroll-lock #layout-main-scroll {
   overflow: hidden !important;
   overscroll-behavior: none;
 }
+
+/* Recharts: root className on Metrics charts (ticks/legend inherit color) */
+.chart-theme-text {
+  color: var(--color-text-secondary);
+}
+
+/* Default tooltip uses white background; force theme colors so label/values stay readable */
+.recharts-default-tooltip {
+  background-color: var(--color-card) !important;
+  border: 1px solid var(--color-border-light) !important;
+  color: var(--color-text) !important;
+}
+
+.recharts-tooltip-label,
+.recharts-tooltip-item-name,
+.recharts-tooltip-item-value,
+.recharts-tooltip-item-separator {
+  color: var(--color-text) !important;
+}
