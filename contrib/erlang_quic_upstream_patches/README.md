@@ -2,16 +2,44 @@
 
 These changes are vendored in `_checkouts/quic/` in this repo. To contribute them upstream to [benoitc/erlang_quic](https://github.com/benoitc/erlang_quic), apply `pertisk-vendor-quic-interop-v1.3.0.patch` on tag **`v1.3.0`** (commit `e3261d38486325d4eb68626b551debd181322c4a`).
 
-## Apply locally (upstream clone)
+## Local first (automated)
+
+From the **pertisk-eproxy** repo root:
+
+```bash
+make quic-upstream-local
+```
+
+Or:
+
+```bash
+bash contrib/erlang_quic_upstream_patches/apply-local.sh
+```
+
+This clones **`../erlang_quic`** next to this repository (unless **`ERLANG_QUIC_LOCAL`** points elsewhere), checks out **`v1.3.0`**, applies **`pertisk-vendor-quic-interop-v1.3.0.patch`**, and runs **`rebar3 compile`** in that clone. Then create a branch and push when satisfied.
+
+Optional environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ERLANG_QUIC_LOCAL` | `<parent-of-this-repo>/erlang_quic` | Clone directory |
+| `ERLANG_QUIC_TAG` | `v1.3.0` | Tag to check out before applying |
+| `ERLANG_QUIC_GIT_URL` | `https://github.com/benoitc/erlang_quic.git` | Upstream URL |
+
+To run the script again on the **same** clone, reset it first (the script refuses a dirty working tree):
+
+```bash
+git -C "$ERLANG_QUIC_LOCAL" reset --hard "${ERLANG_QUIC_TAG:-v1.3.0}"
+```
+
+## Apply manually (upstream clone)
 
 ```bash
 git clone https://github.com/benoitc/erlang_quic.git && cd erlang_quic
 git checkout v1.3.0
 git apply /path/to/pertisk-eproxy/contrib/erlang_quic_upstream_patches/pertisk-vendor-quic-interop-v1.3.0.patch
-rebar3 eunit --module=quic_qpack_tests  # if present; or rebar3 ct / compile
+rebar3 compile
 ```
-
-Or copy the patch file into the clone and `git apply pertisk-vendor-quic-interop-v1.3.0.patch`.
 
 ## Suggested PR title
 

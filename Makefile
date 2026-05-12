@@ -1,4 +1,4 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke package-deb-amd64
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi tls-smoke package-deb-amd64 quic-upstream-local
 
 REBAR = rebar3
 IMAGE ?= harbor.example.com/pertisk-eproxy
@@ -30,6 +30,10 @@ dialyzer:
 clean:
 	$(REBAR) clean
 	rm -rf _build
+
+## Clone benoitc/erlang_quic locally (default: ../erlang_quic), apply interop patch, rebar3 compile — before opening upstream PR
+quic-upstream-local:
+	bash contrib/erlang_quic_upstream_patches/apply-local.sh
 
 release:
 	$(REBAR) as prod release
