@@ -1,0 +1,13 @@
+{
+  "mode": "proxy_admin",
+  "sites": [],
+  "certificates": [],
+  "backends": [],
+  "dns_providers": [],
+  "http_port": 80,
+  "management_port": 9080,
+  "quic_enabled": true,
+  "https_port": 443,
+  "tls_cert_file": "priv/tls/listener.pem",
+  "tls_key_file": "priv/tls/listener.key"
+}

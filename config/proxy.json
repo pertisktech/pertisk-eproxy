@@ -1,1 +1,7 @@
-{}
+{
+    "http_port": 80,
+    "https_port": 443,
+    "tls_cert_file": "priv/tls/listener.pem",
+    "tls_key_file": "priv/tls/listener.key",
+    "management_port": 9080
+}
