@@ -13,6 +13,7 @@ function normalizeRow(r: Partial<SslJobRow> & { host?: string }): SslJobRow {
 
 export type SslJobContextValue = {
   jobsByHost: Record<string, SslJobRow>;
+  lastPush: SslJobPush | null;
   mergeFromSnapshot: (rows: unknown) => void;
   applySslJobPush: (ev: SslJobPush) => void;
 };
@@ -21,9 +22,11 @@ export type SslJobActionsValue = Pick<SslJobContextValue, 'mergeFromSnapshot' | 
 
 const SslJobActionsContext = createContext<SslJobActionsValue | null>(null);
 const SslJobJobsContext = createContext<Record<string, SslJobRow>>({});
+const SslJobLastPushContext = createContext<SslJobPush | null>(null);
 
 export function SslJobProvider({ children }: { children: ReactNode }) {
   const [jobsByHost, setJobsByHost] = useState<Record<string, SslJobRow>>({});
+  const [lastPush, setLastPush] = useState<SslJobPush | null>(null);
 
   const mergeFromSnapshot = useCallback((rows: unknown) => {
     if (!Array.isArray(rows)) return;
@@ -40,6 +43,7 @@ export function SslJobProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const applySslJobPush = useCallback((ev: SslJobPush) => {
+    setLastPush(ev);
     const host = String(ev.host ?? '');
     if (!host) return;
     const phase = String(ev.phase ?? '');
@@ -68,7 +72,9 @@ export function SslJobProvider({ children }: { children: ReactNode }) {
 
   return (
     <SslJobActionsContext.Provider value={actions}>
-      <SslJobJobsContext.Provider value={jobsByHost}>{children}</SslJobJobsContext.Provider>
+      <SslJobJobsContext.Provider value={jobsByHost}>
+        <SslJobLastPushContext.Provider value={lastPush}>{children}</SslJobLastPushContext.Provider>
+      </SslJobJobsContext.Provider>
     </SslJobActionsContext.Provider>
   );
 }
@@ -84,10 +90,11 @@ export function useSslJobActions(): SslJobActionsValue {
 
 export function useSslJobs(): SslJobContextValue {
   const jobsByHost = useContext(SslJobJobsContext);
+  const lastPush = useContext(SslJobLastPushContext);
   const { mergeFromSnapshot, applySslJobPush } = useSslJobActions();
   return useMemo(
-    () => ({ jobsByHost, mergeFromSnapshot, applySslJobPush }),
-    [jobsByHost, mergeFromSnapshot, applySslJobPush]
+    () => ({ jobsByHost, lastPush, mergeFromSnapshot, applySslJobPush }),
+    [jobsByHost, lastPush, mergeFromSnapshot, applySslJobPush]
   );
 }
 

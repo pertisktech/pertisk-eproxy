@@ -112,6 +112,7 @@ function LayoutShell() {
   const knownCertIdsRef = useRef<Set<string>>(new Set());
   const errorsInitializedRef = useRef(false);
   const lastErrorTsRef = useRef<number | null>(null);
+  const acmeCompleteNotifiedRef = useRef<Record<string, number>>({});
   const refreshTimerRef = useRef<number | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
@@ -314,7 +315,19 @@ function LayoutShell() {
       lastErrorTsRef.current = Math.max(last, maxTs);
     }
 
-    const stop = openRealtimeStream(onRealtime, undefined, (ev) => applySslJobPushRef.current(ev));
+    const stop = openRealtimeStream(onRealtime, undefined, (ev) => {
+      applySslJobPushRef.current(ev);
+      const host = String(ev.host ?? '').trim();
+      const phase = String(ev.phase ?? '').trim();
+      if (host && phase === 'complete') {
+        const ts = typeof ev.updated_at_ms === 'number' ? ev.updated_at_ms : Date.now();
+        const prevTs = acmeCompleteNotifiedRef.current[host] ?? 0;
+        if (ts > prevTs) {
+          acmeCompleteNotifiedRef.current[host] = ts;
+          toastSuccessRef.current(`Auto SSL completed for ${host}.`);
+        }
+      }
+    });
     return () => {
       stop();
     };

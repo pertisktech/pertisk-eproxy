@@ -3,7 +3,7 @@
 -behaviour(application).
 
 -export([start/2, stop/1]).
--export([quic_noise_filter/2]).
+-export([quic_noise_filter/2, reload_tls_listeners/0]).
 
 start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
@@ -27,6 +27,19 @@ stop(_State) ->
     stop_listener(quic6),
     stop_listener(management),
     ok.
+
+%% @doc Reload listeners so updated TLS cert/key paths are applied immediately.
+reload_tls_listeners() ->
+    _ = pertisk_eproxy_h3_api_gateway:stop(),
+    _ = pertisk_eproxy_h3_api_gateway:stop_probe(),
+    stop_listener(http4),
+    stop_listener(http6),
+    stop_listener(https4),
+    stop_listener(https6),
+    stop_listener(quic4),
+    stop_listener(quic6),
+    stop_listener(management),
+    start_listeners().
 
 %% -------------------------------------------------------------------------
 %% Internal
@@ -292,7 +305,87 @@ tls_opts(Config) ->
         {undefined, _} -> [];
         {_, undefined} -> [];
         _ ->
-            [{certfile, CertFile}, {keyfile, KeyFile},
+            Base = [{certfile, CertFile}, {keyfile, KeyFile},
              {versions, ['tlsv1.2', 'tlsv1.3']},
-             {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}]
+             {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}],
+            SniHosts = build_sni_hosts(Config),
+            case SniHosts of
+                [] -> Base;
+                _ -> Base ++ [{sni_hosts, SniHosts}]
+            end
     end.
+
+build_sni_hosts(Config) ->
+    Sites = maps:get(sites, Config, []),
+    DbPath = pertisk_eproxy_config:db_file(),
+    CertRowsById = cert_rows_by_id(DbPath),
+    lists:reverse(
+        lists:foldl(
+            fun(Site, Acc) ->
+                Host = site_host_to_list(maps:get(host, Site, <<>>)),
+                case {Host, resolve_site_cert_paths(Site, CertRowsById)} of
+                    {[], _} ->
+                        Acc;
+                    {_, undefined} ->
+                        Acc;
+                    {H, {CertPath, KeyPath}} ->
+                        case lists:keymember(H, 1, Acc) of
+                            true -> Acc;
+                            false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+                        end
+                end
+            end,
+            [],
+            Sites
+        )
+    ).
+
+cert_rows_by_id(DbPath) ->
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} ->
+            maps:from_list([{integer_to_binary(maps:get(id, Row)), Row} || Row <- Rows]);
+        _ ->
+            #{}
+    end.
+
+resolve_site_cert_paths(Site, CertRowsById) ->
+    case cert_ref_to_binary(maps:get(certificate, Site, undefined)) of
+        undefined ->
+            undefined;
+        <<"acme/", _/binary>> = Name ->
+            acme_paths_for_name(Name);
+        IdRef ->
+            case maps:get(IdRef, CertRowsById, undefined) of
+                #{name := Name0} ->
+                    case cert_ref_to_binary(Name0) of
+                        <<"acme/", _/binary>> = Name1 -> acme_paths_for_name(Name1);
+                        _ -> undefined
+                    end;
+                _ ->
+                    undefined
+            end
+    end.
+
+acme_paths_for_name(<<"acme/", Slug/binary>>) ->
+    AcmeDir = case application:get_env(pertisk_eproxy, acme_data_dir) of
+        {ok, D} when is_list(D) -> D;
+        _ -> "data/acme"
+    end,
+    Dir = filename:join([AcmeDir, "certs", binary_to_list(Slug)]),
+    CertPath = filename:join(Dir, "fullchain.pem"),
+    KeyPath = filename:join(Dir, "privkey.pem"),
+    case {filelib:is_file(CertPath), filelib:is_file(KeyPath)} of
+        {true, true} -> {CertPath, KeyPath};
+        _ -> undefined
+    end.
+
+cert_ref_to_binary(undefined) -> undefined;
+cert_ref_to_binary(null) -> undefined;
+cert_ref_to_binary(V) when is_binary(V) -> V;
+cert_ref_to_binary(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+cert_ref_to_binary(V) when is_integer(V) -> integer_to_binary(V);
+cert_ref_to_binary(_) -> undefined.
+
+site_host_to_list(H) when is_list(H) -> H;
+site_host_to_list(H) when is_binary(H) -> binary_to_list(H);
+site_host_to_list(_) -> [].

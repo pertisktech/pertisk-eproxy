@@ -27,7 +27,7 @@ function readFileAsText(file: File | null): Promise<string> {
 
 export default function Certificates() {
   const toast = useToast();
-  const { jobsByHost } = useSslJobs();
+  const { jobsByHost, lastPush } = useSslJobs();
   const sslJobEntries = useMemo(
     () => Object.values(jobsByHost).sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0)),
     [jobsByHost]
@@ -77,6 +77,15 @@ export default function Certificates() {
   useEffect(() => {
     load({ silent: certificatesCache != null });
   }, [load]);
+
+  useEffect(() => {
+    if (!lastPush) return;
+    if (String(lastPush.phase ?? '') !== 'complete') return;
+    const timer = window.setTimeout(() => {
+      load({ silent: true });
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [lastPush, load]);
 
   const closeImportModal = useCallback(() => {
     setShowImportModal(false);

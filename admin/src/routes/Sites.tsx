@@ -100,7 +100,7 @@ type SslMode = 'none' | 'existing_cert' | 'auto_ssl';
 type ChallengeType = 'http-01' | 'dns-01';
 
 export default function Sites() {
-  const { jobsByHost } = useSslJobs();
+  const { jobsByHost, lastPush } = useSslJobs();
   const [config, setConfig] = useState<ProxyConfig | null>(() => sitesCache?.config ?? null);
   const [loading, setLoading] = useState(() => sitesCache == null);
   const [error, setError] = useState<string | null>(null);
@@ -245,6 +245,15 @@ export default function Sites() {
   useEffect(() => {
     load({ silent: sitesCache != null });
   }, [load]);
+
+  useEffect(() => {
+    if (!lastPush) return;
+    if (String(lastPush.phase ?? '') !== 'complete') return;
+    const timer = window.setTimeout(() => {
+      void load({ silent: true });
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [lastPush, load]);
 
   useEffect(() => {
     if (!showForm) return;

@@ -494,7 +494,7 @@ save_and_register(DbPath, _Site, Host, PemChain, KeyPem) ->
     _ = try file:change_mode(KeyPath, 8#600) catch _:_ -> ok end,
     CertName = cert_db_name(Host),
     {ok, _Id} = pertisk_eproxy_db:upsert_acme_certificate_pem(DbPath, CertName, CertPath, KeyPath),
-    spawn(fun() -> patch_site_certificate(Host, CertName) end),
+    spawn(fun() -> patch_site_certificate(Host, CertName, CertPath, KeyPath) end),
     ok.
 
 cert_slug(Host) ->
@@ -503,7 +503,7 @@ cert_slug(Host) ->
 cert_db_name(Host) ->
     binary_to_list(<<"acme/", (cert_slug(Host))/binary>>).
 
-patch_site_certificate(HostBin, CertName) ->
+patch_site_certificate(HostBin, CertName, CertPath, KeyPath) ->
     timer:sleep(500),
     C = pertisk_eproxy_config:get_config(),
     Sites = maps:get(sites, C, []),
@@ -516,10 +516,16 @@ patch_site_certificate(HostBin, CertName) ->
             end
         end,
         Sites),
-    case pertisk_eproxy_config:put_config(C#{sites => NewSites}) of
+    NextC = C#{
+        sites => NewSites,
+        tls_cert_file => CertPath,
+        tls_key_file => KeyPath
+    },
+    case pertisk_eproxy_config:put_config(NextC) of
         ok -> ok;
         {error, R} -> lager:error("ACME: could not attach certificate to site ~s: ~p", [HostBin, R])
-    end.
+    end,
+    _ = catch pertisk_eproxy_app:reload_tls_listeners().
 
 write_kid(Path, Kid) when is_binary(Kid) ->
     ok = file:write_file(Path, [Kid, $\n]).
