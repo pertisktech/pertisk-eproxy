@@ -1142,8 +1142,7 @@ with_alt_svc(Req, Headers) ->
         true ->
             case pertisk_eproxy_handler:alt_svc_advertised_port(Req) of
                 P when is_integer(P), P > 0 ->
-                    Alt = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [P])),
-                    Headers#{<<"alt-svc">> => Alt};
+                    Headers#{<<"alt-svc">> => pertisk_h3_alt_svc:header_value(P)};
                 _ ->
                     Headers
             end

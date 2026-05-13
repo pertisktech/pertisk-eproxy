@@ -15,7 +15,7 @@
 -module(pertisk_eproxy_handler).
 -behaviour(cowboy_handler).
 
--export([init/2, parse_upstream/1, alt_svc_advertised_port/1]).
+-export([init/2, parse_upstream/1, alt_svc_advertised_port/1, site_advertise_http3/1]).
 
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
@@ -278,28 +278,18 @@ maybe_add_alt_svc(Req, Host, Headers) ->
     Port = alt_svc_advertised_port(Req),
     case {Https, Port, site_advertise_http3(Host)} of
         {true, P, true} when is_integer(P), P > 0 ->
-            Alt = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [P])),
-            Headers#{<<"alt-svc">> => Alt};
+            Headers#{<<"alt-svc">> => pertisk_h3_alt_svc:header_value(P)};
         _ ->
             Headers
     end.
 
 %% @doc Port advertised in {@code Alt-Svc} for QUIC (may differ from {@link cowboy_req:port/1} behind a reverse proxy).
--spec alt_svc_advertised_port(cowboy_req:req()) -> pos_integer().
+-spec alt_svc_advertised_port(cowboy_req:req()) -> pos_integer() | undefined.
 alt_svc_advertised_port(Req) ->
     Cfg = pertisk_eproxy_config:get_config(),
-    case maps:get(alt_svc_port, Cfg, undefined) of
-        P when is_integer(P), P > 0 ->
-            P;
-        _ ->
-            case maps:get(https_port, Cfg, undefined) of
-                P2 when is_integer(P2), P2 > 0 ->
-                    P2;
-                _ ->
-                    cowboy_req:port(Req)
-            end
-    end.
+    pertisk_h3_alt_svc:advertised_port(Cfg, cowboy_req:port(Req)).
 
+-spec site_advertise_http3(binary()) -> boolean().
 site_advertise_http3(Host) ->
     Config = pertisk_eproxy_config:get_config(),
     Sites = maps:get(sites, Config, []),

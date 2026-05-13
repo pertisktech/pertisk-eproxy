@@ -21,7 +21,7 @@
 -define(CONNECT_TIMEOUT, 10000).
 
 start(Config) ->
-    _ = ensure_quic_started(),
+    _ = pertisk_h3_transport:ensure_deps_started(),
     _ = ensure_gun_started(),
     ListenerBackend = maps:get(h3_listener_backend, Config, gen_udp),
     Port = case maps:get(quic_port, Config, undefined) of
@@ -45,12 +45,12 @@ start(Config) ->
     start_prefer_ipv6_server(Port, BaseOpts).
 
 stop() ->
-    catch quic_h3:stop_server(?SERVER),
-    catch quic_h3:stop_server(?SERVER_V6),
+    stop_h3_server_name(?SERVER),
+    stop_h3_server_name(?SERVER_V6),
     ok.
 
 start_probe(Config) ->
-    _ = ensure_quic_started(),
+    _ = pertisk_h3_transport:ensure_deps_started(),
     _ = ensure_gun_started(),
     BasePort = case maps:get(quic_port, Config, undefined) of
         P when is_integer(P), P > 0 -> P;
@@ -67,8 +67,8 @@ start_probe(Config) ->
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
 
 stop_probe() ->
-    catch quic_h3:stop_server(?PROBE_SERVER),
-    catch quic_h3:stop_server(?PROBE_SERVER_V6),
+    stop_h3_server_name(?PROBE_SERVER),
+    stop_h3_server_name(?PROBE_SERVER_V6),
     ok.
 
 handle_request(H3Conn, StreamId, Method, Path, Headers) ->
@@ -93,7 +93,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 log_h3_access(LogHost, Method, PathOnly, 404, T0, <<>>),
                 ok;
             {ok, #{upstream_path := UpPath, backend := BackendName}} ->
-                ClientIp = client_ip_h3(H3Conn, Headers),
+                ClientIp = pertisk_h3_transport:client_peer_ip(H3Conn, Headers),
                 case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                     {error, no_healthy_upstream} ->
                         pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
@@ -146,10 +146,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
                 [Class, Reason, LogHost, Path, Stack]
             ),
-            _ = catch quic_h3:send_response(
+            _ = catch pertisk_h3_transport:send_response(
                 H3Conn, StreamId, 500, [{<<"content-type">>, <<"text/plain">>}]
             ),
-            _ = catch quic_h3:send_data(H3Conn, StreamId, <<"Internal Server Error">>, true),
+            _ = catch pertisk_h3_transport:send_data(H3Conn, StreamId, <<"Internal Server Error">>, true),
             log_h3_access(LogHost, Method, PathOnly, 500, T0, <<>>),
             ok
     end.
@@ -181,22 +181,6 @@ authority_host(Headers) ->
     case lists:keyfind(<<":authority">>, 1, Headers) of
         {_, V} when is_binary(V) -> V;
         _ -> <<"-">>
-    end.
-
-client_ip_h3(H3Conn, Headers) ->
-    case lists:keyfind(<<"x-forwarded-for">>, 1, Headers) of
-        {_, Xff} when is_binary(Xff) ->
-            hd(binary:split(Xff, [<<", ">>, <<",">>]));
-        _ ->
-            try
-                QuicConn = quic_h3:get_quic_conn(H3Conn),
-                case quic:peername(QuicConn) of
-                    {ok, {PeerIp, _Port}} -> list_to_binary(inet:ntoa(PeerIp));
-                    _ -> <<"127.0.0.1">>
-                end
-            catch
-                _:_ -> <<"127.0.0.1">>
-            end
     end.
 
 h3_req_headers_map(Headers) ->
@@ -343,7 +327,7 @@ safe_iolist_to_binary(V) ->
     end.
 
 safe_h3_send_response(H3Conn, StreamId, Status, Headers) ->
-    try quic_h3:send_response(H3Conn, StreamId, Status, Headers) of
+    try pertisk_h3_transport:send_response(H3Conn, StreamId, Status, Headers) of
         Result -> Result
     catch
         exit:normal -> ok;
@@ -352,7 +336,7 @@ safe_h3_send_response(H3Conn, StreamId, Status, Headers) ->
     end.
 
 safe_h3_send_data(H3Conn, StreamId, Data, Fin) ->
-    try quic_h3:send_data(H3Conn, StreamId, Data, Fin) of
+    try pertisk_h3_transport:send_data(H3Conn, StreamId, Data, Fin) of
         Result -> Result
     catch
         exit:normal -> ok;
@@ -374,11 +358,13 @@ read_request_body(Conn, StreamId, Method0, Headers, PathOnly) ->
 
 read_request_body_post(Conn, StreamId, Headers, PathOnly) ->
     TimeoutMs = h3_body_collect_timeout_ms(Headers, PathOnly),
-    case quic_h3:set_stream_handler(Conn, StreamId, self()) of
+    case pertisk_h3_transport:set_stream_handler(Conn, StreamId, self()) of
         {ok, Buffered} ->
-            collect_body(Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs);
+            pertisk_h3_transport:collect_request_body(
+                Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs
+            );
         ok ->
-            collect_body(Conn, StreamId, <<>>, TimeoutMs);
+            pertisk_h3_transport:collect_request_body(Conn, StreamId, <<>>, TimeoutMs);
         _ ->
             <<>>
     end.
@@ -440,21 +426,6 @@ header_content_length_bytes(Headers) ->
             undefined
     end.
 
-collect_body(_Conn, _StreamId, Acc, TimeoutMs) when TimeoutMs =< 0 ->
-    Acc;
-collect_body(Conn, StreamId, Acc, TimeoutMs) ->
-    T0 = erlang:monotonic_time(millisecond),
-    receive
-        {quic_h3, Conn, {data, StreamId, Data, true}} ->
-            <<Acc/binary, Data/binary>>;
-        {quic_h3, Conn, {data, StreamId, Data, false}} ->
-            Elapsed = erlang:monotonic_time(millisecond) - T0,
-            Remaining = TimeoutMs - Elapsed,
-            collect_body(Conn, StreamId, <<Acc/binary, Data/binary>>, Remaining)
-    after TimeoutMs ->
-        Acc
-    end.
-
 ensure_gun_started() ->
     case application:ensure_all_started(gun) of
         {ok, _} -> ok;
@@ -462,8 +433,10 @@ ensure_gun_started() ->
         _ -> ok
     end.
 
-ensure_quic_started() ->
-    _ = application:ensure_all_started(quic),
+%% @doc Stop UDP H3 listener for `Name` on all built-in backends (safe if env switched since start).
+stop_h3_server_name(Name) ->
+    _ = catch pertisk_h3_transport_erlang_quic:stop_server(Name),
+    _ = catch pertisk_h3_transport_quicer_stub:stop_server(Name),
     ok.
 
 %% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).
@@ -493,9 +466,9 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     ListenerBackend = maps:get(listener_backend, BaseOpts, socket),
     %% On Linux: bind UDP over IPv6 (::) with IPV6_V6ONLY=0 so IPv4 clients work.
-    %% On macOS/BSD/Windows: quic_socket falls back to gen_udp, whose option list
-    %% always includes `inet` then appends extra_socket_opts; adding `inet6`
-    %% yields inet+inet6 together and gen_udp:open returns einval.
+    %% On macOS/BSD/Windows: dual listeners (IPv4 + IPv6-only [::]); the v6 companion
+    %% uses `gen_udp' in {@link non_linux_v6_opts/1} because the OTP `socket' UDP
+    %% listener can return einval on some non-Linux hosts when binding [::]:P.
     {ServerOpts, LogLabel} =
         case os:type() of
             {unix, linux} ->
@@ -521,7 +494,7 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     lager:debug(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
     case os:type() of
         {unix, linux} ->
-            case quic_h3:start_server(ServerName, Port, ServerOpts) of
+            case pertisk_h3_transport:start_server(ServerName, Port, ServerOpts) of
                 {ok, _Pid} = Ok ->
                     Ok;
                 {error, V6Reason} ->
@@ -533,7 +506,7 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
                     start_non_linux_dual_stack(ServerName, Port, ServerOpts);
                 false ->
                     lager:info("H3 QUIC non-linux IPv6 companion listener disabled (set {h3_ipv6_non_linux,true} in sys.config to enable)."),
-                    case quic_h3:start_server(ServerName, Port, ServerOpts) of
+                    case pertisk_h3_transport:start_server(ServerName, Port, ServerOpts) of
                         {ok, _Pid} = Ok -> Ok;
                         {error, Reason} -> {error, {failed_quic_udp_listener, Reason}}
                     end
@@ -541,11 +514,11 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     end.
 
 start_non_linux_dual_stack(ServerName, Port, V4Opts) ->
-    case quic_h3:start_server(ServerName, Port, V4Opts) of
+    case pertisk_h3_transport:start_server(ServerName, Port, V4Opts) of
         {ok, _Pid} = Ok ->
             V6Name = v6_server_name(ServerName),
             V6Opts = non_linux_v6_opts(V4Opts),
-            case quic_h3:start_server(V6Name, Port, V6Opts) of
+            case pertisk_h3_transport:start_server(V6Name, Port, V6Opts) of
                 {ok, _V6Pid} ->
                     Ok;
                 {error, Reason} ->
@@ -562,17 +535,18 @@ v6_server_name(?PROBE_SERVER) ->
     ?PROBE_SERVER_V6.
 
 non_linux_v6_opts(BaseOpts) ->
+    %% Do not force `socket_backend => socket' here: on Darwin/BSD the OTP `socket'
+    %% UDP listener often fails init with einval for the [::]:P companion, while
+    %% `gen_udp' matches the successful IPv4 listener (quic_listener:init_genudp_backend).
+    Q0 = maps:get(quic_opts, BaseOpts, #{}),
+    Q1 = maps:without([socket_backend, backend], Q0),
     BaseOpts#{
-        quic_opts => maps:merge(
-            maps:get(quic_opts, BaseOpts, #{}),
-            #{
-                socket_backend => socket,
-                backend => socket,
-                reuseport => false,
-                pool_size => 0,
-                extra_socket_opts => [inet6, {ipv6_v6only, true}]
-            }
-        )
+        quic_opts => maps:merge(Q1, #{
+            socket_backend => gen_udp,
+            reuseport => false,
+            pool_size => 0,
+            extra_socket_opts => [inet6, {ipv6_v6only, true}]
+        })
     }.
 
 non_linux_h3_ipv6_enabled() ->

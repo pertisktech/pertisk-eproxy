@@ -150,9 +150,10 @@ maybe_start_h3_api_gateway(Config) ->
             case pertisk_eproxy_h3_api_gateway:start(Config) of
                 {ok, _Pid} ->
                     {BindBin, StackBin} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),
+                    H3Mod = pertisk_h3_transport:active_module(),
                     lager:info(
-                        "HTTP/3 API gateway (erlang_quic) listening on ~s (~s)",
-                        [h3_udp_listen_addr(BindBin, Port), StackBin]
+                        "HTTP/3 API gateway (~p) listening on ~s (~s)",
+                        [H3Mod, h3_udp_listen_addr(BindBin, Port), StackBin]
                     ),
                     ok;
                 {error, {already_started, _}} ->
@@ -173,9 +174,10 @@ maybe_start_h3_probe(Config) ->
                     BasePort = maps:get(quic_port, Config, maps:get(https_port, Config, 443)),
                     ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
                     {BindBin, StackBin} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),
+                    H3Mod = pertisk_h3_transport:active_module(),
                     lager:info(
-                        "HTTP/3 probe listener (erlang_quic) listening on ~s (~s)",
-                        [h3_udp_listen_addr(BindBin, ProbePort), StackBin]
+                        "HTTP/3 probe listener (~p) listening on ~s (~s)",
+                        [H3Mod, h3_udp_listen_addr(BindBin, ProbePort), StackBin]
                     ),
                     ok;
                 {error, {already_started, _}} ->

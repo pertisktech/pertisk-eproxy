@@ -1,0 +1,42 @@
+%% @doc Shared HTTP/3 discovery via {@code Alt-Svc} on TCP (HTTPS) responses.
+%%
+%% Browsers negotiate HTTP/2 first, then migrate to QUIC using this header.
+%% {@link https://datatracker.ietf.org/doc/html/rfc9114#name-alternative-service-adverti RFC 9114}
+-module(pertisk_h3_alt_svc).
+
+-export([advertised_port/2, header_value/1]).
+
+%% @doc Port clients should use for QUIC on this origin.
+%%
+%% Precedence: {@code alt_svc_port} (public/LB), then {@code https_port}, then
+%% {@code quic_port} (bind port when TLS port is unset), then {@code ReqPortFallback}
+%% (Cowboy / Ranch observed port).
+-spec advertised_port(map(), undefined | inet:port_number()) -> undefined | inet:port_number().
+advertised_port(Cfg, ReqPortFallback) ->
+    case maps:get(alt_svc_port, Cfg, undefined) of
+        P when is_integer(P), P > 0 ->
+            P;
+        _ ->
+            case maps:get(https_port, Cfg, undefined) of
+                P2 when is_integer(P2), P2 > 0 ->
+                    P2;
+                _ ->
+                    case maps:get(quic_port, Cfg, undefined) of
+                        P3 when is_integer(P3), P3 > 0 ->
+                            P3;
+                        _ ->
+                            case ReqPortFallback of
+                                P4 when is_integer(P4), P4 > 0 -> P4;
+                                _ -> undefined
+                            end
+                    end
+            end
+    end.
+
+%% @doc Single {@code Alt-Svc} field-value for HTTP/3 on {@code Port}.
+%%
+%% Long {@code ma} and {@code persist=1} improve client caching and stickiness
+%% (Chrome/Firefox still revalidate; short {@code ma} can delay or drop discovery).
+-spec header_value(inet:port_number()) -> binary().
+header_value(P) when is_integer(P), P > 0 ->
+    iolist_to_binary(io_lib:format("h3=\":~w\"; ma=2592000; persist=1", [P])).

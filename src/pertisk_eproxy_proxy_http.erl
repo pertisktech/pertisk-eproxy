@@ -197,10 +197,9 @@ maybe_add_alt_svc(Req, Host, Headers) ->
     Scheme = pertisk_req:scheme(Req),
     Https = Scheme =:= https orelse Scheme =:= <<"https">>,
     Port = alt_svc_advertised_port(Req),
-    case {Https, Port, site_advertise_http3(Host)} of
+    case {Https, Port, pertisk_eproxy_handler:site_advertise_http3(Host)} of
         {true, P, true} when is_integer(P), P > 0 ->
-            Alt = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [P])),
-            Headers#{<<"alt-svc">> => Alt};
+            Headers#{<<"alt-svc">> => pertisk_h3_alt_svc:header_value(P)};
         _ ->
             Headers
     end.
@@ -208,22 +207,4 @@ maybe_add_alt_svc(Req, Host, Headers) ->
 -spec alt_svc_advertised_port(pertisk_req:req()) -> pos_integer() | undefined.
 alt_svc_advertised_port(Req) ->
     Cfg = pertisk_eproxy_config:get_config(),
-    case maps:get(alt_svc_port, Cfg, undefined) of
-        P when is_integer(P), P > 0 ->
-            P;
-        _ ->
-            case maps:get(https_port, Cfg, undefined) of
-                P2 when is_integer(P2), P2 > 0 ->
-                    P2;
-                _ ->
-                    pertisk_req:port(Req)
-            end
-    end.
-
-site_advertise_http3(Host) ->
-    Config = pertisk_eproxy_config:get_config(),
-    Sites = maps:get(sites, Config, []),
-    case pertisk_eproxy_router:match_best_site(Sites, Host) of
-        undefined -> true;
-        Site -> maps:get(advertise_http3, Site, true) =/= false
-    end.
+    pertisk_h3_alt_svc:advertised_port(Cfg, pertisk_req:port(Req)).

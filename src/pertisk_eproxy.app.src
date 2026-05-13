@@ -1,5 +1,5 @@
 {application, pertisk_eproxy, [
-    {description, "Erlang reverse proxy (Ranch HTTP/1.1 + erlang_quic HTTP/3)"},
+    {description, "Erlang reverse proxy (Ranch HTTP/1.1 + pluggable H3 transport, default erlang_quic)"},
     {vsn, "0.1.0"},
     {registered, [
         pertisk_eproxy_sup,
