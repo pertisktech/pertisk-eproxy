@@ -33,6 +33,9 @@ start(Config) ->
         cert => CertDer,
         key => KeyTerm,
         sni_cert_selector => pertisk_eproxy_app:quic_sni_cert_selector(Config),
+        %% quic_listener_sup_sup uses `1 + maps:get(pool_size, Opts, 1)' — default omits
+        %% pool_size ⇒ two UDP listeners + reuseport on the same port (see lsof).
+        quic_opts => #{pool_size => 0},
         settings => #{
             %% Force static QPACK to avoid dynamic table/base calculation
             %% interoperability failures seen from external clients.
@@ -62,6 +65,7 @@ start_probe(Config) ->
         cert => CertDer,
         key => KeyTerm,
         sni_cert_selector => pertisk_eproxy_app:quic_sni_cert_selector(Config),
+        quic_opts => #{pool_size => 0},
         handler => pertisk_eproxy_h3_probe_handler
     },
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
