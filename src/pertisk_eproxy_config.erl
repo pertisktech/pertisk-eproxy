@@ -284,6 +284,7 @@ json_to_config(Json) ->
         alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        h3_listener_backend => parse_h3_listener_backend(maps:get(<<"h3_listener_backend">>, Json, null)),
         h3_api_gateway_enabled => parse_opt_bool(maps:get(<<"h3_api_gateway_enabled">>, Json, null)),
         h3_probe_enabled => parse_opt_bool(maps:get(<<"h3_probe_enabled">>, Json, null)),
         h3_probe_port   => parse_opt_int(maps:get(<<"h3_probe_port">>, Json, null)),
@@ -441,6 +442,17 @@ parse_opt_bool(true) -> true;
 parse_opt_bool(false) -> false;
 parse_opt_bool(_) -> undefined.
 
+parse_h3_listener_backend(null) -> undefined;
+parse_h3_listener_backend(V) when is_binary(V) ->
+    case string:lowercase(binary_to_list(V)) of
+        "socket" -> socket;
+        "gen_udp" -> gen_udp;
+        _ -> undefined
+    end;
+parse_h3_listener_backend(socket) -> socket;
+parse_h3_listener_backend(gen_udp) -> gen_udp;
+parse_h3_listener_backend(_) -> undefined.
+
 parse_opt_challenge_type(<<"http-01">>) -> "http-01";
 parse_opt_challenge_type(<<"dns-01">>) -> "dns-01";
 parse_opt_challenge_type("http-01") -> "http-01";
@@ -457,6 +469,7 @@ maybe_merge_file_listener_overrides(DbCfg) when is_map(DbCfg) ->
         alt_svc_port,
         quic_enabled,
         quic_port,
+        h3_listener_backend,
         h3_api_gateway_enabled,
         h3_probe_enabled,
         h3_probe_port,

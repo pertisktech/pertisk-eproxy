@@ -183,6 +183,14 @@ init_genudp_backend(Port, Opts) ->
     ActiveN = maps:get(active_n, Opts, 100),
     ReusePort = maps:get(reuseport, Opts, false),
     ExtraFlags = maps:get(extra_socket_opts, Opts, []),
+    Family = case lists:member(inet6, ExtraFlags) of
+        true -> inet6;
+        false -> inet
+    end,
+    ExtraFlags1 = case Family of
+        inet6 -> lists:delete(inet6, ExtraFlags);
+        inet -> ExtraFlags
+    end,
 
     %% UDP buffer sizing - larger buffers improve throughput significantly
     %% OS may cap to lower values (check sysctl net.core.rmem_max on Linux)
@@ -192,7 +200,7 @@ init_genudp_backend(Port, Opts) ->
     SocketOpts =
         [
             binary,
-            inet,
+            Family,
             {active, ActiveN},
             {reuseaddr, true},
             {recbuf, RecBuf},
@@ -201,7 +209,7 @@ init_genudp_backend(Port, Opts) ->
             case ReusePort of
                 true -> [{reuseport, true}, {reuseport_lb, true}];
                 false -> []
-            end ++ ExtraFlags,
+            end ++ ExtraFlags1,
     case gen_udp:open(Port, SocketOpts) of
         {ok, Socket} ->
             {ok, {Socket, undefined, gen_udp, Opts}, {continue, discover_manager}};

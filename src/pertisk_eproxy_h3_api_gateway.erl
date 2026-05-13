@@ -23,6 +23,7 @@
 start(Config) ->
     _ = ensure_quic_started(),
     _ = ensure_gun_started(),
+    ListenerBackend = maps:get(h3_listener_backend, Config, gen_udp),
     Port = case maps:get(quic_port, Config, undefined) of
         P when is_integer(P), P > 0 -> P;
         _ -> maps:get(https_port, Config, 443)
@@ -38,6 +39,7 @@ start(Config) ->
             qpack_max_table_capacity => 0,
             qpack_blocked_streams => 0
         },
+        listener_backend => ListenerBackend,
         handler => ?MODULE
     },
     start_prefer_ipv6_server(Port, BaseOpts).
@@ -79,10 +81,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
-                ok = quic_h3:send_response(
+                _ = safe_h3_send_response(
                     H3Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
                 ),
-                _ = quic_h3:send_data(
+                _ = safe_h3_send_data(
                     H3Conn,
                     StreamId,
                     <<"No route found for host: ", LogHost/binary>>,
@@ -119,8 +121,8 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     LogHost, H3HdrsMap, <<"https">>
                                 ),
                                 H3Hdrs = maps:to_list(H3HdrsMergedMap),
-                                ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Hdrs),
-                                _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
+                                _ = safe_h3_send_response(H3Conn, StreamId, Status, H3Hdrs),
+                                _ = safe_h3_send_data(H3Conn, StreamId, RespBin, true),
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
                                 ok;
                             {error, ProxyReason} ->
@@ -153,10 +155,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     end.
 
 reply_502_plain(H3Conn, StreamId) ->
-    ok = quic_h3:send_response(
+    _ = safe_h3_send_response(
         H3Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
     ),
-    _ = quic_h3:send_data(H3Conn, StreamId, <<"Bad Gateway">>, true),
+    _ = safe_h3_send_data(H3Conn, StreamId, <<"Bad Gateway">>, true),
     ok.
 
 %% Strip a trailing :port for router matching (and log host), same idea as Cowboy's host/1.
@@ -340,6 +342,24 @@ safe_iolist_to_binary(V) ->
             <<>>
     end.
 
+safe_h3_send_response(H3Conn, StreamId, Status, Headers) ->
+    try quic_h3:send_response(H3Conn, StreamId, Status, Headers) of
+        Result -> Result
+    catch
+        exit:normal -> ok;
+        exit:Reason -> {error, Reason};
+        Class:Reason -> {error, {Class, Reason}}
+    end.
+
+safe_h3_send_data(H3Conn, StreamId, Data, Fin) ->
+    try quic_h3:send_data(H3Conn, StreamId, Data, Fin) of
+        Result -> Result
+    catch
+        exit:normal -> ok;
+        exit:Reason -> {error, Reason};
+        Class:Reason -> {error, {Class, Reason}}
+    end.
+
 log_h3_access(Host, Method, Path, Status, T0, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
     catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3', Upstream).
@@ -471,6 +491,7 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
+    ListenerBackend = maps:get(listener_backend, BaseOpts, socket),
     %% On Linux: bind UDP over IPv6 (::) with IPV6_V6ONLY=0 so IPv4 clients work.
     %% On macOS/BSD/Windows: quic_socket falls back to gen_udp, whose option list
     %% always includes `inet` then appends extra_socket_opts; adding `inet6`
@@ -482,8 +503,8 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
                     quic_opts => maps:merge(
                         maps:get(quic_opts, BaseOpts, #{}),
                         #{
-                            socket_backend => socket,
-                            backend => socket,
+                            socket_backend => ListenerBackend,
+                            backend => ListenerBackend,
                             %% Prefer reliability over throughput for edge H3 listener.
                             %% Some Linux paths intermittently drop/timeout QUIC when batching is on.
                             server_send_batching => false,

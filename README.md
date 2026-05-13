@@ -18,7 +18,7 @@ rebar3 compile
 
 HTTP/3 is served by the **erlang_quic** stack (no Msquic/quicer). Enable the H3 API gateway in config (default on).
 
-Configuration note: `h3_api_gateway_enabled` is the switch that starts the HTTP/3 listener path, while `quic_enabled` is an explicit intent/consistency flag shown in runtime config and related warnings. Keep both set to `true` for the clearest operational behavior. `config/proxy.json` is strict JSON (no comments), so document operator notes in this README instead of inline JSON comments.
+Configuration note: `h3_api_gateway_enabled` is the switch that starts the HTTP/3 listener path, while `quic_enabled` is an explicit intent/consistency flag shown in runtime config and related warnings. `h3_listener_backend` selects the QUIC listener transport (`socket` or `gen_udp`); `gen_udp` is the safer default if you see intermittent H3 timeouts on Linux. Keep the HTTP/3 switches enabled for the clearest operational behavior. `config/proxy.json` is strict JSON (no comments), so document operator notes in this README instead of inline JSON comments.
 
 ## Run (development)
 

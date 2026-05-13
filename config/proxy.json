@@ -4,6 +4,7 @@
     "tls_cert_file": "priv/tls/listener.pem",
     "tls_key_file": "priv/tls/listener.key",
     "h3_api_gateway_enabled": true,
+    "h3_listener_backend": "socket",
     "quic_enabled": true,
     "management_addr": "0.0.0.0",
     "management_port": 9080,
