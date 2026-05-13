@@ -284,6 +284,8 @@ json_to_config(Json) ->
         alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        %% `gen_udp' (default when omitted): classic UDP; best IPv4/IPv6 QUIC interop on many hosts.
+        %% `socket': OTP socket + batching path (Linux GRO); can break native IPv6 QUIC on some kernels while IPv4 still works.
         h3_listener_backend => parse_h3_listener_backend(maps:get(<<"h3_listener_backend">>, Json, null)),
         h3_api_gateway_enabled => parse_opt_bool(maps:get(<<"h3_api_gateway_enabled">>, Json, null)),
         h3_probe_enabled => parse_opt_bool(maps:get(<<"h3_probe_enabled">>, Json, null)),
