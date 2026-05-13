@@ -137,8 +137,9 @@ maybe_start_h3_udp_listeners(Config) ->
                     ok
             end;
         false ->
-            lager:warning(
-                "HTTP/3 listeners disabled: OTP ~s detected, need OTP 27+ for current erlang_quic listener path.",
+            lager:error(
+                "HTTP/3 listeners disabled: OTP ~s (< 26). erlang_quic supports OTP 26+; "
+                "`curl --http3-only` will handshake-timeout with no UDP listener.",
                 [erlang:system_info(otp_release)]
             )
     end.
@@ -159,7 +160,10 @@ maybe_start_h3_api_gateway(Config) ->
                 {error, {already_started, _}} ->
                     ok;
                 {error, Reason} ->
-                    lager:warning("HTTP/3 API gateway failed to start: ~p", [Reason]),
+                    lager:error(
+                        "HTTP/3 API gateway failed to start (no QUIC on UDP/~w): ~p",
+                        [Port, Reason]
+                    ),
                     ok
             end;
         _ ->
@@ -183,16 +187,19 @@ maybe_start_h3_probe(Config) ->
                 {error, {already_started, _}} ->
                     ok;
                 {error, Reason} ->
-                    lager:warning("HTTP/3 probe listener failed to start: ~p", [Reason]),
+                    lager:error("HTTP/3 probe listener failed to start: ~p", [Reason]),
                     ok
             end;
         _ ->
             ok
     end.
 
+%% erlang_quic declares `{minimum_otp_vsn, "26"}`; do not require OTP 27+ here or
+%% AlmaLinux / LTS images on OTP 26 start with no UDP listener and clients see QUIC
+%% handshake timeouts while TCP HTTPS still works.
 quic_runtime_supported() ->
     try
-        list_to_integer(erlang:system_info(otp_release)) >= 27
+        list_to_integer(erlang:system_info(otp_release)) >= 26
     catch
         _:_ -> false
     end.
