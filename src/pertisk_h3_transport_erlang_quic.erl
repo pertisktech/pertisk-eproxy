@@ -11,6 +11,7 @@
     send_data/4,
     set_stream_handler/3,
     collect_request_body/4,
+    collect_request_body/5,
     client_peer_ip/2
 ]).
 
@@ -33,9 +34,21 @@ send_data(Conn, StreamId, Data, Fin) ->
 set_stream_handler(Conn, StreamId, HandlerPid) ->
     quic_h3:set_stream_handler(Conn, StreamId, HandlerPid).
 
-collect_request_body(_Conn, _StreamId, Acc, TimeoutMs) when TimeoutMs =< 0 ->
-    Acc;
 collect_request_body(Conn, StreamId, Acc, TimeoutMs) ->
+    collect_request_body(Conn, StreamId, Acc, TimeoutMs, undefined).
+
+%% When {@code ExpectCL} is set, return as soon as that many body bytes are buffered.
+%% Chrome often sends a full {@code content-length} body with FIN on a later QUIC/H3 frame;
+%% waiting only for {@code Fin} matched ~{@code H3_BODY_AUTH_CAP_MS} on small POSTs (e.g. auth refresh).
+collect_request_body(_Conn, _StreamId, _Acc, _TimeoutMs, 0) ->
+    <<>>;
+collect_request_body(_Conn, _StreamId, Acc, _TimeoutMs, CL) when is_integer(CL), CL > 0, byte_size(Acc) >= CL ->
+    binary:part(Acc, 0, CL);
+collect_request_body(_Conn, _StreamId, Acc, TimeoutMs, undefined) when TimeoutMs =< 0 ->
+    Acc;
+collect_request_body(_Conn, _StreamId, Acc, TimeoutMs, CL) when is_integer(CL), TimeoutMs =< 0 ->
+    Acc;
+collect_request_body(Conn, StreamId, Acc, TimeoutMs, undefined) ->
     T0 = erlang:monotonic_time(millisecond),
     receive
         {quic_h3, Conn, {data, StreamId, Data, true}} ->
@@ -43,7 +56,25 @@ collect_request_body(Conn, StreamId, Acc, TimeoutMs) ->
         {quic_h3, Conn, {data, StreamId, Data, false}} ->
             Elapsed = erlang:monotonic_time(millisecond) - T0,
             Remaining = TimeoutMs - Elapsed,
-            collect_request_body(Conn, StreamId, <<Acc/binary, Data/binary>>, Remaining)
+            collect_request_body(Conn, StreamId, <<Acc/binary, Data/binary>>, Remaining, undefined)
+    after TimeoutMs ->
+        Acc
+    end;
+collect_request_body(Conn, StreamId, Acc, TimeoutMs, CL) when is_integer(CL), CL > 0 ->
+    T0 = erlang:monotonic_time(millisecond),
+    receive
+        {quic_h3, Conn, {data, StreamId, Data, Fin}} ->
+            NewAcc = <<Acc/binary, Data/binary>>,
+            case byte_size(NewAcc) >= CL of
+                true ->
+                    binary:part(NewAcc, 0, CL);
+                false when Fin =:= true ->
+                    NewAcc;
+                false ->
+                    Elapsed = erlang:monotonic_time(millisecond) - T0,
+                    Remaining = TimeoutMs - Elapsed,
+                    collect_request_body(Conn, StreamId, NewAcc, Remaining, CL)
+            end
     after TimeoutMs ->
         Acc
     end.

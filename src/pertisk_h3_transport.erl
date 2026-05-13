@@ -14,6 +14,7 @@
     send_data/4,
     set_stream_handler/3,
     collect_request_body/4,
+    collect_request_body/5,
     client_peer_ip/2
 ]).
 
@@ -49,6 +50,14 @@
     StreamId :: stream_id(),
     Acc :: binary(),
     TimeoutMs :: non_neg_integer()
+) -> binary().
+
+-callback collect_request_body(
+    Conn :: h3_conn(),
+    StreamId :: stream_id(),
+    Acc :: binary(),
+    TimeoutMs :: non_neg_integer(),
+    ExpectCL :: undefined | non_neg_integer()
 ) -> binary().
 
 -callback client_peer_ip(Conn :: h3_conn(), Headers :: [{binary(), binary()}]) -> binary().
@@ -104,6 +113,12 @@ set_stream_handler(Conn, StreamId, HandlerPid) ->
 -spec collect_request_body(h3_conn(), stream_id(), binary(), non_neg_integer()) -> binary().
 collect_request_body(Conn, StreamId, Acc, TimeoutMs) ->
     (active_module()):collect_request_body(Conn, StreamId, Acc, TimeoutMs).
+
+-spec collect_request_body(
+    h3_conn(), stream_id(), binary(), non_neg_integer(), undefined | non_neg_integer()
+) -> binary().
+collect_request_body(Conn, StreamId, Acc, TimeoutMs, ExpectCL) ->
+    (active_module()):collect_request_body(Conn, StreamId, Acc, TimeoutMs, ExpectCL).
 
 -spec client_peer_ip(h3_conn(), [{binary(), binary()}]) -> binary().
 client_peer_ip(Conn, Headers) ->

@@ -15,6 +15,7 @@
     send_data/4,
     set_stream_handler/3,
     collect_request_body/4,
+    collect_request_body/5,
     client_peer_ip/2
 ]).
 
@@ -38,7 +39,10 @@ send_data(_Conn, _StreamId, _Data, _Fin) ->
 set_stream_handler(_Conn, _StreamId, _HandlerPid) ->
     ok.
 
-collect_request_body(_Conn, _StreamId, Acc, _TimeoutMs) ->
+collect_request_body(Conn, StreamId, Acc, TimeoutMs) ->
+    collect_request_body(Conn, StreamId, Acc, TimeoutMs, undefined).
+
+collect_request_body(_Conn, _StreamId, Acc, _TimeoutMs, _ExpectCL) ->
     Acc.
 
 client_peer_ip(_Conn, _Headers) ->

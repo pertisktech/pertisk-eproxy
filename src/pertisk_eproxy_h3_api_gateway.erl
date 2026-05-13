@@ -399,15 +399,43 @@ read_request_body(Conn, StreamId, Method0, Headers, PathOnly) ->
 
 read_request_body_post(Conn, StreamId, Headers, PathOnly) ->
     TimeoutMs = h3_body_collect_timeout_ms(Headers, PathOnly),
+    ExpectCL =
+        case header_content_length_bytes(Headers) of
+            {ok, N} when is_integer(N), N >= 0 -> N;
+            _ -> undefined
+        end,
     case pertisk_h3_transport:set_stream_handler(Conn, StreamId, self()) of
         {ok, Buffered} ->
-            pertisk_h3_transport:collect_request_body(
-                Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs
-            );
+            Body = pertisk_h3_transport:collect_request_body(
+                Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs, ExpectCL
+            ),
+            ok = h3_request_stream_body_cleanup(Conn, StreamId),
+            Body;
         ok ->
-            pertisk_h3_transport:collect_request_body(Conn, StreamId, <<>>, TimeoutMs);
+            Body = pertisk_h3_transport:collect_request_body(
+                Conn, StreamId, <<>>, TimeoutMs, ExpectCL
+            ),
+            ok = h3_request_stream_body_cleanup(Conn, StreamId),
+            Body;
         _ ->
             <<>>
+    end.
+
+%% After a full request body (often via {@code content-length}), Chrome may send
+%% a trailing DATA+FIN on its own schedule. We must not leave `{@code quic_h3,...}'
+%% messages in this process while calling {@code gun:await}, and we should
+%% unregister so the H3 connection can finish the request stream cleanly.
+h3_request_stream_body_cleanup(Conn, StreamId) ->
+    h3_flush_stream_data_mailbox(Conn, StreamId),
+    _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+    ok.
+
+h3_flush_stream_data_mailbox(Conn, StreamId) ->
+    receive
+        {quic_h3, Conn, {data, StreamId, _, _}} ->
+            h3_flush_stream_data_mailbox(Conn, StreamId)
+    after 0 ->
+        ok
     end.
 
 normalize_h3_method(M) when is_binary(M) ->
