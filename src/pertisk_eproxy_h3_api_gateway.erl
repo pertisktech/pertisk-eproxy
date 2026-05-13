@@ -230,7 +230,7 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
     Base#{<<"x-forwarded-for">> => XFF}.
 
 proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Body, ClientIp) ->
-    {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
+    {UpHost, UpPort, Transport} = pertisk_eproxy_proxy_http:parse_upstream(UpstreamAddr),
     FullPath = case Qs of
         <<>> -> UpstreamPath;
         _ -> <<UpstreamPath/binary, "?", Qs/binary>>
@@ -440,7 +440,6 @@ ensure_gun_started() ->
 
 ensure_quic_started() ->
     _ = application:ensure_all_started(quic),
-    _ = application:ensure_all_started(quicer),
     ok.
 
 %% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).

@@ -319,8 +319,6 @@ export interface ManagementProcessInfo {
 export interface ManagementRuntimeCapabilities {
   beam: string;
   jit: boolean;
-  cowboy_quic: boolean;
-  quicer_application: boolean;
   h3_api_gateway_config: boolean;
   tls_listener_configured: boolean;
   proxy_http3_udp: boolean;

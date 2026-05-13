@@ -1,5 +1,5 @@
 {application, pertisk_eproxy, [
-    {description, "Erlang Cowboy Reverse Proxy"},
+    {description, "Erlang reverse proxy (Ranch HTTP/1.1 + erlang_quic HTTP/3)"},
     {vsn, "0.1.0"},
     {registered, [
         pertisk_eproxy_sup,
@@ -17,13 +17,15 @@
         crypto,
         ssl,
         inets,
+        ranch,
         cowboy,
+        cowlib,
+        quic,
         gun,
         thoas,
         jose,
         lager,
-        prometheus,
-        prometheus_cowboy
+        prometheus
     ]},
     {env, []},
     {modules, []}

@@ -319,7 +319,7 @@ export default function Dashboard() {
               <dt>Management</dt>
               <dd className="mono">{management?.management_addr ?? '—'}</dd>
               <dt
-                title="ALPN on HTTPS (HTTP/1.1, HTTP/2). HTTP/3 is listed when the H3 API gateway or Cowboy QUIC UDP listener is enabled in config."
+                title="ALPN on HTTPS (HTTP/1.1, HTTP/2). HTTP/3 is listed when the erlang_quic H3 API gateway is enabled."
               >
                 HTTP versions
               </dt>
@@ -337,18 +337,6 @@ export default function Dashboard() {
                 <span className={caps?.jit ? styles.capOn : styles.capOff}>{caps?.jit ? 'on' : 'off'}</span>
               </div>
               <div className={styles.capItem}>
-                <span className={styles.capKey}>Cowboy QUIC API</span>
-                <span className={caps?.cowboy_quic ? styles.capOn : styles.capOff}>
-                  {caps?.cowboy_quic ? 'available' : 'unavailable'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>quicer app</span>
-                <span className={caps?.quicer_application ? styles.capOn : styles.capOff}>
-                  {caps?.quicer_application ? 'loaded' : 'not loaded'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
                 <span className={styles.capKey}>H3 API gateway (config)</span>
                 <span className={caps?.h3_api_gateway_config ? styles.capOn : styles.capOff}>
                   {caps?.h3_api_gateway_config ? 'enabled' : 'disabled'}
@@ -361,7 +349,7 @@ export default function Dashboard() {
                 </span>
               </div>
               <div className={styles.capItem}>
-                <span className={styles.capKey}>UDP HTTP/3 (Cowboy)</span>
+                <span className={styles.capKey}>UDP HTTP/3 (erlang_quic)</span>
                 <span className={caps?.proxy_http3_udp ? styles.capOn : styles.capOff}>
                   {caps?.proxy_http3_udp ? 'enabled' : 'disabled'}
                 </span>

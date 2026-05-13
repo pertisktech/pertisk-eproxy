@@ -1,6 +1,6 @@
 # pertisk-eproxy
 
-Erlang/OTP reverse proxy built on **Cowboy**, with an optional **management listener** (REST + Web UI), **Prometheus** metrics, **HTTP/2** on TLS, and optional **HTTP/3** paths (H3 API gateway / QUIC where enabled in the build).
+Erlang/OTP reverse proxy built on **Cowboy** (TCP HTTP/HTTPS and admin UI), with **HTTP/3** on UDP via **erlang_quic** (`pertisk_eproxy_h3_api_gateway`), an optional **management listener** (REST + Web UI), and **Prometheus** metrics.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ make compile
 rebar3 compile
 ```
 
-Optional QUIC-related compile flags are documented in the `Makefile` (`COWBOY_QUICER`, `COWBOY_QUIC`).
+HTTP/3 is served by the **erlang_quic** stack (no Msquic/quicer). Enable the H3 API gateway in config (default on).
 
 ## Run (development)
 
