@@ -83,11 +83,9 @@ http_versions_list(C) ->
         false -> Base
     end.
 
-%% HTTP/3 is offered on UDP (erlang_quic gateway and/or Cowboy QUIC when built).
+%% HTTP/3 is offered on UDP via erlang_quic when the H3 API gateway is enabled.
 http3_offered(C) ->
-    Gw = maps:get(h3_api_gateway_enabled, C, true),
-    Cowboy = maps:get(quic_enabled, C, false) andalso erlang:function_exported(cowboy, start_quic, 3),
-    Gw orelse Cowboy.
+    maps:get(h3_api_gateway_enabled, C, true).
 
 listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
     MgmtBind = iolist_to_binary(inet:ntoa(MgmtAddr)),
@@ -125,20 +123,6 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
         <<"tls">> => false,
         <<"stack">> => <<"single_bind">>
     }],
-    L3 = case {maps:get(quic_enabled, C, false), maps:get(quic_port, C, undefined)} of
-        {true, P} when is_integer(P) ->
-            L2 ++ [#{
-                <<"id">> => <<"proxy_quic">>,
-                <<"description">> => <<"HTTP/3 via Cowboy QUIC (when built with quicer)">>,
-                <<"protocol">> => <<"udp">>,
-                <<"bind">> => <<"0.0.0.0 and ::">>,
-                <<"port">> => P,
-                <<"tls">> => true,
-                <<"stack">> => <<"dual_stack">>
-            }];
-        _ ->
-            L2
-    end,
     case maps:get(h3_api_gateway_enabled, C, true) of
         true ->
             GwPort = case maps:get(quic_port, C, undefined) of
@@ -150,9 +134,9 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
                     end
             end,
             {GwBind, GwStack} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),
-            L3 ++ [#{
+            L2 ++ [#{
                 <<"id">> => <<"h3_api_gateway">>,
-                <<"description">> => <<"HTTP/3 API gateway (erlang_quic / Msquic)">>,
+                <<"description">> => <<"HTTP/3 reverse proxy (erlang_quic, UDP)">>,
                 <<"protocol">> => <<"udp">>,
                 <<"bind">> => GwBind,
                 <<"port">> => GwPort,
@@ -160,7 +144,7 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
                 <<"stack">> => GwStack
             }];
         false ->
-            L3
+            L2
     end.
 
 %% BEAM scheduler time vs wall clock since the previous sample (same node).
@@ -227,18 +211,12 @@ os_version_bin() ->
     end.
 
 runtime_capabilities(C) ->
-    CowboyQuic = erlang:function_exported(cowboy, start_quic, 3),
-    QuicerLoaded = app_loaded(quicer),
     H3Gw = maps:get(h3_api_gateway_enabled, C, true),
     #{
         <<"beam">> => list_to_binary(erlang:system_info(machine)),
         <<"jit">> => erlang:system_info(emu_flavor) =:= jit,
-        <<"cowboy_quic">> => CowboyQuic,
-        <<"quicer_application">> => QuicerLoaded,
         <<"h3_api_gateway_config">> => H3Gw,
         <<"tls_listener_configured">> => maps:is_key(https_port, C),
-        <<"proxy_http3_udp">> => maps:get(quic_enabled, C, false)
+        %% True when the erlang_quic HTTP/3 listener is configured to run.
+        <<"proxy_http3_udp">> => H3Gw
     }.
-
-app_loaded(Name) ->
-    lists:keymember(Name, 1, application:loaded_applications()).

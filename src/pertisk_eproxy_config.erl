@@ -198,16 +198,20 @@ load_config() ->
     end,
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg} when is_map(Cfg) ->
-            _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
-            _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+            Cfg1 = maybe_merge_file_listener_overrides(Cfg),
+            _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg1, [])),
+            _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg1, [])),
             %% Keep plain sites table in sync from persisted runtime config on every startup.
-            _ = persist_runtime_config(DbPath, Cfg),
-            {ok, Cfg};
+            _ = persist_runtime_config(DbPath, Cfg1),
+            {ok, Cfg1};
         not_found ->
             load_config_from_file_and_seed(DbPath);
         {error, Reason} ->
-            lager:warning("Runtime config in SQLite unavailable (~p), falling back to file", [Reason]),
-            load_config_from_file_and_seed(DbPath)
+            lager:warning(
+                "Runtime config in SQLite unavailable (~p), loading file without persisting to DB to avoid data loss",
+                [Reason]
+            ),
+            load_config_from_file_no_persist(DbPath)
     end.
 
 load_config_from_file_and_seed(DbPath) ->
@@ -220,6 +224,23 @@ load_config_from_file_and_seed(DbPath) ->
                     _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
                     _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
                     _ = persist_runtime_config(DbPath, Cfg),
+                    {ok, Cfg};
+                {error, Reason} ->
+                    {error, {json_parse, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {file_read, Reason}}
+    end.
+
+load_config_from_file_no_persist(DbPath) ->
+    File = config_file(),
+    case file:read_file(File) of
+        {ok, Bin} ->
+            case thoas:decode(Bin) of
+                {ok, Json} ->
+                    Cfg = json_to_config(Json),
+                    _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
+                    _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
                     {ok, Cfg};
                 {error, Reason} ->
                     {error, {json_parse, Reason}}
@@ -263,6 +284,9 @@ json_to_config(Json) ->
         alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        h3_api_gateway_enabled => parse_opt_bool(maps:get(<<"h3_api_gateway_enabled">>, Json, null)),
+        h3_probe_enabled => parse_opt_bool(maps:get(<<"h3_probe_enabled">>, Json, null)),
+        h3_probe_port   => parse_opt_int(maps:get(<<"h3_probe_port">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"127.0.0.1">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
@@ -422,6 +446,49 @@ parse_opt_challenge_type(<<"dns-01">>) -> "dns-01";
 parse_opt_challenge_type("http-01") -> "http-01";
 parse_opt_challenge_type("dns-01") -> "dns-01";
 parse_opt_challenge_type(_) -> undefined.
+
+maybe_merge_file_listener_overrides(DbCfg) when is_map(DbCfg) ->
+    FileCfg = load_file_config_map(),
+    OverrideKeys = [
+        mode,
+        http_addr,
+        http_port,
+        https_port,
+        alt_svc_port,
+        quic_enabled,
+        quic_port,
+        h3_api_gateway_enabled,
+        h3_probe_enabled,
+        h3_probe_port,
+        management_addr,
+        management_port,
+        tls_cert_file,
+        tls_key_file
+    ],
+    lists:foldl(
+        fun(Key, Acc) ->
+            case maps:find(Key, FileCfg) of
+                {ok, V} -> Acc#{Key => V};
+                error -> Acc
+            end
+        end,
+        DbCfg,
+        OverrideKeys
+    ).
+
+load_file_config_map() ->
+    File = config_file(),
+    case file:read_file(File) of
+        {ok, Bin} ->
+            case thoas:decode(Bin) of
+                {ok, Json} when is_map(Json) ->
+                    json_to_config(Json);
+                _ ->
+                    #{}
+            end;
+        _ ->
+            #{}
+    end.
 
 %% Apply a config map: store in ETS, sync backend workers, rebuild router.
 apply_config(Config) ->

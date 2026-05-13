@@ -10,7 +10,10 @@
 
 -export([merge_response_headers/3, parse_json_object/1]).
 
--spec merge_response_headers(binary(), map(), binary()) -> map().
+-spec merge_response_headers(binary(), map(), binary() | atom()) -> map().
+merge_response_headers(HostBin, HeadersMap, ForwardedProto)
+    when is_binary(HostBin), is_map(HeadersMap), is_atom(ForwardedProto) ->
+    merge_response_headers(HostBin, HeadersMap, atom_to_binary(ForwardedProto, utf8));
 merge_response_headers(HostBin, HeadersMap, ForwardedProto)
     when is_binary(HostBin), is_map(HeadersMap), is_binary(ForwardedProto) ->
     Host = string:lowercase(HostBin),

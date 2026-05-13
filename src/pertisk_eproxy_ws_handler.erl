@@ -143,20 +143,5 @@ client_ip(Req) ->
             hd(binary:split(XFF, [<<", ">>, <<",">>]))
     end.
 
-parse_upstream(Addr) when is_binary(Addr) ->
-    parse_upstream(binary_to_list(Addr));
-parse_upstream("https://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 443),
-    {Host, Port, tls};
-parse_upstream("http://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 80),
-    {Host, Port, tcp};
 parse_upstream(Addr) ->
-    {Host, Port} = split_host_port(Addr, 80),
-    {Host, Port, tcp}.
-
-split_host_port(Addr, Default) ->
-    case string:split(Addr, ":", trailing) of
-        [Host, PortStr] -> {Host, list_to_integer(string:trim(PortStr, trailing, "/"))};
-        [Host]          -> {Host, Default}
-    end.
+    pertisk_eproxy_proxy_http:parse_upstream(Addr).

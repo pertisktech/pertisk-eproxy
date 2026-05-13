@@ -8,18 +8,15 @@ DOCKERFILE ?= Dockerfile
 INGRESS_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 INGRESS_BUILD_PROVENANCE ?= false
 INGRESS_BUILD_SBOM ?= false
-# Set to 1 to enable Cowboy QUIC/HTTP3 hooks when supported by Cowboy build.
-COWBOY_QUICER ?= 0
-COWBOY_QUIC ?= 0
 PACKAGE_NAME ?= pertisk-eproxy
 
 all: compile
 
 compile:
-	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
+	$(REBAR) compile
 
 shell: compile
-	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
+	$(REBAR) shell
 
 test:
 	$(REBAR) eunit
@@ -63,7 +60,7 @@ docker-harbor-multi: docker-eproxy-multi
 
 ## Start the proxy (development — reads config from config/proxy.json)
 run: compile
-	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
+	$(REBAR) shell --apps pertisk_eproxy
 
 ## Hot-reload config from JSON
 reload:

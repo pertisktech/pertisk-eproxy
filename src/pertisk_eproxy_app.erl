@@ -9,6 +9,8 @@ start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
     _ = install_quic_log_filter(),
     _ = application:ensure_all_started(inets),
+    _ = application:ensure_all_started(ranch),
+    _ = application:ensure_all_started(cowboy),
     ok = pertisk_eproxy_metrics:setup(),
     ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
@@ -27,8 +29,6 @@ stop(_State) ->
     stop_listener(http6),
     stop_listener(https4),
     stop_listener(https6),
-    stop_listener(quic4),
-    stop_listener(quic6),
     stop_listener(management),
     ok.
 
@@ -40,8 +40,6 @@ reload_tls_listeners() ->
     stop_listener(http6),
     stop_listener(https4),
     stop_listener(https6),
-    stop_listener(quic4),
-    stop_listener(quic6),
     stop_listener(management),
     start_listeners().
 
@@ -50,178 +48,112 @@ reload_tls_listeners() ->
 %% -------------------------------------------------------------------------
 
 start_listeners() ->
-    try
-        Config = pertisk_eproxy_config:get_config(),
-        Routes = build_proxy_routes(),
-        AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
+    Config = pertisk_eproxy_config:get_config(),
+    AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
 
-        %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
-        HttpPort = maps:get(http_port, Config, 8080),
-        ok = must_start_clear_listener(http4,
-            #{
-                num_acceptors => 100,
-                socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
-            },
-            #{
-                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                logger => pertisk_eproxy_cowboy_logger
-            },
-            "HTTP proxy", "0.0.0.0", HttpPort),
-        ok = must_start_clear_listener(http6,
-            #{
-                num_acceptors => 100,
-                socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
-            },
-            #{
-                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                logger => pertisk_eproxy_cowboy_logger
-            },
-            "HTTP proxy", "[::]", HttpPort),
-        lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
+    HttpPort = maps:get(http_port, Config, 8080),
+    HttpProtoOpts = #{listener => http4, mode => proxy, scheme => http, port => HttpPort},
+    {ok, _} = ranch:start_listener(http4, ranch_tcp, #{
+        num_acceptors => 100,
+        max_connections => infinity,
+        socket_opts => [{ip, {0, 0, 0, 0}}, {port, HttpPort}]
+    }, pertisk_eproxy_ranch_http1, HttpProtoOpts),
+    {ok, _} = ranch:start_listener(http6, ranch_tcp, #{
+        num_acceptors => 100,
+        max_connections => infinity,
+        socket_opts => [{ip, {0, 0, 0, 0, 0, 0, 0, 0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
+    }, pertisk_eproxy_ranch_http1, HttpProtoOpts#{listener => http6}),
+    lager:info("HTTP proxy (Ranch) listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
-        %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS
-        case resolve_https_listen(Config) of
-            {ok, HttpsPort} ->
-                TlsOpts = tls_opts(Config),
-                case TlsOpts of
-                    [] ->
-                        lager:warning(
-                            "HTTPS TCP not started on port ~w: tls_cert_file / tls_key_file missing or invalid. "
-                            "Browsers need TCP TLS for https:// (HTTP/2); QUIC alone is not enough.",
-                            [HttpsPort]
-                        );
-                    _ ->
-                        TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
-                        TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
-                        ok = must_start_tls_listener(https4,
-                            #{
-                                num_acceptors => 100,
-                                socket_opts => TlsSocketOpts4
-                            },
-                            #{
-                                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                                logger => pertisk_eproxy_cowboy_logger
-                            },
-                            "HTTPS proxy", "0.0.0.0", HttpsPort),
-                        ok = must_start_tls_listener(https6,
-                            #{
-                                num_acceptors => 100,
-                                socket_opts => TlsSocketOpts6
-                            },
-                            #{
-                                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                                logger => pertisk_eproxy_cowboy_logger
-                            },
-                            "HTTPS proxy", "[::]", HttpsPort),
-                        lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort])
-                end;
-            error ->
-                ok
-        end,
-
-        maybe_start_quic(Config, Routes),
-
-        %% Management / Admin listener (local only by default)
-        MgmtAddr = maps:get(management_addr, Config, {127,0,0,1}),
-        MgmtPort = maps:get(management_port, Config, 9080),
-        ok = must_start_clear_listener(management,
-            #{
-                num_acceptors => 10,
-                socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]
-            },
-            #{
-                env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
-                logger => pertisk_eproxy_cowboy_logger
-            },
-            "Management API", inet:ntoa(MgmtAddr), MgmtPort),
-        lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
-        ok
-    catch
-        throw:{listener_start_failed, Name, Reason, _Kind, _Host, _Port} ->
-            cleanup_started_listeners(),
-            {error, {listener_start_failed, Name, Reason}}
-    end.
-
-must_start_clear_listener(Name, TransOpts, ProtoOpts, ListenerKind, Host, Port) ->
-    must_start_listener(cowboy:start_clear(Name, TransOpts, ProtoOpts), Name, ListenerKind, Host, Port).
-
-must_start_tls_listener(Name, TransOpts, ProtoOpts, ListenerKind, Host, Port) ->
-    must_start_listener(cowboy:start_tls(Name, TransOpts, ProtoOpts), Name, ListenerKind, Host, Port).
-
-must_start_listener({ok, _}, _Name, _ListenerKind, _Host, _Port) ->
-    ok;
-must_start_listener({error, eaddrinuse}, Name, ListenerKind, Host, Port) ->
-    lager:error("~s failed to start on ~s:~w (~p): address already in use", [ListenerKind, Host, Port, Name]),
-    lager:error("To find the conflicting process, run: lsof -nP -iTCP:~w -sTCP:LISTEN", [Port]),
-    throw({listener_start_failed, Name, eaddrinuse, ListenerKind, Host, Port});
-must_start_listener({error, Reason}, Name, ListenerKind, Host, Port) ->
-    lager:error("~s failed to start on ~s:~w (~p): ~p", [ListenerKind, Host, Port, Name, Reason]),
-    throw({listener_start_failed, Name, Reason, ListenerKind, Host, Port}).
-
-cleanup_started_listeners() ->
-    _ = pertisk_eproxy_h3_api_gateway:stop(),
-    _ = pertisk_eproxy_h3_api_gateway:stop_probe(),
-    stop_listener(http4),
-    stop_listener(http6),
-    stop_listener(https4),
-    stop_listener(https6),
-    stop_listener(quic4),
-    stop_listener(quic6),
-    stop_listener(management),
-    ok.
-
-maybe_start_quic(Config, Routes) ->
-    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
-    _ = maybe_start_h3_api_gateway(Config),
-    _ = maybe_start_h3_probe(Config),
-    case {maps:get(quic_enabled, Config, false), GatewayEnabled} of
-        {_, true} ->
-            %% When erlang_quic gateway is enabled we reserve UDP QUIC port for it.
-            ok;
-        {true, false} ->
-            Port = case maps:get(quic_port, Config, undefined) of
-                P when is_integer(P), P > 0 -> P;
-                _ -> maps:get(https_port, Config, 443)
-            end,
-            Tls = tls_opts(Config),
-            QuicSocketOpts4 = [{ip, {0,0,0,0}}, {port, Port} | Tls],
-            QuicProtoOpts = #{
-                env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                logger => pertisk_eproxy_cowboy_logger,
-                enable_connect_protocol => true,
-                h3_datagram => true,
-                wt_max_sessions => 16,
-                enable_webtransport => true
-            },
-            case erlang:function_exported(cowboy, start_quic, 3) of
-                true ->
-                    R1 = catch cowboy:start_quic(quic4,
+    case resolve_https_listen(Config) of
+        {ok, HttpsPort} ->
+            TlsOpts = tls_opts(Config),
+            case TlsOpts of
+                [] ->
+                    lager:warning(
+                        "HTTPS TCP not started on port ~w: tls_cert_file / tls_key_file missing or invalid. "
+                        "Browsers need TCP TLS for https://; QUIC alone is not enough.",
+                        [HttpsPort]
+                    );
+                _ ->
+                    TlsSocketOpts4 = [{ip, {0, 0, 0, 0}}, {port, HttpsPort} | TlsOpts],
+                    TlsSocketOpts6 = [{ip, {0, 0, 0, 0, 0, 0, 0, 0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
+                    ProxyDispatch = cowboy_router:compile([{'_', build_proxy_routes()}]),
+                    {ok, _} = cowboy:start_tls(https4,
                         #{
                             num_acceptors => 100,
-                            socket_opts => QuicSocketOpts4
-                        }, QuicProtoOpts),
-                    case R1 of
-                        {ok, _} ->
-                            lager:info("QUIC proxy listening on udp/:~w", [Port]),
-                            ok;
-                        _ ->
-                            lager:warning("QUIC start requested but failed (~p). Keep using HTTP/1.1+HTTP/2 on TCP 443.", [R1]),
-                            ok
-                    end;
-                false ->
-                    lager:warning("QUIC requested on udp/:~w but Cowboy was built without start_quic/3 (enable COWBOY_QUICER=1 and quicer dependency).", [Port]),
+                            socket_opts => TlsSocketOpts4
+                        },
+                        #{
+                            env => #{dispatch => ProxyDispatch},
+                            logger => pertisk_eproxy_cowboy_logger
+                        }
+                    ),
+                    {ok, _} = cowboy:start_tls(https6,
+                        #{
+                            num_acceptors => 100,
+                            socket_opts => TlsSocketOpts6
+                        },
+                        #{
+                            env => #{dispatch => ProxyDispatch},
+                            logger => pertisk_eproxy_cowboy_logger
+                        }
+                    ),
+                    lager:info("HTTPS proxy (Cowboy, HTTP/2 + HTTP/1.1) on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort])
+            end;
+        error ->
+            ok
+    end,
+
+    maybe_start_h3_udp_listeners(Config),
+
+    MgmtAddr = maps:get(management_addr, Config, {127, 0, 0, 1}),
+    MgmtPort = maps:get(management_port, Config, 9080),
+    {ok, _} = cowboy:start_clear(management,
+        #{
+            num_acceptors => 10,
+            socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]
+        },
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
+    ),
+    lager:info("Management API (Cowboy) listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+maybe_start_h3_udp_listeners(Config) ->
+    case quic_runtime_supported() of
+        true ->
+            _ = maybe_start_h3_api_gateway(Config),
+            _ = maybe_start_h3_probe(Config),
+            case {maps:get(quic_enabled, Config, false), maps:get(h3_api_gateway_enabled, Config, true)} of
+                {true, false} ->
+                    lager:warning(
+                        "quic_enabled is true but h3_api_gateway_enabled is false: HTTP/3 is only served via "
+                        "erlang_quic (h3_api_gateway). Enable h3_api_gateway or turn off quic_enabled."
+                    );
+                _ ->
                     ok
             end;
-        _ ->
-            ok
+        false ->
+            lager:warning(
+                "HTTP/3 listeners disabled: OTP ~s detected, need OTP 27+ for current erlang_quic listener path.",
+                [erlang:system_info(otp_release)]
+            )
     end.
 
 maybe_start_h3_api_gateway(Config) ->
     case maps:get(h3_api_gateway_enabled, Config, true) of
         true ->
+            Port = maps:get(quic_port, Config, maps:get(https_port, Config, 443)),
             case pertisk_eproxy_h3_api_gateway:start(Config) of
                 {ok, _Pid} ->
-                    lager:info("HTTP/3 API gateway (erlang_quic) listening on udp/:~w", [maps:get(quic_port, Config, maps:get(https_port, Config, 443))]),
+                    {BindBin, StackBin} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),
+                    lager:info(
+                        "HTTP/3 API gateway (erlang_quic) listening on ~s (~s)",
+                        [h3_udp_listen_addr(BindBin, Port), StackBin]
+                    ),
                     ok;
                 {error, {already_started, _}} ->
                     ok;
@@ -240,7 +172,11 @@ maybe_start_h3_probe(Config) ->
                 {ok, _Pid} ->
                     BasePort = maps:get(quic_port, Config, maps:get(https_port, Config, 443)),
                     ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
-                    lager:info("HTTP/3 probe listener (erlang_quic) listening on udp/:~w", [ProbePort]),
+                    {BindBin, StackBin} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),
+                    lager:info(
+                        "HTTP/3 probe listener (erlang_quic) listening on ~s (~s)",
+                        [h3_udp_listen_addr(BindBin, ProbePort), StackBin]
+                    ),
                     ok;
                 {error, {already_started, _}} ->
                     ok;
@@ -252,7 +188,21 @@ maybe_start_h3_probe(Config) ->
             ok
     end.
 
+quic_runtime_supported() ->
+    try
+        list_to_integer(erlang:system_info(otp_release)) >= 27
+    catch
+        _:_ -> false
+    end.
+
+%% Log address for UDP H3 (matches {@link pertisk_eproxy_h3_api_gateway:management_listener_bind_stack/0}).
+h3_udp_listen_addr(<<"::">>, Port) ->
+    iolist_to_binary(io_lib:format("udp/[::]:~w", [Port]));
+h3_udp_listen_addr(BindBin, Port) when is_binary(BindBin) ->
+    iolist_to_binary(io_lib:format("udp/~s:~w", [BindBin, Port])).
+
 stop_listener(Name) ->
+    _ = catch ranch:stop_listener(Name),
     _ = catch cowboy:stop_listener(Name),
     ok.
 
@@ -289,8 +239,6 @@ message_contains_quic_shutdown_noise(Other) ->
 
 build_proxy_routes() ->
     [
-        %% Realtime admin stream must always enter websocket proxy handler directly.
-        %% This avoids relying solely on Upgrade header detection in generic handler.
         {"/api/realtime", pertisk_eproxy_ws_handler, []},
         {"/[...]", pertisk_eproxy_handler, []}
     ].

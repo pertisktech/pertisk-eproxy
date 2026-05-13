@@ -832,15 +832,46 @@ decode_runtime_value(undefined) ->
     not_found;
 decode_runtime_value(V0) ->
     try
-        V = iolist_to_binary(V0),
+        V = normalize_runtime_b64(iolist_to_binary(V0)),
         TermBin = base64:decode(V),
+        decode_runtime_term(TermBin)
+    catch
+        _:_ ->
+            decode_runtime_value_json_fallback(V0)
+    end.
+
+decode_runtime_value_json_fallback(V0) ->
+    try
+        V = iolist_to_binary(V0),
+        case thoas:decode(V) of
+            {ok, Json} when is_map(Json) ->
+                {ok, pertisk_eproxy_config:json_to_config_pub(Json)};
+            _ ->
+                {error, invalid_runtime_config_encoding}
+        end
+    catch
+        _:_ ->
+            {error, invalid_runtime_config_encoding}
+    end.
+
+normalize_runtime_b64(Bin) when is_binary(Bin) ->
+    %% Be tolerant of accidental whitespace/newlines around stored base64 payload.
+    re:replace(Bin, <<"\\s+">>, <<"">>, [global, {return, binary}]).
+
+decode_runtime_term(TermBin) when is_binary(TermBin) ->
+    try
         case binary_to_term(TermBin, [safe]) of
             M when is_map(M) -> {ok, M};
             _ -> {error, invalid_runtime_config_term}
         end
     catch
         _:_ ->
-            {error, invalid_runtime_config_encoding}
+            %% Runtime config is stored locally by this app in SQLite; allow
+            %% standard decode for backward compatibility with older payloads.
+            case binary_to_term(TermBin) of
+                M2 when is_map(M2) -> {ok, M2};
+                _ -> {error, invalid_runtime_config_term}
+            end
     end.
 
 sql_escape(Str) when is_list(Str) ->
