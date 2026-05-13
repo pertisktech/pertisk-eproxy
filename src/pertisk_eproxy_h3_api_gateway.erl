@@ -85,8 +85,12 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
+                H404 = maps:merge(
+                    h3_response_edge_defaults(),
+                    #{<<"content-type">> => <<"text/plain">>}
+                ),
                 _ = safe_h3_send_response(
-                    H3Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
+                    H3Conn, StreamId, 404, maps:to_list(H404)
                 ),
                 _ = safe_h3_send_data(
                     H3Conn,
@@ -124,7 +128,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 H3HdrsMergedMap = pertisk_eproxy_security_headers:merge_response_headers(
                                     LogHost, H3HdrsMap, <<"https">>
                                 ),
-                                H3Hdrs = maps:to_list(H3HdrsMergedMap),
+                                H3HdrsFinalMap = maps:merge(
+                                    h3_response_edge_defaults(), H3HdrsMergedMap
+                                ),
+                                H3Hdrs = maps:to_list(H3HdrsFinalMap),
                                 _ = safe_h3_send_response(H3Conn, StreamId, Status, H3Hdrs),
                                 _ = safe_h3_send_data(H3Conn, StreamId, RespBin, true),
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
@@ -150,8 +157,12 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
                 [Class, Reason, LogHost, Path, Stack]
             ),
+            H500 = maps:merge(
+                h3_response_edge_defaults(),
+                #{<<"content-type">> => <<"text/plain">>}
+            ),
             _ = catch pertisk_h3_transport:send_response(
-                H3Conn, StreamId, 500, [{<<"content-type">>, <<"text/plain">>}]
+                H3Conn, StreamId, 500, maps:to_list(H500)
             ),
             _ = catch pertisk_h3_transport:send_data(H3Conn, StreamId, <<"Internal Server Error">>, true),
             log_h3_access(LogHost, Method, PathOnly, 500, T0, <<>>),
@@ -159,8 +170,12 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     end.
 
 reply_502_plain(H3Conn, StreamId) ->
+    H502 = maps:merge(
+        h3_response_edge_defaults(),
+        #{<<"content-type">> => <<"text/plain">>}
+    ),
     _ = safe_h3_send_response(
-        H3Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
+        H3Conn, StreamId, 502, maps:to_list(H502)
     ),
     _ = safe_h3_send_data(H3Conn, StreamId, <<"Bad Gateway">>, true),
     ok.
@@ -292,6 +307,28 @@ gun_response_status_int(S) when is_binary(S) ->
     end;
 gun_response_status_int(_) ->
     502.
+
+%% @doc Same edge fields as TCP {@link cowboy}: {@code date}, {@code server}, {@code alt-svc}.
+%%
+%% {@link gun_resp_headers_to_h3/1} drops upstream {@code date}/{@code server} so we
+%% re-apply defaults; security/site maps still win via {@code maps:merge/2} order.
+-spec h3_response_edge_defaults() -> map().
+h3_response_edge_defaults() ->
+    Cfg = pertisk_eproxy_config:get_config(),
+    Alt =
+        case pertisk_h3_alt_svc:advertised_port(Cfg, undefined) of
+            P when is_integer(P), P > 0 ->
+                #{<<"alt-svc">> => pertisk_h3_alt_svc:header_value(P)};
+            _ ->
+                #{}
+        end,
+    maps:merge(
+        #{
+            <<"date">> => cow_date:rfc1123(calendar:universal_time()),
+            <<"server">> => <<"Cowboy">>
+        },
+        Alt
+    ).
 
 gun_resp_headers_to_h3(Headers) ->
     Blocked = [
