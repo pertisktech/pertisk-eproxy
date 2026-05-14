@@ -12,6 +12,8 @@
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
 -define(SERVER_V6, pertisk_eproxy_h3_api_v6).
 -define(PROBE_SERVER_V6, pertisk_eproxy_h3_probe_v6).
+%% Actual main-gateway UDP bind (set on successful start; used by {@link management_listener_bind_stack/0}).
+-define(H3_GATEWAY_LISTEN_PT, {pertisk_eproxy, h3_api_gateway_udp_listen}).
 %% Max wait per read_request_body (H3 client request DATA). Was a flat 15s and matched ~15003ms access-log timings for small API POSTs (e.g. /api/auth/refresh).
 -define(H3_BODY_TIMEOUT_UNKNOWN_CL_MS, 3500).
 -define(H3_BODY_TIMEOUT_SMALL_POST_MS, 4000).
@@ -48,6 +50,7 @@ start(Config) ->
     start_prefer_ipv6_server(Port, BaseOpts).
 
 stop() ->
+    _ = catch persistent_term:erase(?H3_GATEWAY_LISTEN_PT),
     stop_h3_server_name(?SERVER),
     stop_h3_server_name(?SERVER_V6),
     ok.
@@ -61,11 +64,13 @@ start_probe(Config) ->
     end,
     ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
     {CertDer, KeyTerm} = load_cert_and_key(Config),
+    ProbeBackend = maps:get(h3_listener_backend, Config, gen_udp),
     ProbeOpts = #{
         cert => CertDer,
         key => KeyTerm,
         sni_cert_selector => pertisk_eproxy_app:quic_sni_cert_selector(Config),
         quic_opts => #{pool_size => 0},
+        listener_backend => ProbeBackend,
         handler => pertisk_eproxy_h3_probe_handler
     },
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
@@ -508,12 +513,24 @@ stop_h3_server_name(Name) ->
     _ = catch pertisk_h3_transport_quicer_stub:stop_server(Name),
     ok.
 
-%% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).
+%% @doc Bind/stack for admin UI and startup logs.
+%%
+%% After the main HTTP/3 gateway has started successfully, reflects the
+%% effective UDP bind (e.g. IPv4-only fallback on Linux). Before start or for unknown state,
+%% falls back to OS-level defaults.
 -spec management_listener_bind_stack() -> {Bind :: binary(), Stack :: binary()}.
 management_listener_bind_stack() ->
+    case persistent_term:get(?H3_GATEWAY_LISTEN_PT, undefined) of
+        {Bind, Stack} when is_binary(Bind), is_binary(Stack) ->
+            {Bind, Stack};
+        undefined ->
+            management_listener_bind_stack_default()
+    end.
+
+management_listener_bind_stack_default() ->
     case os:type() of
         {unix, linux} ->
-            %% UDP/IPv6 :: with IPV6_V6ONLY=0 -> accept IPv4 and IPv6 clients.
+            %% Intended bind: UDP/IPv6 :: with IPV6_V6ONLY=0 (may fall back to IPv4-only at runtime).
             {<<"::">>, <<"dual_stack">>};
         {unix, _} ->
             case non_linux_h3_ipv6_enabled() of
@@ -529,70 +546,71 @@ management_listener_bind_stack() ->
             {<<"0.0.0.0">>, <<"ipv4">>}
     end.
 
+note_h3_gateway_udp_listen(?SERVER, Bind, Stack) when is_binary(Bind), is_binary(Stack) ->
+    persistent_term:put(?H3_GATEWAY_LISTEN_PT, {Bind, Stack}),
+    ok;
+note_h3_gateway_udp_listen(_, _, _) ->
+    ok.
+
 start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
-    ListenerBackend = maps:get(listener_backend, BaseOpts, socket),
-    %% On Linux: bind UDP over IPv6 (::) with IPV6_V6ONLY=0 so IPv4 clients work.
-    %% On macOS/BSD/Windows: dual listeners (IPv4 + IPv6-only [::]); the v6 companion
-    %% uses `gen_udp' in {@link non_linux_v6_opts/1} because the OTP `socket' UDP
-    %% listener can return einval on some non-Linux hosts when binding [::]:P.
-    {ServerOpts, LogLabel} =
-        case os:type() of
-            {unix, linux} ->
-                V6Opts = BaseOpts#{
-                    quic_opts => maps:merge(
-                        maps:get(quic_opts, BaseOpts, #{}),
-                        #{
-                            socket_backend => ListenerBackend,
-                            backend => ListenerBackend,
-                            %% Prefer reliability over throughput for edge H3 listener.
-                            %% Some Linux paths intermittently drop/timeout QUIC when batching is on.
-                            server_send_batching => false,
-                            reuseport => false,
-                            pool_size => 0,
-                            extra_socket_opts => [inet6, {ipv6_v6only, false}]
-                        }
-                    )
-                },
-                {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p"};
-            _ ->
-                {BaseOpts, "H3 QUIC: starting dual listeners (IPv4 + IPv6) on non-linux"}
-        end,
-    lager:debug(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
+    ListenerBackend = maps:get(listener_backend, BaseOpts, gen_udp),
+    %% Linux: always split UDP (IPv4 + [::] with IPV6_V6ONLY=1 on the companion). A single [::] socket
+    %% with IPV6_V6ONLY=0 can pass a raw gen_udp probe yet still fail inside erlang_quic, which produced
+    %% supervisor crash noise before retrying this same layout.
     case os:type() of
         {unix, linux} ->
-            case pertisk_h3_transport:start_server(ServerName, Port, ServerOpts) of
-                {ok, _Pid} = Ok ->
-                    Ok;
-                {error, V6Reason} ->
-                    {error, {failed_quic_udp_listener, V6Reason}}
-            end;
+            V4Opts = linux_h3_quic_v4_server_opts(BaseOpts, ListenerBackend),
+            lager:debug("H3 QUIC quic_opts (linux split v4+ipv6): ~p", [maps:get(quic_opts, V4Opts, #{})]),
+            start_non_linux_dual_stack(ServerName, Port, V4Opts);
         _ ->
+            lager:debug("H3 QUIC: starting dual listeners (IPv4 + IPv6) on non-linux: ~p", [
+                maps:get(quic_opts, BaseOpts, #{})
+            ]),
             case non_linux_h3_ipv6_enabled() of
                 true ->
-                    start_non_linux_dual_stack(ServerName, Port, ServerOpts);
+                    start_non_linux_dual_stack(ServerName, Port, BaseOpts);
                 false ->
                     lager:info("H3 QUIC non-linux IPv6 companion listener disabled (set {h3_ipv6_non_linux,true} in sys.config to enable)."),
-                    case pertisk_h3_transport:start_server(ServerName, Port, ServerOpts) of
-                        {ok, _Pid} = Ok -> Ok;
+                    case pertisk_h3_transport:start_server(ServerName, Port, BaseOpts) of
+                        {ok, _} = Ok ->
+                            note_h3_gateway_udp_listen(ServerName, <<"0.0.0.0">>, <<"ipv4">>),
+                            Ok;
                         {error, Reason} -> {error, {failed_quic_udp_listener, Reason}}
                     end
             end
     end.
 
+linux_h3_quic_v4_server_opts(BaseOpts, ListenerBackend) ->
+    BaseOpts#{
+        quic_opts => maps:merge(
+            maps:get(quic_opts, BaseOpts, #{}),
+            #{
+                socket_backend => ListenerBackend,
+                backend => ListenerBackend,
+                server_send_batching => false,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => []
+            }
+        )
+    }.
+
 start_non_linux_dual_stack(ServerName, Port, V4Opts) ->
     case pertisk_h3_transport:start_server(ServerName, Port, V4Opts) of
-        {ok, _Pid} = Ok ->
+        {ok, Pid} ->
             V6Name = v6_server_name(ServerName),
             V6Opts = non_linux_v6_opts(V4Opts),
             case pertisk_h3_transport:start_server(V6Name, Port, V6Opts) of
                 {ok, _V6Pid} ->
-                    Ok;
+                    note_h3_gateway_udp_listen(ServerName, <<"0.0.0.0 and ::">>, <<"dual_stack">>),
+                    {ok, Pid};
                 {error, Reason} ->
                     lager:warning("H3 QUIC IPv6 listener failed on udp/:~w (~p). Continuing with IPv4 only.", [Port, Reason]),
-                    Ok
+                    note_h3_gateway_udp_listen(ServerName, <<"0.0.0.0">>, <<"ipv4">>),
+                    {ok, Pid}
             end;
         {error, Reason} ->
             {error, {failed_quic_udp_listener, Reason}}

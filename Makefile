@@ -3,7 +3,9 @@
 REBAR = rebar3
 IMAGE ?= harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
 VERSION ?= x.x.x
-PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
+PACKAGE_VERSION ?= $(VERSION)
+# .deb/.rpm metadata: strip leading "v" (RPM treats v0.1.0 and 0.1.0 as unrelated packages).
+PACKAGE_SEMVER := $(patsubst v%,%,$(PACKAGE_VERSION))
 DOCKERFILE ?= Dockerfile
 INGRESS_BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 INGRESS_BUILD_PROVENANCE ?= false
@@ -86,9 +88,9 @@ tls-smoke: compile
 
 ## Build Linux x86_64 Debian package into release/
 package-deb-amd64: release
-	@bash scripts/build-deb-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
+	@bash scripts/build-deb-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_SEMVER)"
 
 ## Build Linux x86_64 RPM package into release/
 package-rpm-amd64: release
-	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
+	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_SEMVER)"
 

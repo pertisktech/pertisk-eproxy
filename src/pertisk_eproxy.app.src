@@ -20,12 +20,13 @@
         ranch,
         cowboy,
         cowlib,
-        quic,
         gun,
         thoas,
         jose,
         lager,
-        prometheus
+        prometheus,
+        %% Start after lager so file/console logging works if quic NIF or app:start fails.
+        quic
     ]},
     {env, []},
     {modules, []}

@@ -1,0 +1,24 @@
+# Installed as /lib/systemd/system/@PKG_NAME@.service by scripts/build-{rpm,deb}-amd64.sh
+[Unit]
+Description=Pertisk eProxy
+After=network.target
+
+[Service]
+Type=simple
+User=@PKG_NAME@
+Group=@PKG_NAME@
+WorkingDirectory=/opt/@PKG_NAME@
+# '+' runs as root: ensure writable log/ + data/ for lager and SQLite (common crash if missing).
+ExecStartPre=+/usr/bin/install -d -o @PKG_NAME@ -g @PKG_NAME@ -m 0755 /opt/@PKG_NAME@/log /opt/@PKG_NAME@/data
+ExecStartPre=+/usr/bin/chown -R @PKG_NAME@:@PKG_NAME@ /opt/@PKG_NAME@/log /opt/@PKG_NAME@/data
+Environment=ERL_CRASH_DUMP=/opt/@PKG_NAME@/log/erl_crash.dump
+ExecStart=/opt/@PKG_NAME@/bin/pertisk_eproxy foreground
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

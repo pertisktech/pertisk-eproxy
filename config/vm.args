@@ -7,9 +7,8 @@
 ## Heartbeat monitor (restart VM on crash)
 ## -heart
 
-## SMP auto-detect
-+S auto
-
+## Schedulers: omit +S to use all logical CPUs (VM default). OTP 28+ rejects +S auto.
+##
 ## Async thread pool
 +A 32
 

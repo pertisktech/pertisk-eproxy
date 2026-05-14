@@ -14,6 +14,7 @@ init_cpu_sample() ->
 
 snapshot() ->
     C = pertisk_eproxy_config:get_config(),
+    HttpAddr = maps:get(http_addr, C, {0, 0, 0, 0}),
     HttpPort = maps:get(http_port, C, 8080),
     MgmtPort = maps:get(management_port, C, 9080),
     MgmtAddr = maps:get(management_addr, C, {127, 0, 0, 1}),
@@ -24,8 +25,10 @@ snapshot() ->
         M -> atom_to_binary(M, utf8)
     end,
     HttpsAddr = case maps:find(https_port, C) of
-        {ok, Hp} -> iolist_to_binary(io_lib:format("0.0.0.0:~w", [Hp]));
-        _ -> <<>>
+        {ok, Hp} ->
+            iolist_to_binary([inet:ntoa(HttpAddr), $:, integer_to_list(Hp)]);
+        _ ->
+            <<>>
     end,
     TlsInfoBeam = case code:which(pertisk_eproxy_tls_cert_info) of
         Path when is_list(Path) -> list_to_binary(Path);
@@ -37,7 +40,7 @@ snapshot() ->
     Base = #{
         <<"version">> => app_version(),
         <<"mode">> => ModeBin,
-        <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
+        <<"http_addr">> => iolist_to_binary([inet:ntoa(HttpAddr), $:, integer_to_list(HttpPort)]),
         <<"https_addr">> => HttpsAddr,
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
         <<"config_file">> => config_file_path_bin(),
@@ -87,14 +90,23 @@ http_versions_list(C) ->
 http3_offered(C) ->
     maps:get(h3_api_gateway_enabled, C, true).
 
+proxy_bind_summary(C) ->
+    A4 = maps:get(http_addr, C, {0, 0, 0, 0}),
+    A6 = case A4 of
+        {127, 0, 0, 1} -> {0, 0, 0, 0, 0, 0, 0, 1};
+        _ -> {0, 0, 0, 0, 0, 0, 0, 0}
+    end,
+    iolist_to_binary([inet:ntoa(A4), " and [", inet:ntoa(A6), "]"]).
+
 listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
     MgmtBind = iolist_to_binary(inet:ntoa(MgmtAddr)),
+    ProxyBind = proxy_bind_summary(C),
     L0 = [
         #{
             <<"id">> => <<"proxy_http">>,
             <<"description">> => <<"Reverse proxy HTTP (Cowboy)">>,
             <<"protocol">> => <<"tcp">>,
-            <<"bind">> => <<"0.0.0.0 and ::">>,
+            <<"bind">> => ProxyBind,
             <<"port">> => HttpPort,
             <<"tls">> => false,
             <<"stack">> => <<"dual_stack">>
@@ -106,7 +118,7 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
                 <<"id">> => <<"proxy_https">>,
                 <<"description">> => <<"Reverse proxy HTTPS (ALPN h2, http/1.1)">>,
                 <<"protocol">> => <<"tcp">>,
-                <<"bind">> => <<"0.0.0.0 and ::">>,
+                <<"bind">> => ProxyBind,
                 <<"port">> => Hp,
                 <<"tls">> => true,
                 <<"stack">> => <<"dual_stack">>

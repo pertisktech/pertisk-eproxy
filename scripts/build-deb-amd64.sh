@@ -3,6 +3,7 @@ set -euo pipefail
 
 PKG_NAME="${1:-pertisk-eproxy}"
 VERSION="${2:-0.1.0}"
+VERSION="${VERSION#v}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL_SRC="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
@@ -19,25 +20,11 @@ rm -rf "$WORK_DIR"
 mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/lib/systemd/system" "$OUT_DIR"
 
 cp -R "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
+mkdir -p "$PKG_ROOT/opt/$PKG_NAME/config"
+cp "$ROOT_DIR/packaging/proxy.package.json" "$PKG_ROOT/opt/$PKG_NAME/config/proxy.json"
 
-cat > "$PKG_ROOT/lib/systemd/system/$PKG_NAME.service" <<EOF
-[Unit]
-Description=Pertisk eProxy
-After=network.target
-
-[Service]
-Type=simple
-User=$PKG_NAME
-Group=$PKG_NAME
-WorkingDirectory=/opt/$PKG_NAME
-ExecStart=/opt/$PKG_NAME/bin/pertisk_eproxy foreground
-Restart=on-failure
-RestartSec=2
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sed "s/@PKG_NAME@/$PKG_NAME/g" "$ROOT_DIR/packaging/pertisk-eproxy.service.in" \
+  > "$PKG_ROOT/lib/systemd/system/$PKG_NAME.service"
 
 cat > "$WORK_DIR/preinstall.sh" <<EOF
 #!/bin/sh
@@ -59,20 +46,46 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   systemctl enable $PKG_NAME || true
 fi
+mkdir -p /opt/$PKG_NAME/log /opt/$PKG_NAME/data || true
 chown -R $PKG_NAME:$PKG_NAME /opt/$PKG_NAME || true
 
 cat << 'MSG'
-Pertisk eProxy installed.
+Pertisk eProxy installed — this package is the edge reverse proxy (HTTP, HTTPS,
+HTTP/3 over QUIC). You do not need nginx in front for the same listener layout.
 
-Enable and start:
-  sudo systemctl enable pertisk-eproxy --now
+1) Start the service
+   sudo systemctl enable pertisk-eproxy --now
 
-Service control:
-  sudo systemctl status pertisk-eproxy
-  sudo systemctl restart pertisk-eproxy
+2) Default listeners (see /opt/pertisk-eproxy/config/proxy.json)
+   HTTP:             TCP 80   (all interfaces)
+   HTTPS + HTTP/2:   TCP 443
+   HTTP/3 (QUIC):    UDP 443  (same port as HTTPS)
+   Admin UI + API:   TCP 127.0.0.1:9080 (localhost only; not exposed as 0.0.0.0)
 
-Runtime path:
-  /opt/pertisk-eproxy
+3) Open the firewall / cloud security group (example: firewalld)
+   sudo firewall-cmd --permanent --add-service=http
+   sudo firewall-cmd --permanent --add-service=https
+   sudo firewall-cmd --permanent --add-port=443/udp
+   sudo firewall-cmd --reload
+   (Do not open 9080 publicly unless you set management_addr to 0.0.0.0 in proxy.json.)
+
+4) Admin UI from your laptop (SSH port forward)
+   ssh -L 9080:127.0.0.1:9080 root@YOUR_SERVER_IP
+   Then open: http://127.0.0.1:9080/
+
+5) Runtime config
+   data/proxy.db overrides proxy.json after first start. If upgrades loop, back up then:
+   sudo rm -f /opt/pertisk-eproxy/data/proxy.db && sudo systemctl restart pertisk-eproxy
+
+systemd grants CAP_NET_BIND_SERVICE so the service user can bind 80/443/443-udp.
+
+If the service still exits immediately:
+  sudo journalctl -u pertisk-eproxy -b -n 100 --no-pager
+  sudo tail -n 80 /opt/pertisk-eproxy/log/proxy.log
+  sudo tail -n 80 /opt/pertisk-eproxy/log/error.log
+  sudo ls -la /opt/pertisk-eproxy/log/erl_crash.dump
+
+Runtime: /opt/pertisk-eproxy
 MSG
 exit 0
 EOF

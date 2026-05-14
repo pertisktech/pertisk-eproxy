@@ -463,6 +463,15 @@ parse_opt_challenge_type(_) -> undefined.
 
 maybe_merge_file_listener_overrides(DbCfg) when is_map(DbCfg) ->
     FileCfg = load_file_config_map(),
+    case FileCfg =:= #{} of
+        true ->
+            lager:warning(
+                "config/proxy.json missing or invalid — keeping listener-related settings from SQLite. "
+                "If the service fails to bind (e.g. port 80), fix the JSON file or remove data/proxy.db after backup."
+            );
+        false ->
+            ok
+    end,
     OverrideKeys = [
         mode,
         http_addr,
@@ -492,23 +501,104 @@ maybe_merge_file_listener_overrides(DbCfg) when is_map(DbCfg) ->
     ).
 
 load_file_config_map() ->
-    File = config_file(),
+    File = filename:absname(config_file()),
     case file:read_file(File) of
         {ok, Bin} ->
             case thoas:decode(Bin) of
                 {ok, Json} when is_map(Json) ->
                     json_to_config(Json);
-                _ ->
+                Err ->
+                    lager:error("Invalid JSON in ~s: ~p", [File, Err]),
                     #{}
             end;
-        _ ->
+        {error, Reason} ->
+            lager:error("Cannot read ~s: ~p (listener merge from file disabled)", [File, Reason]),
             #{}
     end.
 
+%% In relx releases TLS files live under lib/<app>-*/priv/..., while JSON uses "priv/tls/..." relative
+%% to the app priv directory. Remap so listeners find PEMs when CWD is the release root.
+resolve_tls_paths_for_release(Cfg) ->
+    lists:foldl(
+        fun(Key, Acc) ->
+            case maps:find(Key, Acc) of
+                {ok, Val} -> maps:put(Key, resolve_one_tls_path(Val), Acc);
+                error -> Acc
+            end
+        end,
+        Cfg,
+        [tls_cert_file, tls_key_file]
+    ).
+
+resolve_one_tls_path(undefined) ->
+    undefined;
+resolve_one_tls_path(<<>>) ->
+    undefined;
+resolve_one_tls_path(Path) when is_binary(Path) ->
+    resolve_one_tls_path(binary_to_list(Path));
+resolve_one_tls_path(Path) when is_list(Path) ->
+    case Path of
+        "priv/" ++ Rest ->
+            try filename:join(code:priv_dir(pertisk_eproxy), Rest) of
+                Joined -> Joined
+            catch
+                _:_ -> Path
+            end;
+        "./priv/" ++ Rest ->
+            try filename:join(code:priv_dir(pertisk_eproxy), Rest) of
+                Joined -> Joined
+            catch
+                _:_ -> Path
+            end;
+        _ ->
+            Path
+    end;
+resolve_one_tls_path(Path) ->
+    Path.
+
+sanitize_sites(Sites) when is_list(Sites) ->
+    {Keep, Drop} = lists:partition(
+        fun(S) ->
+            is_map(S) andalso maps:is_key(host, S) andalso maps:is_key(backend, S)
+        end,
+        Sites
+    ),
+    case Drop of
+        [] ->
+            ok;
+        _ ->
+            lager:warning(
+                "Dropped ~w site(s) missing host/backend (bad DB row); fix via admin API or re-import config",
+                [length(Drop)]
+            )
+    end,
+    Keep;
+sanitize_sites(_) ->
+    [].
+
+sanitize_backends(Backends) when is_list(Backends) ->
+    {Keep, Drop} = lists:partition(
+        fun(B) -> is_map(B) andalso maps:is_key(name, B) end,
+        Backends
+    ),
+    case Drop of
+        [] ->
+            ok;
+        _ ->
+            lager:warning("Dropped ~w backend(s) missing name", [length(Drop)])
+    end,
+    Keep;
+sanitize_backends(_) ->
+    [].
+
 %% Apply a config map: store in ETS, sync backend workers, rebuild router.
-apply_config(Config) ->
-    Sites    = maps:get(sites,    Config, []),
-    Backends = maps:get(backends, Config, []),
+apply_config(Config0) ->
+    Config1 = resolve_tls_paths_for_release(Config0),
+    Sites0 = maps:get(sites, Config1, []),
+    Backends0 = maps:get(backends, Config1, []),
+    Sites = sanitize_sites(Sites0),
+    Backends = sanitize_backends(Backends0),
+    Config = Config1#{sites => Sites, backends => Backends},
     Certificates = maps:get(certificates, Config, []),
     DnsProviders  = maps:get(dns_providers, Config, []),
 
