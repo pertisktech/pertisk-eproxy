@@ -9,6 +9,7 @@ import {
   type Backend,
   type CertificateRow,
   type ManagementInfo,
+  type DnsProviderRow,
   normalizeDnsProviders,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
@@ -28,6 +29,7 @@ const EMPTY_BACKENDS: Backend[] = [];
 type SitesCache = {
   config: ProxyConfig | null;
   issuedTlsCerts: CertificateRow[];
+  dnsProviderRows: DnsProviderRow[];
 };
 
 let sitesCache: SitesCache | null = null;
@@ -158,6 +160,7 @@ export default function Sites() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
   const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
+  const [dnsProviderRows, setDnsProviderRows] = useState<DnsProviderRow[]>(() => sitesCache?.dnsProviderRows ?? []);
   const [managementInfo, setManagementInfo] = useState<ManagementInfo | null>(null);
   const toast = useToast();
   const wildcardLabel = wildcardDomainFromHost(formHost);
@@ -172,10 +175,17 @@ export default function Sites() {
 
   const sites = config?.sites ?? EMPTY_SITES;
   const backends = config?.backends ?? EMPTY_BACKENDS;
-  const dnsNames = useMemo(
-    () => normalizeDnsProviders(config?.dns_providers).map((e) => e.name).filter((n) => n.length > 0),
-    [config?.dns_providers],
-  );
+  const dnsNames = useMemo(() => {
+    const fromApi = dnsProviderRows
+      .map((r) => String(r.name ?? '').trim())
+      .filter((n) => n.length > 0);
+    if (fromApi.length > 0) {
+      return [...new Set(fromApi)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+    return normalizeDnsProviders(config?.dns_providers)
+      .map((e) => e.name)
+      .filter((n) => n.length > 0);
+  }, [dnsProviderRows, config?.dns_providers]);
 
   const displaySiteItems: DisplaySiteItem[] = useMemo(
     () =>
@@ -254,24 +264,29 @@ export default function Sites() {
     }
     setError(null);
     try {
-      const [nextConfig, certList, mgmt] = await Promise.all([
+      const [nextConfig, certList, mgmt, dnsList] = await Promise.all([
         api.config(),
         api.certificates.list().catch(() => [] as CertificateRow[]),
         api.management().catch(() => null),
+        api.dnsProviders.list().catch(() => [] as DnsProviderRow[]),
       ]);
       const certs = Array.isArray(certList) ? certList : [];
+      const dnsRows = Array.isArray(dnsList) ? dnsList : [];
       setConfig(nextConfig);
       setIssuedTlsCerts(certs);
+      setDnsProviderRows(dnsRows);
       setManagementInfo(mgmt);
       sitesCache = {
         config: nextConfig,
         issuedTlsCerts: certs,
+        dnsProviderRows: dnsRows,
       };
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load config');
       if (sitesCache == null) {
         setConfig(null);
         setIssuedTlsCerts([]);
+        setDnsProviderRows([]);
       }
     } finally {
       if (!silent) {

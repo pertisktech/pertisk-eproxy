@@ -178,6 +178,31 @@ export interface DnsProviderRow {
   created_at: string;
 }
 
+/** Coerce GET /dns-providers JSON into stable row shape for tables and dropdowns. */
+export function normalizeDnsProviderApiRow(raw: unknown): DnsProviderRow | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const id = o.id != null && o.id !== '' ? String(o.id) : '';
+  if (!id) return null;
+  const name = o.name != null && typeof o.name !== 'object' ? String(o.name).trim() : '';
+  const provider_type =
+    o.provider_type != null && typeof o.provider_type !== 'object'
+      ? String(o.provider_type).trim() || DNS_LABEL_PROVIDER_ID
+      : DNS_LABEL_PROVIDER_ID;
+  const credRaw = o.credentials;
+  let credentials: Record<string, string> | null = null;
+  if (credRaw && typeof credRaw === 'object' && !Array.isArray(credRaw)) {
+    const cred: Record<string, string> = {};
+    for (const [k, v] of Object.entries(credRaw)) {
+      if (typeof k === 'string' && v != null && String(v).length > 0) cred[k] = String(v);
+    }
+    if (Object.keys(cred).length > 0) credentials = cred;
+  }
+  const created_at =
+    o.created_at != null && typeof o.created_at !== 'object' ? String(o.created_at) : '';
+  return { id, name, provider_type, credentials, created_at };
+}
+
 export interface SupportedDnsProviderField {
   key: string;
   label: string;
@@ -602,8 +627,10 @@ export function openRealtimeStream(
 }
 
 function ensureDnsProviderRows(value: unknown): DnsProviderRow[] {
-  if (Array.isArray(value)) return value as DnsProviderRow[];
-  throw new Error('DNS providers API is unavailable. Restart proxy to load latest backend routes.');
+  if (!Array.isArray(value)) {
+    throw new Error('DNS providers API is unavailable. Restart proxy to load latest backend routes.');
+  }
+  return value.map(normalizeDnsProviderApiRow).filter((r): r is DnsProviderRow => r != null);
 }
 
 // ---------------------------------------------------------------------------

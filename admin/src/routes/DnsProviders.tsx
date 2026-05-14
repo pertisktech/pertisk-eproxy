@@ -1,5 +1,5 @@
 import FaIcon from "@/components/FaIcon";
-import { useEffect, useState, FormEvent } from 'react';
+import { useEffect, useState, FormEvent, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   api,
@@ -36,6 +36,8 @@ export default function DnsProviders() {
   const toast = useToast();
 
   const selectedProvider = supported.find((p) => p.id === formType);
+  const supportedIds = useMemo(() => new Set(supported.map((p) => p.id)), [supported]);
+  const formTypeUnknown = Boolean(formType && !supportedIds.has(formType));
 
   const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
   useEffect(() => {
@@ -145,6 +147,10 @@ export default function DnsProviders() {
     }
     if (!provider_type) {
       setFormError('Provider type is required');
+      return;
+    }
+    if (!editingId && !supportedIds.has(provider_type)) {
+      setFormError('Choose a provider type from the list.');
       return;
     }
     const credentials = buildCredentials();
@@ -351,6 +357,11 @@ export default function DnsProviders() {
                   autoComplete="off"
                 >
                   {!formType && <option value="">Select a provider…</option>}
+                  {formTypeUnknown && (
+                    <option value={formType}>
+                      Unsupported type ({formType}) — upgrade admin or migrate this entry
+                    </option>
+                  )}
                   {supported.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
@@ -358,6 +369,12 @@ export default function DnsProviders() {
                   ))}
                 </select>
               </label>
+              {formTypeUnknown && editingId && (
+                <p className={styles.formHint} role="status">
+                  This provider&apos;s type is not in the current supported list. Type cannot be changed here; add a new
+                  provider if you need a supported integration.
+                </p>
+              )}
 
               {selectedProvider && selectedProvider.fields.length > 0 && (
                 <div className={styles.configBlock}>

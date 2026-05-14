@@ -618,7 +618,9 @@ linux_h3_quic_v4_server_opts(BaseOpts, ListenerBackend) ->
                 server_send_batching => false,
                 reuseport => false,
                 pool_size => 0,
-                extra_socket_opts => []
+                extra_socket_opts => [],
+                %% Chromium paths sometimes lose PMTUD probes where curl/Firefox succeed; disable DPLPMTUD here.
+                pmtu_enabled => false
             }
         )
     }.

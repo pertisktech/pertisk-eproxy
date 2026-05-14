@@ -37,6 +37,15 @@ advertised_port(Cfg, ReqPortFallback) ->
 %%
 %% Long {@code ma} and {@code persist=1} improve client caching and stickiness
 %% (Chrome/Firefox still revalidate; short {@code ma} can delay or drop discovery).
+%%
+%% Include {@code h3-29} alongside RFC {@code h3}: some Chromium builds favour or
+%% probe the draft ALPN first; advertising both improves discovery parity with
+%% common reverse proxies.
 -spec header_value(inet:port_number()) -> binary().
 header_value(P) when is_integer(P), P > 0 ->
-    iolist_to_binary(io_lib:format("h3=\":~w\"; ma=2592000; persist=1", [P])).
+    iolist_to_binary(
+        io_lib:format(
+            "h3=\":~w\"; ma=2592000; persist=1, h3-29=\":~w\"; ma=2592000; persist=1",
+            [P, P]
+        )
+    ).

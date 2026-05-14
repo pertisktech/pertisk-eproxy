@@ -546,6 +546,13 @@
   color: var(--error);
 }
 
+.formHint {
+  margin: -0.5rem 0 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .modalActions {
   display: flex;
   justify-content: flex-end;

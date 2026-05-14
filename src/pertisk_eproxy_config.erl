@@ -201,9 +201,10 @@ load_config() ->
             Cfg1 = maybe_merge_file_listener_overrides(Cfg),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg1, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg1, [])),
-            %% Keep plain sites table in sync from persisted runtime config on every startup.
-            _ = persist_runtime_config(DbPath, Cfg1),
-            {ok, Cfg1};
+            %% `dns_providers` SQLite table is authoritative for admin CRUD; merge so GET /api/config matches GET /api/dns-providers.
+            Merged = merge_dns_providers_from_sqlite(Cfg1),
+            _ = persist_runtime_config(DbPath, Merged),
+            {ok, Merged};
         not_found ->
             load_config_from_file_and_seed(DbPath);
         {error, Reason} ->
@@ -223,8 +224,9 @@ load_config_from_file_and_seed(DbPath) ->
                     Cfg = json_to_config(Json),
                     _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
                     _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
-                    _ = persist_runtime_config(DbPath, Cfg),
-                    {ok, Cfg};
+                    Merged = merge_dns_providers_from_sqlite(Cfg),
+                    _ = persist_runtime_config(DbPath, Merged),
+                    {ok, Merged};
                 {error, Reason} ->
                     {error, {json_parse, Reason}}
             end;
@@ -241,13 +243,44 @@ load_config_from_file_no_persist(DbPath) ->
                     Cfg = json_to_config(Json),
                     _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
                     _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
-                    {ok, Cfg};
+                    Merged = merge_dns_providers_from_sqlite(Cfg),
+                    {ok, Merged};
                 {error, Reason} ->
                     {error, {json_parse, Reason}}
             end;
         {error, Reason} ->
             {error, {file_read, Reason}}
     end.
+
+%% @doc Replace {@code dns_providers} in config with rows from the {@code dns_providers} SQLite table
+%% (same source as {@code GET /api/dns-providers}), so runtime config and admin Sites dropdown stay aligned.
+merge_dns_providers_from_sqlite(Cfg) ->
+    case pertisk_eproxy_db:list_dns_providers(db_file()) of
+        {ok, Rows} when is_list(Rows) ->
+            DnsProviders = [dns_sqlite_row_to_config_entry(R) || R <- Rows],
+            Cfg#{dns_providers => DnsProviders};
+        {error, Reason} ->
+            lager:warning("merge_dns_providers_from_sqlite: list_dns_providers failed: ~p", [Reason]),
+            Cfg
+    end.
+
+dns_sqlite_row_to_config_entry(R) ->
+    NameBin = dns_row_json_text(maps:get(name, R, <<>>)),
+    PtBin = dns_row_json_text(maps:get(provider_type, R, <<"label">>)),
+    Cred0 = maps:get(credentials, R, #{}),
+    Cred = case Cred0 of
+        M when is_map(M) -> M;
+        _ -> #{}
+    end,
+    #{
+        name => binary_to_list(NameBin),
+        provider_type => binary_to_list(PtBin),
+        credentials => Cred
+    }.
+
+dns_row_json_text(V) when is_binary(V) -> V;
+dns_row_json_text(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+dns_row_json_text(V) -> iolist_to_binary(io_lib:format("~p", [V])).
 
 persist_runtime_config(Config) ->
     persist_runtime_config(db_file(), Config).
