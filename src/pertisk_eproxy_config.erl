@@ -288,6 +288,8 @@ json_to_config(Json) ->
         %% `socket': OTP socket + batching path (Linux GRO); can break native IPv6 QUIC on some kernels while IPv4 still works.
         h3_listener_backend => parse_h3_listener_backend(maps:get(<<"h3_listener_backend">>, Json, null)),
         h3_api_gateway_enabled => parse_opt_bool(maps:get(<<"h3_api_gateway_enabled">>, Json, null)),
+        %% When true: bind QUIC/HTTP/3 on IPv4 UDP only (no [::] companion listener).
+        h3_quic_ipv4_only => parse_opt_bool(maps:get(<<"h3_quic_ipv4_only">>, Json, null)),
         h3_probe_enabled => parse_opt_bool(maps:get(<<"h3_probe_enabled">>, Json, null)),
         h3_probe_port   => parse_opt_int(maps:get(<<"h3_probe_port">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"127.0.0.1">>)),
@@ -482,6 +484,7 @@ maybe_merge_file_listener_overrides(DbCfg) when is_map(DbCfg) ->
         quic_port,
         h3_listener_backend,
         h3_api_gateway_enabled,
+        h3_quic_ipv4_only,
         h3_probe_enabled,
         h3_probe_port,
         management_addr,
