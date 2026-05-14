@@ -1,0 +1,36 @@
+# Erlang/OTP build artifacts
+*.beam
+*.plt
+ebin/
+_build/
+.eunit/
+deps/
+.rebar3/
+*.crashdump
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.o
+*.so
+*.dylib
+
+# Release artifacts
+rel/
+*.tar.gz
+*.zip
+
+# Logs
+*.log
+erl_crash.dump
+var/log/

@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8080:8080"
+      - "443:443"
+    environment:
+      - LISTEN_ADDR=0.0.0.0
+      - LISTEN_PORT_H2=443
+      - LISTEN_PORT_H3=443
+      - ADMIN_PORT=8080
+      - ACME_ENABLED=true
+    volumes:
+      - ./config:/app/config
+      - ./certs:/app/certs
+    networks:
+      - eproxy-network
+
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080/api
+    depends_on:
+      - backend
+    networks:
+      - eproxy-network
+
+networks:
+  eproxy-network:
+    driver: bridge

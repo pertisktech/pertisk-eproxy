@@ -1,0 +1,81 @@
+{
+  "config": {
+    "http_addr": "[::]:80",
+    "https_addr": "[::]:443",
+    "http3_addr": null,
+    "management_addr": "0.0.0.0:9080",
+    "backends": [
+      {
+        "name": "inline-admin.arm.thaidevops.co",
+        "upstreams": [
+          {
+            "addr": "http://localhost:9080",
+            "weight": 0
+          }
+        ],
+        "algorithm": "round-robin",
+        "health_path": null,
+        "health_interval_secs": 0
+      }
+    ],
+    "sites": [
+      {
+        "host": "admin.arm.thaidevops.co",
+        "routes": [
+          {
+            "path_type": "Prefix",
+            "path": "/",
+            "rewrite": "/"
+          }
+        ],
+        "backend": "inline-admin.arm.thaidevops.co"
+      }
+    ],
+    "tls": [
+      {
+        "hosts": [
+          "*.arm.thaidevops.co",
+          "admin.arm.thaidevops.co"
+        ],
+        "source": {
+          "type": "acme",
+          "email": "dotnetnat@gmail.com",
+          "challenge": "dns01",
+          "dns_provider": "cloudflare",
+          "dns_provider_type": "cloudflare",
+          "dns_credentials": {
+            "api_token": "W_dc02rsC85xZMc_T3XTdnLfuOZE1PhfF_jVfrNe"
+          }
+        }
+      }
+    ],
+    "security_headers": {
+      "Content-Security-Policy": "default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' https: data:; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; worker-src 'self' blob:; base-uri 'self'; object-src 'none'; upgrade-insecure-requests",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+      "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN"
+    },
+    "proxy_log": true
+  },
+  "certificates": [
+    {
+      "hosts": [
+        "*.arm.thaidevops.co"
+      ],
+      "cert_pem": "-----BEGIN CERTIFICATE-----\nMIIDsDCCAzagAwIBAgISBXn/PWGKJvmjeUYWVkxeCxo2MAoGCCqGSM49BAMDMDIx\nCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQswCQYDVQQDEwJF\nODAeFw0yNjA1MTQxMjQ0MzRaFw0yNjA4MTIxMjQ0MzNaMB4xHDAaBgNVBAMMEyou\nYXJtLnRoYWlkZXZvcHMuY28wdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAS/MYR+r7pO\nyK7wHxMrYCQo6cHfe56BqzdTvsDuAECFZihgtZQYYFyGm+gtiesWtU6LlNWlRoK7\nn+a9vL0vG2sa12iWhdJkT97n432AIDXn6Sau84GPxkKfshIqfDi0xeWjggIhMIIC\nHTAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDAYDVR0TAQH/\nBAIwADAdBgNVHQ4EFgQU7DLw5Lh7N0uLE0akZxs2r0ZYu4swHwYDVR0jBBgwFoAU\njw0TovYuftFQbDMYOF1ZjiNykcowMgYIKwYBBQUHAQEEJjAkMCIGCCsGAQUFBzAC\nhhZodHRwOi8vZTguaS5sZW5jci5vcmcvMB4GA1UdEQQXMBWCEyouYXJtLnRoYWlk\nZXZvcHMuY28wEwYDVR0gBAwwCjAIBgZngQwBAgEwLQYDVR0fBCYwJDAioCCgHoYc\naHR0cDovL2U4LmMubGVuY3Iub3JnLzU1LmNybDCCAQ4GCisGAQQB1nkCBAIEgf8E\ngfwA+gB3ANdtfRDRp/V3wsfpX9cAv/mCyTNaZeHQswFzF8DIxWl3AAABnia6AUsA\nAAQDAEgwRgIhALAqCMzCI1DC9+B5W0cOlEkU6jk5dButKE9eblrV8ZLPAiEAx2QJ\neLw7xMAm5kkxSaVOCZ8u0j0v5X6ldBLst70x3isAfwBGr4Y9Oz7ln6V33qgkXTaw\n2e0ioiP0YXdBIpRS7pVQXwAAAZ4mugHiAAgAAAUABpcfYAQDAEgwRgIhAMc5/u5S\ndEG1FVk3EshIK9FCIG5ZfDrI4z5meFHHjDOMAiEAwPiNUp9qMqeP0Z6hqJLAzQrh\nS9WxeyXZInQ78VcBXvUwCgYIKoZIzj0EAwMDaAAwZQIwBZfTWVd8nVTYZYMXeeli\nAOOtTRPbDBfG3iMS6Cth92bSePQZkOzTK0y1OXQBtxsVAjEAhyTY4Eo8Cmhzu14H\nPHcpVLwbrQZYLPPGu28Nu2PNX1fuAqrNT1ZtWF2pVh8jL+Jc\n-----END CERTIFICATE-----\n\n-----BEGIN CERTIFICATE-----\nMIIEVjCCAj6gAwIBAgIQY5WTY8JOcIJxWRi/w9ftVjANBgkqhkiG9w0BAQsFADBP\nMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFy\nY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMTAeFw0yNDAzMTMwMDAwMDBa\nFw0yNzAzMTIyMzU5NTlaMDIxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBF\nbmNyeXB0MQswCQYDVQQDEwJFODB2MBAGByqGSM49AgEGBSuBBAAiA2IABNFl8l7c\nS7QMApzSsvru6WyrOq44ofTUOTIzxULUzDMMNMchIJBwXOhiLxxxs0LXeb5GDcHb\nR6EToMffgSZjO9SNHfY9gjMy9vQr5/WWOrQTZxh7az6NSNnq3u2ubT6HTKOB+DCB\n9TAOBgNVHQ8BAf8EBAMCAYYwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMB\nMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFI8NE6L2Ln7RUGwzGDhdWY4j\ncpHKMB8GA1UdIwQYMBaAFHm0WeZ7tuXkAXOACIjIGlj26ZtuMDIGCCsGAQUFBwEB\nBCYwJDAiBggrBgEFBQcwAoYWaHR0cDovL3gxLmkubGVuY3Iub3JnLzATBgNVHSAE\nDDAKMAgGBmeBDAECATAnBgNVHR8EIDAeMBygGqAYhhZodHRwOi8veDEuYy5sZW5j\nci5vcmcvMA0GCSqGSIb3DQEBCwUAA4ICAQBnE0hGINKsCYWi0Xx1ygxD5qihEjZ0\nRI3tTZz1wuATH3ZwYPIp97kWEayanD1j0cDhIYzy4CkDo2jB8D5t0a6zZWzlr98d\nAQFNh8uKJkIHdLShy+nUyeZxc5bNeMp1Lu0gSzE4McqfmNMvIpeiwWSYO9w82Ob8\notvXcO2JUYi3svHIWRm3+707DUbL51XMcY2iZdlCq4Wa9nbuk3WTU4gr6LY8MzVA\naDQG2+4U3eJ6qUF10bBnR1uuVyDYs9RhrwucRVnfuDj29CMLTsplM5f5wSV5hUpm\nUwp/vV7M4w4aGunt74koX71n4EdagCsL/Yk5+mAQU0+tue0JOfAV/R6t1k+Xk9s2\nHMQFeoxppfzAVC04FdG9M+AC2JWxmFSt6BCuh3CEey3fE52Qrj9YM75rtvIjsm/1\nHl+u//Wqxnu1ZQ4jpa+VpuZiGOlWrqSP9eogdOhCGisnyewWJwRQOqK16wiGyZeR\nxs/Bekw65vwSIaVkBruPiTfMOo0Zh4gVa8/qJgMbJbyrwwG97z/PRgmLKCDl8z3d\ntA0Z7qq7fta0Gl24uyuB05dqI5J1LvAzKuWdIjT1tP8qCoxSE/xpix8hX2dt3h+/\njujUgFPFZ0EVZ0xSyBNRF3MboGZnYXFUxpNjTWPKpagDHJQmqrAcDmWJnMsFY3jS\nu1igv3OefnWjSQ==\n-----END CERTIFICATE-----\n",
+      "key_pem": "-----BEGIN PRIVATE KEY-----\nMIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDDy/TPExcI5w00zlm77\nF/197U6HyAMI4qHMvu7gixpKY7hRQC0UyTgKMLVPC9lhaUqhZANiAAS/MYR+r7pO\nyK7wHxMrYCQo6cHfe56BqzdTvsDuAECFZihgtZQYYFyGm+gtiesWtU6LlNWlRoK7\nn+a9vL0vG2sa12iWhdJkT97n432AIDXn6Sau84GPxkKfshIqfDi0xeU=\n-----END PRIVATE KEY-----\n",
+      "source_type": "backup"
+    }
+  ],
+  "dns_providers": [
+    {
+      "id": "65c75a12-01ce-4b6e-a73e-03c134812632",
+      "name": "cloudflare",
+      "provider_type": "cloudflare",
+      "created_at": "2026-05-14T13:41:34.967972+00:00"
+    }
+  ],
+  "created_at": "2026-05-14T13:43:49.923847+00:00"
+}

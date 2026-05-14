@@ -1,0 +1,34 @@
+## VM arguments
+## See http://erlang.org/doc/man/erl.html for more information.
+
+# Name of the node
+-sname pertisk_eproxy@localhost
+
+# Cookie for distributed erlang
+-setcookie pertisk_eproxy_secret
+
+# Enable SMP support (will use all available CPU cores)
++S auto:auto
+
+# Memory settings
++K true
++A 256
++B i
+
+# Kernel poll
++K true
+
+# Enable distributed port mapping daemon
+-kernel inet_dist_listen_min 6000 inet_dist_listen_max 7000
+
+# Logging
++J
+
+# Initialize flags
+-init_debug
+
+# Heart beat monitoring (enable if needed)
+# -heart
+
+# Crash dump settings
+-env ERL_CRASH_DUMP /tmp/pertisk_eproxy_crash.dump

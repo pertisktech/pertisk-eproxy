@@ -1,0 +1,22 @@
+FROM erlang:26-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache     git     build-base     cmake     openssl-dev     gcc     musl-dev     ncurses-dev
+
+# Install rebar3
+RUN wget https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3 && mv rebar3 /usr/local/bin/
+
+# Copy the application source code
+COPY . .
+
+# Compile the application
+RUN rebar3 compile
+
+# Expose ports
+EXPOSE 8080 443
+
+# Start the application
+CMD ["rebar3", "shell"]

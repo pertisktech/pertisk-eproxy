@@ -1,0 +1,42 @@
+{application, pertisk_eproxy, [
+    {description, "Erlang QUIC Reverse Proxy with HTTP/2, HTTP/3, Auto ACME, and Compression"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {pertisk_eproxy_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        ssl,
+        inets,
+        cowboy,
+        jiffy,
+        quic,
+        lager
+    ]},
+    {env, [
+        {listen_addr, "any"},
+        {listen_port_http, 80},
+        {listen_port_h2, 443},
+        {listen_port_https, 443},
+        {listen_port_h3, 443},
+        {admin_port, 8080},
+        {tls_certfile, "tls/arm-thaidevops.co-cert.pem"},
+        {tls_keyfile, "tls/arm-thaidevops.co-key.pem"},
+        {upstreams_file, "config/upstreams.json"},
+        {acme_enabled, true},
+        {acme_provider, "https://acme-v02.api.letsencrypt.org/directory"},
+        {compression_methods, [brotli, zstd]},
+        {upstreams, []}
+    ]},
+    {modules, [
+        pertisk_eproxy_app,
+        pertisk_eproxy_sup,
+        pertisk_eproxy_proxy,
+        pertisk_eproxy_admin,
+        pertisk_eproxy_redirect_handler,
+        pertisk_eproxy_proxy_handler,
+        pertisk_eproxy_admin_handler,
+        pertisk_eproxy_acme,
+        pertisk_eproxy_compression
+    ]}
+]}.
