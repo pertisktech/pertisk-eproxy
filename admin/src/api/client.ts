@@ -347,6 +347,10 @@ export interface ManagementRuntimeCapabilities {
   h3_api_gateway_config: boolean;
   tls_listener_configured: boolean;
   proxy_http3_udp: boolean;
+  /** When true, QUIC UDP is bound on IPv4 only (`proxy.json` `h3_quic_ipv4_only`). */
+  h3_quic_ipv4_only?: boolean;
+  /** Present when H3 gateway is dual-stack: explains Chrome h2 vs Firefox h3 when IPv6 UDP/443 is blocked. */
+  http3_chrome_ipv6_hint?: string;
 }
 
 export interface ManagementInfo {

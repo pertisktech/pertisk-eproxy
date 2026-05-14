@@ -224,11 +224,23 @@ os_version_bin() ->
 
 runtime_capabilities(C) ->
     H3Gw = maps:get(h3_api_gateway_enabled, C, true),
-    #{
+    H3V4Only = maps:get(h3_quic_ipv4_only, C, false),
+    Base = #{
         <<"beam">> => list_to_binary(erlang:system_info(machine)),
         <<"jit">> => erlang:system_info(emu_flavor) =:= jit,
         <<"h3_api_gateway_config">> => H3Gw,
         <<"tls_listener_configured">> => maps:is_key(https_port, C),
         %% True when the erlang_quic HTTP/3 listener is configured to run.
-        <<"proxy_http3_udp">> => H3Gw
-    }.
+        <<"proxy_http3_udp">> => H3Gw,
+        <<"h3_quic_ipv4_only">> => H3V4Only
+    },
+    %% Dual-stack UDP: Chrome often prefers AAAA for the origin; if IPv6 UDP/443 is blocked, Chrome stays on HTTP/2.
+    case H3Gw andalso (not H3V4Only) of
+        true ->
+            Base#{
+                <<"http3_chrome_ipv6_hint">> =>
+                    <<"If Chrome shows HTTP/2 while curl/Firefox use HTTP/3, check DevTools Network Remote Address: IPv6 means QUIC must work over UDP/443 on IPv6 (open host/LB IPv6 UDP); or remove AAAA / point the hostname at IPv4 only, as with a typical IPv4-only edge.">>
+            };
+        false ->
+            Base
+    end.

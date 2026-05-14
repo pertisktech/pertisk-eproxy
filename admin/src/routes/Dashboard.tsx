@@ -354,11 +354,22 @@ export default function Dashboard() {
                   {caps?.proxy_http3_udp ? 'enabled' : 'disabled'}
                 </span>
               </div>
+              <div className={styles.capItem}>
+                <span className={styles.capKey}>QUIC IPv4-only bind</span>
+                <span className={caps?.h3_quic_ipv4_only ? styles.capOn : styles.capOff}>
+                  {caps?.h3_quic_ipv4_only ? 'yes' : 'no'}
+                </span>
+              </div>
               <div className={styles.capItemWide}>
                 <span className={styles.capKey}>BEAM target</span>
                 <code className={styles.capCode}>{caps?.beam ?? '—'}</code>
               </div>
             </div>
+            {caps?.http3_chrome_ipv6_hint ? (
+              <p className={styles.http3Hint} role="note">
+                {caps.http3_chrome_ipv6_hint}
+              </p>
+            ) : null}
           </div>
 
           {health?.backends && health.backends.length > 0 ? (

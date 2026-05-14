@@ -6,6 +6,8 @@
 
 -export([advertised_port/2, header_value/1]).
 
+-define(ALT_SVC_MA_SEC, 2592000).
+
 %% @doc Port clients should use for QUIC on this origin.
 %%
 %% Precedence: {@code alt_svc_port} (public/LB), then {@code https_port}, then
@@ -35,8 +37,8 @@ advertised_port(Cfg, ReqPortFallback) ->
 
 %% @doc Single {@code Alt-Svc} field-value for HTTP/3 on {@code Port}.
 %%
-%% Long {@code ma} and {@code persist=1} improve client caching and stickiness
-%% (Chrome/Firefox still revalidate; short {@code ma} can delay or drop discovery).
+%% {@code ma} is long-lived so clients retain the hint across restarts; {@code persist=1}
+%% encourages reuse of the alternative service (RFC 7838).
 %%
 %% Include {@code h3-29} alongside RFC {@code h3}: some Chromium builds favour or
 %% probe the draft ALPN first; advertising both improves discovery parity with
@@ -45,7 +47,7 @@ advertised_port(Cfg, ReqPortFallback) ->
 header_value(P) when is_integer(P), P > 0 ->
     iolist_to_binary(
         io_lib:format(
-            "h3=\":~w\"; ma=2592000; persist=1, h3-29=\":~w\"; ma=2592000; persist=1",
-            [P, P]
+            "h3=\":~w\"; ma=~w; persist=1, h3-29=\":~w\"; ma=~w; persist=1",
+            [P, ?ALT_SVC_MA_SEC, P, ?ALT_SVC_MA_SEC]
         )
     ).
