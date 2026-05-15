@@ -70,6 +70,16 @@ login(User, Pass) ->
                     {ok, #{token => Token, username => UBin, expires_in => 86400}};
                 {error, invalid_credentials} ->
                     {error, invalid_credentials};
+                {error, sqlite3_executable_not_found} ->
+                    lager:warning(
+                        "admin login DB error: sqlite3 CLI not found (install package `sqlite3` and/or set "
+                        "`{sqlite3_executable, \"/usr/bin/sqlite3\"}` under `pertisk_eproxy` in sys.config "
+                        "when the VM has a minimal PATH)"
+                    ),
+                    {error, invalid_credentials};
+                {error, {sqlite3_cli, Msg}} ->
+                    lager:warning("admin login DB error: sqlite3 shell failed (~s)", [Msg]),
+                    {error, invalid_credentials};
                 {error, Reason} ->
                     lager:warning("admin login DB error: ~p", [Reason]),
                     {error, invalid_credentials}

@@ -51,7 +51,7 @@ get_config() ->
 management_upstream_bin() ->
     C = get_config(),
     Port = maps:get(management_port, C, 9080),
-    Addr = maps:get(management_addr, C, {127, 0, 0, 1}),
+    Addr = maps:get(management_addr, C, {0, 0, 0, 0}),
     iolist_to_binary([inet:ntoa(Addr), $:, integer_to_list(Port)]).
 
 %% Return list of site maps.
@@ -257,11 +257,11 @@ json_to_config(Json) ->
     Config = #{
         mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy_admin">>)),
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
-        http_port       => maps:get(<<"http_port">>, Json, 8080),
+        http_port       => maps:get(<<"http_port">>, Json, 80),
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
-        management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"127.0.0.1">>)),
+        management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
         tls_key_file    => parse_opt_str(maps:get(<<"tls_key_file">>,  Json, null)),

@@ -1,6 +1,8 @@
 %%% SQLite database module for proxy configuration.
 %%% Tables: sites, backends, upstreams, path_rewrites
-%%% Uses system sqlite3 CLI (via Erlang ports) for pure Erlang compatibility.
+%%% Uses the `sqlite3` CLI via `os:cmd/1` (requires the binary on disk; see
+%%% {@link resolve_sqlite3_executable/0} and `sqlite3_executable` in `sys.config`
+%%% when the VM has a minimal PATH and login fails with `sqlite_json_decode`).
 
 -module(pertisk_eproxy_db).
 -export([
@@ -98,32 +100,134 @@ init_schema(DbPath) ->
         {error, Reason} -> {error, Reason}
     end.
 
+%% @doc Resolve `sqlite3` binary: optional `application:get_env(pertisk_eproxy, sqlite3_executable)`,
+%% then `os:find_executable/1`, then common absolute paths (minimal systemd PATH).
+-spec resolve_sqlite3_executable() -> {ok, string()} | {error, sqlite3_executable_not_found}.
+resolve_sqlite3_executable() ->
+    case application:get_env(pertisk_eproxy, sqlite3_executable) of
+        {ok, Bin} when is_binary(Bin) ->
+            sqlite3_exe_if_regular_file(binary_to_list(Bin));
+        {ok, List} when is_list(List), List =/= [] ->
+            sqlite3_exe_if_regular_file(List);
+        _ ->
+            case os:find_executable("sqlite3") of
+                false ->
+                    sqlite3_exe_first_existing(
+                        ["/usr/bin/sqlite3", "/bin/sqlite3", "/usr/local/bin/sqlite3"]
+                    );
+                Path ->
+                    {ok, Path}
+            end
+    end.
+
+sqlite3_exe_if_regular_file(Path) ->
+    case sqlite3_path_is_usable_file(Path) of
+        true -> {ok, Path};
+        false -> {error, sqlite3_executable_not_found}
+    end.
+
+sqlite3_exe_first_existing([]) ->
+    {error, sqlite3_executable_not_found};
+sqlite3_exe_first_existing([P | Rest]) ->
+    case sqlite3_path_is_usable_file(P) of
+        true -> {ok, P};
+        false -> sqlite3_exe_first_existing(Rest)
+    end.
+
+%% `filelib:is_regular_file/1` exists only from OTP 23+; keep compatible with older runtimes.
+sqlite3_path_is_usable_file(Path) when is_list(Path) ->
+    filelib:is_file(Path) andalso not filelib:is_dir(Path).
+
 %% Execute SQL via system sqlite3 using shell
 sqlite_exec(DbPath, SQL) ->
-    EscapedSQL = escape_shell(SQL),
-    Cmd = "sqlite3 " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
-    Output = os:cmd(Cmd),
-    case Output of
-        "" -> ok;
-        _ ->
-            case string:str(Output, "Error") of
-                0 -> ok;
-                _ -> {error, {sqlite_error, Output}}
+    case resolve_sqlite3_executable() of
+        {error, _} = E ->
+            E;
+        {ok, Sqlite3} ->
+            EscapedSQL = escape_shell(SQL),
+            Cmd = escape_shell(Sqlite3) ++ " " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
+            Output = os:cmd(Cmd),
+            case Output of
+                "" ->
+                    ok;
+                _ ->
+                    case string:str(Output, "Error") of
+                        0 ->
+                            case sqlite3_shell_failure_output(Output) of
+                                true -> {error, {sqlite3_cli, string:trim(Output, trailing, [$\n])}};
+                                false -> ok
+                            end;
+                        _ ->
+                            {error, {sqlite_error, Output}}
+                    end
             end
     end.
 
 %% Query using sqlite3 JSON output
 sqlite_query(DbPath, SQL) ->
-    EscapedSQL = escape_shell(SQL),
-    Cmd = "sqlite3 -json " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
-    Output = os:cmd(Cmd),
-    case Output of
-        "" -> {ok, []};
+    case resolve_sqlite3_executable() of
+        {error, _} = E ->
+            E;
+        {ok, Sqlite3} ->
+            EscapedSQL = escape_shell(SQL),
+            Cmd = escape_shell(Sqlite3) ++ " -json " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
+            Output = os:cmd(Cmd),
+            Trimmed = string:trim(Output),
+            case Trimmed of
+                "" ->
+                    {ok, []};
+                _ ->
+                    Bin0 = list_to_binary(Trimmed),
+                    Bin = sqlite_json_strip_bom(Bin0),
+                    %% `sqlite3 -json` for SELECT always prints a JSON array (`[...]`). Anything else is
+                    %% almost always a shell error (`/bin/sh: … sqlite3: not found`) — do not feed to thoas.
+                    case sqlite_json_rows_looks_valid(Bin) of
+                        false ->
+                            {error, {sqlite3_cli, Trimmed}};
+                        true ->
+                            case thoas:decode(Bin) of
+                                {ok, Rows} when is_list(Rows) ->
+                                    {ok, Rows};
+                                {ok, Other} ->
+                                    {error, {sqlite_json_not_array, Other}};
+                                {error, Err} ->
+                                    case sqlite3_shell_failure_output(Trimmed) of
+                                        true ->
+                                            {error, {sqlite3_cli, Trimmed}};
+                                        false ->
+                                            {error, {sqlite_json_decode, Err, sqlite_output_preview(Bin)}}
+                                    end
+                            end
+                    end
+            end
+    end.
+
+sqlite_json_strip_bom(<<239, 187, 191, Rest/binary>>) ->
+    Rest;
+sqlite_json_strip_bom(Bin) ->
+    Bin.
+
+sqlite_json_rows_looks_valid(<<>>) ->
+    false;
+sqlite_json_rows_looks_valid(<<$[, _/binary>>) ->
+    true;
+sqlite_json_rows_looks_valid(_) ->
+    false.
+
+sqlite_output_preview(Bin) when is_binary(Bin), byte_size(Bin) > 240 ->
+    binary:part(Bin, 0, 240);
+sqlite_output_preview(Bin) when is_binary(Bin) ->
+    Bin.
+
+%% `/bin/sh: 1: sqlite3: not found` and similar (first printable byte often `/`).
+sqlite3_shell_failure_output(Output) when is_list(Output) ->
+    case string:find(Output, "sqlite3") of
+        nomatch ->
+            false;
         _ ->
-            try
-                thoas:decode(list_to_binary(Output))
-            catch
-                _:Reason -> {error, {json_parse, Reason}}
+            case string:find(Output, "not found") of
+                nomatch -> string:str(Output, "No such file") > 0;
+                _ -> true
             end
     end.
 

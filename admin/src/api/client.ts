@@ -1,6 +1,8 @@
 import { clearToken, clearUsername, getToken } from '@/auth';
 import { SUPPORTED_DNS_PROVIDERS } from '@/data/supportedDnsProviders';
 
+export type { SupportedDnsProvider, SupportedDnsProviderField } from '@/data/supportedDnsProviders';
+
 const API = '/api';
 
 // ---------------------------------------------------------------------------
@@ -167,19 +169,6 @@ export interface DnsProviderRow {
   provider_type: DnsProviderType;
   credentials?: Record<string, string> | null;
   created_at: string;
-}
-
-export interface SupportedDnsProviderField {
-  key: string;
-  label: string;
-  type: string;
-  required: boolean;
-}
-
-export interface SupportedDnsProvider {
-  id: string;
-  name: string;
-  fields: SupportedDnsProviderField[];
 }
 
 function dnsProviderRowsFromConfig(c: ProxyConfig): DnsProviderRow[] {
@@ -706,7 +695,7 @@ export const api = {
 
   dnsProviders: {
     list: async () => ensureDnsProviderRows(await get<unknown>('/dns-providers')),
-    supported: async () => SUPPORTED_DNS_PROVIDERS as SupportedDnsProvider[],
+    supported: async () => SUPPORTED_DNS_PROVIDERS,
     create: async (name: string, provider_type: DnsProviderType, credentials?: Record<string, string> | null) => {
       const n = name.trim();
       if (!n) throw new Error('Name is required');

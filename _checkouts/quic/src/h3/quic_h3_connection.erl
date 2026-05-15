@@ -560,6 +560,13 @@ awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State
     {next_state, closing, State};
 awaiting_quic(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
     {next_state, closing, State};
+%% Defer outbound H3 until QUIC + SETTINGS handshake reaches `connected` (avoids gen_statem:call hang).
+awaiting_quic({call, _From}, {send_response, _, _, _}, State) ->
+    {keep_state, State, [postpone]};
+awaiting_quic({call, _From}, {send_data, _, _, _}, State) ->
+    {keep_state, State, [postpone]};
+awaiting_quic({call, _From}, {send_trailers, _, _}, State) ->
+    {keep_state, State, [postpone]};
 awaiting_quic(_EventType, _Event, _State) ->
     keep_state_and_data.
 
@@ -634,6 +641,14 @@ h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State
     {next_state, closing, State};
 h3_connecting(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
     {next_state, closing, State};
+%% Request handlers run in spawned processes and may finish before SETTINGS complete; postpone
+%% send_response/send_data until `connected` so gen_statem always replies to the call.
+h3_connecting({call, _From}, {send_response, _, _, _}, State) ->
+    {keep_state, State, [postpone]};
+h3_connecting({call, _From}, {send_data, _, _, _}, State) ->
+    {keep_state, State, [postpone]};
+h3_connecting({call, _From}, {send_trailers, _, _}, State) ->
+    {keep_state, State, [postpone]};
 h3_connecting(_EventType, _Event, _State) ->
     keep_state_and_data.
 
@@ -900,6 +915,20 @@ goaway_sent({call, From}, {send_data, StreamId, Data, Fin}, State) ->
         {error, Reason} ->
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
     end;
+goaway_sent({call, From}, {send_response, StreamId, Status, Headers}, State) ->
+    case do_send_response(StreamId, Status, Headers, State) of
+        {ok, State1} ->
+            {keep_state, State1, [{reply, From, ok}]};
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end;
+goaway_sent({call, From}, {send_trailers, StreamId, Trailers}, State) ->
+    case do_send_trailers(StreamId, Trailers, State) of
+        {ok, State1} ->
+            {keep_state, State1, [{reply, From, ok}]};
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end;
 goaway_sent(cast, close, State) ->
     {next_state, closing, State};
 goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
@@ -942,6 +971,20 @@ goaway_received({call, From}, {request, _Headers, _Opts}, _State) ->
     {keep_state_and_data, [{reply, From, {error, goaway_received}}]};
 goaway_received({call, From}, {send_data, StreamId, Data, Fin}, State) ->
     case do_send_data(StreamId, Data, Fin, State) of
+        {ok, State1} ->
+            {keep_state, State1, [{reply, From, ok}]};
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end;
+goaway_received({call, From}, {send_response, StreamId, Status, Headers}, State) ->
+    case do_send_response(StreamId, Status, Headers, State) of
+        {ok, State1} ->
+            {keep_state, State1, [{reply, From, ok}]};
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end;
+goaway_received({call, From}, {send_trailers, StreamId, Trailers}, State) ->
+    case do_send_trailers(StreamId, Trailers, State) of
         {ok, State1} ->
             {keep_state, State1, [{reply, From, ok}]};
         {error, Reason} ->

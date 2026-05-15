@@ -1,6 +1,6 @@
 %% @doc Admin REST API handler for pertisk_eproxy.
 %%
-%% Endpoints (served on the management listener, default 127.0.0.1:9080):
+%% Endpoints (served on the management listener, default 0.0.0.0:9080):
 %%
 %%   GET  /api/config              — Return full proxy config as JSON
 %%   PUT  /api/config              — Replace proxy config (hot-reload)
@@ -653,7 +653,7 @@ dns_cred_to_json(_) -> #{}.
 config_to_json(Config) ->
     Base = #{
         mode            => atom_to_binary(maps:get(mode, Config, proxy_admin), utf8),
-        http_port       => maps:get(http_port, Config, 8080),
+        http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
         certificates    => [json_text(V) || V <- maps:get(certificates, Config, [])],
         dns_providers   => [dns_provider_entry_to_json(P) || P <- maps:get(dns_providers, Config, [])],

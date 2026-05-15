@@ -51,7 +51,7 @@ start_listeners() ->
     AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
-    HttpPort   = maps:get(http_port, Config, 8080),
+    HttpPort   = maps:get(http_port, Config, 80),
     {ok, _}    = cowboy:start_clear(http4,
         #{
             num_acceptors => 100,
@@ -74,41 +74,45 @@ start_listeners() ->
     ),
     lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
-    %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS
-    case maps:find(https_port, Config) of
-        {ok, HttpsPort} ->
-            TlsOpts = tls_opts(Config),
-            TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
-            TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
-            {ok, _} = cowboy:start_tls(https4,
-                #{
-                    num_acceptors => 100,
-                    socket_opts => TlsSocketOpts4
-                },
-                #{
-                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                    logger => pertisk_eproxy_cowboy_logger
-                }
-            ),
-            {ok, _} = cowboy:start_tls(https6,
-                #{
-                    num_acceptors => 100,
-                    socket_opts => TlsSocketOpts6
-                },
-                #{
-                    env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-                    logger => pertisk_eproxy_cowboy_logger
-                }
-            ),
-            lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
+    %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS.
+    %% If `https_port` is omitted but listener PEMs exist (defaults match the H3 gateway), TCP TLS uses 443.
+    %% Set https_port to a positive integer to choose a port; use https_port <= 0 in config to disable TCP HTTPS.
+    TlsOpts = tls_opts(Config),
+    HttpsPortRes = case maps:find(https_port, Config) of
+        {ok, P} when is_integer(P), P > 0 ->
+            {explicit, P};
+        {ok, P} when is_integer(P), P =< 0 ->
+            none;
+        {ok, _} ->
+            none;
+        error when TlsOpts =/= [] ->
+            {inferred, 443};
         error ->
-            ok
+            none
+    end,
+    case HttpsPortRes of
+        none ->
+            ok;
+        {Kind, HttpsPort} when Kind =:= explicit; Kind =:= inferred ->
+            case TlsOpts of
+                [] ->
+                    lager:warning(
+                        "HTTPS not started on port ~w: no tls_cert_file/tls_key_file and no readable "
+                        "priv/tls/listener.pem + priv/tls/listener.key (set paths in config or install PEMs)",
+                        [HttpsPort]
+                    ),
+                    ok;
+                _ when Kind =:= inferred ->
+                    start_https_proxy_listeners(HttpsPort, TlsOpts, Routes);
+                _ ->
+                    start_https_proxy_listeners(HttpsPort, TlsOpts, Routes)
+            end
     end,
 
     maybe_start_quic(Config, Routes),
 
-    %% Management / Admin listener (local only by default)
-    MgmtAddr = maps:get(management_addr, Config, {127,0,0,1}),
+    %% Management / Admin listener (default all IPv4 interfaces; set management_addr in proxy.json to restrict)
+    MgmtAddr = maps:get(management_addr, Config, {0,0,0,0}),
     MgmtPort = maps:get(management_port, Config, 9080),
     {ok, _}  = cowboy:start_clear(management,
         #{
@@ -121,6 +125,32 @@ start_listeners() ->
         }
     ),
     lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
+    TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
+    TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
+    {ok, _} = cowboy:start_tls(https4,
+        #{
+            num_acceptors => 100,
+            socket_opts => TlsSocketOpts4
+        },
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
+    ),
+    {ok, _} = cowboy:start_tls(https6,
+        #{
+            num_acceptors => 100,
+            socket_opts => TlsSocketOpts6
+        },
+        #{
+            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+            logger => pertisk_eproxy_cowboy_logger
+        }
+    ),
+    lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]),
     ok.
 
 maybe_start_quic(Config, Routes) ->
@@ -299,12 +329,10 @@ build_admin_api_routes() ->
     ].
 
 tls_opts(Config) ->
-    CertFile = maps:get(tls_cert_file, Config, undefined),
-    KeyFile  = maps:get(tls_key_file,  Config, undefined),
-    case {CertFile, KeyFile} of
-        {undefined, _} -> [];
-        {_, undefined} -> [];
-        _ ->
+    case tls_cert_key_paths(Config) of
+        {undefined, undefined} ->
+            [];
+        {CertFile, KeyFile} ->
             Base = [{certfile, CertFile}, {keyfile, KeyFile},
              {versions, ['tlsv1.2', 'tlsv1.3']},
              {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}],
@@ -314,6 +342,36 @@ tls_opts(Config) ->
                 _ -> Base ++ [{sni_hosts, SniHosts}]
             end
     end.
+
+%% @doc Listener cert paths: explicit `tls_cert_file` / `tls_key_file`, else default PEMs
+%% (same files as {@link pertisk_eproxy_h3_api_gateway}) when both exist on disk.
+-spec tls_cert_key_paths(map()) -> {undefined | string(), undefined | string()}.
+tls_cert_key_paths(Config) ->
+    Cert0 = maps:get(tls_cert_file, Config, undefined),
+    Key0 = maps:get(tls_key_file, Config, undefined),
+    Cert = normalize_tls_path(Cert0),
+    Key = normalize_tls_path(Key0),
+    case {Cert, Key} of
+        {undefined, undefined} ->
+            DefC = "priv/tls/listener.pem",
+            DefK = "priv/tls/listener.key",
+            case {filelib:is_file(DefC), filelib:is_file(DefK)} of
+                {true, true} -> {DefC, DefK};
+                _ -> {undefined, undefined}
+            end;
+        {undefined, _} ->
+            {undefined, undefined};
+        {_, undefined} ->
+            {undefined, undefined};
+        {C, K} ->
+            {C, K}
+    end.
+
+normalize_tls_path(undefined) -> undefined;
+normalize_tls_path(null) -> undefined;
+normalize_tls_path(V) when is_binary(V) -> binary_to_list(V);
+normalize_tls_path(V) when is_list(V) -> V;
+normalize_tls_path(_) -> undefined.
 
 build_sni_hosts(Config) ->
     Sites = maps:get(sites, Config, []),

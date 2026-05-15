@@ -25,7 +25,14 @@ start(Config) ->
         P when is_integer(P), P > 0 -> P;
         _ -> maps:get(https_port, Config, 443)
     end,
-    {CertDer, KeyTerm} = load_cert_and_key(Config),
+    case load_cert_and_key(Config) of
+        {ok, {CertDer, KeyTerm}} ->
+            do_start_gateway(Port, CertDer, KeyTerm);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+do_start_gateway(Port, CertDer, KeyTerm) ->
     BaseOpts = #{
         cert => CertDer,
         key => KeyTerm,
@@ -51,7 +58,14 @@ start_probe(Config) ->
         _ -> maps:get(https_port, Config, 443)
     end,
     ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
-    {CertDer, KeyTerm} = load_cert_and_key(Config),
+    case load_cert_and_key(Config) of
+        {ok, {CertDer, KeyTerm}} ->
+            do_start_probe(ProbePort, CertDer, KeyTerm);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+do_start_probe(ProbePort, CertDer, KeyTerm) ->
     ProbeOpts = #{
         cert => CertDer,
         key => KeyTerm,
@@ -488,8 +502,25 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
 load_cert_and_key(Config) ->
     CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
     KeyPath = maps:get(tls_key_file, Config, "priv/tls/listener.key"),
-    {ok, CertPem} = file:read_file(CertPath),
-    {ok, KeyPem} = file:read_file(KeyPath),
-    [CertEntry | _] = public_key:pem_decode(CertPem),
-    [KeyEntry | _] = public_key:pem_decode(KeyPem),
-    {element(2, CertEntry), public_key:pem_entry_decode(KeyEntry)}.
+    case {file:read_file(CertPath), file:read_file(KeyPath)} of
+        {{ok, CertPem}, {ok, KeyPem}} ->
+            decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath);
+        {{error, enoent}, _} ->
+            {error, {missing_tls_file, cert, CertPath}};
+        {_, {error, enoent}} ->
+            {error, {missing_tls_file, key, KeyPath}};
+        {{error, CErr}, _} ->
+            {error, {read_cert_failed, CertPath, CErr}};
+        {_, {error, KErr}} ->
+            {error, {read_key_failed, KeyPath, KErr}}
+    end.
+
+decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
+    try
+        [CertEntry | _] = public_key:pem_decode(CertPem),
+        [KeyEntry | _] = public_key:pem_decode(KeyPem),
+        {ok, {element(2, CertEntry), public_key:pem_entry_decode(KeyEntry)}}
+    catch
+        _:_ ->
+            {error, {invalid_listener_pem, CertPath, KeyPath}}
+    end.
