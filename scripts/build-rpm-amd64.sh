@@ -7,7 +7,7 @@ VERSION="${2:-0.1.0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL_SRC="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
 OUT_DIR="$ROOT_DIR/release"
-WORK_DIR="$ROOT_DIR/_build/package-deb-amd64"
+WORK_DIR="$ROOT_DIR/_build/package-rpm-amd64"
 PKG_ROOT="$WORK_DIR/pkg"
 
 copy_tree() {
@@ -24,7 +24,7 @@ if [ ! -d "$REL_SRC" ]; then
 fi
 
 rm -rf "$WORK_DIR"
-mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/lib/systemd/system" "$OUT_DIR"
+mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"
 
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
@@ -32,7 +32,7 @@ copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
 copy_tree "$ROOT_DIR/data" "$PKG_ROOT/opt/$PKG_NAME/data"
 copy_tree "$ROOT_DIR/log" "$PKG_ROOT/opt/$PKG_NAME/log"
 
-cat > "$PKG_ROOT/lib/systemd/system/$PKG_NAME.service" <<EOF
+cat > "$PKG_ROOT/usr/lib/systemd/system/$PKG_NAME.service" <<EOF
 [Unit]
 Description=Pertisk eProxy
 After=network.target
@@ -102,19 +102,22 @@ EOF
 chmod +x "$WORK_DIR/preremove.sh"
 
 FPM_ARGS=(
-  -s dir -t deb --force
+  -s dir -t rpm --force
   -n "$PKG_NAME"
   -v "$VERSION"
-  -a amd64
+  -a x86_64
   --description "Pertisk Erlang reverse proxy"
   --maintainer "Pertisk Team"
   --license "MIT"
   --vendor "Pertisk"
   --category "net"
+  --rpm-os linux
   --before-install "$WORK_DIR/preinstall.sh"
   --after-install "$WORK_DIR/postinstall.sh"
   --before-remove "$WORK_DIR/preremove.sh"
-  --deb-systemd-enable
+  --config-files "/opt/$PKG_NAME/config/proxy.json"
+  --config-files "/opt/$PKG_NAME/config/sys.config"
+  --config-files "/opt/$PKG_NAME/config/vm.args"
   -p "$OUT_DIR"
   -C "$PKG_ROOT" .
 )
@@ -122,11 +125,11 @@ FPM_ARGS=(
 if command -v fpm >/dev/null 2>&1; then
   fpm "${FPM_ARGS[@]}"
 elif command -v docker >/dev/null 2>&1; then
-  echo "fpm not found locally; using Docker fallback to build .deb..."
-  PKG_ROOT_REL="_build/package-deb-amd64/pkg"
-  PRE_REL="_build/package-deb-amd64/preinstall.sh"
-  POST_REL="_build/package-deb-amd64/postinstall.sh"
-  PREREM_REL="_build/package-deb-amd64/preremove.sh"
+  echo "fpm not found locally; using Docker fallback to build .rpm..."
+  PKG_ROOT_REL="_build/package-rpm-amd64/pkg"
+  PRE_REL="_build/package-rpm-amd64/preinstall.sh"
+  POST_REL="_build/package-rpm-amd64/postinstall.sh"
+  PREREM_REL="_build/package-rpm-amd64/preremove.sh"
   OUT_REL="release"
   docker run --rm \
     -v "$ROOT_DIR:/work" \
@@ -135,23 +138,26 @@ elif command -v docker >/dev/null 2>&1; then
     bash -lc '
       set -euo pipefail
       apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y ruby ruby-dev build-essential
+      DEBIAN_FRONTEND=noninteractive apt-get install -y rpm ruby ruby-dev build-essential
       gem install --no-document fpm
       fpm "$@"
     ' -- \
-      -s dir -t deb --force \
+      -s dir -t rpm --force \
       -n "$PKG_NAME" \
       -v "$VERSION" \
-      -a amd64 \
+      -a x86_64 \
       --description "Pertisk Erlang reverse proxy" \
       --maintainer "Pertisk Team" \
       --license "MIT" \
       --vendor "Pertisk" \
       --category "net" \
+      --rpm-os linux \
       --before-install "$PRE_REL" \
       --after-install "$POST_REL" \
       --before-remove "$PREREM_REL" \
-      --deb-systemd-enable \
+      --config-files "/opt/$PKG_NAME/config/proxy.json" \
+      --config-files "/opt/$PKG_NAME/config/sys.config" \
+      --config-files "/opt/$PKG_NAME/config/vm.args" \
       -p "$OUT_REL" \
       -C "$PKG_ROOT_REL" .
 else
@@ -159,4 +165,4 @@ else
   exit 1
 fi
 
-echo "DEB created in $OUT_DIR"
+echo "RPM created in $OUT_DIR"
