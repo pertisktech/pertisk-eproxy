@@ -1,10 +1,10 @@
 import { clearToken, clearUsername, getToken } from '@/auth';
-import { SUPPORTED_DNS_PROVIDERS } from '../data/supportedDnsProviders';
+import { SUPPORTED_DNS_PROVIDERS } from './supportedDnsProviders';
 
 export type {
   SupportedDnsProviderDef as SupportedDnsProvider,
   SupportedDnsFieldDef as SupportedDnsProviderField,
-} from '../data/supportedDnsProviders';
+} from './supportedDnsProviders';
 
 const API = '/api';
 
