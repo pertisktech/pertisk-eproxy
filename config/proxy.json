@@ -1,1 +1,5 @@
-{}
+{
+    "h3_api_gateway_enabled": true,
+    "h3_probe_enabled": true,
+    "quic_enabled": true
+}

@@ -10,6 +10,8 @@
 
 -define(SERVER, pertisk_eproxy_h3_api).
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
+-define(SERVER_V4, pertisk_eproxy_h3_api_v4).
+-define(PROBE_SERVER_V4, pertisk_eproxy_h3_probe_v4).
 %% Max wait per read_request_body (H3 client request DATA). Was a flat 15s and matched ~15003ms access-log timings for small API POSTs (e.g. /api/auth/refresh).
 -define(H3_BODY_TIMEOUT_UNKNOWN_CL_MS, 3500).
 -define(H3_BODY_TIMEOUT_SMALL_POST_MS, 4000).
@@ -26,28 +28,40 @@ start(Config) ->
         _ -> maps:get(https_port, Config, 443)
     end,
     case load_cert_and_key(Config) of
-        {ok, {CertDer, KeyTerm}} ->
-            do_start_gateway(Port, CertDer, KeyTerm);
+        {ok, {CertDer, KeyTerm, CertChain}} ->
+            do_start_gateway(Port, CertDer, KeyTerm, CertChain);
         {error, Reason} ->
             {error, Reason}
     end.
 
-do_start_gateway(Port, CertDer, KeyTerm) ->
-    BaseOpts = #{
-        cert => CertDer,
-        key => KeyTerm,
-        settings => #{
-            %% Force static QPACK to avoid dynamic table/base calculation
-            %% interoperability failures seen from external clients.
-            qpack_max_table_capacity => 0,
-            qpack_blocked_streams => 0
-        },
-        handler => ?MODULE
-    },
+do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
+    case CertChain of
+        [] ->
+            lager:warning(
+                "HTTP/3 listener: PEM has leaf only (no intermediate certs); "
+                "Chrome may reject QUIC while Firefox/curl still work — append chain to listener.pem"
+            );
+        _ ->
+            lager:info("HTTP/3 listener: TLS chain ~p cert(s) (leaf + ~p intermediate(s))",
+                       [1 + length(CertChain), length(CertChain)])
+    end,
+    BaseOpts = maps:merge(
+        tls_server_opts(CertDer, KeyTerm, CertChain),
+        #{
+            settings => #{
+                %% Force static QPACK to avoid dynamic table/base calculation
+                %% interoperability failures seen from external clients.
+                qpack_max_table_capacity => 0,
+                qpack_blocked_streams => 0
+            },
+            handler => ?MODULE
+        }
+    ),
     start_prefer_ipv6_server(Port, BaseOpts).
 
 stop() ->
     catch quic_h3:stop_server(?SERVER),
+    catch quic_h3:stop_server(?SERVER_V4),
     ok.
 
 start_probe(Config) ->
@@ -59,22 +73,22 @@ start_probe(Config) ->
     end,
     ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
     case load_cert_and_key(Config) of
-        {ok, {CertDer, KeyTerm}} ->
-            do_start_probe(ProbePort, CertDer, KeyTerm);
+        {ok, {CertDer, KeyTerm, CertChain}} ->
+            do_start_probe(ProbePort, CertDer, KeyTerm, CertChain);
         {error, Reason} ->
             {error, Reason}
     end.
 
-do_start_probe(ProbePort, CertDer, KeyTerm) ->
-    ProbeOpts = #{
-        cert => CertDer,
-        key => KeyTerm,
-        handler => pertisk_eproxy_h3_probe_handler
-    },
+do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
+    ProbeOpts = maps:merge(
+        tls_server_opts(CertDer, KeyTerm, CertChain),
+        #{handler => pertisk_eproxy_h3_probe_handler}
+    ),
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
 
 stop_probe() ->
     catch quic_h3:stop_server(?PROBE_SERVER),
+    catch quic_h3:stop_server(?PROBE_SERVER_V4),
     ok.
 
 handle_request(H3Conn, StreamId, Method, Path, Headers) ->
@@ -121,7 +135,8 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
-                                ok = quic_h3:send_response(H3Conn, StreamId, Status, RespHeaders),
+                                H3Headers = maybe_add_h3_alt_svc(LogHost, RespHeaders),
+                                ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Headers),
                                 _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
                                 log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
                                 ok;
@@ -351,16 +366,28 @@ read_request_body(Conn, StreamId, Method0, Headers, PathOnly) ->
     case Method of
         <<"GET">> -> <<>>;
         <<"HEAD">> -> <<>>;
-        _ -> read_request_body_post(Conn, StreamId, Headers, PathOnly)
+        _ ->
+            case h3_skip_request_body(PathOnly) of
+                true -> <<>>;
+                false -> read_request_body_post(Conn, StreamId, Headers, PathOnly)
+            end
     end.
 
+%% Bearer-only auth routes ignore the POST body; waiting for QUIC DATA+FIN (Chrome is slow here)
+%% caused ~3s access-log timings and pushed Chrome off HTTP/3 to HTTP/2.
+h3_skip_request_body(<<"/api/auth/refresh">>) -> true;
+h3_skip_request_body(<<"/api/auth/logout">>) -> true;
+h3_skip_request_body(_) -> false.
+
 read_request_body_post(Conn, StreamId, Headers, PathOnly) ->
+    Cl = header_content_length_bytes(Headers),
     TimeoutMs = h3_body_collect_timeout_ms(Headers, PathOnly),
     case quic_h3:set_stream_handler(Conn, StreamId, self()) of
         {ok, Buffered} ->
-            collect_body(Conn, StreamId, chunks_to_binary(Buffered), TimeoutMs);
+            Acc0 = chunks_to_binary(Buffered),
+            collect_body(Conn, StreamId, Acc0, TimeoutMs, Cl);
         ok ->
-            collect_body(Conn, StreamId, <<>>, TimeoutMs);
+            collect_body(Conn, StreamId, <<>>, TimeoutMs, Cl);
         _ ->
             <<>>
     end.
@@ -422,20 +449,33 @@ header_content_length_bytes(Headers) ->
             undefined
     end.
 
-collect_body(_Conn, _StreamId, Acc, TimeoutMs) when TimeoutMs =< 0 ->
+collect_body(_Conn, _StreamId, Acc, _TimeoutMs, {ok, Cl}) when byte_size(Acc) >= Cl ->
     Acc;
-collect_body(Conn, StreamId, Acc, TimeoutMs) ->
+collect_body(_Conn, _StreamId, Acc, TimeoutMs, _Cl) when TimeoutMs =< 0 ->
+    Acc;
+collect_body(Conn, StreamId, Acc, TimeoutMs, Cl) ->
     T0 = erlang:monotonic_time(millisecond),
     receive
         {quic_h3, Conn, {data, StreamId, Data, true}} ->
-            <<Acc/binary, Data/binary>>;
+            Acc1 = <<Acc/binary, Data/binary>>,
+            body_acc_complete(Acc1, Cl);
         {quic_h3, Conn, {data, StreamId, Data, false}} ->
-            Elapsed = erlang:monotonic_time(millisecond) - T0,
-            Remaining = TimeoutMs - Elapsed,
-            collect_body(Conn, StreamId, <<Acc/binary, Data/binary>>, Remaining)
+            Acc1 = <<Acc/binary, Data/binary>>,
+            case body_acc_complete(Acc1, Cl) of
+                complete -> Acc1;
+                incomplete ->
+                    Elapsed = erlang:monotonic_time(millisecond) - T0,
+                    Remaining = TimeoutMs - Elapsed,
+                    collect_body(Conn, StreamId, Acc1, Remaining, Cl)
+            end
     after TimeoutMs ->
         Acc
     end.
+
+body_acc_complete(Acc, {ok, Cl}) when byte_size(Acc) >= Cl ->
+    complete;
+body_acc_complete(_Acc, _Cl) ->
+    incomplete.
 
 ensure_gun_started() ->
     case application:ensure_all_started(gun) of
@@ -454,8 +494,8 @@ ensure_quic_started() ->
 management_listener_bind_stack() ->
     case os:type() of
         {unix, linux} ->
-            %% UDP/IPv6 :: with IPV6_V6ONLY=0 → accept IPv4 and IPv6 clients.
-            {<<"::">>, <<"dual_stack">>};
+            %% [::]:443 (v6only) + 0.0.0.0:443 (reuseport), same as TCP https4/https6.
+            {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
         {unix, _} ->
             {<<"0.0.0.0">>, <<"ipv4">>};
         win32 ->
@@ -468,36 +508,105 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
-    %% On Linux: bind UDP over IPv6 (::) with IPV6_V6ONLY=0 so IPv4 clients work.
-    %% On macOS/BSD/Windows: quic_socket falls back to gen_udp, whose option list
-    %% always includes `inet` then appends extra_socket_opts; adding `inet6`
-    %% yields inet+inet6 together and gen_udp:open returns einval.
-    {ServerOpts, LogLabel} =
-        case os:type() of
-            {unix, linux} ->
-                V6Opts = BaseOpts#{
-                    quic_opts => maps:merge(
-                        maps:get(quic_opts, BaseOpts, #{}),
-                        #{
-                            socket_backend => socket,
-                            backend => socket,
-                            reuseport => false,
-                            pool_size => 0,
-                            extra_socket_opts => [inet6, {ipv6_v6only, false}]
+    %% On Linux: two UDP listeners on the same port (SO_REUSEPORT):
+    %%   [::]:443  with IPV6_V6ONLY=1  → native IPv6 only
+    %%   0.0.0.0:443 (inet)          → IPv4 only
+    %% Do NOT combine V6ONLY=0 with a separate IPv4 bind — the kernel can deliver
+    %% the same IPv4 datagrams to both sockets and corrupt QUIC (unstable curl -4).
+    %% On macOS/BSD/Windows: quic_socket falls back to gen_udp; adding `inet6`
+    %% to extra_socket_opts can yield einval, so keep a single listener there.
+    case os:type() of
+        {unix, linux} ->
+            V4Name = v4_server_name(ServerName),
+
+            QuicBase = maps:get(quic_opts, BaseOpts, #{}),
+            %% IPv4 first: gen_udp + inet is the well-tested erlang_quic listener path.
+            V4Opts = BaseOpts#{
+                quic_opts =>
+                    maps:merge(QuicBase, #{
+                        socket_backend => gen_udp,
+                        reuseport => true,
+                        pool_size => 0,
+                        extra_socket_opts => []
+                    })
+            },
+            %% Native IPv6 only (::, V6ONLY=1). Do not use V6ONLY=0 when v4 is also bound.
+            V6Opts = BaseOpts#{
+                quic_opts =>
+                    maps:merge(QuicBase, #{
+                        socket_backend => socket,
+                        backend => socket,
+                        reuseport => true,
+                        pool_size => 0,
+                        extra_socket_opts => [inet6, {ipv6_v6only, true}]
+                    })
+            },
+
+            _ = lager:info(
+                "HTTP/3 starting QUIC listeners on udp/:~w (v4=~p gen_udp, v6=~p socket)",
+                [Port, V4Name, ServerName]
+            ),
+
+            %% Bind IPv4 (0.0.0.0) before IPv6 ([::]) — some kernels are picky about order.
+            V4Ok =
+                case quic_h3:start_server(V4Name, Port, V4Opts) of
+                    {ok, _} ->
+                        lager:info("HTTP/3 QUIC IPv4 listener ready on udp/0.0.0.0:~w", [Port]),
+                        true;
+                    {error, V4Reason} ->
+                        lager:error(
+                            "HTTP/3 QUIC IPv4 listener failed on udp/0.0.0.0:~w: ~p "
+                            "(falling back to dual-stack [::] only for IPv4+IPv6)",
+                            [Port, V4Reason]
+                        ),
+                        false
+                end,
+            V6OptsFinal =
+                case V4Ok of
+                    true ->
+                        V6Opts;
+                    false ->
+                        %% Single [::] socket with V6ONLY=0 when dedicated IPv4 bind failed.
+                        BaseOpts#{
+                            quic_opts =>
+                                maps:merge(QuicBase, #{
+                                    socket_backend => socket,
+                                    backend => socket,
+                                    reuseport => false,
+                                    pool_size => 0,
+                                    extra_socket_opts => [inet6, {ipv6_v6only, false}]
+                                })
                         }
-                    )
-                },
-                {V6Opts, "H3 QUIC quic_opts (linux dual-stack): ~p"};
-            _ ->
-                {BaseOpts, "H3 QUIC: default listener opts (non-linux, no inet6 extra_socket_opts)"}
-        end,
-    lager:debug(LogLabel, [maps:get(quic_opts, ServerOpts, #{})]),
-    case quic_h3:start_server(ServerName, Port, ServerOpts) of
-        {ok, _Pid} = Ok ->
-            Ok;
-        {error, V6Reason} ->
-            {error, {failed_quic_udp_listener, V6Reason}}
+                end,
+            case quic_h3:start_server(ServerName, Port, V6OptsFinal) of
+                {ok, Pid} ->
+                    case V4Ok of
+                        true ->
+                            lager:info("HTTP/3 QUIC IPv6 listener ready on udp/[::]:~w", [Port]);
+                        false ->
+                            lager:info(
+                                "HTTP/3 QUIC listener ready on udp/[::]:~w (dual-stack, no separate 0.0.0.0 bind)",
+                                [Port]
+                            )
+                    end,
+                    {ok, Pid};
+                {error, V6Reason} ->
+                    _ = catch quic_h3:stop_server(V4Name),
+                    {error, {failed_quic_udp_listener_v6, V6Reason}}
+            end;
+        _ ->
+            %% Non-linux: keep existing behaviour.
+            case quic_h3:start_server(ServerName, Port, BaseOpts) of
+                {ok, _} = Ok ->
+                    Ok;
+                {error, Reason} ->
+                    {error, {failed_quic_udp_listener, Reason}}
+            end
     end.
+
+v4_server_name(?SERVER) -> ?SERVER_V4;
+v4_server_name(?PROBE_SERVER) -> ?PROBE_SERVER_V4;
+v4_server_name(Other) -> Other.
 
 load_cert_and_key(Config) ->
     CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
@@ -517,10 +626,42 @@ load_cert_and_key(Config) ->
 
 decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
     try
-        [CertEntry | _] = public_key:pem_decode(CertPem),
-        [KeyEntry | _] = public_key:pem_decode(KeyPem),
-        {ok, {element(2, CertEntry), public_key:pem_entry_decode(KeyEntry)}}
+        CertDers = [
+            D
+         || {'Certificate', D, not_encrypted} <- public_key:pem_decode(CertPem)
+        ],
+        case CertDers of
+            [] ->
+                {error, {invalid_listener_pem, CertPath, KeyPath}};
+            [Leaf | Chain] ->
+                [KeyEntry | _] = public_key:pem_decode(KeyPem),
+                {ok, {Leaf, public_key:pem_entry_decode(KeyEntry), Chain}}
+        end
     catch
         _:_ ->
             {error, {invalid_listener_pem, CertPath, KeyPath}}
     end.
+
+%% Leaf in `cert`, intermediates in `cert_chain` (Chrome QUIC is strict; TCP certfile sends the full PEM).
+tls_server_opts(CertDer, KeyTerm, []) ->
+    #{cert => CertDer, key => KeyTerm};
+tls_server_opts(CertDer, KeyTerm, Chain) ->
+    #{cert => CertDer, key => KeyTerm, cert_chain => Chain}.
+
+%% Reinforce HTTP/3 on responses (Chrome caches Alt-Svc from the first successful H3 response).
+maybe_add_h3_alt_svc(Host, Headers) ->
+    case pertisk_eproxy_handler:site_advertise_http3(Host) of
+        true ->
+            H = headers_without(Headers, [<<"alt-svc">>]),
+            H ++ [{<<"alt-svc">>, <<"h3=\":443\"; ma=86400">>}];
+        false ->
+            Headers
+    end.
+
+headers_without(Headers, DropKeys) ->
+    DropLC = [string:lowercase(D) || D <- DropKeys],
+    [
+        {K, V}
+     || {K, V} <- Headers,
+        not lists:member(string:lowercase(K), DropLC)
+    ].

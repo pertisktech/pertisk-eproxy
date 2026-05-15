@@ -42,6 +42,7 @@ init(Req, Resource) ->
 
 auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
+auth_public(<<"HEAD">>, version) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
 auth_public(<<"HEAD">>, auth_config) -> true;
 auth_public(<<"GET">>, auth_check) -> true;
@@ -58,6 +59,9 @@ auth_public(_, _) -> false.
 
 handle(<<"GET">>, version, Req) ->
     json_reply(200, #{<<"version">> => pertisk_eproxy_admin_management_snapshot:app_version()}, Req);
+handle(<<"HEAD">>, version, Req) ->
+    %% Chrome probes public endpoints with HEAD over HTTP/3; must not require auth (GET is public).
+    json_reply(200, #{}, Req);
 
 handle(<<"GET">>, management, Req) ->
     json_reply(200, pertisk_eproxy_admin_management_snapshot:snapshot(), Req);
@@ -673,14 +677,22 @@ config_to_json(Config) ->
         Pq when is_integer(Pq) -> WithQuic#{<<"quic_port">> => Pq};
         _ -> WithQuic
     end,
+    WithH3Gw = WithQuicPort#{
+        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
+        <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true)
+    },
+    WithH3ProbePort = case maps:get(h3_probe_port, Config, undefined) of
+        Pp when is_integer(Pp) -> WithH3Gw#{<<"h3_probe_port">> => Pp};
+        _ -> WithH3Gw
+    end,
     case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
         {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->
-            WithQuicPort#{
+            WithH3ProbePort#{
                 <<"tls_cert_file">> => json_text(Cf),
                 <<"tls_key_file">> => json_text(Kf)
             };
         _ ->
-            WithQuicPort
+            WithH3ProbePort
     end.
 
 site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->

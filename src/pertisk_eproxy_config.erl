@@ -261,6 +261,17 @@ json_to_config(Json) ->
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        h3_api_gateway_enabled =>
+            case maps:get(<<"h3_api_gateway_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        h3_probe_enabled =>
+            case maps:get(<<"h3_probe_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        h3_probe_port => parse_opt_int(maps:get(<<"h3_probe_port">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),

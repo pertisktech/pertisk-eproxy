@@ -83,3 +83,111 @@ index 0c5cfe7..00a12ef 100644
      case socket:bind(Socket, Addr) of
          ok ->
              build_socket_state(Socket, BatchConfig);
+diff --git a/src/h3/quic_h3_connection.erl b/src/h3/quic_h3_connection.erl
+--- a/src/h3/quic_h3_connection.erl
++++ b/src/h3/quic_h3_connection.erl
+@@ -551,10 +551,21 @@
+ awaiting_quic({call, From}, get_quic_conn, #state{quic_conn = QuicConn}) ->
+ {keep_state_and_data, [{reply, From, QuicConn}]};
+ awaiting_quic(cast, close, State) ->
+ {next_state, closing, State};
+ awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
+ {next_state, closing, State};
+-awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
+-{stop, quic_closed, State};
+-awaiting_quic(_EventType, _Event, _State) ->
+-keep_state_and_data.
++awaiting_quic(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
++ %% QUIC transport exited (peer close, idle, etc.): use closing so owner
++ %% gets {quic_h3, _, closed} and gen_statem does not log quic_closed as error.
++ {next_state, closing, State};
++awaiting_quic(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
++ {next_state, closing, State};
++%% Defer outbound H3 until QUIC + SETTINGS handshake reaches `connected` (avoids gen_statem:call hang).
++awaiting_quic({call, _From}, {send_response, _, _, _}, State) ->
++ {keep_state, State, [postpone]};
++awaiting_quic({call, _From}, {send_data, _, _, _}, State) ->
++ {keep_state, State, [postpone]};
++awaiting_quic({call, _From}, {send_trailers, _, _}, State) ->
++ {keep_state, State, [postpone]};
++awaiting_quic(_EventType, _Event, _State) ->
++ keep_state_and_data.
+@@ -625,8 +636,18 @@
+ h3_connecting(cast, close, State) ->
+ {next_state, closing, State};
+ h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
+ {next_state, closing, State};
+-h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
+-{stop, quic_closed, State};
+-h3_connecting(_EventType, _Event, _State) ->
+-keep_state_and_data.
++h3_connecting(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
++ {next_state, closing, State};
++h3_connecting(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
++ {next_state, closing, State};
++%% Request handlers run in spawned processes and may finish before SETTINGS complete; postpone
++%% send_response/send_data until `connected` so gen_statem always replies to the call.
++h3_connecting({call, _From}, {send_response, _, _, _}, State) ->
++ {keep_state, State, [postpone]};
++h3_connecting({call, _From}, {send_data, _, _, _}, State) ->
++ {keep_state, State, [postpone]};
++h3_connecting({call, _From}, {send_trailers, _, _}, State) ->
++ {keep_state, State, [postpone]};
++h3_connecting(_EventType, _Event, _State) ->
++ keep_state_and_data.
+@@ -894,9 +915,25 @@
+ end;
++goaway_sent({call, From}, {send_response, StreamId, Status, Headers}, State) ->
++ case do_send_response(StreamId, Status, Headers, State) of
++ {ok, State1} ->
++ {keep_state, State1, [{reply, From, ok}]};
++ {error, Reason} ->
++ {keep_state_and_data, [{reply, From, {error, Reason}}]}
++ end;
++goaway_sent({call, From}, {send_trailers, StreamId, Trailers}, State) ->
++ case do_send_trailers(StreamId, Trailers, State) of
++ {ok, State1} ->
++ {keep_state, State1, [{reply, From, ok}]};
++ {error, Reason} ->
++ {keep_state_and_data, [{reply, From, {error, Reason}}]}
++ end;
+ goaway_sent(cast, close, State) ->
+ {next_state, closing, State};
+ goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
+ {next_state, closing, State};
+-goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
+-{stop, quic_closed, State};
++goaway_sent(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
++ {next_state, closing, State};
++goaway_sent(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
++ {next_state, closing, State};
+ goaway_sent(_EventType, _Event, _State) ->
+ keep_state_and_data.
+@@ -939,9 +976,25 @@
+ end;
++goaway_received({call, From}, {send_response, StreamId, Status, Headers}, State) ->
++ case do_send_response(StreamId, Status, Headers, State) of
++ {ok, State1} ->
++ {keep_state, State1, [{reply, From, ok}]};
++ {error, Reason} ->
++ {keep_state_and_data, [{reply, From, {error, Reason}}]}
++ end;
++goaway_received({call, From}, {send_trailers, StreamId, Trailers}, State) ->
++ case do_send_trailers(StreamId, Trailers, State) of
++ {ok, State1} ->
++ {keep_state, State1, [{reply, From, ok}]};
++ {error, Reason} ->
++ {keep_state_and_data, [{reply, From, {error, Reason}}]}
++ end;
+ goaway_received(cast, close, State) ->
+ {next_state, closing, State};
+ goaway_received(info, {'DOWN', Ref, process, _, _}, #state{owner_monitor = Ref} = State) ->
+ {next_state, closing, State};
+-goaway_received(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
+-{stop, quic_closed, State};
++goaway_received(info, {'DOWN', Ref, process, _, _}, #state{quic_ref = Ref} = State) ->
++ {next_state, closing, State};
++goaway_received(info, {quic, QuicConn, {closed, _Reason}}, #state{quic_conn = QuicConn} = State) ->
++ {next_state, closing, State};
+ goaway_received(_EventType, _Event, _State) ->
+ keep_state_and_data.

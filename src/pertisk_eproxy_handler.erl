@@ -15,7 +15,7 @@
 -module(pertisk_eproxy_handler).
 -behaviour(cowboy_handler).
 
--export([init/2, parse_upstream/1]).
+-export([init/2, parse_upstream/1, site_advertise_http3/1]).
 
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
