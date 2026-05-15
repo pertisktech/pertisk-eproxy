@@ -7,6 +7,8 @@
 %%        after normal HTTP/3 responses.
 %%      - Drop duplicate proc_lib crash_report for quic_listener init + einval when
 %%        supervisor start_error already summarizes the failure.
+%%      - Shorten OTP ssl TLS alert notices (ssl_alert / ssl_logger report maps) so
+%%        jsonlog does not dump huge #alert{} tuples and metadata.
 %%%-------------------------------------------------------------------
 
 -module(pertisk_eproxy_log_filter).
@@ -20,7 +22,8 @@ primary(Log, Extra) ->
             stop;
         Log0 ->
             Log1 = maybe_simplify_supervisor_logs(Log0),
-            drop_quic_closed(Log1, Extra)
+            Log2 = maybe_simplify_ssl_alert_logs(Log1),
+            drop_quic_closed(Log2, Extra)
     end.
 
 %% Duplicate detail: supervisor already logs start_error; crash_report is huge JSON.
@@ -74,6 +77,65 @@ maybe_simplify_supervisor_logs(
     Log#{msg => {string, supervisor_start_error_summary(Rep)}};
 maybe_simplify_supervisor_logs(Log) ->
     Log.
+
+%% ssl_logger passes a map (protocol, role, alerter, statename, alert) with report_cb;
+%% jsonlog ~p of #alert{} is noisy.
+-spec maybe_simplify_ssl_alert_logs(logger:log_event()) -> logger:log_event().
+maybe_simplify_ssl_alert_logs(
+    #{
+        meta := #{mfa := {ssl_alert, decode, _}},
+        msg := Msg
+    } = Log
+) ->
+    case ssl_alert_report_from_msg(Msg) of
+        {ok, Summary} ->
+            Log#{msg => {string, Summary}};
+        error ->
+            Log
+    end;
+maybe_simplify_ssl_alert_logs(Log) ->
+    Log.
+
+-spec ssl_alert_report_from_msg(term()) -> {ok, binary()} | error.
+ssl_alert_report_from_msg(
+    #{protocol := Prot, role := Role, alerter := Alt, statename := SN, alert := Alert}
+) ->
+    {ok, ssl_alert_summary(Prot, Role, Alt, SN, Alert)};
+ssl_alert_report_from_msg({report, #{protocol := _, alert := _, role := _, alerter := _} = R}) ->
+    ssl_alert_report_from_msg(R);
+ssl_alert_report_from_msg(_) ->
+    error.
+
+-spec ssl_alert_summary(term(), term(), term(), term(), term()) -> binary().
+ssl_alert_summary(Prot, Role, Alt, SN, Alert) ->
+    iolist_to_binary(
+        io_lib:format(
+            "ssl TLS alert: protocol=~ts role=~0p alerter=~0p state=~0p ~ts",
+            [ssl_alert_protocol_txt(Prot), Role, Alt, SN, ssl_alert_short(Alert)]
+        )
+    ).
+
+-spec ssl_alert_protocol_txt(term()) -> binary().
+ssl_alert_protocol_txt(P) when is_atom(P) ->
+    atom_to_binary(P, utf8);
+ssl_alert_protocol_txt(P) when is_binary(P) ->
+    P;
+ssl_alert_protocol_txt(P) when is_list(P) ->
+    try iolist_to_binary(P) of
+        B -> B
+    catch
+        _:_ -> <<"">>
+    end;
+ssl_alert_protocol_txt(_) ->
+    <<"">>.
+
+-spec ssl_alert_short(term()) -> binary().
+ssl_alert_short(A) when is_tuple(A), tuple_size(A) >= 3, element(1, A) =:= alert ->
+    Level = element(2, A),
+    Desc = element(3, A),
+    iolist_to_binary(io_lib:format("alert(level=~w,description=~w)", [Level, Desc]));
+ssl_alert_short(A) ->
+    iolist_to_binary(io_lib:format("alert(~120p)", [A])).
 
 -spec supervisor_start_error_summary(term()) -> binary().
 supervisor_start_error_summary(Rep) when is_map(Rep) ->

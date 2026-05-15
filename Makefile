@@ -6,7 +6,8 @@ all: build test
 
 build:
 	@echo "Building pertisk_eproxy..."
-	rebar3 compile
+	@rebar3 compile
+	@echo "(post-hook may patch erlang_quic HTTP/3 deferred invoke + recompile quic once)"
 
 run: build
 	@echo "Starting pertisk_eproxy development shell..."
@@ -23,6 +24,7 @@ run-web: tls-dev-cert admin-build build
 # lsof still shows UDP/443 but curl --http3-only will always time out (fix erlang_quic / certs).
 h3-poc-curl:
 	@echo "Tip: sudo lsof -nP -iUDP:443 shows sockets; only \"HTTP/3 QUIC is active\" means real QUIC."
+	@echo "Snap curl + ngtcp2 sometimes reports ERR_CLOSING even when the server is fine — try: make h3-poc-remote H3_HOST=your.host"
 	@echo "Apple curl often uses Secure Transport QUIC; if this hangs, run: make h3-poc-erlang-client"
 	@curl -sv --http3-only --connect-timeout 8 \
 		--resolve "admin.arm.thaidevops.co:443:127.0.0.1" \
@@ -33,9 +35,11 @@ h3-poc-erlang-client: build
 	@if [ "$$(id -u)" -eq 0 ]; then echo "h3-poc-erlang-client: warning: running as root; _build may become root-owned. Prefer a normal user when possible."; fi
 	@escript $(CURDIR)/scripts/h3_local_client.escript
 
-# Full HTTP/3 GET against a live host (UDP 443 must work). Example: make h3-poc-remote H3_HOST=admin.arm.thaidevops.co H3_PATH=/api/health
+# Full HTTP/3 GET against a live host (UDP 443 must work). Same quic_h3 stack as the server — use this if curl --http3-only shows ERR_CLOSING.
+# Example: make h3-poc-remote H3_HOST=admin.arm.thaidevops.co H3_PATH=/api/health
 h3-poc-remote: build
 	@test -n "$(H3_HOST)" || (echo "Set H3_HOST, e.g. make h3-poc-remote H3_HOST=admin.arm.thaidevops.co"; exit 1)
+	@echo "h3-poc-remote: HTTP/3 via erlang_quic (not curl); proves UDP/443 + H3 handler on the target host."
 	@if [ -z "$(H3_PATH)" ]; then escript $(CURDIR)/scripts/h3_local_client.escript "$(H3_HOST)"; else escript $(CURDIR)/scripts/h3_local_client.escript "$(H3_HOST)" "$(H3_PATH)"; fi
 
 tls-dev-cert:
@@ -122,7 +126,7 @@ help:
 	@echo "  make run-web       - Build admin UI and serve reverse proxy on 80/443/443udp"
 	@echo "  make h3-poc-curl          - HTTP/3-only curl (needs sudo make run-web; may hang on some curl builds)"
 	@echo "  make h3-poc-erlang-client - quic_h3 GET / loopback (needs run-web); non-root preferred for _build ownership"
-	@echo "  make h3-poc-remote H3_HOST=host [H3_PATH=/] - quic_h3 GET over the internet (same stack as server)"
+	@echo "  make h3-poc-remote H3_HOST=host [H3_PATH=/] - quic_h3 GET over the internet (same stack as server; use if curl ERR_CLOSING)"
 	@echo "  make shell         - Start development shell"
 	@echo "  make test          - Run unit tests"
 	@echo "  make test-coverage - Run tests with coverage"

@@ -22,6 +22,9 @@
 -define(H3_SERVER_NAME_V6, pertisk_eproxy_h3_server_v6).
 -define(DEFAULT_H3_MAX_BODY, 10485760).
 -define(DEFAULT_H3_BODY_TIMEOUT_MS, 120000).
+%% Upper bound for each quic_h3:send_data/4 chunk (flow control / interop with strict peers).
+%% Small default: client transport params can cap how much we may send per stream before MAX_STREAM_DATA.
+-define(DEFAULT_H3_RESPONSE_CHUNK_BYTES, 4096).
 
 -record(state, {
     h3_listeners = [],
@@ -454,27 +457,43 @@ start_h3_dual_listeners(Port, Cert, CertChain, Key) ->
 -spec start_h3_server_family(atom(), integer(), inet | inet6, list(), binary(), [binary()], term()) ->
     {ok, pid()} | {error, term()}.
 start_h3_server_family(ServerName, Port, Family, ExtraSocketOpts, Cert, CertChain, Key) ->
+    QuicBase = h3_quic_opts_base(Family, ExtraSocketOpts, CertChain),
+    EnvOpts =
+        case application:get_env(pertisk_eproxy, h3_quic_opts) of
+            {ok, M} when is_map(M) -> M;
+            _ -> #{}
+        end,
     quic_h3:start_server(ServerName, Port, #{
         cert => Cert,
         key => Key,
         alpn => [<<"h3">>],
-        quic_opts => #{
-            family => Family,
-            cert_chain => CertChain,
-            extra_socket_opts => ExtraSocketOpts,
-            %% erlang_quic defaults pool_size so 1+1=2 listeners and SO_REUSEPORT; that
-            %% combination can return einval on some IPv6 + ipv6_v6only stacks. Single
-            %% listener (pool_size 0 => pool of 1) avoids reuseport unless overridden.
-            pool_size => quic_listener_pool_size_env(),
-            %% Extra headroom for control + request streams (interop with strict clients).
-            max_streams_bidi => 256,
-            max_streams_uni => 256,
-            idle_timeout => 60000,
-            %% Avoid coalesced/GSO send path; helps some clients (e.g. curl+ngtcp2) on Linux.
-            server_send_batching => false
-        },
+        quic_opts => maps:merge(QuicBase, EnvOpts),
         handler => fun ?MODULE:h3_handler/5
     }).
+
+-spec h3_quic_opts_base(inet | inet6, list(), [binary()]) -> map().
+h3_quic_opts_base(Family, ExtraSocketOpts, CertChain) ->
+    #{
+        family => Family,
+        cert_chain => CertChain,
+        extra_socket_opts => ExtraSocketOpts,
+        %% erlang_quic defaults pool_size so 1+1=2 listeners and SO_REUSEPORT; that
+        %% combination can return einval on some IPv6 + ipv6_v6only stacks. Single
+        %% listener (pool_size 0 => pool of 1) avoids reuseport unless overridden.
+        pool_size => quic_listener_pool_size_env(),
+        %% Extra headroom for control + request streams (interop with strict clients).
+        max_streams_bidi => 256,
+        max_streams_uni => 256,
+        idle_timeout => 60000,
+        %% Avoid coalesced/GSO send path; helps some clients (e.g. curl+ngtcp2) on Linux.
+        server_send_batching => false,
+        %% Larger windows than erlang_quic defaults: some H3 peers close (curl ERR_CLOSING)
+        %% if they cannot grow flow control quickly enough for HTML responses.
+        max_data => 16777216,
+        max_stream_data_bidi_local => 8388608,
+        max_stream_data_bidi_remote => 8388608,
+        max_stream_data_uni => 8388608
+    }.
 
 -spec stop_h3_listener(term()) -> ok.
 stop_h3_listener(Listener) when is_atom(Listener) ->
@@ -841,14 +860,54 @@ h3_drop_request_header(<<"proxy-connection">>) -> true;
 h3_drop_request_header(<<"te">>) -> true;
 h3_drop_request_header(_) -> false.
 
+%% httpc may return header names/values as strings or binaries; list_to_binary/1 is not safe on binaries.
+-spec h3_httpc_field_to_binary(term()) -> binary().
+h3_httpc_field_to_binary(B) when is_binary(B) ->
+    B;
+h3_httpc_field_to_binary(L) when is_list(L) ->
+    iolist_to_binary(L);
+h3_httpc_field_to_binary(A) when is_atom(A) ->
+    atom_to_binary(A, utf8);
+h3_httpc_field_to_binary(X) ->
+    iolist_to_binary(io_lib:format("~p", [X])).
+
+%% QPACK / HTTP field-value interop: strip NUL/CR/LF from upstream values (invalid on H3).
+-spec h3_sanitize_field_value(binary()) -> binary().
+h3_sanitize_field_value(B) when is_binary(B) ->
+    B1 = binary:replace(B, <<0>>, <<" ">>, [global]),
+    B2 = binary:replace(B1, <<$\r>>, <<" ">>, [global]),
+    binary:replace(B2, <<$\n>>, <<" ">>, [global]).
+
+-spec h3_response_header_name_allowed(binary()) -> boolean().
+h3_response_header_name_allowed(<<>>) ->
+    false;
+h3_response_header_name_allowed(<<$:, _/binary>>) ->
+    %% :status is added by quic_h3; other pseudo-headers must not appear on responses.
+    false;
+h3_response_header_name_allowed(_) ->
+    true.
+
+-spec h3_upstream_response_pairs([{term(), term()}]) -> [{binary(), binary()}].
+h3_upstream_response_pairs(ResponseHeaders) ->
+    lists:filtermap(
+        fun({K, V}) ->
+            Kb = h3_httpc_field_to_binary(string:lowercase(h3_httpc_field_to_binary(K))),
+            case h3_response_header_name_allowed(Kb) of
+                false ->
+                    false;
+                true ->
+                    {true, {Kb, h3_sanitize_field_value(h3_httpc_field_to_binary(V))}}
+            end
+        end,
+        ResponseHeaders
+    ).
+
 -spec h3_prepare_response_headers(
-    [{string(), string()}], binary(), head | get | post | put | patch | delete | options
+    [{term(), term()}], binary(), head | get | post | put | patch | delete | options
 ) ->
     [{binary(), binary()}].
 h3_prepare_response_headers(ResponseHeaders, Body, Method) ->
-    Map0 = maps:from_list(
-        [{list_to_binary(string:lowercase(K)), list_to_binary(V)} || {K, V} <- ResponseHeaders]
-    ),
+    Map0 = maps:from_list(h3_upstream_response_pairs(ResponseHeaders)),
     %% HTTP/3 forbids connection-specific headers; omit Alt-Svc here — the peer is already on
     %% QUIC (some clients, e.g. curl+ngtcp2, mishandle Alt-Svc on active HTTP/3 responses).
     Map1 = maps:without(
@@ -892,24 +951,76 @@ send_h3_error_json(Conn, StreamId, Status, Map) ->
 
 -spec send_h3_response_fields(pid(), non_neg_integer(), non_neg_integer(), [{binary(), binary()}], binary()) -> ok.
 send_h3_response_fields(Conn, StreamId, Status, Fields, Body) ->
-    case catch quic_h3:send_response(Conn, StreamId, Status, Fields) of
+    case quic_h3:send_response(Conn, StreamId, Status, Fields) of
         ok ->
-            case catch quic_h3:send_data(Conn, StreamId, Body, true) of
-                ok ->
-                    ok;
-                {error, Reason} ->
-                    io:format("h3 send_data failed: ~p~n", [Reason]),
-                    ok;
-                {'EXIT', Reason} ->
-                    io:format("h3 send_data exit: ~p~n", [Reason]),
-                    ok
-            end;
+            h3_send_response_body_chunked(Conn, StreamId, Body);
         {error, Reason} ->
-            io:format("h3 send_response failed: ~p~n", [Reason]),
+            logger:error(#{what => h3_send_response_failed, reason => Reason, stream_id => StreamId}),
             ok;
-        {'EXIT', Reason} ->
-            io:format("h3 send_response exit: ~p~n", [Reason]),
+        Other ->
+            logger:error(#{what => h3_send_response_unexpected, result => Other, stream_id => StreamId}),
             ok
+    end.
+
+-spec h3_response_body_chunk_bytes() -> pos_integer().
+h3_response_body_chunk_bytes() ->
+    case application:get_env(pertisk_eproxy, h3_response_body_chunk_bytes) of
+        {ok, N} when is_integer(N), N >= 1024, N =< 1048576 ->
+            N;
+        _ ->
+            ?DEFAULT_H3_RESPONSE_CHUNK_BYTES
+    end.
+
+%% One huge DATA frame can exceed the peer's stream flow-control window; chunk after HEADERS.
+-spec h3_send_response_body_chunked(pid(), non_neg_integer(), binary()) -> ok.
+h3_send_response_body_chunked(Conn, StreamId, Body) ->
+    Sz = byte_size(Body),
+    Chunk = h3_response_body_chunk_bytes(),
+    case Sz =< Chunk of
+        true ->
+            h3_send_data_chunk(Conn, StreamId, Body, true);
+        false ->
+            h3_send_response_body_chunks(Conn, StreamId, Body, 0, Sz, Chunk)
+    end.
+
+-spec h3_send_response_body_chunks(pid(), non_neg_integer(), binary(), non_neg_integer(), non_neg_integer(), pos_integer()) -> ok.
+h3_send_response_body_chunks(Conn, StreamId, Body, Off, Total, ChunkSz) when Off < Total ->
+    Len = min(ChunkSz, Total - Off),
+    Part = binary:part(Body, Off, Len),
+    Fin = Off + Len =:= Total,
+    case h3_send_data_chunk(Conn, StreamId, Part, Fin) of
+        ok when Fin ->
+            ok;
+        ok ->
+            h3_send_response_body_chunks(Conn, StreamId, Body, Off + Len, Total, ChunkSz);
+        error ->
+            ok
+    end;
+h3_send_response_body_chunks(_, _, _, _, _, _) ->
+    ok.
+
+-spec h3_send_data_chunk(pid(), non_neg_integer(), binary(), boolean()) -> ok | error.
+h3_send_data_chunk(Conn, StreamId, Data, Fin) ->
+    case quic_h3:send_data(Conn, StreamId, Data, Fin) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            logger:error(#{
+                what => h3_send_data_failed,
+                reason => Reason,
+                stream_id => StreamId,
+                fin => Fin,
+                chunk_bytes => byte_size(Data)
+            }),
+            error;
+        Other ->
+            logger:error(#{
+                what => h3_send_data_unexpected,
+                result => Other,
+                stream_id => StreamId,
+                fin => Fin
+            }),
+            error
     end.
 
 -spec send_h3_response(pid(), non_neg_integer(), non_neg_integer(), binary()) -> ok.
