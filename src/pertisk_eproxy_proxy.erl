@@ -20,6 +20,8 @@
 -define(DEFAULT_H3_TLS_KEYFILE, "tls/dev-key.pem").
 -define(H3_SERVER_NAME_V4, pertisk_eproxy_h3_server_v4).
 -define(H3_SERVER_NAME_V6, pertisk_eproxy_h3_server_v6).
+-define(DEFAULT_H3_MAX_BODY, 10485760).
+-define(DEFAULT_H3_BODY_TIMEOUT_MS, 120000).
 
 -record(state, {
     h3_listeners = [],
@@ -270,6 +272,7 @@ start_https_listener_named(Name, TransportOptions, Dispatch) ->
 open_h3_listeners("any", Port) ->
     case try_start_h3_server(Port) of
         {ok, ServerNames} ->
+            print_quic_listener_pool_hint(),
             io:format(
                 "pertisk_eproxy: HTTP/3 QUIC is active on UDP/~w (quic_h3 ~p).~n",
                 [Port, ServerNames]
@@ -294,6 +297,7 @@ open_h3_listeners("*", Port) ->
 open_h3_listeners(IP, Port) ->
     case try_start_h3_server(Port) of
         {ok, ServerNames} ->
+            print_quic_listener_pool_hint(),
             io:format(
                 "pertisk_eproxy: HTTP/3 QUIC is active on UDP/~w listen_addr ~s (quic_h3 ~p).~n",
                 [Port, IP, ServerNames]
@@ -357,6 +361,23 @@ maybe_quic_failure_hints(Port, Detail) ->
         end,
     ok.
 
+%% erlang_quic uses PoolSize = 1 + maps:get(pool_size, Opts, 1) per logical server name.
+-spec quic_listener_pool_size_env() -> non_neg_integer().
+quic_listener_pool_size_env() ->
+    case application:get_env(pertisk_eproxy, quic_listener_pool_size) of
+        {ok, N} when is_integer(N), N >= 0 -> N;
+        _ -> 0
+    end.
+
+-spec print_quic_listener_pool_hint() -> ok.
+print_quic_listener_pool_hint() ->
+    N = quic_listener_pool_size_env(),
+    io:format(
+        "pertisk_eproxy: QUIC erlang_quic: quic_listener_pool_size=~w → ~w UDP listener worker(s) "
+        "per logical server name (SO_REUSEPORT when >1).~n",
+        [N, 1 + N]
+    ).
+
 -spec try_start_h3_server(integer()) -> {ok, started} | {error, term()}.
 try_start_h3_server(Port) ->
     case code:ensure_loaded(quic_h3) of
@@ -402,24 +423,26 @@ start_h3_dual_listeners(Port, Cert, CertChain, Key) ->
     stop_h3_listener(?H3_SERVER_NAME_V6),
     case start_h3_server_family(?H3_SERVER_NAME_V4, Port, inet, [], Cert, CertChain, Key) of
         {ok, _PidV4} ->
-            case start_h3_server_family(
-                ?H3_SERVER_NAME_V6, Port, inet6, [{ipv6_v6only, true}], Cert, CertChain, Key
-            ) of
+            %% Prefer plain inet6 first: some kernels/containers return einval for
+            %% {ipv6_v6only,true} even though dual-stack UDP/443 works without it.
+            case start_h3_server_family(?H3_SERVER_NAME_V6, Port, inet6, [], Cert, CertChain, Key) of
                 {ok, _PidV6} ->
                     {ok, [?H3_SERVER_NAME_V4, ?H3_SERVER_NAME_V6]};
-                {error, ReasonV6} ->
-                    case start_h3_server_family(?H3_SERVER_NAME_V6, Port, inet6, [], Cert, CertChain, Key) of
+                {error, ReasonPlain} ->
+                    case start_h3_server_family(
+                        ?H3_SERVER_NAME_V6, Port, inet6, [{ipv6_v6only, true}], Cert, CertChain, Key
+                    ) of
                         {ok, _PidV6} ->
                             io:format(
-                                "pertisk_eproxy: HTTP/3 IPv6 listener started (retry without ipv6_v6only).~n",
-                                []
+                                "pertisk_eproxy: HTTP/3 IPv6 QUIC on UDP/~w (inet6 + ipv6_v6only; plain inet6 failed: ~p).~n",
+                                [Port, ReasonPlain]
                             ),
                             {ok, [?H3_SERVER_NAME_V4, ?H3_SERVER_NAME_V6]};
-                        {error, ReasonV6b} ->
+                        {error, ReasonV6only} ->
                             io:format(
-                                "pertisk_eproxy: HTTP/3 IPv6 QUIC failed (v6only ~p, plain inet6 ~p); "
+                                "pertisk_eproxy: HTTP/3 IPv6 QUIC failed (plain inet6 ~p, ipv6_v6only ~p); "
                                 "continuing with IPv4-only QUIC.~n",
-                                [ReasonV6, ReasonV6b]
+                                [ReasonPlain, ReasonV6only]
                             ),
                             {ok, [?H3_SERVER_NAME_V4]}
                     end
@@ -438,7 +461,17 @@ start_h3_server_family(ServerName, Port, Family, ExtraSocketOpts, Cert, CertChai
         quic_opts => #{
             family => Family,
             cert_chain => CertChain,
-            extra_socket_opts => ExtraSocketOpts
+            extra_socket_opts => ExtraSocketOpts,
+            %% erlang_quic defaults pool_size so 1+1=2 listeners and SO_REUSEPORT; that
+            %% combination can return einval on some IPv6 + ipv6_v6only stacks. Single
+            %% listener (pool_size 0 => pool of 1) avoids reuseport unless overridden.
+            pool_size => quic_listener_pool_size_env(),
+            %% Extra headroom for control + request streams (interop with strict clients).
+            max_streams_bidi => 256,
+            max_streams_uni => 256,
+            idle_timeout => 60000,
+            %% Avoid coalesced/GSO send path; helps some clients (e.g. curl+ngtcp2) on Linux.
+            server_send_batching => false
         },
         handler => fun ?MODULE:h3_handler/5
     }).
@@ -508,35 +541,258 @@ h3_handler(Conn, StreamId, Method, Path, Headers) ->
 -spec h3_dispatch(pid(), non_neg_integer(), binary(), binary(), binary(), list(), map()) -> ok.
 h3_dispatch(Conn, StreamId, MethodBin, PathOnly, Query, Headers, Upstream) ->
     case h3_method(MethodBin) of
+        {ok, M} when M =:= post; M =:= put; M =:= patch ->
+            case h3_collect_request_body(Conn, StreamId, Headers) of
+                {ok, ReqBody} ->
+                    ReqMap = h3_request_headers_to_map(Headers),
+                    case pertisk_eproxy_proxy_handler:h1_upstream(M, PathOnly, Query, ReqMap, ReqBody, Upstream) of
+                        {ok, Status, RespHdrs, RespBody} ->
+                            RespBodyBin = iolist_to_binary(RespBody),
+                            RespFields = h3_prepare_response_headers(RespHdrs, RespBodyBin, M),
+                            send_h3_response_fields(Conn, StreamId, Status, RespFields, RespBodyBin);
+                        {error, Reason} ->
+                            send_h3_error_json(Conn, StreamId, 502, #{
+                                error => iolist_to_binary(io_lib:format("~p", [Reason]))
+                            })
+                    end;
+                {error, body_too_large} ->
+                    send_h3_error_json(Conn, StreamId, 413, #{error => <<"request body exceeds configured limit">>});
+                {error, invalid_content_length} ->
+                    send_h3_error_json(Conn, StreamId, 400, #{error => <<"invalid content-length">>});
+                {error, body_timeout} ->
+                    send_h3_error_json(Conn, StreamId, 408, #{error => <<"request body read timeout">>});
+                {error, {set_stream_handler, Reason}} ->
+                    send_h3_error_json(Conn, StreamId, 500, #{
+                        error => iolist_to_binary(io_lib:format("h3 stream handler: ~p", [Reason]))
+                    })
+            end;
         {ok, M} ->
             ReqMap = h3_request_headers_to_map(Headers),
             case pertisk_eproxy_proxy_handler:h1_upstream(M, PathOnly, Query, ReqMap, <<>>, Upstream) of
                 {ok, Status, RespHdrs, RespBody} ->
-                    RespFields = h3_prepare_response_headers(RespHdrs, RespBody, M),
-                    send_h3_response_fields(Conn, StreamId, Status, RespFields, RespBody);
+                    RespBodyBin = iolist_to_binary(RespBody),
+                    RespFields = h3_prepare_response_headers(RespHdrs, RespBodyBin, M),
+                    send_h3_response_fields(Conn, StreamId, Status, RespFields, RespBodyBin);
                 {error, Reason} ->
                     send_h3_error_json(Conn, StreamId, 502, #{
                         error => iolist_to_binary(io_lib:format("~p", [Reason]))
                     })
             end;
-        {error, body_not_supported} ->
-            send_h3_error_json(Conn, StreamId, 501, #{
-                error => <<"HTTP/3 request bodies (POST/PUT/PATCH) are not implemented yet">>
-            });
         {error, method_not_allowed} ->
             send_h3_response(Conn, StreamId, 405, <<"method not allowed">>)
     end.
 
--spec h3_method(binary()) ->
-    {ok, head | get | post | put | patch | delete | options} | {error, body_not_supported | method_not_allowed}.
+-spec h3_method(binary()) -> {ok, head | get | post | put | patch | delete | options} | {error, method_not_allowed}.
 h3_method(<<"GET">>) -> {ok, get};
 h3_method(<<"HEAD">>) -> {ok, head};
 h3_method(<<"DELETE">>) -> {ok, delete};
 h3_method(<<"OPTIONS">>) -> {ok, options};
-h3_method(<<"POST">>) -> {error, body_not_supported};
-h3_method(<<"PUT">>) -> {error, body_not_supported};
-h3_method(<<"PATCH">>) -> {error, body_not_supported};
+h3_method(<<"POST">>) -> {ok, post};
+h3_method(<<"PUT">>) -> {ok, put};
+h3_method(<<"PATCH">>) -> {ok, patch};
 h3_method(_) -> {error, method_not_allowed}.
+
+-spec h3_max_request_body_bytes() -> non_neg_integer().
+h3_max_request_body_bytes() ->
+    application:get_env(pertisk_eproxy, h3_max_request_body_bytes, ?DEFAULT_H3_MAX_BODY).
+
+-spec h3_request_body_timeout_ms() -> timeout().
+h3_request_body_timeout_ms() ->
+    application:get_env(pertisk_eproxy, h3_request_body_timeout_ms, ?DEFAULT_H3_BODY_TIMEOUT_MS).
+
+-spec h3_parse_content_length(list()) -> undefined | {ok, non_neg_integer()} | {error, invalid_content_length}.
+h3_parse_content_length(Headers) ->
+    case h3_header_first(<<"content-length">>, Headers) of
+        <<>> ->
+            undefined;
+        Bin ->
+            try
+                N = binary_to_integer(h3_trim_ascii_ws(Bin)),
+                case N < 0 of
+                    true -> {error, invalid_content_length};
+                    false -> {ok, N}
+                end
+            catch
+                _:_ ->
+                    {error, invalid_content_length}
+            end
+    end.
+
+-spec h3_trim_ascii_ws(binary()) -> binary().
+h3_trim_ascii_ws(Bin) ->
+    list_to_binary(string:trim(binary_to_list(Bin), both, " \t\r\n")).
+
+-spec h3_collect_request_body(pid(), non_neg_integer(), list()) -> {ok, binary()} | {error, term()}.
+h3_collect_request_body(Conn, StreamId, Headers) ->
+    Max = h3_max_request_body_bytes(),
+    case h3_parse_content_length(Headers) of
+        {error, _} = E ->
+            E;
+        {ok, 0} ->
+            {ok, <<>>};
+        {ok, N} when N > Max ->
+            {error, body_too_large};
+        {ok, N} when N > 0 ->
+            h3_read_request_body_sized(Conn, StreamId, N, Max);
+        undefined ->
+            h3_read_request_body_until_fin(Conn, StreamId, Max)
+    end.
+
+-spec h3_read_request_body_sized(pid(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
+    {ok, binary()} | {error, term()}.
+h3_read_request_body_sized(Conn, StreamId, N, Max) when N =< Max ->
+    case quic_h3:set_stream_handler(Conn, StreamId, self()) of
+        {error, Reason} ->
+            {error, {set_stream_handler, Reason}};
+        ok ->
+            h3_body_after_register(Conn, StreamId, N, <<>>, Max);
+        {ok, Buffered} ->
+            case h3_fold_buffered_chunks(Buffered, <<>>, Max) of
+                {error, _} = E ->
+                    _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                    E;
+                {ok, Acc, HadFin} ->
+                    Sz = byte_size(Acc),
+                    case Sz > N of
+                        true ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, invalid_content_length};
+                        false when Sz =:= N ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {ok, Acc};
+                        false when HadFin ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, invalid_content_length};
+                        false ->
+                            h3_recv_until_size(Conn, StreamId, N, Acc, Max)
+                    end
+            end
+    end.
+
+-spec h3_read_request_body_until_fin(pid(), non_neg_integer(), non_neg_integer()) -> {ok, binary()} | {error, term()}.
+h3_read_request_body_until_fin(Conn, StreamId, Max) ->
+    case quic_h3:set_stream_handler(Conn, StreamId, self()) of
+        {error, Reason} ->
+            {error, {set_stream_handler, Reason}};
+        ok ->
+            h3_recv_until_fin(Conn, StreamId, <<>>, Max);
+        {ok, Buffered} ->
+            case h3_fold_buffered_chunks(Buffered, <<>>, Max) of
+                {error, _} = E ->
+                    _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                    E;
+                {ok, Acc, true} ->
+                    _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                    {ok, Acc};
+                {ok, Acc, false} ->
+                    h3_recv_until_fin(Conn, StreamId, Acc, Max)
+            end
+    end.
+
+-spec h3_fold_buffered_chunks([{binary(), boolean()}], binary(), non_neg_integer()) ->
+    {ok, binary(), boolean()} | {error, body_too_large}.
+h3_fold_buffered_chunks(Chunks, Acc0, Max) ->
+    h3_fold_buffered_chunks(Chunks, Acc0, Max, false).
+
+-spec h3_fold_buffered_chunks([{binary(), boolean()}], binary(), non_neg_integer(), boolean()) ->
+    {ok, binary(), boolean()} | {error, body_too_large}.
+h3_fold_buffered_chunks([], Acc, _Max, HadFin) ->
+    {ok, Acc, HadFin};
+h3_fold_buffered_chunks([{Data, Fin} | Rest], Acc, Max, HadFin0) ->
+    NewAcc = <<Acc/binary, Data/binary>>,
+    case byte_size(NewAcc) > Max of
+        true ->
+            {error, body_too_large};
+        false ->
+            h3_fold_buffered_chunks(Rest, NewAcc, Max, HadFin0 orelse Fin)
+    end.
+
+-spec h3_body_after_register(pid(), non_neg_integer(), non_neg_integer(), binary(), non_neg_integer()) ->
+    {ok, binary()} | {error, term()}.
+h3_body_after_register(Conn, StreamId, N, Acc, Max) ->
+    case byte_size(Acc) > Max of
+        true ->
+            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+            {error, body_too_large};
+        false when byte_size(Acc) =:= N ->
+            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+            {ok, Acc};
+        false when byte_size(Acc) > N ->
+            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+            {error, invalid_content_length};
+        false ->
+            h3_recv_until_size(Conn, StreamId, N, Acc, Max)
+    end.
+
+-spec h3_recv_until_size(pid(), non_neg_integer(), non_neg_integer(), binary(), non_neg_integer()) ->
+    {ok, binary()} | {error, term()}.
+h3_recv_until_size(Conn, StreamId, N, Acc, Max) ->
+    Need = N - byte_size(Acc),
+    case Need =< 0 of
+        true ->
+            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+            {ok, binary:part(Acc, 0, N)};
+        false ->
+            receive
+                {quic_h3, Conn, {data, StreamId, Data, Fin}} ->
+                    NewAcc = <<Acc/binary, Data/binary>>,
+                    case byte_size(NewAcc) > Max of
+                        true ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, body_too_large};
+                        false when byte_size(NewAcc) > N ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, invalid_content_length};
+                        false when byte_size(NewAcc) =:= N ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {ok, NewAcc};
+                        false when Fin ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, invalid_content_length};
+                        false ->
+                            h3_recv_until_size(Conn, StreamId, N, NewAcc, Max)
+                    end
+            after h3_request_body_timeout_ms() ->
+                _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                {error, body_timeout}
+            end
+    end.
+
+-spec h3_recv_until_fin(pid(), non_neg_integer(), binary(), non_neg_integer()) -> {ok, binary()} | {error, term()}.
+h3_recv_until_fin(Conn, StreamId, Acc, Max) ->
+    case byte_size(Acc) > Max of
+        true ->
+            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+            {error, body_too_large};
+        false ->
+            receive
+                {quic_h3, Conn, {data, StreamId, Data, true}} ->
+                    NewAcc = <<Acc/binary, Data/binary>>,
+                    case byte_size(NewAcc) > Max of
+                        true ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, body_too_large};
+                        false ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {ok, NewAcc}
+                    end;
+                {quic_h3, Conn, {data, StreamId, Data, false}} ->
+                    NewAcc = <<Acc/binary, Data/binary>>,
+                    case byte_size(NewAcc) > Max of
+                        true ->
+                            _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                            {error, body_too_large};
+                        false ->
+                            h3_recv_until_fin(Conn, StreamId, NewAcc, Max)
+                    end
+            after h3_request_body_timeout_ms() ->
+                _ = catch quic_h3:unset_stream_handler(Conn, StreamId),
+                case Acc of
+                    <<>> -> {ok, <<>>};
+                    _ -> {error, body_timeout}
+                end
+            end
+    end.
 
 -spec h3_header_first(binary(), list()) -> binary().
 h3_header_first(Key, Headers) ->
@@ -585,32 +841,44 @@ h3_drop_request_header(<<"proxy-connection">>) -> true;
 h3_drop_request_header(<<"te">>) -> true;
 h3_drop_request_header(_) -> false.
 
--spec h3_prepare_response_headers([{string(), string()}], binary(), head | get | delete | options) ->
+-spec h3_prepare_response_headers(
+    [{string(), string()}], binary(), head | get | post | put | patch | delete | options
+) ->
     [{binary(), binary()}].
 h3_prepare_response_headers(ResponseHeaders, Body, Method) ->
     Map0 = maps:from_list(
         [{list_to_binary(string:lowercase(K)), list_to_binary(V)} || {K, V} <- ResponseHeaders]
     ),
+    %% HTTP/3 forbids connection-specific headers; omit Alt-Svc here — the peer is already on
+    %% QUIC (some clients, e.g. curl+ngtcp2, mishandle Alt-Svc on active HTTP/3 responses).
     Map1 = maps:without(
-        [<<"transfer-encoding">>, <<"connection">>, <<"keep-alive">>, <<"upgrade">>, <<"proxy-connection">>],
+        [
+            <<"alt-svc">>,
+            <<"connection">>,
+            <<"keep-alive">>,
+            <<"proxy-connection">>,
+            <<"te">>,
+            <<"trailer">>,
+            <<"transfer-encoding">>,
+            <<"upgrade">>
+        ],
         Map0
     ),
-    Map2 = pertisk_eproxy_proxy_handler:with_alt_svc(Map1),
-    Map3 =
+    Map2 =
         case Method of
             head ->
-                case maps:is_key(<<"content-length">>, Map2) of
-                    true -> Map2;
-                    false -> maps:put(<<"content-length">>, <<"0">>, Map2)
+                case maps:is_key(<<"content-length">>, Map1) of
+                    true -> Map1;
+                    false -> maps:put(<<"content-length">>, <<"0">>, Map1)
                 end;
             _ ->
                 CL = integer_to_binary(byte_size(Body)),
-                maps:put(<<"content-length">>, CL, maps:remove(<<"content-length">>, Map2))
+                maps:put(<<"content-length">>, CL, maps:remove(<<"content-length">>, Map1))
         end,
     Map4 =
-        case maps:is_key(<<"content-type">>, Map3) of
-            true -> Map3;
-            false -> maps:put(<<"content-type">>, <<"application/octet-stream">>, Map3)
+        case maps:is_key(<<"content-type">>, Map2) of
+            true -> Map2;
+            false -> maps:put(<<"content-type">>, <<"application/octet-stream">>, Map2)
         end,
     maps:to_list(Map4).
 

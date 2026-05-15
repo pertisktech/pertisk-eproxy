@@ -1,11 +1,140 @@
 %%%-------------------------------------------------------------------
-%% @doc Primary logger filter: drop noisy quic_closed teardown from erlang_quic
-%%      (gen_statem / proc_lib) after normal HTTP/3 responses.
+%% @doc Primary logger filter:
+%%      - Replace huge OTP supervisor events (progress + start_error) with short
+%%        strings so jsonlog does not choke on funs / cert DER / nested sslsocket
+%%        terms ("FORMATTER CRASH" in the console).
+%%      - Drop noisy quic_closed teardown from erlang_quic (gen_statem / proc_lib)
+%%        after normal HTTP/3 responses.
+%%      - Drop duplicate proc_lib crash_report for quic_listener init + einval when
+%%        supervisor start_error already summarizes the failure.
 %%%-------------------------------------------------------------------
 
 -module(pertisk_eproxy_log_filter).
 
--export([drop_quic_closed/2]).
+-export([primary/2]).
+
+-spec primary(logger:log_event(), term()) -> logger:log_event() | stop.
+primary(Log, Extra) ->
+    case maybe_drop_logger_noise(Log) of
+        stop ->
+            stop;
+        Log0 ->
+            Log1 = maybe_simplify_supervisor_logs(Log0),
+            drop_quic_closed(Log1, Extra)
+    end.
+
+%% Duplicate detail: supervisor already logs start_error; crash_report is huge JSON.
+-spec maybe_drop_logger_noise(logger:log_event()) -> logger:log_event() | stop.
+maybe_drop_logger_noise(
+    #{
+        level := error,
+        meta := #{mfa := {proc_lib, crash_report, _}},
+        msg := Msg
+    } = Log
+) ->
+    case quic_listener_einval_crash(Msg) of
+        true -> stop;
+        false -> Log
+    end;
+maybe_drop_logger_noise(Log) ->
+    Log.
+
+-spec quic_listener_einval_crash(term()) -> boolean().
+quic_listener_einval_crash(Msg) ->
+    Bin = iolist_to_binary(io_lib:format("~8000p", [Msg])),
+    nomatch =/= binary:match(Bin, <<"quic_listener">>) andalso
+        nomatch =/= binary:match(Bin, <<"einval">>).
+
+%% OTP logs child starts at info with full childspec (Ranch SSL acceptors include
+%% entire #{} ssl options). jsonlog then JSON-encodes that map and crashes or prints
+%% unusable megabyte lines.
+%%
+%% start_error at error level repeats the same material in `offender` / mfargs.
+-spec maybe_simplify_supervisor_logs(logger:log_event()) -> logger:log_event().
+maybe_simplify_supervisor_logs(
+    #{
+        level := info,
+        meta := #{mfa := {supervisor, report_progress, _}}
+    } = Log
+) ->
+    Log#{msg => {string, <<"supervisor: child progress (details omitted)">>}};
+maybe_simplify_supervisor_logs(
+    #{
+        level := info,
+        meta := #{mfa := {supervisor_bridge, report_progress, _}}
+    } = Log
+) ->
+    Log#{msg => {string, <<"supervisor_bridge: child progress (details omitted)">>}};
+maybe_simplify_supervisor_logs(
+    #{
+        level := error,
+        msg := {report, #{label := {supervisor, start_error}, report := Rep}}
+    } = Log
+) ->
+    Log#{msg => {string, supervisor_start_error_summary(Rep)}};
+maybe_simplify_supervisor_logs(Log) ->
+    Log.
+
+-spec supervisor_start_error_summary(term()) -> binary().
+supervisor_start_error_summary(Rep) when is_map(Rep) ->
+    Sup = maps:get(supervisor, Rep, undefined),
+    Ctx = maps_get_first([errorContext, error_context], Rep, undefined),
+    Reason = maps:get(reason, Rep, undefined),
+    OffId = offender_child_id(maps:get(offender, Rep, undefined)),
+    iolist_to_binary(
+        io_lib:format(
+            "supervisor start_error: sup=~0p context=~0p reason=~0p offender_id=~0p (mfargs omitted)",
+            [Sup, Ctx, Reason, OffId]
+        )
+    );
+supervisor_start_error_summary(Rep) when is_list(Rep) ->
+    supervisor_start_error_summary(report_list_to_map(Rep));
+supervisor_start_error_summary(Rep) ->
+    iolist_to_binary(io_lib:format("supervisor start_error (unparsed report): ~2000p", [Rep])).
+
+-spec report_list_to_map([{term(), term()}]) -> map().
+report_list_to_map(L) ->
+    lists:foldl(fun({K, V}, Acc) -> Acc#{K => V} end, #{}, L).
+
+-spec maps_get_first([K], #{K => V}, V) -> V.
+maps_get_first([], _Map, Def) ->
+    Def;
+maps_get_first([K | Rest], Map, Def) ->
+    case maps:find(K, Map) of
+        {ok, V} -> V;
+        error -> maps_get_first(Rest, Map, Def)
+    end.
+
+-spec offender_child_id(term()) -> term().
+offender_child_id(Off) when is_tuple(Off), tuple_size(Off) >= 1 ->
+    element(1, Off);
+offender_child_id(Off) when is_map(Off) ->
+    maps_get_first([id, child_id], Off, undefined);
+offender_child_id(Off) when is_list(Off) ->
+    %% OTP supervisor report uses a proplist-like [{pid,...},{id,...},{mfargs,...},...]
+    case lists:keyfind(id, 1, Off) of
+        {id, Id} ->
+            Id;
+        false ->
+            case lists:keyfind(name, 1, Off) of
+                {name, Nm} -> Nm;
+                false -> mfargs_summary(Off)
+            end
+    end;
+offender_child_id(Off) ->
+    Off.
+
+-spec mfargs_summary(term()) -> term().
+mfargs_summary(Off) when is_list(Off) ->
+    case lists:keyfind(mfargs, 1, Off) of
+        {mfargs, {M, F, _}} when is_atom(M), is_atom(F) ->
+            {M, F};
+        {mfargs, _} ->
+            undefined;
+        false -> undefined
+    end;
+mfargs_summary(_) ->
+    undefined.
 
 -spec drop_quic_closed(logger:log_event(), term()) -> logger:log_event() | stop.
 drop_quic_closed(#{level := error, msg := Msg, meta := Meta} = Log, _) ->

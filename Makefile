@@ -1,4 +1,4 @@
-.PHONY: all build compile run run-web tls-dev-cert shell clean test docs release help admin-install admin-dev admin-build h3-poc-curl h3-poc-erlang-client
+.PHONY: all build compile run run-web tls-dev-cert shell clean test docs release help admin-install admin-dev admin-build h3-poc-curl h3-poc-erlang-client h3-poc-remote
 
 PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
 
@@ -13,11 +13,11 @@ run: build
 	rebar3 shell
 
 run-web: tls-dev-cert admin-build build
-	sudo lsof -nP -iUDP:443 | grep beam.smp | awk '{print $2}' | xargs sudo kill
+
 	@if [ "$$(id -u)" -ne 0 ]; then echo "run-web needs root to bind 80/443. Use: sudo make run-web"; exit 1; fi
 	@echo "Starting pertisk_eproxy proxy on 80/443/443udp with admin UI on http://localhost:8080 ..."
 	rebar3 shell
-
+# 	sudo lsof -nP -iUDP:443 | grep beam.smp | awk '{print $2}' | xargs sudo kill
 # Proof-of-concept: QUIC only on the host. Requires another terminal: sudo make run-web.
 # In the run-web logs you want: "HTTP/3 QUIC is active". If you see "*** WARNING ... plain gen_udp",
 # lsof still shows UDP/443 but curl --http3-only will always time out (fix erlang_quic / certs).
@@ -28,10 +28,15 @@ h3-poc-curl:
 		--resolve "admin.arm.thaidevops.co:443:127.0.0.1" \
 		"https://admin.arm.thaidevops.co/" 2>&1 | sed -n '1,45p'
 
-# Same quic_h3 library as the server. Run WITHOUT sudo (only run-web needs root). Requires sudo make run-web in another tty.
+# Same quic_h3 library as the server. Requires `sudo make run-web` in another tty (loopback). Prefer non-root so _build stays owned by your login user.
 h3-poc-erlang-client: build
-	@if [ "$$(id -u)" -eq 0 ]; then echo "Do not use sudo for h3-poc-erlang-client (run as your user). Only run-web needs sudo."; exit 1; fi
+	@if [ "$$(id -u)" -eq 0 ]; then echo "h3-poc-erlang-client: warning: running as root; _build may become root-owned. Prefer a normal user when possible."; fi
 	@escript $(CURDIR)/scripts/h3_local_client.escript
+
+# Full HTTP/3 GET against a live host (UDP 443 must work). Example: make h3-poc-remote H3_HOST=admin.arm.thaidevops.co H3_PATH=/api/health
+h3-poc-remote: build
+	@test -n "$(H3_HOST)" || (echo "Set H3_HOST, e.g. make h3-poc-remote H3_HOST=admin.arm.thaidevops.co"; exit 1)
+	@if [ -z "$(H3_PATH)" ]; then escript $(CURDIR)/scripts/h3_local_client.escript "$(H3_HOST)"; else escript $(CURDIR)/scripts/h3_local_client.escript "$(H3_HOST)" "$(H3_PATH)"; fi
 
 tls-dev-cert:
 	@mkdir -p tls
@@ -116,7 +121,8 @@ help:
 	@echo "  make run           - Build and start development shell"
 	@echo "  make run-web       - Build admin UI and serve reverse proxy on 80/443/443udp"
 	@echo "  make h3-poc-curl          - HTTP/3-only curl (needs sudo make run-web; may hang on some curl builds)"
-	@echo "  make h3-poc-erlang-client - quic_h3 client (no sudo); needs run-web; probes TCP then QUIC v4/v6 loopback"
+	@echo "  make h3-poc-erlang-client - quic_h3 GET / loopback (needs run-web); non-root preferred for _build ownership"
+	@echo "  make h3-poc-remote H3_HOST=host [H3_PATH=/] - quic_h3 GET over the internet (same stack as server)"
 	@echo "  make shell         - Start development shell"
 	@echo "  make test          - Run unit tests"
 	@echo "  make test-coverage - Run tests with coverage"
