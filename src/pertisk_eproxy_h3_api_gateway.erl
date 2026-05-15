@@ -35,6 +35,9 @@ start(Config) ->
     end.
 
 do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
+    Config = pertisk_eproxy_config:get_config(),
+    CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
+    _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
     case CertChain of
         [] ->
             lager:warning(
@@ -48,13 +51,9 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
     BaseOpts = maps:merge(
         tls_server_opts(CertDer, KeyTerm, CertChain),
         #{
-            settings => #{
-                %% Force static QPACK to avoid dynamic table/base calculation
-                %% interoperability failures seen from external clients.
-                qpack_max_table_capacity => 0,
-                qpack_blocked_streams => 0
-            },
-            handler => ?MODULE
+            settings => h3_http_settings(Config),
+            handler => ?MODULE,
+            quic_opts => quic_transport_opts(Config)
         }
     ),
     start_prefer_ipv6_server(Port, BaseOpts).
@@ -80,9 +79,13 @@ start_probe(Config) ->
     end.
 
 do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
+    Config = pertisk_eproxy_config:get_config(),
     ProbeOpts = maps:merge(
         tls_server_opts(CertDer, KeyTerm, CertChain),
-        #{handler => pertisk_eproxy_h3_probe_handler}
+        #{
+            handler => pertisk_eproxy_h3_probe_handler,
+            quic_opts => quic_transport_opts(Config)
+        }
     ),
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
 
@@ -121,9 +124,19 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                         log_h3_access(LogHost, Method, PathOnly, 502, T0, <<>>),
                         ok;
                     {ok, UpstreamAddr} ->
-                        case proxy_via_gun(
-                            Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
-                        ) of
+                        ProxyResult =
+                            proxy_h3_upstream(
+                                Method,
+                                LogHost,
+                                PathOnly,
+                                UpPath,
+                                Qs,
+                                UpstreamAddr,
+                                Headers,
+                                Body,
+                                ClientIp
+                            ),
+                        case ProxyResult of
                             {ok, Status0, RespHeaders, RespBody} ->
                                 Status = gun_response_status_int(Status0),
                                 StatusBin = integer_to_binary(Status),
@@ -138,7 +151,12 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 H3Headers = maybe_add_h3_alt_svc(LogHost, RespHeaders),
                                 ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Headers),
                                 _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
-                                log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamAddr),
+                                UpstreamLog =
+                                    case is_management_upstream(UpstreamAddr) of
+                                        true -> <<"management-local">>;
+                                        false -> UpstreamAddr
+                                    end,
+                                log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamLog),
                                 ok;
                             {error, ProxyReason} ->
                                 pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
@@ -249,6 +267,103 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
         error -> ClientIp
     end,
     Base#{<<"x-forwarded-for">> => XFF}.
+
+%% Match pertisk-rproxy defaults: 300s QUIC idle, 30s keepalive (ms in erlang_quic).
+-define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 300).
+-define(H3_KEEPALIVE_SECS_DEFAULT, 30).
+
+%% HTTP/3 SETTINGS sent to clients (Chrome expects default dynamic QPACK like Node/Go/Rust).
+h3_http_settings(Config) ->
+    case maps:get(h3_qpack_static, Config, false) of
+        true ->
+            #{
+                qpack_max_table_capacity => 0,
+                qpack_blocked_streams => 0
+            };
+        false ->
+            #{}
+    end.
+
+proxy_h3_upstream(
+    Method,
+    LogHost,
+    PathOnly,
+    UpPath,
+    Qs,
+    UpstreamAddr,
+    Headers,
+    Body,
+    ClientIp
+) ->
+    case is_management_upstream(UpstreamAddr) of
+        true ->
+            case pertisk_eproxy_h3_local_admin:try_dispatch(
+                Method, LogHost, PathOnly, Qs, Headers, Body, ClientIp
+            ) of
+                {ok, Status, RespHeaders, RespBody} ->
+                    {ok, Status, gun_resp_headers_to_h3(RespHeaders), RespBody};
+                {error, unsupported} ->
+                    proxy_via_gun(
+                        Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
+                    );
+                {error, Reason} ->
+                    {error, {local_admin, Reason}}
+            end;
+        false ->
+            proxy_via_gun(
+                Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
+            )
+    end.
+
+quic_transport_opts(Config) ->
+    IdleSecs =
+        case maps:get(h3_idle_timeout_secs, Config, undefined) of
+            IdleS when is_integer(IdleS), IdleS >= 0 ->
+                IdleS;
+            _ ->
+                ?H3_IDLE_TIMEOUT_SECS_DEFAULT
+        end,
+    KeepSecs =
+        case maps:get(h3_keepalive_interval_secs, Config, undefined) of
+            KeepS when is_integer(KeepS), KeepS >= 0 ->
+                KeepS;
+            _ ->
+                ?H3_KEEPALIVE_SECS_DEFAULT
+        end,
+    Opts = #{idle_timeout => IdleSecs * 1000},
+    case KeepSecs of
+        0 ->
+            Opts;
+        _ ->
+            Opts#{keep_alive_interval => max(5000, KeepSecs * 1000)}
+    end.
+
+is_management_upstream(UpstreamAddr) ->
+    try
+        {Host, Port, _} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
+        C = pertisk_eproxy_config:get_config(),
+        Port =:= maps:get(management_port, C, 9080) andalso
+            management_host_match(Host, maps:get(management_addr, C, {0, 0, 0, 0}))
+    catch
+        _:_ ->
+            false
+    end.
+
+management_host_match(Host, MgmtAddr) when is_binary(Host) ->
+    management_host_match(binary_to_list(Host), MgmtAddr);
+management_host_match(Host, MgmtAddr) when is_list(Host) ->
+    H = string:lowercase(string:trim(Host)),
+    Mgmt = string:lowercase(lists:flatten(inet:ntoa(MgmtAddr))),
+    lists:member(H, [
+        Mgmt,
+        "127.0.0.1",
+        "localhost",
+        "0.0.0.0",
+        "::1",
+        "[::1]",
+        "::",
+        "[::]"
+    ]).
 
 proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Body, ClientIp) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
@@ -492,15 +607,19 @@ ensure_quic_started() ->
 %% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).
 -spec management_listener_bind_stack() -> {Bind :: binary(), Stack :: binary()}.
 management_listener_bind_stack() ->
-    case os:type() of
-        {unix, linux} ->
-            %% [::]:443 (v6only) + 0.0.0.0:443 (reuseport), same as TCP https4/https6.
+    BindMode = maps:get(h3_udp_bind, pertisk_eproxy_config:get_config(), dual_stack),
+    case {os:type(), BindMode} of
+        {{unix, linux}, dual_stack} ->
+            {<<"[::]:udp">>, <<"dual_stack">>};
+        {{unix, linux}, split} ->
             {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
-        {unix, _} ->
+        {{unix, _}, split} ->
+            {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
+        {{unix, _}, _} ->
+            {<<"[::]:udp">>, <<"dual_stack">>};
+        {win32, _} ->
             {<<"0.0.0.0">>, <<"ipv4">>};
-        win32 ->
-            {<<"0.0.0.0">>, <<"ipv4">>};
-        _ ->
+        {_, _} ->
             {<<"0.0.0.0">>, <<"ipv4">>}
     end.
 
@@ -508,13 +627,51 @@ start_prefer_ipv6_server(Port, BaseOpts) ->
     start_prefer_ipv6_server(?SERVER, Port, BaseOpts).
 
 start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
-    %% On Linux: two UDP listeners on the same port (SO_REUSEPORT):
-    %%   [::]:443  with IPV6_V6ONLY=1  → native IPv6 only
-    %%   0.0.0.0:443 (inet)          → IPv4 only
-    %% Do NOT combine V6ONLY=0 with a separate IPv4 bind — the kernel can deliver
-    %% the same IPv4 datagrams to both sockets and corrupt QUIC (unstable curl -4).
-    %% On macOS/BSD/Windows: quic_socket falls back to gen_udp; adding `inet6`
-    %% to extra_socket_opts can yield einval, so keep a single listener there.
+    Config = pertisk_eproxy_config:get_config(),
+    BindMode = maps:get(h3_udp_bind, Config, dual_stack),
+    case {os:type(), BindMode} of
+        {{unix, linux}, dual_stack} ->
+            start_linux_dual_stack_udp(ServerName, Port, BaseOpts);
+        {{unix, linux}, split} ->
+            start_linux_split_udp(ServerName, Port, BaseOpts);
+        _ ->
+            start_single_udp_listener(ServerName, Port, BaseOpts)
+    end.
+
+%% Single [::] dual-stack socket (same model as pertisk-rproxy / Quinn / Node http3).
+start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
+    QuicBase = maps:get(quic_opts, BaseOpts, #{}),
+    Opts = BaseOpts#{
+        quic_opts =>
+            maps:merge(QuicBase, #{
+                socket_backend => socket,
+                backend => socket,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => [inet6, {ipv6_v6only, false}]
+            })
+    },
+    _ = lager:info(
+        "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack, Chrome/Node/Rust compatible)",
+        [Port]
+    ),
+    case quic_h3:start_server(ServerName, Port, Opts) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, Reason} ->
+            {error, {failed_quic_udp_listener_dual_stack, Reason}}
+    end.
+
+start_single_udp_listener(ServerName, Port, BaseOpts) ->
+    case quic_h3:start_server(ServerName, Port, BaseOpts) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, Reason} ->
+            {error, {failed_quic_udp_listener, Reason}}
+    end.
+
+%% Legacy Linux: separate IPv4 gen_udp + IPv6 socket (reuseport).
+start_linux_split_udp(ServerName, Port, BaseOpts) ->
     case os:type() of
         {unix, linux} ->
             V4Name = v4_server_name(ServerName),

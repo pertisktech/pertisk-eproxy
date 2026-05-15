@@ -1,5 +1,9 @@
 {
     "h3_api_gateway_enabled": true,
     "h3_probe_enabled": true,
-    "quic_enabled": true
+    "quic_enabled": true,
+    "h3_idle_timeout_secs": 300,
+    "h3_keepalive_interval_secs": 30,
+    "h3_udp_bind": "dual_stack",
+    "h3_qpack_static": false
 }
