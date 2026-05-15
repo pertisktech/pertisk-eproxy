@@ -1105,7 +1105,5 @@ bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
 bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).
 
 with_alt_svc(Req, Headers) ->
-    case cowboy_req:port(Req) of
-        443 -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
-        _ -> Headers
-    end.
+    Host = cowboy_req:host(Req),
+    pertisk_eproxy_alt_svc:merge_response_headers(Req, Host, Headers).

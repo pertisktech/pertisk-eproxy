@@ -653,7 +653,7 @@ maybe_add_h3_alt_svc(Host, Headers) ->
     case pertisk_eproxy_handler:site_advertise_http3(Host) of
         true ->
             H = headers_without(Headers, [<<"alt-svc">>]),
-            H ++ [{<<"alt-svc">>, <<"h3=\":443\"; ma=86400">>}];
+            H ++ [{<<"alt-svc">>, pertisk_eproxy_alt_svc:header_value()}];
         false ->
             Headers
     end.

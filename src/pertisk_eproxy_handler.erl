@@ -263,15 +263,12 @@ method_to_gun(<<"OPTIONS">>) -> <<"OPTIONS">>;
 method_to_gun(M)             -> M.
 
 maybe_add_alt_svc(Req, Host, Headers) ->
-    case {cowboy_req:port(Req), site_advertise_http3(Host)} of
-        {443, true} -> Headers#{<<"alt-svc">> => <<"h3=\":443\"; ma=86400">>};
-        _ -> Headers
-    end.
+    pertisk_eproxy_alt_svc:merge_response_headers(Req, normalize_host(Host), Headers).
 
 site_advertise_http3(Host) ->
     Config = pertisk_eproxy_config:get_config(),
     Sites = maps:get(sites, Config, []),
-    case find_site_for_host(Sites, string:lowercase(Host)) of
+    case find_site_for_host(Sites, normalize_host(Host)) of
         undefined -> true;
         Site -> maps:get(advertise_http3, Site, true) =/= false
     end.
@@ -293,3 +290,11 @@ host_matches(Host, <<"*.", Suffix/binary>>) ->
     end;
 host_matches(Host, SiteHost) ->
     Host =:= SiteHost.
+
+normalize_host(H) when is_binary(H) ->
+    case binary:split(H, <<":">>) of
+        [Name, _] -> string:lowercase(Name);
+        [Name] -> string:lowercase(Name)
+    end;
+normalize_host(H) when is_list(H) ->
+    normalize_host(list_to_binary(H)).
