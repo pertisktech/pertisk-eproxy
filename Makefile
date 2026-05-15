@@ -1,4 +1,4 @@
-.PHONY: all build compile run run-web tls-dev-cert shell clean test docs release help admin-install admin-dev admin-build
+.PHONY: all build compile run run-web tls-dev-cert shell clean test docs release help admin-install admin-dev admin-build h3-poc-curl h3-poc-erlang-client
 
 PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
 
@@ -13,9 +13,25 @@ run: build
 	rebar3 shell
 
 run-web: tls-dev-cert admin-build build
+	sudo lsof -nP -iUDP:443 | grep beam.smp | awk '{print $2}' | xargs sudo kill
 	@if [ "$$(id -u)" -ne 0 ]; then echo "run-web needs root to bind 80/443. Use: sudo make run-web"; exit 1; fi
 	@echo "Starting pertisk_eproxy proxy on 80/443/443udp with admin UI on http://localhost:8080 ..."
 	rebar3 shell
+
+# Proof-of-concept: QUIC only on the host. Requires another terminal: sudo make run-web.
+# In the run-web logs you want: "HTTP/3 QUIC is active". If you see "*** WARNING ... plain gen_udp",
+# lsof still shows UDP/443 but curl --http3-only will always time out (fix erlang_quic / certs).
+h3-poc-curl:
+	@echo "Tip: sudo lsof -nP -iUDP:443 shows sockets; only \"HTTP/3 QUIC is active\" means real QUIC."
+	@echo "Apple curl often uses Secure Transport QUIC; if this hangs, run: make h3-poc-erlang-client"
+	@curl -sv --http3-only --connect-timeout 8 \
+		--resolve "admin.arm.thaidevops.co:443:127.0.0.1" \
+		"https://admin.arm.thaidevops.co/" 2>&1 | sed -n '1,45p'
+
+# Same quic_h3 library as the server. Run WITHOUT sudo (only run-web needs root). Requires sudo make run-web in another tty.
+h3-poc-erlang-client: build
+	@if [ "$$(id -u)" -eq 0 ]; then echo "Do not use sudo for h3-poc-erlang-client (run as your user). Only run-web needs sudo."; exit 1; fi
+	@escript $(CURDIR)/scripts/h3_local_client.escript
 
 tls-dev-cert:
 	@mkdir -p tls
@@ -99,6 +115,8 @@ help:
 	@echo "  make build         - Compile the project"
 	@echo "  make run           - Build and start development shell"
 	@echo "  make run-web       - Build admin UI and serve reverse proxy on 80/443/443udp"
+	@echo "  make h3-poc-curl          - HTTP/3-only curl (needs sudo make run-web; may hang on some curl builds)"
+	@echo "  make h3-poc-erlang-client - quic_h3 client (no sudo); needs run-web; probes TCP then QUIC v4/v6 loopback"
 	@echo "  make shell         - Start development shell"
 	@echo "  make test          - Run unit tests"
 	@echo "  make test-coverage - Run tests with coverage"

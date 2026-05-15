@@ -162,8 +162,7 @@ start_proxy_listeners(IP, HttpPort, HttpsPort, H3Port) ->
                         ok ->
                             case open_h3_listeners(IP, H3Port) of
                                 {ok, Sockets} ->
-                                    io:format("Started HTTP/3 listener(s) on ~s:~w~n", [IP, H3Port]),
-                                    io:format("Configure options: ~p~n", [ListenOptions]),
+                                    io:format("HTTP/3 UDP options (reference): ~p~n", [ListenOptions]),
                                     {ok, Sockets};
                                 {error, Reason} ->
                                     {error, {h3_listener_failed, Reason}}
@@ -188,7 +187,11 @@ start_http_listener(IP, Port, Dispatch) ->
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 4 ->
             start_http_listener_named(proxy_http_listener_v4, [{ip, ParsedIP}, {port, Port}], Dispatch);
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 8 ->
-            start_http_listener_named(proxy_http_listener_v6, [inet6, {ip, ParsedIP}, {port, Port}], Dispatch);
+            start_http_listener_named(
+                proxy_http_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, ParsedIP}, {port, Port}],
+                Dispatch
+            );
         {error, Reason} ->
             {error, Reason}
     end.
@@ -197,7 +200,11 @@ start_http_listener(IP, Port, Dispatch) ->
 start_http_listener_all_families(Port, Dispatch) ->
     case start_http_listener_named(proxy_http_listener_v4, [{ip, {0, 0, 0, 0}}, {port, Port}], Dispatch) of
         ok ->
-            case start_http_listener_named(proxy_http_listener_v6, [inet6, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}], Dispatch) of
+            case start_http_listener_named(
+                proxy_http_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}],
+                Dispatch
+            ) of
                 ok -> ok;
                 {error, Reason} -> {error, {http_ipv6_listener_failed, Reason}}
             end;
@@ -222,7 +229,11 @@ start_https_listener(IP, Port, Dispatch) ->
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 4 ->
             start_https_listener_named(proxy_https_listener_v4, [{ip, ParsedIP}, {port, Port}], Dispatch);
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 8 ->
-            start_https_listener_named(proxy_https_listener_v6, [inet6, {ip, ParsedIP}, {port, Port}], Dispatch);
+            start_https_listener_named(
+                proxy_https_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, ParsedIP}, {port, Port}],
+                Dispatch
+            );
         {error, Reason} ->
             {error, Reason}
     end.
@@ -231,7 +242,11 @@ start_https_listener(IP, Port, Dispatch) ->
 start_https_listener_all_families(Port, Dispatch) ->
     case start_https_listener_named(proxy_https_listener_v4, [{ip, {0, 0, 0, 0}}, {port, Port}], Dispatch) of
         ok ->
-            case start_https_listener_named(proxy_https_listener_v6, [inet6, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}], Dispatch) of
+            case start_https_listener_named(
+                proxy_https_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}],
+                Dispatch
+            ) of
                 ok -> ok;
                 {error, Reason} -> {error, {https_ipv6_listener_failed, Reason}}
             end;
@@ -251,32 +266,96 @@ start_https_listener_named(Name, TransportOptions, Dispatch) ->
         {error, Reason} -> {error, Reason}
     end.
 
--spec open_h3_listeners(string(), integer()) -> {ok, [port()]} | {error, term()}.
+-spec open_h3_listeners(string(), integer()) -> {ok, [atom() | port()]} | {error, term()}.
 open_h3_listeners("any", Port) ->
     case try_start_h3_server(Port) of
         {ok, ServerNames} ->
+            io:format(
+                "pertisk_eproxy: HTTP/3 QUIC is active on UDP/~w (quic_h3 ~p).~n",
+                [Port, ServerNames]
+            ),
             {ok, ServerNames};
         {error, Reason} ->
-            io:format("HTTP/3 server unavailable (~p), falling back to UDP reservation~n", [Reason]),
-            open_h3_listeners_for_all_families(Port)
+            print_quic_h3_failure(Port, Reason),
+            case open_h3_listeners_for_all_families(Port) of
+                {ok, _} = Ok ->
+                    io:format(
+                        "*** WARNING: UDP/~w is plain gen_udp (not QUIC). "
+                        "lsof will still show beam on UDP/*:~w but curl --http3-only will time out.~n",
+                        [Port, Port]
+                    ),
+                    Ok;
+                Err ->
+                    Err
+            end
     end;
 open_h3_listeners("*", Port) ->
     open_h3_listeners("any", Port);
 open_h3_listeners(IP, Port) ->
     case try_start_h3_server(Port) of
         {ok, ServerNames} ->
+            io:format(
+                "pertisk_eproxy: HTTP/3 QUIC is active on UDP/~w listen_addr ~s (quic_h3 ~p).~n",
+                [Port, IP, ServerNames]
+            ),
             {ok, ServerNames};
         {error, Reason} ->
-            io:format("HTTP/3 server unavailable (~p), falling back to UDP reservation~n", [Reason]),
+            io:format("pertisk_eproxy: (listen_addr ~s)~n", [IP]),
+            print_quic_h3_failure(Port, Reason),
             case inet:parse_address(IP) of
                 {ok, ParsedIP} when tuple_size(ParsedIP) =:= 4 ->
-                    open_udp_socket(Port, [{ip, ParsedIP}]);
+                    reserve_udp_or_error(Port, open_udp_socket(Port, [{ip, ParsedIP}]));
                 {ok, ParsedIP} when tuple_size(ParsedIP) =:= 8 ->
-                    open_udp_socket(Port, [inet6, {ip, ParsedIP}]);
+                    reserve_udp_or_error(Port, open_udp_socket(Port, [inet6, {ip, ParsedIP}]));
                 {error, ParseReason} ->
                     {error, ParseReason}
             end
     end.
+
+-spec reserve_udp_or_error(integer(), {ok, [port()]} | {error, term()}) -> {ok, [port()]} | {error, term()}.
+reserve_udp_or_error(Port, {ok, _} = Ok) ->
+    io:format(
+        "*** WARNING: UDP/~w is plain gen_udp (not QUIC). "
+        "curl --http3-only will time out until quic_h3 starts.~n",
+        [Port]
+    ),
+    Ok;
+reserve_udp_or_error(_Port, Err) ->
+    Err.
+
+%% Print full supervisor / listener failure (default ~p depth truncates child specs).
+-spec print_quic_h3_failure(inet:port_number(), term()) -> ok.
+print_quic_h3_failure(Port, Reason) ->
+    Detail = iolist_to_binary(io_lib:format("~P", [Reason, 500])),
+    io:format("pertisk_eproxy: quic_h3 failed; opening UDP port reservation only.~n", []),
+    io:format("pertisk_eproxy: failure detail (print depth 500):~n~ts~n", [Detail]),
+    maybe_quic_failure_hints(Port, Detail),
+    ok.
+
+-spec maybe_quic_failure_hints(inet:port_number(), binary()) -> ok.
+maybe_quic_failure_hints(Port, Detail) ->
+    S = unicode:characters_to_list(Detail),
+    _ =
+        case string:find(S, "eaddrinuse") of
+            nomatch ->
+                ok;
+            _ ->
+                io:format(
+                    "pertisk_eproxy: hint: UDP/~w may already be in use. Try: sudo lsof -nP -iUDP/~w~n",
+                    [Port, Port]
+                )
+        end,
+    _ =
+        case string:find(S, "already_started") of
+            nomatch ->
+                ok;
+            _ ->
+                io:format(
+                    "pertisk_eproxy: hint: QUIC listener name still registered — use a clean `rebar3 shell` / restart the VM.~n",
+                    []
+                )
+        end,
+    ok.
 
 -spec try_start_h3_server(integer()) -> {ok, started} | {error, term()}.
 try_start_h3_server(Port) ->
@@ -329,8 +408,21 @@ start_h3_dual_listeners(Port, Cert, CertChain, Key) ->
                 {ok, _PidV6} ->
                     {ok, [?H3_SERVER_NAME_V4, ?H3_SERVER_NAME_V6]};
                 {error, ReasonV6} ->
-                    stop_h3_listener(?H3_SERVER_NAME_V4),
-                    {error, {quic_h3_v6_start_failed, ReasonV6}}
+                    case start_h3_server_family(?H3_SERVER_NAME_V6, Port, inet6, [], Cert, CertChain, Key) of
+                        {ok, _PidV6} ->
+                            io:format(
+                                "pertisk_eproxy: HTTP/3 IPv6 listener started (retry without ipv6_v6only).~n",
+                                []
+                            ),
+                            {ok, [?H3_SERVER_NAME_V4, ?H3_SERVER_NAME_V6]};
+                        {error, ReasonV6b} ->
+                            io:format(
+                                "pertisk_eproxy: HTTP/3 IPv6 QUIC failed (v6only ~p, plain inet6 ~p); "
+                                "continuing with IPv4-only QUIC.~n",
+                                [ReasonV6, ReasonV6b]
+                            ),
+                            {ok, [?H3_SERVER_NAME_V4]}
+                    end
             end;
         {error, ReasonV4} ->
             {error, {quic_h3_v4_start_failed, ReasonV4}}
@@ -381,30 +473,183 @@ decode_quic_credentials(CertPem, KeyPem) ->
             {error, Reason}
     end.
 
--spec h3_handler(pid(), non_neg_integer(), binary(), binary(), list()) -> any().
-h3_handler(Conn, StreamId, <<"GET">>, Path, _Headers) ->
-    Body = <<"pertisk-eproxy http/3 ok path=", Path/binary>>,
-    send_h3_response(Conn, StreamId, 200, Body);
-h3_handler(Conn, StreamId, _Method, _Path, _Headers) ->
-    send_h3_response(Conn, StreamId, 405, <<"method not allowed">>).
+-spec h3_handler(pid(), non_neg_integer(), iodata(), iodata(), list()) -> any().
+h3_handler(Conn, StreamId, Method, Path, Headers) ->
+    try
+        MethodBin = iolist_to_binary(Method),
+        PathBin = iolist_to_binary(Path),
+        Authority = h3_header_first(<<":authority">>, Headers),
+        Host =
+            case Authority of
+                <<>> -> <<>>;
+                _ -> strip_h3_host(Authority)
+            end,
+        {PathOnly, Query} = split_h3_path_query(PathBin),
+        case Host of
+            <<>> ->
+                send_h3_error_json(Conn, StreamId, 400, #{error => <<"missing :authority">>});
+            _ ->
+                case pertisk_eproxy_proxy:get_upstream(Host) of
+                    {error, not_found} ->
+                        send_h3_error_json(Conn, StreamId, 404, #{
+                            error => <<"No upstream configured for host">>,
+                            host => Host
+                        });
+                    {ok, Upstream} ->
+                        h3_dispatch(Conn, StreamId, MethodBin, PathOnly, Query, Headers, Upstream)
+                end
+        end
+    catch
+        Class:Reason:Stacktrace ->
+            io:format("H3 handler crashed: ~p:~p~nStacktrace: ~p~n", [Class, Reason, Stacktrace]),
+            send_h3_response(Conn, StreamId, 500, <<"internal server error">>)
+    end.
 
--spec send_h3_response(pid(), non_neg_integer(), non_neg_integer(), binary()) -> ok.
-send_h3_response(Conn, StreamId, Status, Body) ->
-    Headers = [
-        {<<"content-type">>, <<"text/plain">>}
-    ],
-    case quic_h3:send_response(Conn, StreamId, Status, Headers) of
+-spec h3_dispatch(pid(), non_neg_integer(), binary(), binary(), binary(), list(), map()) -> ok.
+h3_dispatch(Conn, StreamId, MethodBin, PathOnly, Query, Headers, Upstream) ->
+    case h3_method(MethodBin) of
+        {ok, M} ->
+            ReqMap = h3_request_headers_to_map(Headers),
+            case pertisk_eproxy_proxy_handler:h1_upstream(M, PathOnly, Query, ReqMap, <<>>, Upstream) of
+                {ok, Status, RespHdrs, RespBody} ->
+                    RespFields = h3_prepare_response_headers(RespHdrs, RespBody, M),
+                    send_h3_response_fields(Conn, StreamId, Status, RespFields, RespBody);
+                {error, Reason} ->
+                    send_h3_error_json(Conn, StreamId, 502, #{
+                        error => iolist_to_binary(io_lib:format("~p", [Reason]))
+                    })
+            end;
+        {error, body_not_supported} ->
+            send_h3_error_json(Conn, StreamId, 501, #{
+                error => <<"HTTP/3 request bodies (POST/PUT/PATCH) are not implemented yet">>
+            });
+        {error, method_not_allowed} ->
+            send_h3_response(Conn, StreamId, 405, <<"method not allowed">>)
+    end.
+
+-spec h3_method(binary()) ->
+    {ok, head | get | post | put | patch | delete | options} | {error, body_not_supported | method_not_allowed}.
+h3_method(<<"GET">>) -> {ok, get};
+h3_method(<<"HEAD">>) -> {ok, head};
+h3_method(<<"DELETE">>) -> {ok, delete};
+h3_method(<<"OPTIONS">>) -> {ok, options};
+h3_method(<<"POST">>) -> {error, body_not_supported};
+h3_method(<<"PUT">>) -> {error, body_not_supported};
+h3_method(<<"PATCH">>) -> {error, body_not_supported};
+h3_method(_) -> {error, method_not_allowed}.
+
+-spec h3_header_first(binary(), list()) -> binary().
+h3_header_first(Key, Headers) ->
+    case lists:keyfind(Key, 1, Headers) of
+        {_, V} -> iolist_to_binary(V);
+        false -> <<>>
+    end.
+
+-spec strip_h3_host(binary()) -> binary().
+strip_h3_host(Auth) ->
+    hd(binary:split(Auth, <<":">>, [global])).
+
+-spec split_h3_path_query(binary()) -> {binary(), binary()}.
+split_h3_path_query(P) ->
+    case binary:split(P, <<"?">>) of
+        [A] -> {A, <<>>};
+        [A, B] -> {A, B}
+    end.
+
+-spec h3_request_headers_to_map(list()) -> map().
+h3_request_headers_to_map(Headers) ->
+    lists:foldl(
+        fun({K0, V0}, Acc) ->
+            K = iolist_to_binary(K0),
+            V = iolist_to_binary(V0),
+            case K of
+                <<":", _/binary>> ->
+                    Acc;
+                _ ->
+                    case h3_drop_request_header(K) of
+                        true -> Acc;
+                        false -> maps:put(K, V, Acc)
+                    end
+            end
+        end,
+        #{},
+        Headers
+    ).
+
+-spec h3_drop_request_header(binary()) -> boolean().
+h3_drop_request_header(<<"connection">>) -> true;
+h3_drop_request_header(<<"keep-alive">>) -> true;
+h3_drop_request_header(<<"transfer-encoding">>) -> true;
+h3_drop_request_header(<<"upgrade">>) -> true;
+h3_drop_request_header(<<"proxy-connection">>) -> true;
+h3_drop_request_header(<<"te">>) -> true;
+h3_drop_request_header(_) -> false.
+
+-spec h3_prepare_response_headers([{string(), string()}], binary(), head | get | delete | options) ->
+    [{binary(), binary()}].
+h3_prepare_response_headers(ResponseHeaders, Body, Method) ->
+    Map0 = maps:from_list(
+        [{list_to_binary(string:lowercase(K)), list_to_binary(V)} || {K, V} <- ResponseHeaders]
+    ),
+    Map1 = maps:without(
+        [<<"transfer-encoding">>, <<"connection">>, <<"keep-alive">>, <<"upgrade">>, <<"proxy-connection">>],
+        Map0
+    ),
+    Map2 = pertisk_eproxy_proxy_handler:with_alt_svc(Map1),
+    Map3 =
+        case Method of
+            head ->
+                case maps:is_key(<<"content-length">>, Map2) of
+                    true -> Map2;
+                    false -> maps:put(<<"content-length">>, <<"0">>, Map2)
+                end;
+            _ ->
+                CL = integer_to_binary(byte_size(Body)),
+                maps:put(<<"content-length">>, CL, maps:remove(<<"content-length">>, Map2))
+        end,
+    Map4 =
+        case maps:is_key(<<"content-type">>, Map3) of
+            true -> Map3;
+            false -> maps:put(<<"content-type">>, <<"application/octet-stream">>, Map3)
+        end,
+    maps:to_list(Map4).
+
+-spec send_h3_error_json(pid(), non_neg_integer(), pos_integer(), map()) -> ok.
+send_h3_error_json(Conn, StreamId, Status, Map) ->
+    Body = jiffy:encode(Map),
+    send_h3_response_fields(Conn, StreamId, Status, [
+        {<<"content-type">>, <<"application/json">>},
+        {<<"content-length">>, integer_to_binary(byte_size(Body))}
+    ], Body).
+
+-spec send_h3_response_fields(pid(), non_neg_integer(), non_neg_integer(), [{binary(), binary()}], binary()) -> ok.
+send_h3_response_fields(Conn, StreamId, Status, Fields, Body) ->
+    case catch quic_h3:send_response(Conn, StreamId, Status, Fields) of
         ok ->
-            case quic_h3:send_data(Conn, StreamId, Body, true) of
-                ok -> ok;
+            case catch quic_h3:send_data(Conn, StreamId, Body, true) of
+                ok ->
+                    ok;
                 {error, Reason} ->
                     io:format("h3 send_data failed: ~p~n", [Reason]),
+                    ok;
+                {'EXIT', Reason} ->
+                    io:format("h3 send_data exit: ~p~n", [Reason]),
                     ok
             end;
         {error, Reason} ->
             io:format("h3 send_response failed: ~p~n", [Reason]),
+            ok;
+        {'EXIT', Reason} ->
+            io:format("h3 send_response exit: ~p~n", [Reason]),
             ok
     end.
+
+-spec send_h3_response(pid(), non_neg_integer(), non_neg_integer(), binary()) -> ok.
+send_h3_response(Conn, StreamId, Status, Body) ->
+    send_h3_response_fields(Conn, StreamId, Status, [
+        {<<"content-type">>, <<"text/plain">>},
+        {<<"content-length">>, integer_to_binary(byte_size(Body))}
+    ], Body).
 
 -spec open_h3_listeners_for_all_families(integer()) -> {ok, [port()]} | {error, term()}.
 open_h3_listeners_for_all_families(Port) ->

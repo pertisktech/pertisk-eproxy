@@ -174,7 +174,11 @@ start_admin_listener(IP, Port, Dispatch) ->
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 4 ->
             start_admin_listener_named(admin_listener_v4, [{ip, ParsedIP}, {port, Port}], Dispatch);
         {ok, ParsedIP} when tuple_size(ParsedIP) =:= 8 ->
-            start_admin_listener_named(admin_listener_v6, [inet6, {ip, ParsedIP}, {port, Port}], Dispatch);
+            start_admin_listener_named(
+                admin_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, ParsedIP}, {port, Port}],
+                Dispatch
+            );
         {error, Reason} ->
             {error, Reason}
     end.
@@ -183,7 +187,11 @@ start_admin_listener(IP, Port, Dispatch) ->
 start_admin_listener_all_families(Port, Dispatch) ->
     case start_admin_listener_named(admin_listener_v4, [{ip, {0, 0, 0, 0}}, {port, Port}], Dispatch) of
         ok ->
-            case start_admin_listener_named(admin_listener_v6, [inet6, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}], Dispatch) of
+            case start_admin_listener_named(
+                admin_listener_v6,
+                [inet6, {ipv6_v6only, true}, {ip, {0, 0, 0, 0, 0, 0, 0, 0}}, {port, Port}],
+                Dispatch
+            ) of
                 ok -> ok;
                 {error, Reason} -> {error, {admin_ipv6_listener_failed, Reason}}
             end;

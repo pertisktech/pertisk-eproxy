@@ -11,7 +11,8 @@
         cowboy,
         jiffy,
         quic,
-        lager
+        jsone,
+        jsonlog
     ]},
     {env, [
         {listen_addr, "any"},
@@ -37,6 +38,7 @@
         pertisk_eproxy_proxy_handler,
         pertisk_eproxy_admin_handler,
         pertisk_eproxy_acme,
-        pertisk_eproxy_compression
+        pertisk_eproxy_compression,
+        pertisk_eproxy_log_filter
     ]}
 ]}.

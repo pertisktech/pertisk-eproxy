@@ -5,7 +5,7 @@
 
 -module(pertisk_eproxy_proxy_handler).
 
--export([init/2]).
+-export([init/2, h1_upstream/6, with_alt_svc/1]).
 
 -spec init(cowboy_req:req(), term()) -> {ok, cowboy_req:req(), term()}.
 init(Req, State) ->
@@ -25,13 +25,10 @@ proxy_request(Req, State, Upstream) ->
     Path = cowboy_req:path(Req),
     QueryString = cowboy_req:qs(Req),
     {ok, Body, Req1} = cowboy_req:read_body(Req),
-    Target = normalize_target(maps:get(target, Upstream)),
-    URL = build_target_url(Target, Path, QueryString),
-    Headers = build_outgoing_headers(cowboy_req:headers(Req1), Target),
-    Request = request_spec(Method, binary_to_list(URL), Headers, Body),
-    case httpc:request(Method, Request, [], [{body_format, binary}]) of
-        {ok, {{_Version, StatusCode, _ReasonPhrase}, ResponseHeaders, ResponseBody}} ->
-            RespHeaders = maps:from_list([{list_to_binary(K), list_to_binary(V)} || {K, V} <- ResponseHeaders]),
+    case h1_upstream(Method, Path, QueryString, cowboy_req:headers(Req1), Body, Upstream) of
+        {ok, StatusCode, ResponseHeaders, ResponseBody} ->
+            RespHeaders0 = maps:from_list([{list_to_binary(K), list_to_binary(V)} || {K, V} <- ResponseHeaders]),
+            RespHeaders = with_alt_svc(RespHeaders0),
             Resp = cowboy_req:reply(StatusCode, RespHeaders, ResponseBody, Req1),
             {ok, Resp, State};
         {error, Reason} ->
@@ -39,6 +36,35 @@ proxy_request(Req, State, Upstream) ->
             Resp = cowboy_req:reply(502, #{<<"content-type">> => <<"application/json">>}, ErrorBody, Req1),
             {ok, Resp, State}
     end.
+
+%% @doc Shared HTTP/1.1 upstream call (Cowboy and HTTP/3 handler).
+-spec h1_upstream(
+    head | get | post | put | patch | delete | options,
+    binary(),
+    binary(),
+    cowboy:http_headers(),
+    binary(),
+    map()
+) ->
+    {ok, pos_integer(), [{string(), string()}], binary()} | {error, term()}.
+h1_upstream(Method, Path, QueryString, HeadersMap, Body, Upstream) ->
+    Target = normalize_target(maps:get(target, Upstream)),
+    URL = build_target_url(Target, Path, QueryString),
+    HdrList = build_outgoing_headers(HeadersMap, Target),
+    Request = request_spec(Method, binary_to_list(URL), HdrList, Body),
+    case httpc:request(Method, Request, [], [{body_format, binary}]) of
+        {ok, {{_Version, StatusCode, _ReasonPhrase}, ResponseHeaders, ResponseBody}} ->
+            {ok, StatusCode, ResponseHeaders, ResponseBody};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec with_alt_svc(cowboy:http_headers()) -> cowboy:http_headers().
+with_alt_svc(Headers) ->
+    H3Port = application:get_env(pertisk_eproxy, listen_port_h3, 443),
+    %% Advertise HTTP/3 on the QUIC UDP port (same host; clients probe UDP).
+    AltSvc = iolist_to_binary(io_lib:format("h3=\":~w\"; ma=86400", [H3Port])),
+    maps:put(<<"alt-svc">>, AltSvc, maps:remove(<<"alt-svc">>, Headers)).
 
 -spec strip_port(binary()) -> binary().
 strip_port(Host) ->
