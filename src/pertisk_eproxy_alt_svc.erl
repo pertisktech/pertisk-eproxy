@@ -12,8 +12,8 @@ header_value() ->
     Port = quic_udp_port(),
     PortBin = integer_to_binary(Port),
     %% RFC 7838: alternate authority is ":port" on the same host (e.g. h3=":443"), not "443".
-    %% Advertise only `h3` (Chromium); omit h3-29 and persist=1 (Node/Quinn-style stacks).
-    <<"h3=\":", PortBin/binary, "\"; ma=86400">>.
+    %% Include both final (`h3`) and draft token (`h3-29`) with persistence for Chromium variants.
+    <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1, h3-29=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
 
 %% @doc Add or replace Alt-Svc on a client-facing response map when appropriate.
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().
@@ -29,10 +29,19 @@ should_advertise(Req, Host) ->
 
 https_front_request(Req) ->
     case cowboy_req:scheme(Req) of
+        https ->
+            true;
         <<"https">> ->
             true;
         _ ->
-            cowboy_req:port(Req) =:= 443
+            case cowboy_req:header(<<"x-forwarded-proto">>, Req, <<>>) of
+                <<"https">> ->
+                    true;
+                <<"HTTPS">> ->
+                    true;
+                _ ->
+                    cowboy_req:port(Req) =:= 443
+            end
     end.
 
 quic_udp_port() ->

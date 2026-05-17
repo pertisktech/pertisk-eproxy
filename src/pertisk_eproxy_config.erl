@@ -272,6 +272,11 @@ json_to_config(Json) ->
                 V -> parse_opt_bool(V)
             end,
         h3_probe_port => parse_opt_int(maps:get(<<"h3_probe_port">>, Json, null)),
+        tls_http2_enabled =>
+            case maps:get(<<"tls_http2_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
         h3_idle_timeout_secs =>
             parse_opt_int(maps:get(<<"h3_idle_timeout_secs">>, Json, null)),
         h3_keepalive_interval_secs =>
@@ -279,8 +284,8 @@ json_to_config(Json) ->
         %% dual_stack: one [::] UDP socket (IPv4+IPv6) — matches Quinn/Node/Go; best for Chrome.
         %% split: separate 0.0.0.0 + [::] reuseport listeners (legacy curl -4 workaround).
         h3_udp_bind => parse_h3_udp_bind(maps:get(<<"h3_udp_bind">>, Json, <<"dual_stack">>)),
-        %% false = default dynamic QPACK (Chrome/Firefox); true = static-only table.
-        h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, false)),
+        %% true = default static-only QPACK (maximum browser interop); false = dynamic table.
+        h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),

@@ -483,7 +483,9 @@ encode_transport_param(original_dcid, Value) ->
 encode_transport_param(max_idle_timeout, Value) ->
     encode_tp(?TP_MAX_IDLE_TIMEOUT, quic_varint:encode(Value));
 encode_transport_param(max_udp_payload_size, Value) ->
-    encode_tp(?TP_MAX_UDP_PAYLOAD_SIZE, quic_varint:encode(Value));
+    %% Force conservative server advertisement to avoid path MTU and interop issues.
+    SafeValue = min(1200, max(1200, Value)),
+    encode_tp(?TP_MAX_UDP_PAYLOAD_SIZE, quic_varint:encode(SafeValue));
 encode_transport_param(initial_max_data, Value) ->
     encode_tp(?TP_INITIAL_MAX_DATA, quic_varint:encode(Value));
 encode_transport_param(initial_max_stream_data_bidi_local, Value) ->
@@ -508,8 +510,9 @@ encode_transport_param(initial_scid, Value) ->
     encode_tp(?TP_INITIAL_SCID, Value);
 encode_transport_param(preferred_address, #preferred_address{} = PA) ->
     encode_tp(?TP_PREFERRED_ADDRESS, encode_preferred_address(PA));
-encode_transport_param(max_datagram_frame_size, Value) when Value > 0 ->
-    encode_tp(?TP_MAX_DATAGRAM_FRAME_SIZE, quic_varint:encode(Value));
+%% Deliberately do not advertise DATAGRAM support to keep transport params strict.
+encode_transport_param(max_datagram_frame_size, _Value) ->
+    <<>>;
 %% draft-ietf-quic-reliable-stream-reset-07 - Reliable RESET_STREAM
 encode_transport_param(reset_stream_at, true) ->
     encode_tp(?TP_RESET_STREAM_AT, <<>>);

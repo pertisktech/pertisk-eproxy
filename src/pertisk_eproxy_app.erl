@@ -299,9 +299,14 @@ tls_opts(Config) ->
         {undefined, undefined} ->
             [];
         {CertFile, KeyFile} ->
+            H2Enabled = maps:get(tls_http2_enabled, Config, true),
+            Alpn = case H2Enabled of
+                false -> [<<"http/1.1">>];
+                _ -> [<<"h2">>, <<"http/1.1">>]
+            end,
             Base = [{certfile, CertFile}, {keyfile, KeyFile},
              {versions, ['tlsv1.2', 'tlsv1.3']},
-             {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}],
+             {alpn_preferred_protocols, Alpn}],
             SniHosts = build_sni_hosts(Config),
             case SniHosts of
                 [] -> Base;

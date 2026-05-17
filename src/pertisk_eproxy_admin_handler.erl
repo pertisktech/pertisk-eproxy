@@ -681,9 +681,13 @@ config_to_json(Config) ->
         <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
         <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true)
     },
-    WithH3ProbePort = case maps:get(h3_probe_port, Config, undefined) of
-        Pp when is_integer(Pp) -> WithH3Gw#{<<"h3_probe_port">> => Pp};
+    WithTlsH2 = case maps:get(tls_http2_enabled, Config, undefined) of
+        Vh2 when is_boolean(Vh2) -> WithH3Gw#{<<"tls_http2_enabled">> => Vh2};
         _ -> WithH3Gw
+    end,
+    WithH3ProbePort = case maps:get(h3_probe_port, Config, undefined) of
+        Pp when is_integer(Pp) -> WithTlsH2#{<<"h3_probe_port">> => Pp};
+        _ -> WithTlsH2
     end,
     case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
         {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->

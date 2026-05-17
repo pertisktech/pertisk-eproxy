@@ -1,9 +1,15 @@
 {
+    "mode": "proxy_admin",
+    "http_addr": "0.0.0.0",
+    "http_port": 80,
+    "management_addr": "0.0.0.0",
+    "management_port": 9080,
     "h3_api_gateway_enabled": true,
     "h3_probe_enabled": true,
-    "quic_enabled": true,
+    "tls_http2_enabled": true,
+    "quic_enabled": false,
     "h3_idle_timeout_secs": 300,
     "h3_keepalive_interval_secs": 30,
     "h3_udp_bind": "dual_stack",
-    "h3_qpack_static": false
+    "h3_qpack_static": true
 }

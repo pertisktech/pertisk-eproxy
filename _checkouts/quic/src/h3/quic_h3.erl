@@ -724,7 +724,15 @@ build_server_quic_opts(Opts) ->
     %% TLS options (required for server)
     TlsOpts = maps:with([cert, key, cacerts, cert_chain], Opts),
     %% Custom QUIC options
-    QuicOpts = maps:get(quic_opts, Opts, #{}),
+    QuicOpts0 = maps:get(quic_opts, Opts, #{}),
+    %% Hard safety defaults for browser interop.
+    %% Keep payload at QUIC minimum and avoid advertising H3 DATAGRAM support.
+    QuicOpts = QuicOpts0#{
+        max_udp_payload_size => 1200,
+        max_datagram_frame_size => 0,
+        pmtu_enabled => false,
+        pmtu_max_mtu => 1200
+    },
     Merged = maps:merge(maps:merge(BaseOpts, TlsOpts), QuicOpts),
     maybe_enable_quic_datagrams(Opts, Merged).
 

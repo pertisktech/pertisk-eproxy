@@ -2987,7 +2987,14 @@ send_app_packet_internal(Payload, Frames, State) ->
         Cipher, Key, IV, HP, PN, FirstByte, DCID, PaddedPayload
     ),
     PacketSize = byte_size(Packet),
-    SendResult = do_socket_send(Packet, State),
+    MaxUdpPayloadSize = get_effective_max_udp_payload_size(State),
+    SendResult =
+        case PacketSize =< MaxUdpPayloadSize of
+            true ->
+                do_socket_send(Packet, State);
+            false ->
+                {error, {packet_too_large_local, PacketSize, MaxUdpPayloadSize}}
+        end,
 
     %% Handle send result - only track packet and update state if send succeeded
     case SendResult of
@@ -6076,11 +6083,10 @@ do_open_unidirectional_stream(
 
 %% @doc Calculate max stream data per packet based on current PMTU.
 -spec get_max_stream_data_per_packet(#state{}) -> pos_integer().
-get_max_stream_data_per_packet(#state{pmtu_state = undefined}) ->
-    ?DEFAULT_MAX_STREAM_DATA_PER_PACKET;
-get_max_stream_data_per_packet(#state{pmtu_state = PMTUState}) ->
-    MTU = quic_pmtu:current_mtu(PMTUState),
-    max(MTU - ?STREAM_PACKET_OVERHEAD, ?DEFAULT_MAX_STREAM_DATA_PER_PACKET).
+get_max_stream_data_per_packet(State) ->
+    MaxUdp = get_effective_max_udp_payload_size(State),
+    %% Keep a conservative minimum chunk size while honoring negotiated/path UDP limits.
+    max(MaxUdp - ?STREAM_PACKET_OVERHEAD, 256).
 
 %% @doc Get the peer's stream data limit for a given stream type.
 %% RFC 9000 Section 4.1: Each endpoint independently sets flow control limits.
@@ -9371,20 +9377,28 @@ handle_pmtu_probe_loss(
             State
     end.
 
+%% @doc Get effective outbound UDP payload ceiling.
+%% This clamps local PMTU with peer-advertised max_udp_payload_size.
+-spec get_effective_max_udp_payload_size(#state{}) -> pos_integer().
+get_effective_max_udp_payload_size(#state{transport_params = TP} = State) ->
+    Local = get_current_mtu(State),
+    Peer = maps:get(max_udp_payload_size, TP, Local),
+    min(Local, Peer).
+
 %% @doc Get the current MTU for sending.
 -spec get_current_mtu(#state{}) -> pos_integer().
 get_current_mtu(#state{pmtu_state = undefined}) ->
-    ?DEFAULT_MAX_UDP_PAYLOAD_SIZE;
+    1200;
 get_current_mtu(#state{pmtu_state = PMTUState}) ->
-    quic_pmtu:current_mtu(PMTUState).
+    min(1200, quic_pmtu:current_mtu(PMTUState)).
 
 %% @doc Get the local max UDP payload size for transport parameters.
 %% Returns the configured max MTU from PMTU state, or the default if not configured.
 -spec get_local_max_udp_payload_size(#state{}) -> pos_integer().
 get_local_max_udp_payload_size(#state{pmtu_state = undefined}) ->
-    ?DEFAULT_MAX_UDP_PAYLOAD_SIZE;
+    1200;
 get_local_max_udp_payload_size(#state{pmtu_state = PMTUState}) ->
-    PMTUState#pmtu_state.max_mtu.
+    min(1200, PMTUState#pmtu_state.max_mtu).
 
 %%====================================================================
 %% Test Helpers

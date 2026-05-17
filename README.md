@@ -114,3 +114,24 @@ cd admin && npm ci && npm run build
 ## Further reading
 
 - **`README_SQLITE.md`** — SQLite schema, certificates, DNS providers, and related operational notes.
+
+## HTTP/3 transport verification
+
+Use the helper script to print negotiated QUIC transport parameters from both public DNS and forced-localhost paths.
+
+```bash
+chmod +x scripts/verify_h3_params.sh
+scripts/verify_h3_params.sh eproxy.arm.thaidevops.co /
+```
+
+The script checks ports `443` and `444` and reports lines such as `remote transport[...]` and `peer idle timeout is ...`.
+
+It also prints a PASS/FAIL summary and returns non-zero if required checks fail:
+
+- Required: `public-dns:443`, `localhost-resolve:443`, `localhost-resolve:444`
+- Optional: `public-dns:444` (often closed on public edge by design)
+
+In addition, it verifies reverse-proxy protocol behavior on localhost mapping:
+
+- Required HTTP/3 routes: `/`, `/login`, `/api/auth/config`, `/api/version`, `/api/health`
+- Required WebSocket handshake over HTTP/1.1: `/api/realtime` returns `101 Switching Protocols`

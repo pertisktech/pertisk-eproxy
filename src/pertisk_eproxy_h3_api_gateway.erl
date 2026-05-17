@@ -38,6 +38,7 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
     Config = pertisk_eproxy_config:get_config(),
     CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
     _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
+    QuicOpts = quic_transport_opts(Config),
     case CertChain of
         [] ->
             lager:warning(
@@ -48,12 +49,21 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
             lager:info("HTTP/3 listener: TLS chain ~p cert(s) (leaf + ~p intermediate(s))",
                        [1 + length(CertChain), length(CertChain)])
     end,
+    _ = lager:info(
+        "HTTP/3 gateway QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w",
+        [
+            maps:get(idle_timeout, QuicOpts, undefined),
+            maps:get(keep_alive_interval, QuicOpts, undefined),
+            maps:get(max_udp_payload_size, QuicOpts, undefined),
+            maps:get(max_datagram_frame_size, QuicOpts, undefined)
+        ]
+    ),
     BaseOpts = maps:merge(
         tls_server_opts(CertDer, KeyTerm, CertChain),
         #{
             settings => h3_http_settings(Config),
             handler => ?MODULE,
-            quic_opts => quic_transport_opts(Config)
+            quic_opts => QuicOpts
         }
     ),
     start_prefer_ipv6_server(Port, BaseOpts).
@@ -80,11 +90,21 @@ start_probe(Config) ->
 
 do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
     Config = pertisk_eproxy_config:get_config(),
+    QuicOpts = quic_transport_opts(Config),
+    _ = lager:info(
+        "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w",
+        [
+            maps:get(idle_timeout, QuicOpts, undefined),
+            maps:get(keep_alive_interval, QuicOpts, undefined),
+            maps:get(max_udp_payload_size, QuicOpts, undefined),
+            maps:get(max_datagram_frame_size, QuicOpts, undefined)
+        ]
+    ),
     ProbeOpts = maps:merge(
         tls_server_opts(CertDer, KeyTerm, CertChain),
         #{
             handler => pertisk_eproxy_h3_probe_handler,
-            quic_opts => quic_transport_opts(Config)
+            quic_opts => QuicOpts
         }
     ),
     start_prefer_ipv6_server(?PROBE_SERVER, ProbePort, ProbeOpts).
@@ -271,10 +291,11 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
 %% Match pertisk-rproxy defaults: 300s QUIC idle, 30s keepalive (ms in erlang_quic).
 -define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 300).
 -define(H3_KEEPALIVE_SECS_DEFAULT, 30).
+-define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1200).
 
 %% HTTP/3 SETTINGS sent to clients (Chrome expects default dynamic QPACK like Node/Go/Rust).
 h3_http_settings(Config) ->
-    case maps:get(h3_qpack_static, Config, false) of
+    case maps:get(h3_qpack_static, Config, true) of
         true ->
             #{
                 qpack_max_table_capacity => 0,
@@ -330,12 +351,23 @@ quic_transport_opts(Config) ->
             _ ->
                 ?H3_KEEPALIVE_SECS_DEFAULT
         end,
-    Opts = #{idle_timeout => IdleSecs * 1000},
+    Base = #{
+        idle_timeout => IdleSecs * 1000,
+        %% Chromium can close with QUIC_PACKET_TOO_LARGE on some paths.
+        %% Keep server datagrams at QUIC minimum and avoid PMTU probing regressions.
+        socket_backend => gen_udp,
+        backend => gen_udp,
+        batching => #{enabled => false},
+        max_datagram_frame_size => 0,
+        max_udp_payload_size => ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE,
+        pmtu_enabled => false,
+        pmtu_max_mtu => ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE
+    },
     case KeepSecs of
         0 ->
-            Opts;
+            Base;
         _ ->
-            Opts#{keep_alive_interval => max(5000, KeepSecs * 1000)}
+            Base#{keep_alive_interval => max(5000, KeepSecs * 1000)}
     end.
 
 is_management_upstream(UpstreamAddr) ->

@@ -279,8 +279,7 @@ default_settings() ->
     #{
         qpack_max_table_capacity => ?H3_DEFAULT_QPACK_MAX_TABLE_CAPACITY,
         max_field_section_size => ?H3_DEFAULT_MAX_FIELD_SECTION_SIZE,
-        qpack_blocked_streams => ?H3_DEFAULT_QPACK_BLOCKED_STREAMS,
-        enable_connect_protocol => 0
+        qpack_blocked_streams => ?H3_DEFAULT_QPACK_BLOCKED_STREAMS
     }.
 
 %% @doc Encode settings map to SETTINGS frame payload.

@@ -97,11 +97,12 @@ websocket_handle(_Frame, State) ->
     {ok, State}.
 
 %% Message from gun (upstream) → forward to client, or handle close/errors.
-websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
-    {[Frame], State};
 
 websocket_info({gun_ws, _ConnPid, _SRef, close}, State) ->
     {[close], State};
+
+websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
+    {[Frame], State};
 
 websocket_info(
     {gun_upgrade, ConnPid, SRef, [<<"websocket">>], _Headers},
