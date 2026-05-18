@@ -1,7 +1,14 @@
 import FaIcon from "@/components/FaIcon";
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
-import { api, openRealtimeStream, type CertificateRow, type LogEntry, type RealtimeSnapshot } from '@/api/client';
+import {
+  api,
+  openRealtimeStream,
+  warmupHttp3ForChromium,
+  type CertificateRow,
+  type LogEntry,
+  type RealtimeSnapshot,
+} from '@/api/client';
 import {
   detectAuthMethodFromToken,
   getAuthMethod,
@@ -144,7 +151,7 @@ function LayoutShell() {
     let cancelled = false;
     api
       .authCheck()
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) return;
         if (!data.authenticated && getToken()) {
           clearAuth();
@@ -160,6 +167,8 @@ function LayoutShell() {
         const em = getEmail();
         if (em) setCurrentEmail(em);
         setCurrentAuthMethod(getAuthMethod());
+        await warmupHttp3ForChromium();
+        if (cancelled) return;
         hasCheckedSessionRef.current = true;
         setSessionVerified(true);
       })

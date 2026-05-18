@@ -275,6 +275,8 @@ build_proxy_routes() ->
         %% Realtime admin stream must always enter websocket proxy handler directly.
         %% This avoids relying solely on Upgrade header detection in generic handler.
         {"/api/realtime", pertisk_eproxy_ws_handler, []},
+        %% SSE avoids anchoring Chromium on HTTP/1.1 WebSocket (blocks HTTP/3 for the origin).
+        {"/api/realtime-sse", pertisk_eproxy_admin_sse_handler, realtime_sse},
         {"/[...]", pertisk_eproxy_handler, []}
     ].
 

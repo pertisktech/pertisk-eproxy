@@ -404,7 +404,95 @@ export type VersionResponse = { version: string };
 // HTTP helper
 // ---------------------------------------------------------------------------
 
+let chromiumH3WarmupDone = false;
+let chromiumH3WarmupPromise: Promise<void> | null = null;
+
+function isChromiumBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  return /Chrome\//.test(ua) && !/Edg\//.test(ua) && !/OPR\//.test(ua);
+}
+
+/**
+ * Chromium keeps multiplexing fetch/XHR on the warm HTTP/2 connection opened for the document.
+ * Opening a realtime WebSocket first (separate connection) helps establish the management path
+ * early without leaking auth tokens in query parameters.
+ */
+export function warmupHttp3ForChromium(): Promise<void> {
+  if (chromiumH3WarmupDone) return Promise.resolve();
+  if (chromiumH3WarmupPromise) return chromiumH3WarmupPromise;
+  if (typeof window === 'undefined' || window.location.protocol !== 'https:' || !isChromiumBrowser()) {
+    chromiumH3WarmupDone = true;
+    return Promise.resolve();
+  }
+
+  chromiumH3WarmupPromise = new Promise((resolve) => {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = new URL(`${proto}://${window.location.host}${API}/realtime`);
+    const token = getToken();
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      chromiumH3WarmupDone = true;
+      chromiumH3WarmupPromise = null;
+      resolve();
+    };
+
+    const ws = new WebSocket(url.toString());
+    const timer = window.setTimeout(() => {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+      console.debug('[h3-warmup] timeout (continuing)');
+      finish();
+    }, 2500);
+
+    ws.onopen = () => {
+      if (token) {
+        try {
+          ws.send(JSON.stringify({ type: 'auth', token }));
+        } catch {
+          // ignore
+        }
+      }
+    };
+    ws.onmessage = () => {
+      window.clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+      console.debug('[h3-warmup] realtime WS path ready');
+      finish();
+    };
+    ws.onerror = () => {
+      window.clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+      console.debug('[h3-warmup] realtime WS failed (continuing on TCP)');
+      finish();
+    };
+    ws.onclose = () => {
+      window.clearTimeout(timer);
+      finish();
+    };
+  });
+
+  return chromiumH3WarmupPromise;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  if (window.location.protocol === 'https:') {
+    await warmupHttp3ForChromium();
+  }
   const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -464,7 +552,53 @@ async function del<T>(path: string): Promise<T> {
   return request<T>(path, { method: 'DELETE' });
 }
 
-export function openRealtimeStream(
+function openRealtimeSse(
+  onMessage: (snapshot: RealtimeSnapshot) => void,
+  onError?: (event: Event) => void
+): () => void {
+  const token = getToken();
+  const url = new URL(`${API}/realtime-sse`, window.location.origin);
+  if (token) {
+    url.searchParams.set('token', token);
+  }
+  let source: EventSource | null = null;
+  let closedManually = false;
+
+  function connect() {
+    if (closedManually) return;
+    console.debug('[realtime-sse] connecting', { url: url.toString() });
+    source = new EventSource(url.toString());
+    source.addEventListener('snapshot', (event) => {
+      try {
+        const snap = JSON.parse((event as MessageEvent<string>).data) as RealtimeSnapshot;
+        const logsLen = Array.isArray(snap.logs) ? snap.logs.length : -1;
+        console.debug('[realtime-sse] snapshot', { logs: logsLen });
+        onMessage(snap);
+      } catch {
+        console.error('[realtime-sse] snapshot parse failed');
+      }
+    });
+    source.onerror = (event) => {
+      console.warn('[realtime-sse] error', event);
+      if (onError) onError(event);
+      if (!closedManually) {
+        source?.close();
+        source = null;
+        window.setTimeout(connect, 3000);
+      }
+    };
+  }
+
+  connect();
+  return () => {
+    closedManually = true;
+    console.info('[realtime-sse] manual close');
+    source?.close();
+    source = null;
+  };
+}
+
+function openRealtimeWebSocket(
   onMessage: (snapshot: RealtimeSnapshot) => void,
   onError?: (event: Event) => void,
   onSslJobPush?: (ev: SslJobPush) => void
@@ -507,16 +641,20 @@ export function openRealtimeStream(
 
   function connect() {
     if (closedManually) return;
-    const token = getToken();
     const url = new URL(baseUrl.toString());
-    if (token) {
-      url.searchParams.set('token', token);
-    }
     console.debug('[realtime-ws] connecting', { url: url.toString() });
     ws = new WebSocket(url.toString());
     ws.onopen = () => {
       console.info('[realtime-ws] open');
       reconnectAttempt = 0;
+      const token = getToken();
+      if (token) {
+        try {
+          ws?.send(JSON.stringify({ type: 'auth', token }));
+        } catch {
+          console.error('[realtime-ws] auth send failed');
+        }
+      }
     };
     ws.onmessage = (event) => {
       const parseAndDispatch = (raw: string) => {
@@ -569,6 +707,15 @@ export function openRealtimeStream(
     ws.onclose = (event) => {
       console.warn('[realtime-ws] close', { code: event.code, reason: event.reason, wasClean: event.wasClean });
       ws = null;
+      const unauthorized = event.code === 4401 || event.code === 1008;
+      if (unauthorized) {
+        clearToken();
+        clearUsername();
+        if (!window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
+        }
+        return;
+      }
       scheduleReconnect();
     };
   }
@@ -584,6 +731,23 @@ export function openRealtimeStream(
       // ignore
     }
   };
+}
+
+/** Live admin snapshots. Defaults to WebSocket; set `VITE_REALTIME_USE_SSE=1` to force SSE fallback. */
+export function openRealtimeStream(
+  onMessage: (snapshot: RealtimeSnapshot) => void,
+  onError?: (event: Event) => void,
+  onSslJobPush?: (ev: SslJobPush) => void
+): () => void {
+  const env = import.meta.env as {
+    VITE_REALTIME_USE_SSE?: string;
+    VITE_REALTIME_WEBSOCKET_URL?: string;
+  };
+  const forceSse = env.VITE_REALTIME_USE_SSE === '1';
+  if (forceSse) {
+    return openRealtimeSse(onMessage, onError);
+  }
+  return openRealtimeWebSocket(onMessage, onError, onSslJobPush);
 }
 
 function ensureDnsProviderRows(value: unknown): DnsProviderRow[] {

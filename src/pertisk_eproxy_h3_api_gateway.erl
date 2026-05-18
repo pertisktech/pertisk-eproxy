@@ -23,15 +23,20 @@
 start(Config) ->
     _ = ensure_quic_started(),
     _ = ensure_gun_started(),
-    Port = case maps:get(quic_port, Config, undefined) of
-        P when is_integer(P), P > 0 -> P;
-        _ -> maps:get(https_port, Config, 443)
-    end,
-    case load_cert_and_key(Config) of
-        {ok, {CertDer, KeyTerm, CertChain}} ->
-            do_start_gateway(Port, CertDer, KeyTerm, CertChain);
-        {error, Reason} ->
-            {error, Reason}
+    case ensure_qpack_chrome_compat() of
+        ok ->
+            Port = case maps:get(quic_port, Config, undefined) of
+                P when is_integer(P), P > 0 -> P;
+                _ -> maps:get(https_port, Config, 443)
+            end,
+            case load_cert_and_key(Config) of
+                {ok, {CertDer, KeyTerm, CertChain}} ->
+                    do_start_gateway(Port, CertDer, KeyTerm, CertChain);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, _} = Err ->
+            Err
     end.
 
 do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
@@ -76,16 +81,47 @@ stop() ->
 start_probe(Config) ->
     _ = ensure_quic_started(),
     _ = ensure_gun_started(),
-    BasePort = case maps:get(quic_port, Config, undefined) of
-        P when is_integer(P), P > 0 -> P;
-        _ -> maps:get(https_port, Config, 443)
-    end,
-    ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
-    case load_cert_and_key(Config) of
-        {ok, {CertDer, KeyTerm, CertChain}} ->
-            do_start_probe(ProbePort, CertDer, KeyTerm, CertChain);
-        {error, Reason} ->
-            {error, Reason}
+    case ensure_qpack_chrome_compat() of
+        ok ->
+            BasePort = case maps:get(quic_port, Config, undefined) of
+                P when is_integer(P), P > 0 -> P;
+                _ -> maps:get(https_port, Config, 443)
+            end,
+            ProbePort = maps:get(h3_probe_port, Config, BasePort + 1),
+            case load_cert_and_key(Config) of
+                {ok, {CertDer, KeyTerm, CertChain}} ->
+                    do_start_probe(ProbePort, CertDer, KeyTerm, CertChain);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% Chromium rejects header blocks from older quic_qpack builds where RIC=0
+%% was encoded with a pre-base sign bit ("Error calculating Base").
+ensure_qpack_chrome_compat() ->
+    case qpack_ric0_prefix_ok() of
+        true ->
+            ok;
+        false ->
+            lager:error(
+                "HTTP/3 disabled: incompatible quic_qpack detected (RIC=0 Base encoding). "
+                "Rebuild with vendored _checkouts/quic (for example: make clean && make)."
+            ),
+            {error, incompatible_quic_qpack}
+    end.
+
+qpack_ric0_prefix_ok() ->
+    try
+        %% Encode a static-only block; RFC 9204 requires RIC=0 and Base=0.
+        Encoded = quic_qpack:encode([{<<":status">>, <<"200">>}]),
+        case Encoded of
+            <<0, 0, _/binary>> -> true;
+            _ -> false
+        end
+    catch
+        _:_ -> false
     end.
 
 do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
@@ -643,6 +679,8 @@ management_listener_bind_stack() ->
     case {os:type(), BindMode} of
         {{unix, linux}, dual_stack} ->
             {<<"[::]:udp">>, <<"dual_stack">>};
+        {{unix, _}, dual_stack} ->
+            {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
         {{unix, linux}, split} ->
             {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
         {{unix, _}, split} ->
@@ -662,15 +700,18 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     Config = pertisk_eproxy_config:get_config(),
     BindMode = maps:get(h3_udp_bind, Config, dual_stack),
     case {os:type(), BindMode} of
-        {{unix, linux}, dual_stack} ->
-            start_linux_dual_stack_udp(ServerName, Port, BaseOpts);
         {{unix, linux}, split} ->
             start_linux_split_udp(ServerName, Port, BaseOpts);
+        {{unix, linux}, dual_stack} ->
+            start_linux_dual_stack_udp(ServerName, Port, BaseOpts);
+        {{unix, _}, dual_stack} ->
+            %% macOS/BSD: single [::] + IPV6_V6ONLY=0 often returns einval; use split v4/v6 instead.
+            start_unix_split_udp(ServerName, Port, BaseOpts);
         _ ->
             start_single_udp_listener(ServerName, Port, BaseOpts)
     end.
 
-%% Single [::] dual-stack socket (same model as pertisk-rproxy / Quinn / Node http3).
+%% Single [::] dual-stack socket on Linux (same model as pertisk-rproxy / Quinn / Node http3).
 start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
     QuicBase = maps:get(quic_opts, BaseOpts, #{}),
     Opts = BaseOpts#{
@@ -683,15 +724,74 @@ start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
                 extra_socket_opts => [inet6, {ipv6_v6only, false}]
             })
     },
-    _ = lager:info(
-        "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack, Chrome/Node/Rust compatible)",
-        [Port]
-    ),
     case quic_h3:start_server(ServerName, Port, Opts) of
         {ok, _} = Ok ->
+            _ = lager:info(
+                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack, Chrome/Node/Rust compatible)",
+                [Port]
+            ),
             Ok;
         {error, Reason} ->
-            {error, {failed_quic_udp_listener_dual_stack, Reason}}
+            _ = lager:warning(
+                "HTTP/3 dual-stack udp/[::]:~w failed (~p); falling back to IPv4-only UDP",
+                [Port, Reason]
+            ),
+            start_single_udp_listener(ServerName, Port, BaseOpts)
+    end.
+
+%% Non-Linux Unix: 0.0.0.0 + [::] via gen_udp (OTP socket inet6 bind is einval on macOS).
+start_unix_split_udp(ServerName, Port, BaseOpts) ->
+    V4Name = v4_server_name(ServerName),
+    QuicBase = maps:get(quic_opts, BaseOpts, #{}),
+    V4Opts = BaseOpts#{
+        quic_opts =>
+            maps:merge(QuicBase, #{
+                socket_backend => gen_udp,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => []
+            })
+    },
+    V6Opts = BaseOpts#{
+        quic_opts =>
+            maps:merge(QuicBase, #{
+                socket_backend => gen_udp,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => [inet6, {ipv6_v6only, true}]
+            })
+    },
+    _ = lager:info(
+        "HTTP/3 starting QUIC listeners on udp/:~w (v4=~p gen_udp, v6=~p gen_udp, non-Linux dual_stack)",
+        [Port, V4Name, ServerName]
+    ),
+    V4Result = quic_h3:start_server(V4Name, Port, V4Opts),
+    V6Result = quic_h3:start_server(ServerName, Port, V6Opts),
+    case {V4Result, V6Result} of
+        {{ok, _}, {ok, V6Pid}} ->
+            lager:info(
+                "HTTP/3 QUIC listeners ready on udp/0.0.0.0:~w and udp/[::]:~w",
+                [Port, Port]
+            ),
+            {ok, V6Pid};
+        {{ok, V4Pid}, {error, V6Reason}} ->
+            lager:warning(
+                "HTTP/3 QUIC IPv6 listener failed on udp/[::]:~w (~p); using IPv4 QUIC only",
+                [Port, V6Reason]
+            ),
+            {ok, V4Pid};
+        {{error, V4Reason}, {ok, V6Pid}} ->
+            lager:warning(
+                "HTTP/3 QUIC IPv4 listener failed on udp/0.0.0.0:~w (~p); using IPv6 QUIC only",
+                [Port, V4Reason]
+            ),
+            {ok, V6Pid};
+        {{error, V4Reason}, {error, V6Reason}} ->
+            lager:warning(
+                "HTTP/3 QUIC split bind failed (v4=~p, v6=~p); trying IPv4-only UDP",
+                [V4Reason, V6Reason]
+            ),
+            start_single_udp_listener(ServerName, Port, BaseOpts)
     end.
 
 start_single_udp_listener(ServerName, Port, BaseOpts) ->

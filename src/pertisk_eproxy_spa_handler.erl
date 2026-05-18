@@ -12,9 +12,12 @@ init(Req, State) ->
     IndexFile = filename:join([PrivDir, "admin", "index.html"]),
     case file:read_file(IndexFile) of
         {ok, Html} ->
-            Req2 = cowboy_req:reply(200,
-                #{<<"content-type">> => <<"text/html; charset=utf-8">>},
-                Html, Req),
+            Host = cowboy_req:host(Req),
+            Headers = pertisk_eproxy_alt_svc:merge_response_headers(
+                Req, Host,
+                #{<<"content-type">> => <<"text/html; charset=utf-8">>}
+            ),
+            Req2 = cowboy_req:reply(200, Headers, Html, Req),
             {ok, Req2, State};
         {error, _} ->
             %% Admin UI not built yet; return a helpful message.
@@ -22,8 +25,11 @@ init(Req, State) ->
                      "<h2>Admin UI not built</h2>"
                      "<p>Run: <code>cd admin &amp;&amp; npm install &amp;&amp; npm run build</code></p>"
                      "</body></html>">>,
-            Req2 = cowboy_req:reply(200,
-                #{<<"content-type">> => <<"text/html; charset=utf-8">>},
-                Body, Req),
+            Host = cowboy_req:host(Req),
+            Headers = pertisk_eproxy_alt_svc:merge_response_headers(
+                Req, Host,
+                #{<<"content-type">> => <<"text/html; charset=utf-8">>}
+            ),
+            Req2 = cowboy_req:reply(200, Headers, Body, Req),
             {ok, Req2, State}
     end.

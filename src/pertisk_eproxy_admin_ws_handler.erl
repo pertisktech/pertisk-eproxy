@@ -7,33 +7,61 @@
 
 -define(TICK_MS, 2000).
 -define(IDLE_TIMEOUT_MS, 60000).
+-define(AUTH_TIMEOUT_MS, 5000).
 
 init(Req, _State) ->
     case authorize(Req) of
         ok ->
             log_ws_upgrade(Req),
-            {cowboy_websocket, Req, #{}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
+            {cowboy_websocket, Req, #{authenticated => true}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
+        pending_auth ->
+            log_ws_upgrade(Req),
+            {cowboy_websocket, Req, #{authenticated => false}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
         {error, unauthorized} ->
             Req2 = cowboy_req:reply(401, #{<<"content-type">> => <<"application/json">>},
                                     <<"{\"error\":\"Unauthorized\"}">>, Req),
             {ok, Req2, #{}}
     end.
 
-websocket_init(State) ->
+websocket_init(State = #{authenticated := true}) ->
     ok = pertisk_eproxy_admin_realtime:subscribe(self()),
     TRef = erlang:send_after(?TICK_MS, self(), tick),
     Msg = snapshot_json(),
     {[{text, Msg}], State#{timer_ref => TRef}}.
 
+websocket_init(State = #{authenticated := false}) ->
+    AuthRef = erlang:send_after(?AUTH_TIMEOUT_MS, self(), auth_timeout),
+    {ok, State#{auth_ref => AuthRef}}.
+
+websocket_handle({text, Bin}, State = #{authenticated := false}) when is_binary(Bin) ->
+    case auth_token_from_frame(Bin) of
+        {ok, Token} ->
+            case pertisk_eproxy_auth:verify_token(Token) of
+                {ok, _User} ->
+                    State1 = cancel_auth_timer(State#{authenticated => true}),
+                    ok = pertisk_eproxy_admin_realtime:subscribe(self()),
+                    TRef = erlang:send_after(?TICK_MS, self(), tick),
+                    Msg = snapshot_json(),
+                    {[{text, Msg}], State1#{timer_ref => TRef}};
+                {error, _} ->
+                    {[{close, 4401, <<"Unauthorized">>}], State}
+            end;
+        error ->
+            {[{close, 4401, <<"Unauthorized">>}], State}
+    end;
+websocket_handle(_Frame, State = #{authenticated := false}) ->
+    {ok, State};
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
-websocket_info({admin_ws_push, Bin}, State) when is_binary(Bin) ->
+websocket_info({admin_ws_push, Bin}, State = #{authenticated := true}) when is_binary(Bin) ->
     {[{text, Bin}], State};
-websocket_info(tick, State) ->
+websocket_info(tick, State = #{authenticated := true}) ->
     Msg = snapshot_json(),
     TRef = erlang:send_after(?TICK_MS, self(), tick),
     {[{text, Msg}], State#{timer_ref => TRef}};
+websocket_info(auth_timeout, State = #{authenticated := false}) ->
+    {[{close, 4401, <<"Unauthorized">>}], State};
 websocket_info(_Info, State) ->
     {ok, State}.
 
@@ -51,17 +79,35 @@ authorize(Req) ->
         disabled ->
             ok;
         local ->
-            Qs = maps:from_list(cowboy_req:parse_qs(Req)),
-            case maps:get(<<"token">>, Qs, <<>>) of
-                <<>> ->
-                    {error, unauthorized};
-                Token ->
+            case pertisk_eproxy_auth:bearer_from_request(Req) of
+                {ok, Token} ->
                     case pertisk_eproxy_auth:verify_token(Token) of
                         {ok, _User} -> ok;
                         {error, _} -> {error, unauthorized}
-                    end
+                    end;
+                error ->
+                    pending_auth
             end
     end.
+
+auth_token_from_frame(Bin) when is_binary(Bin) ->
+    case thoas:decode(Bin) of
+        {ok, M} when is_map(M) ->
+            case {maps:get(<<"type">>, M, undefined), maps:get(<<"token">>, M, undefined)} of
+                {<<"auth">>, Token} when is_binary(Token), byte_size(Token) > 0 ->
+                    {ok, Token};
+                _Other ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+cancel_auth_timer(State = #{auth_ref := Ref}) ->
+    _ = erlang:cancel_timer(Ref),
+    maps:remove(auth_ref, State);
+cancel_auth_timer(State) ->
+    State.
 
 snapshot_json() ->
     Data = #{

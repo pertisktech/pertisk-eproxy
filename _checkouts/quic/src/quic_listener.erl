@@ -178,11 +178,24 @@ init_socket_backend(Port, Opts) ->
             {stop, Reason}
     end.
 
+%% When extra_socket_opts contains inet6, bind gen_udp to [::] (not inet + inet6, which is einval).
+gen_udp_inet_family_opts(ExtraFlags) ->
+    case lists:member(inet6, ExtraFlags) of
+        true ->
+            {
+                inet6,
+                [Opt || Opt <- ExtraFlags, Opt =/= inet6]
+            };
+        false ->
+            {inet, ExtraFlags}
+    end.
+
 %% Initialize with gen_udp backend (default, backwards compatible)
 init_genudp_backend(Port, Opts) ->
     ActiveN = maps:get(active_n, Opts, 100),
     ReusePort = maps:get(reuseport, Opts, false),
-    ExtraFlags = maps:get(extra_socket_opts, Opts, []),
+    ExtraFlags0 = maps:get(extra_socket_opts, Opts, []),
+    {InetOpt, ExtraFlags} = gen_udp_inet_family_opts(ExtraFlags0),
 
     %% UDP buffer sizing - larger buffers improve throughput significantly
     %% OS may cap to lower values (check sysctl net.core.rmem_max on Linux)
@@ -192,7 +205,7 @@ init_genudp_backend(Port, Opts) ->
     SocketOpts =
         [
             binary,
-            inet,
+            InetOpt,
             {active, ActiveN},
             {reuseaddr, true},
             {recbuf, RecBuf},

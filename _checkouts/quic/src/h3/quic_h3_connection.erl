@@ -582,9 +582,13 @@ h3_connecting(enter, _OldState, State) ->
             case send_settings(State1) of
                 {ok, State2} ->
                     {keep_state, State2};
+                {error, {invalid_state, draining}} ->
+                    {next_state, closing, State1};
                 {error, Reason} ->
                     {stop, {error, Reason}}
             end;
+        {error, {invalid_state, draining}} ->
+            {next_state, closing, State};
         {error, Reason} ->
             {stop, {error, Reason}}
     end;

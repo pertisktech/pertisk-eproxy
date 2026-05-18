@@ -10,11 +10,13 @@
 init(Req, _State) ->
     case authorize(Req) of
         ok ->
-            Headers = #{
+            Host = cowboy_req:host(Req),
+            Headers0 = #{
                 <<"content-type">> => <<"text/event-stream; charset=utf-8">>,
                 <<"cache-control">> => <<"no-cache, no-transform">>,
                 <<"connection">> => <<"keep-alive">>
             },
+            Headers = pertisk_eproxy_alt_svc:merge_response_headers(Req, Host, Headers0),
             Req2 = cowboy_req:stream_reply(200, Headers, Req),
             Req3 = send_snapshot_event(Req2),
             stream_ticks(Req3, ?MAX_TICKS),

@@ -12,15 +12,18 @@ header_value() ->
     Port = quic_udp_port(),
     PortBin = integer_to_binary(Port),
     %% RFC 7838: alternate authority is ":port" on the same host (e.g. h3=":443"), not "443".
-    %% Include both final (`h3`) and draft token (`h3-29`) with persistence for Chromium variants.
-    <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1, h3-29=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
+    %% Single `h3` entry (Chromium 124+); avoid comma-separated h3-29 duplicates confusing Alt-Svc cache.
+    <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
 
 %% @doc Add or replace Alt-Svc on a client-facing response map when appropriate.
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().
 merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
     Base = maps:without([<<"alt-svc">>], Headers),
     case should_advertise(Req, Host) of
-        true -> Base#{<<"alt-svc">> => header_value()};
+        true ->
+            AltSvc = header_value(),
+            lager:debug("Alt-Svc attached host=~s value=~s", [Host, AltSvc]),
+            Base#{<<"alt-svc">> => AltSvc};
         false -> Base
     end.
 
