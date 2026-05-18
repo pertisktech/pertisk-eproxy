@@ -4,7 +4,6 @@ import { createPortal } from 'react-dom';
 import {
   api,
   type DnsProviderRow,
-  type DnsProviderType,
   type SupportedDnsProvider,
   type SupportedDnsProviderField,
 } from '@/api/client';
@@ -24,7 +23,7 @@ export default function DnsProviders() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState('');
-  const [formType, setFormType] = useState<DnsProviderType>('');
+  const [formType, setFormType] = useState<string>('');
   const [formCreds, setFormCreds] = useState<Record<string, string>>({});
   const [fieldVisibility, setFieldVisibility] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -36,6 +35,12 @@ export default function DnsProviders() {
   const toast = useToast();
 
   const selectedProvider = supported.find((p) => p.id === formType);
+  let submitLabel = 'Create';
+  if (saving) {
+    submitLabel = 'Saving…';
+  } else if (editingId) {
+    submitLabel = 'Update';
+  }
 
   const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
   useEffect(() => {
@@ -198,7 +203,7 @@ export default function DnsProviders() {
       .finally(() => setDeletingId(null));
   }
 
-  function getProviderDisplayName(providerType: DnsProviderType): string {
+  function getProviderDisplayName(providerType: string): string {
     const p = supported.find((s) => s.id === providerType);
     return p ? p.name : providerType;
   }
@@ -305,14 +310,11 @@ export default function DnsProviders() {
 
       {showForm &&
         createPortal(
-          <div
+          <dialog
             className={styles.modalBackdrop}
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setShowForm(false);
-            }}
+            open
           >
-          <div className={styles.modal} role="dialog" aria-modal="true">
+          <div className={styles.modal}>
             <div className={styles.modalHeader}>
               <h2>
                 <FaIcon className={editingId ? 'fas fa-pen-to-square' : 'fas fa-plus'} aria-hidden />{' '}
@@ -325,6 +327,7 @@ export default function DnsProviders() {
             <form onSubmit={handleSubmit} className={styles.modalForm} autoComplete="off">
               <label className={styles.label}>
                 Name
+                {' '}
                 <input
                   type="text"
                   name="dns-provider-name"
@@ -338,6 +341,7 @@ export default function DnsProviders() {
               </label>
               <label className={styles.label}>
                 Provider type
+                {' '}
                 <select
                   name="dns-provider-type"
                   value={formType}
@@ -384,12 +388,12 @@ export default function DnsProviders() {
                   Cancel
                 </button>
                 <button type="submit" className={styles.btnPrimary} disabled={saving}>
-                  {saving ? 'Saving…' : editingId ? 'Update' : 'Create'}
+                  {submitLabel}
                 </button>
               </div>
             </form>
           </div>
-        </div>,
+        </dialog>,
           document.body,
         )}
 
@@ -412,6 +416,62 @@ export default function DnsProviders() {
   );
 }
 
+type CredentialFieldProps = Readonly<{
+  field: SupportedDnsProviderField;
+  value: string;
+  onChange: (v: string) => void;
+  visible: boolean;
+  onToggleVisibility: () => void;
+  inputClassName: string;
+  textareaClassName: string;
+  labelClassName: string;
+}>;
+
+function PasswordField({
+  field,
+  value,
+  visible,
+  onChange,
+  onToggleVisibility,
+  inputClassName,
+}: Readonly<{
+  field: SupportedDnsProviderField;
+  value: string;
+  visible: boolean;
+  onChange: (v: string) => void;
+  onToggleVisibility: () => void;
+  inputClassName: string;
+}>) {
+  const passwordType = visible ? 'text' : 'password';
+  const toggleTitle = visible ? 'Hide' : 'Show';
+  const toggleAria = visible ? 'Hide password' : 'Show password';
+  const eyeClass = visible ? 'fas fa-eye-slash' : 'fas fa-eye';
+
+  return (
+    <div className={styles.passwordWrap}>
+      <input
+        name={`dns-provider-${field.key}`}
+        type={passwordType}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.label}
+        className={inputClassName}
+        autoComplete="new-password"
+        required={field.required}
+      />
+      <button
+        type="button"
+        className={styles.passwordToggle}
+        onClick={onToggleVisibility}
+        title={toggleTitle}
+        aria-label={toggleAria}
+      >
+        <FaIcon className={eyeClass} />
+      </button>
+    </div>
+  );
+}
+
 function CredentialField({
   field,
   value,
@@ -421,69 +481,57 @@ function CredentialField({
   inputClassName,
   textareaClassName,
   labelClassName,
-}: {
-  field: SupportedDnsProviderField;
-  value: string;
-  onChange: (v: string) => void;
-  visible: boolean;
-  onToggleVisibility: () => void;
-  inputClassName: string;
-  textareaClassName: string;
-  labelClassName: string;
-}) {
+}: CredentialFieldProps) {
   const isPassword = field.type === 'password';
   const isTextarea = field.type === 'textarea';
   const isSensitiveKey = /token|secret|key|password/i.test(field.key);
+
+  let control: JSX.Element;
+
+  if (isTextarea) {
+    control = (
+      <textarea
+        name={`dns-provider-${field.key}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.label}
+        className={textareaClassName}
+        rows={4}
+        autoComplete="off"
+        required={field.required}
+      />
+    );
+  } else if (isPassword) {
+    control = (
+      <PasswordField
+        field={field}
+        value={value}
+        visible={visible}
+        onChange={onChange}
+        onToggleVisibility={onToggleVisibility}
+        inputClassName={inputClassName}
+      />
+    );
+  } else {
+    control = (
+      <input
+        type="text"
+        name={`dns-provider-${field.key}`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.label}
+        className={inputClassName}
+        autoComplete={isSensitiveKey ? 'new-password' : 'off'}
+        required={field.required}
+      />
+    );
+  }
 
   return (
     <label className={labelClassName}>
       {field.label}
       {field.required && ' *'}
-      {isTextarea ? (
-        <textarea
-          name={`dns-provider-${field.key}`}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={field.label}
-          className={textareaClassName}
-          rows={4}
-          autoComplete="off"
-          required={field.required}
-        />
-      ) : isPassword ? (
-        <div className={styles.passwordWrap}>
-          <input
-            name={`dns-provider-${field.key}`}
-            type={visible ? 'text' : 'password'}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={field.label}
-            className={inputClassName}
-            autoComplete="new-password"
-            required={field.required}
-          />
-          <button
-            type="button"
-            className={styles.passwordToggle}
-            onClick={onToggleVisibility}
-            title={visible ? 'Hide' : 'Show'}
-            aria-label={visible ? 'Hide password' : 'Show password'}
-          >
-            <FaIcon className={visible ? 'fas fa-eye-slash' : 'fas fa-eye'} />
-          </button>
-        </div>
-      ) : (
-        <input
-          type="text"
-          name={`dns-provider-${field.key}`}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={field.label}
-          className={inputClassName}
-          autoComplete={isSensitiveKey ? 'new-password' : 'off'}
-          required={field.required}
-        />
-      )}
+      {control}
     </label>
   );
 }

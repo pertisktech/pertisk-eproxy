@@ -85,8 +85,6 @@ export interface ProxyConfig {
 }
 
 /** DNS provider row (rproxy-compatible shape; eProxy stores names in `dns_providers` only). */
-export type DnsProviderType = string;
-
 const DNS_LABEL_PROVIDER_ID = 'label';
 
 /** Known DNS integration ids from `supportedDnsProviders.ts` (upgrade legacy string-only entries). */
@@ -100,43 +98,55 @@ function inferProviderTypeFromLegacy(name: string, explicitType: string | undefi
   return DNS_LABEL_PROVIDER_ID;
 }
 
+function asPlainString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return '';
+}
+
+function asTrimmedPlainString(value: unknown): string {
+  return asPlainString(value).trim();
+}
+
+function normalizeCredentials(value: unknown): Record<string, string> {
+  const credentials: Record<string, string> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return credentials;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    const normalized = asPlainString(v);
+    if (normalized.length > 0) {
+      credentials[k] = normalized;
+    }
+  }
+  return credentials;
+}
+
+function normalizeDnsProviderEntry(entry: unknown): DnsProviderConfigEntry {
+  if (typeof entry === 'string') {
+    const name = entry.trim();
+    const provider_type = inferProviderTypeFromLegacy(name, undefined);
+    return { name, provider_type, credentials: {} };
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { name: '', provider_type: DNS_LABEL_PROVIDER_ID, credentials: {} };
+  }
+
+  const obj = entry as Record<string, unknown>;
+  const name = asPlainString(obj.name);
+  const explicitPt = asTrimmedPlainString(obj.provider_type);
+  const provider_type = inferProviderTypeFromLegacy(name, explicitPt || undefined);
+  const credentials = normalizeCredentials(obj.credentials);
+  return { name, provider_type, credentials };
+}
+
 /** Normalize `dns_providers` from config (legacy strings or objects) for the admin UI. */
 export function normalizeDnsProviders(raw: unknown): DnsProviderConfigEntry[] {
   if (!Array.isArray(raw)) return [];
-  return raw.map((entry: unknown) => {
-    if (typeof entry === 'string') {
-      const name = entry.trim();
-      const provider_type = inferProviderTypeFromLegacy(name, undefined);
-      return { name, provider_type, credentials: {} };
-    }
-    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-      const o = entry as Record<string, unknown>;
-      const rawName = o.name;
-      const name =
-        typeof rawName === 'string'
-          ? rawName
-          : rawName != null && typeof rawName !== 'object'
-            ? String(rawName)
-            : '';
-      const rawPt = o.provider_type;
-      const explicitPt =
-        typeof rawPt === 'string'
-          ? rawPt.trim()
-          : rawPt != null && typeof rawPt !== 'object'
-            ? String(rawPt).trim()
-            : '';
-      const provider_type = inferProviderTypeFromLegacy(name, explicitPt || undefined);
-      const credentials: Record<string, string> = {};
-      const credRaw = o.credentials;
-      if (credRaw && typeof credRaw === 'object' && !Array.isArray(credRaw)) {
-        for (const [k, v] of Object.entries(credRaw)) {
-          if (v != null && String(v).length > 0) credentials[k] = String(v);
-        }
-      }
-      return { name, provider_type, credentials };
-    }
-    return { name: '', provider_type: DNS_LABEL_PROVIDER_ID, credentials: {} };
-  });
+  return raw.map(normalizeDnsProviderEntry);
 }
 
 function dnsProvidersForPut(entries: DnsProviderConfigEntry[]): DnsProviderConfigEntry[] {
@@ -169,7 +179,7 @@ function prepareConfigForPut(c: ProxyConfig): ProxyConfig {
 export interface DnsProviderRow {
   id: string;
   name: string;
-  provider_type: DnsProviderType;
+  provider_type: string;
   credentials?: Record<string, string> | null;
   created_at: string;
 }
@@ -257,7 +267,7 @@ export interface AuthCheckResponse {
 export interface AuthConfigResponse {
   mode: 'local' | 'sso' | 'both';
   /** From proxy config (`proxy` vs `proxy_admin`); served on public GET /api/auth/config for shell after refresh. */
-  deployment_mode?: 'proxy' | 'proxy_admin' | string;
+  deployment_mode?: string;
   supports_local: boolean;
   supports_sso: boolean;
   auth0_domain?: string;
@@ -407,6 +417,12 @@ export type VersionResponse = { version: string };
 let chromiumH3WarmupDone = false;
 let chromiumH3WarmupPromise: Promise<void> | null = null;
 
+function reconnectDelayMs(attempt: number): number {
+  const base = Math.min(30000, 1000 * Math.pow(2, attempt));
+  const jitter = Math.floor(Math.random() * 300);
+  return base + jitter;
+}
+
 function isChromiumBrowser(): boolean {
   if (typeof navigator === 'undefined') return false;
   const ua = navigator.userAgent;
@@ -421,14 +437,14 @@ function isChromiumBrowser(): boolean {
 export function warmupHttp3ForChromium(): Promise<void> {
   if (chromiumH3WarmupDone) return Promise.resolve();
   if (chromiumH3WarmupPromise) return chromiumH3WarmupPromise;
-  if (typeof window === 'undefined' || window.location.protocol !== 'https:' || !isChromiumBrowser()) {
+  if (globalThis.window?.location.protocol !== 'https:' || !isChromiumBrowser()) {
     chromiumH3WarmupDone = true;
     return Promise.resolve();
   }
 
   chromiumH3WarmupPromise = new Promise((resolve) => {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = new URL(`${proto}://${window.location.host}${API}/realtime`);
+    const proto = globalThis.window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = new URL(`${proto}://${globalThis.window.location.host}${API}/realtime`);
     const token = getToken();
 
     let settled = false;
@@ -441,7 +457,7 @@ export function warmupHttp3ForChromium(): Promise<void> {
     };
 
     const ws = new WebSocket(url.toString());
-    const timer = window.setTimeout(() => {
+    const timer = globalThis.window.setTimeout(() => {
       try {
         ws.close();
       } catch {
@@ -461,7 +477,7 @@ export function warmupHttp3ForChromium(): Promise<void> {
       }
     };
     ws.onmessage = () => {
-      window.clearTimeout(timer);
+      globalThis.window.clearTimeout(timer);
       try {
         ws.close();
       } catch {
@@ -471,7 +487,7 @@ export function warmupHttp3ForChromium(): Promise<void> {
       finish();
     };
     ws.onerror = () => {
-      window.clearTimeout(timer);
+      globalThis.window.clearTimeout(timer);
       try {
         ws.close();
       } catch {
@@ -481,7 +497,7 @@ export function warmupHttp3ForChromium(): Promise<void> {
       finish();
     };
     ws.onclose = () => {
-      window.clearTimeout(timer);
+      globalThis.window.clearTimeout(timer);
       finish();
     };
   });
@@ -490,7 +506,7 @@ export function warmupHttp3ForChromium(): Promise<void> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (window.location.protocol === 'https:') {
+  if (globalThis.window.location.protocol === 'https:') {
     await warmupHttp3ForChromium();
   }
   const token = getToken();
@@ -513,8 +529,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (res.status === 401) {
     clearToken();
     clearUsername();
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.href = '/login';
+    if (!globalThis.window.location.pathname.startsWith('/login')) {
+      globalThis.window.location.href = '/login';
     }
     throw new Error('Unauthorized');
   }
@@ -557,7 +573,7 @@ function openRealtimeSse(
   onError?: (event: Event) => void
 ): () => void {
   const token = getToken();
-  const url = new URL(`${API}/realtime-sse`, window.location.origin);
+  const url = new URL(`${API}/realtime-sse`, globalThis.window.location.origin);
   if (token) {
     url.searchParams.set('token', token);
   }
@@ -584,7 +600,7 @@ function openRealtimeSse(
       if (!closedManually) {
         source?.close();
         source = null;
-        window.setTimeout(connect, 3000);
+        globalThis.window.setTimeout(connect, 3000);
       }
     };
   }
@@ -609,23 +625,17 @@ function openRealtimeWebSocket(
   const baseUrl = explicitWs
     ? new URL(explicitWs)
     : (() => {
-        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        return new URL(`${proto}://${window.location.host}${API}/realtime`);
+        const proto = globalThis.window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return new URL(`${proto}://${globalThis.window.location.host}${API}/realtime`);
       })();
   let ws: WebSocket | null = null;
   let closedManually = false;
   let reconnectTimer: number | null = null;
   let reconnectAttempt = 0;
 
-  function reconnectDelayMs(attempt: number): number {
-    const base = Math.min(30000, 1000 * Math.pow(2, attempt));
-    const jitter = Math.floor(Math.random() * 300);
-    return base + jitter;
-  }
-
   function clearReconnectTimer() {
     if (reconnectTimer !== null) {
-      window.clearTimeout(reconnectTimer);
+      globalThis.window.clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
   }
@@ -636,7 +646,7 @@ function openRealtimeWebSocket(
     const delay = reconnectDelayMs(reconnectAttempt);
     console.debug('[realtime-ws] scheduling reconnect', { attempt: reconnectAttempt + 1, delay_ms: delay });
     reconnectAttempt += 1;
-    reconnectTimer = window.setTimeout(connect, delay);
+    reconnectTimer = globalThis.window.setTimeout(connect, delay);
   }
 
   function connect() {
@@ -660,7 +670,7 @@ function openRealtimeWebSocket(
       const parseAndDispatch = (raw: string) => {
         try {
           const parsed = JSON.parse(raw) as Record<string, unknown>;
-          if (parsed && parsed.type === 'ssl_job') {
+          if (parsed?.type === 'ssl_job') {
             if (onSslJobPush) {
               onSslJobPush(parsed as unknown as SslJobPush);
             }
@@ -711,8 +721,8 @@ function openRealtimeWebSocket(
       if (unauthorized) {
         clearToken();
         clearUsername();
-        if (!window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login';
+        if (!globalThis.window.location.pathname.startsWith('/login')) {
+          globalThis.window.location.href = '/login';
         }
         return;
       }
@@ -863,7 +873,7 @@ export const api = {
   dnsProviders: {
     list: async () => ensureDnsProviderRows(await get<unknown>('/dns-providers')),
     supported: async () => SUPPORTED_DNS_PROVIDERS,
-    create: async (name: string, provider_type: DnsProviderType, credentials?: Record<string, string> | null) => {
+    create: async (name: string, provider_type: string, credentials?: Record<string, string> | null) => {
       const n = name.trim();
       if (!n) throw new Error('Name is required');
       const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;
@@ -877,7 +887,7 @@ export const api = {
       if (!row) throw new Error('DNS provider not found');
       return row;
     },
-    put: async (id: string, name: string, provider_type: DnsProviderType, credentials?: Record<string, string> | null) => {
+    put: async (id: string, name: string, provider_type: string, credentials?: Record<string, string> | null) => {
       const n = name.trim();
       if (!n) throw new Error('Name is required');
       const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;
