@@ -34,4 +34,5 @@ priv/tls/
 # macOS
 .DS_Store
 release/
+rebar3.crashdump
 
