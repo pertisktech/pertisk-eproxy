@@ -17,15 +17,10 @@
  {<<"prometheus_cowboy">>,{pkg,<<"prometheus_cowboy">>,<<"0.1.8">>},0},
  {<<"prometheus_httpd">>,{pkg,<<"prometheus_httpd">>,<<"2.1.15">>},1},
  {<<"quantile_estimator">>,{pkg,<<"quantile_estimator">>,<<"0.2.1">>},1},
- {<<"quicer">>,
-  {git,"https://github.com/emqx/quic.git",
-       {ref,"9074ee1087e19298b659d6fd3492a9fd524cbef0"}},
-  0},
  {<<"ranch">>,
   {git,"https://github.com/ninenines/ranch",
        {ref,"10b51304b26062e0dbfd5e74824324e9a911e269"}},
   1},
- {<<"snabbkaffe">>,{pkg,<<"snabbkaffe">>,<<"1.0.10">>},1},
  {<<"thoas">>,{pkg,<<"thoas">>,<<"1.2.1">>},0}]}.
 [
 {pkg_hash,[
@@ -39,7 +34,6 @@
  {<<"prometheus_cowboy">>, <<"CFCE0BC7B668C5096639084FCD873826E6220EA714BF60A716F5BD080EF2A99C">>},
  {<<"prometheus_httpd">>, <<"8F767D819A5D36275EAB9264AFF40D87279151646776069BF69FBDBBD562BD75">>},
  {<<"quantile_estimator">>, <<"EF50A361F11B5F26B5F16D0696E46A9E4661756492C981F7B2229EF42FF1CD15">>},
- {<<"snabbkaffe">>, <<"9BE2F54F61FC6862391B666B2B5B76C3FA53598E2989A17CEF1B48CF347A8A63">>},
  {<<"thoas">>, <<"19A25F31177A17E74004D4840F66D791D4298C5738790FA2CC73731EB911F195">>}]},
 {pkg_hash_ext,[
  {<<"accept">>, <<"CA69388943F5DAD2E7232A5478F16086E3C872F48E32B88B378E1885A59F5649">>},
@@ -52,6 +46,5 @@
  {<<"prometheus_cowboy">>, <<"BA286BECA9302618418892D37BCD5DC669A6CC001F4EB6D6AF85FF81F3F4F34C">>},
  {<<"prometheus_httpd">>, <<"67736D000745184D5013C58A63E947821AB90CB9320BC2E6AE5D3061C6FFE039">>},
  {<<"quantile_estimator">>, <<"282A8A323CA2A845C9E6F787D166348F776C1D4A41EDE63046D72D422E3DA946">>},
- {<<"snabbkaffe">>, <<"70A98DF36AE756908D55B5770891D443D63C903833E3E87D544036E13D4FAC26">>},
  {<<"thoas">>, <<"E38697EDFFD6E91BD12CEA41B155115282630075C2A727E7A6B2947F5408B86A">>}]}
 ].
