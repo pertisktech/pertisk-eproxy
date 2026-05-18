@@ -27,7 +27,7 @@ websocket_init(State = #{authenticated := true}) ->
     ok = pertisk_eproxy_admin_realtime:subscribe(self()),
     TRef = erlang:send_after(?TICK_MS, self(), tick),
     Msg = snapshot_json(),
-    {[{text, Msg}], State#{timer_ref => TRef}}.
+    {[{text, Msg}], State#{timer_ref => TRef}};
 
 websocket_init(State = #{authenticated := false}) ->
     AuthRef = erlang:send_after(?AUTH_TIMEOUT_MS, self(), auth_timeout),
