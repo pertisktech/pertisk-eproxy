@@ -116,13 +116,18 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
         error ->
             L0
     end,
+    MgmtTls = maps:get(management_tls_enabled, C, false) =:= true,
+    MgmtDesc = case MgmtTls of
+        true  -> <<"Admin API + UI (management, ALPN h2+http/1.1)">>;
+        false -> <<"Admin API + UI (management listener)">>
+    end,
     L2 = L1 ++ [#{
         <<"id">> => <<"management">>,
-        <<"description">> => <<"Admin API + UI (management listener)">>,
+        <<"description">> => MgmtDesc,
         <<"protocol">> => <<"tcp">>,
         <<"bind">> => MgmtBind,
         <<"port">> => MgmtPort,
-        <<"tls">> => false,
+        <<"tls">> => MgmtTls,
         <<"stack">> => <<"single_bind">>
     }],
     L3 = case {maps:get(quic_enabled, C, false), maps:get(quic_port, C, undefined)} of

@@ -288,6 +288,14 @@ json_to_config(Json) ->
         h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
+        %% When true, the management listener uses TLS (same certs as the HTTPS proxy).
+        %% This allows browsers to negotiate HTTP/2 via ALPN, enabling WebSocket over HTTP/2 (RFC 8441).
+        management_tls_enabled =>
+            case maps:get(<<"management_tls_enabled">>, Json, false) of
+                true  -> true;
+                false -> false;
+                _     -> false
+            end,
         tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
         tls_key_file    => parse_opt_str(maps:get(<<"tls_key_file">>,  Json, null)),
         sites           => Sites,

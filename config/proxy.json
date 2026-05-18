@@ -4,6 +4,7 @@
     "http_port": 80,
     "management_addr": "0.0.0.0",
     "management_port": 9080,
+    "management_tls_enabled": true,
     "h3_api_gateway_enabled": true,
     "h3_probe_enabled": true,
     "tls_http2_enabled": true,

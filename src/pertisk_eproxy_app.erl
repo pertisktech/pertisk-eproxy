@@ -114,41 +114,52 @@ start_listeners() ->
     %% Management / Admin listener (default all IPv4 interfaces; set management_addr in proxy.json to restrict)
     MgmtAddr = maps:get(management_addr, Config, {0,0,0,0}),
     MgmtPort = maps:get(management_port, Config, 9080),
-    {ok, _}  = cowboy:start_clear(management,
-        #{
-            num_acceptors => 10,
-            socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]
-        },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
-    ),
-    lager:info("Management API listening on ~s:~w", [inet:ntoa(MgmtAddr), MgmtPort]),
+    MgmtProtoOpts = #{
+        env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
+        logger => pertisk_eproxy_cowboy_logger,
+        %% RFC 8441: tunnel WebSocket frames inside an HTTP/2 CONNECT stream.
+        %% Active when the listener negotiates h2 via ALPN (TLS mode); harmless on HTTP/1.1.
+        enable_connect_protocol => true
+    },
+    case management_tls_opts(Config) of
+        [] ->
+            {ok, _} = cowboy:start_clear(management,
+                #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
+                MgmtProtoOpts
+            ),
+            lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]);
+        MgmtTlsOpts ->
+            TlsSocketOpts = [{ip, MgmtAddr}, {port, MgmtPort} | MgmtTlsOpts],
+            {ok, _} = cowboy:start_tls(management,
+                #{num_acceptors => 10, socket_opts => TlsSocketOpts},
+                MgmtProtoOpts
+            ),
+            lager:info("Management API listening on ~s:~w (https, h2+http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort])
+    end,
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
     TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
+    HttpsProtoOpts = #{
+        env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+        logger => pertisk_eproxy_cowboy_logger,
+        %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
+        enable_connect_protocol => true
+    },
     {ok, _} = cowboy:start_tls(https4,
         #{
             num_acceptors => 100,
             socket_opts => TlsSocketOpts4
         },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
+        HttpsProtoOpts
     ),
     {ok, _} = cowboy:start_tls(https6,
         #{
             num_acceptors => 100,
             socket_opts => TlsSocketOpts6
         },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
+        HttpsProtoOpts
     ),
     lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]),
     ok.
@@ -345,6 +356,28 @@ normalize_tls_path(null) -> undefined;
 normalize_tls_path(V) when is_binary(V) -> binary_to_list(V);
 normalize_tls_path(V) when is_list(V) -> V;
 normalize_tls_path(_) -> undefined.
+
+%% @doc TLS socket opts for the management listener.
+%% Returns [] when management_tls_enabled is false, or when no certs are configured.
+%% When TLS is enabled, advertises h2 then http/1.1 via ALPN so browsers negotiate HTTP/2,
+%% which allows WebSocket over HTTP/2 (RFC 8441 extended CONNECT).
+management_tls_opts(Config) ->
+    case maps:get(management_tls_enabled, Config, false) of
+        true ->
+            case tls_cert_key_paths(Config) of
+                {undefined, undefined} ->
+                    lager:warning("management_tls_enabled=true but no TLS cert/key found; "
+                                  "falling back to plain HTTP. Set tls_cert_file + tls_key_file "
+                                  "or place certs at priv/tls/listener.pem + priv/tls/listener.key"),
+                    [];
+                {CertFile, KeyFile} ->
+                    [{certfile, CertFile}, {keyfile, KeyFile},
+                     {versions, ['tlsv1.2', 'tlsv1.3']},
+                     {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}]
+            end;
+        _ ->
+            []
+    end.
 
 build_sni_hosts(Config) ->
     Sites = maps:get(sites, Config, []),
