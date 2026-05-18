@@ -35,4 +35,5 @@ priv/tls/
 .DS_Store
 release/
 rebar3.crashdump
+compile.log
 
