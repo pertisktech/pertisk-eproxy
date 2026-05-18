@@ -17,7 +17,9 @@ init(Req, State) ->
                 Req, Host,
                 #{<<"content-type">> => <<"text/html; charset=utf-8">>}
             ),
-            Req2 = cowboy_req:reply(200, Headers, Html, Req),
+            {OutHeaders, OutBody} =
+                pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Html),
+            Req2 = cowboy_req:reply(200, OutHeaders, OutBody, Req),
             {ok, Req2, State};
         {error, _} ->
             %% Admin UI not built yet; return a helpful message.
@@ -30,6 +32,8 @@ init(Req, State) ->
                 Req, Host,
                 #{<<"content-type">> => <<"text/html; charset=utf-8">>}
             ),
-            Req2 = cowboy_req:reply(200, Headers, Body, Req),
+            {OutHeaders, OutBody} =
+                pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Body),
+            Req2 = cowboy_req:reply(200, OutHeaders, OutBody, Req),
             {ok, Req2, State}
     end.

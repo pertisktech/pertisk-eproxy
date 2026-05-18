@@ -204,9 +204,15 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
-                                H3Headers = maybe_add_h3_alt_svc(LogHost, RespHeaders),
+                                H3Headers0 = maybe_add_h3_alt_svc(LogHost, RespHeaders),
+                                {H3Headers, RespOut} = pertisk_eproxy_compression:maybe_compress_h3(
+                                    Status,
+                                    Headers,
+                                    H3Headers0,
+                                    RespBin
+                                ),
                                 ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Headers),
-                                _ = quic_h3:send_data(H3Conn, StreamId, RespBin, true),
+                                _ = quic_h3:send_data(H3Conn, StreamId, RespOut, true),
                                 UpstreamLog =
                                     case is_management_upstream(UpstreamAddr) of
                                         true -> <<"management-local">>;

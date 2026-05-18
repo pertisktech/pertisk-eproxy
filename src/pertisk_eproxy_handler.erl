@@ -61,8 +61,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
             H404 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
-            Req2 = cowboy_req:reply(404, H404,
-                                    <<"No route found for host: ", Host/binary>>, Req),
+            Body404 = <<"No route found for host: ", Host/binary>>,
+            {H404Out, Body404Out} =
+                pertisk_eproxy_compression:maybe_compress_cowboy(404, Req, H404, Body404),
+            Req2 = cowboy_req:reply(404, H404Out, Body404Out, Req),
             log_access(Host, Method, Path, 404, T0, Vsn, <<>>),
             {ok, Req2, State};
         {ok, #{upstream_path := UpstreamPath, backend := BackendName}} ->
@@ -71,8 +73,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                 {error, no_healthy_upstream} ->
                     pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
                     H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
-                    Req2 = cowboy_req:reply(502, H502,
-                                            <<"Bad Gateway: no healthy upstream">>, Req),
+                    Body502 = <<"Bad Gateway: no healthy upstream">>,
+                    {H502Out, Body502Out} =
+                        pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
+                    Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
                     log_access(Host, Method, Path, 502, T0, Vsn, <<>>),
                     {ok, Req2, State};
                 {ok, UpstreamAddr} ->
@@ -91,8 +95,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             lager:warning("Proxy error ~p for ~s~s -> ~s",
                                           [Reason, Host, Path, UpstreamAddr]),
                             H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
-                            Req2 = cowboy_req:reply(502, H502,
-                                                    <<"Bad Gateway">>, Req),
+                            Body502 = <<"Bad Gateway">>,
+                            {H502Out, Body502Out} =
+                                pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
+                            Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
                             log_access(Host, Method, Path, 502, T0, Vsn, UpstreamAddr),
                             {ok, Req2, State}
                     end
@@ -148,7 +154,9 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
             RawHeaders  = headers_to_map(RespHeaders),
             CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
-            Req2 = cowboy_req:reply(Status, CowboyHeaders, RespBody, Req),
+            {OutHeaders, OutBody} =
+                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, CowboyHeaders, RespBin),
+            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
             {ok, Status, Req2};
         {response, fin, Status, RespHeaders} ->
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),

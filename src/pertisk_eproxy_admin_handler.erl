@@ -159,7 +159,7 @@ handle(<<"GET">>, backup_export, Req) ->
         <<"content-type">> => <<"application/json">>,
         <<"content-disposition">> => <<"attachment; filename=\"eproxy-config.json\"">>
     },
-    Req2 = cowboy_req:reply(200, with_alt_svc(Req, Headers), Body, Req),
+    Req2 = reply_compressed(200, with_alt_svc(Req, Headers), Body, Req),
     {ok, Req2, undefined};
 
 handle(<<"POST">>, backup_restore, Req) ->
@@ -552,9 +552,12 @@ handle(<<"GET">>, health, Req) ->
 
 handle(<<"GET">>, metrics, Req) ->
     Output = prometheus_text_format:format(),
-    Req2   = cowboy_req:reply(200,
-                              with_alt_svc(Req, #{<<"content-type">> => <<"text/plain; version=0.0.4">>}),
-                              Output, Req),
+    Req2 = reply_compressed(
+        200,
+        with_alt_svc(Req, #{<<"content-type">> => <<"text/plain; version=0.0.4">>}),
+        Output,
+        Req
+    ),
     {ok, Req2, metrics};
 
 handle(<<"POST">>, reload, Req) ->
@@ -564,8 +567,12 @@ handle(<<"POST">>, reload, Req) ->
     end;
 
 handle(_Method, _Resource, Req) ->
-    Req2 = cowboy_req:reply(405, #{<<"content-type">> => <<"text/plain">>},
-                            <<"Method Not Allowed">>, Req),
+    Req2 = reply_compressed(
+        405,
+        #{<<"content-type">> => <<"text/plain">>},
+        <<"Method Not Allowed">>,
+        Req
+    ),
     {ok, Req2, undefined}.
 
 %% ---------------------------------------------------------------------------
@@ -592,10 +599,18 @@ host_metric_bin(H) -> iolist_to_binary(io_lib:format("~s", [H])).
 json_reply(Status, Data, Req) ->
     inc_management_request_metric(Req, Status),
     Body = thoas:encode(Data),
-    Req2 = cowboy_req:reply(Status,
-                            with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}),
-                            Body, Req),
+    Req2 = reply_compressed(
+        Status,
+        with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}),
+        Body,
+        Req
+    ),
     {ok, Req2, undefined}.
+
+reply_compressed(Status, Headers, Body, Req) ->
+    {OutHeaders, OutBody} =
+        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, Headers, Body),
+    cowboy_req:reply(Status, OutHeaders, OutBody, Req).
 
 error_reply(Status, Reason, Req) ->
     Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
