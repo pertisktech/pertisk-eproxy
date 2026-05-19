@@ -38,11 +38,13 @@ init(Req, _State) ->
                         <<>> -> UpPath;
                         _    -> <<UpPath/binary, "?", Qs/binary>>
                     end,
+                    WsHeaders = ws_forward_headers(Req, Host, ClientIp),
                     WsState = #{
                         host                => Host,
                         backend             => BackendName,
                         upstream_addr       => UpstreamAddr,
                         upstream_path       => FullPath,
+                        ws_headers          => WsHeaders,
                         conn_pid            => undefined,
                         stream_ref          => undefined,
                         upstream_ws_ready   => false,
@@ -54,14 +56,13 @@ init(Req, _State) ->
             end
     end.
 
-websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, host := Host}) ->
+websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
     {UpHost, UpPort, Transport} = parse_upstream(UpAddr),
     GunOpts = #{transport => Transport, protocols => [http]},
     case gun:open(UpHost, UpPort, GunOpts) of
         {ok, ConnPid} ->
             case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
                 {ok, _} ->
-                    Headers = [{<<"host">>, Host}],
                     StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers),
                     {ok, State#{
                         conn_pid => ConnPid,
@@ -161,3 +162,48 @@ split_host_port(Addr, Default) ->
         [Host, PortStr] -> {Host, list_to_integer(string:trim(PortStr, trailing, "/"))};
         [Host]          -> {Host, Default}
     end.
+
+ws_forward_headers(Req, OrigHost, ClientIp) ->
+    InHeaders = cowboy_req:headers(Req),
+    Proto = case cowboy_req:scheme(Req) of
+        https -> <<"https">>;
+        <<"https">> -> <<"https">>;
+        _ -> <<"http">>
+    end,
+    ProtoVsn = version_to_bin(cowboy_req:version(Req)),
+    XFF = case maps:get(<<"x-forwarded-for">>, InHeaders, undefined) of
+        undefined -> ClientIp;
+        Existing -> <<Existing/binary, ", ", ClientIp/binary>>
+    end,
+    %% Gun builds WS transport headers; only forward app-relevant headers.
+    Base = #{
+        <<"host">> => OrigHost,
+        <<"x-forwarded-for">> => XFF,
+        <<"x-forwarded-proto">> => Proto,
+        <<"x-forwarded-proto-version">> => ProtoVsn
+    },
+    Keep = [
+        <<"authorization">>,
+        <<"cookie">>,
+        <<"origin">>,
+        <<"user-agent">>,
+        <<"sec-websocket-protocol">>,
+        <<"x-eproxy-bearer">>
+    ],
+    Out = lists:foldl(
+        fun(K, Acc) ->
+            case maps:get(K, InHeaders, undefined) of
+                undefined -> Acc;
+                V -> Acc#{K => V}
+            end
+        end,
+        Base,
+        Keep
+    ),
+    maps:to_list(Out).
+
+version_to_bin('HTTP/1.0') -> <<"HTTP/1.0">>;
+version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;
+version_to_bin('HTTP/2') -> <<"HTTP/2">>;
+version_to_bin('HTTP/3') -> <<"HTTP/3">>;
+version_to_bin(_) -> <<"HTTP/1.1">>.

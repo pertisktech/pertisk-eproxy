@@ -15,7 +15,15 @@
 -module(pertisk_eproxy_handler).
 -behaviour(cowboy_handler).
 
--export([init/2, parse_upstream/1, site_advertise_http3/1]).
+-export([
+    init/2,
+    parse_upstream/1,
+    site_advertise_http3/1,
+    websocket_init/1,
+    websocket_handle/2,
+    websocket_info/2,
+    terminate/3
+]).
 
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
@@ -272,6 +280,20 @@ method_to_gun(M)             -> M.
 
 maybe_add_alt_svc(Req, Host, Headers) ->
     pertisk_eproxy_alt_svc:merge_response_headers(Req, normalize_host(Host), Headers).
+
+%% Delegate websocket callbacks when this handler upgrades requests to websocket
+%% (Cowboy invokes callbacks on the original route module).
+websocket_init(State) ->
+    pertisk_eproxy_ws_handler:websocket_init(State).
+
+websocket_handle(Frame, State) ->
+    pertisk_eproxy_ws_handler:websocket_handle(Frame, State).
+
+websocket_info(Info, State) ->
+    pertisk_eproxy_ws_handler:websocket_info(Info, State).
+
+terminate(Reason, Req, State) ->
+    pertisk_eproxy_ws_handler:terminate(Reason, Req, State).
 
 site_advertise_http3(Host) ->
     Config = pertisk_eproxy_config:get_config(),
