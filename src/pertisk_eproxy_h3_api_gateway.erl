@@ -31,7 +31,8 @@ start(Config) ->
             end,
             case load_cert_and_key(Config) of
                 {ok, {CertDer, KeyTerm, CertChain}} ->
-                    do_start_gateway(Port, CertDer, KeyTerm, CertChain);
+                    SniCerts = load_sni_certs(Config),
+                    do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts);
                 {error, Reason} ->
                     {error, Reason}
             end;
@@ -39,7 +40,7 @@ start(Config) ->
             Err
     end.
 
-do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
+do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
     Config = pertisk_eproxy_config:get_config(),
     CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
     _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
@@ -63,8 +64,12 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain) ->
             maps:get(max_datagram_frame_size, QuicOpts, undefined)
         ]
     ),
+    _ = case maps:size(SniCerts) of
+        0 -> ok;
+        N -> lager:info("HTTP/3 listener: loaded ~p SNI certificate override(s)", [N])
+    end,
     BaseOpts = maps:merge(
-        tls_server_opts(CertDer, KeyTerm, CertChain),
+        tls_server_opts(CertDer, KeyTerm, CertChain, SniCerts),
         #{
             settings => h3_http_settings(Config),
             handler => ?MODULE,
@@ -137,7 +142,7 @@ do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
         ]
     ),
     ProbeOpts = maps:merge(
-        tls_server_opts(CertDer, KeyTerm, CertChain),
+        tls_server_opts(CertDer, KeyTerm, CertChain, #{}),
         #{
             handler => pertisk_eproxy_h3_probe_handler,
             quic_opts => QuicOpts
@@ -940,10 +945,115 @@ decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
     end.
 
 %% Leaf in `cert`, intermediates in `cert_chain` (Chrome QUIC is strict; TCP certfile sends the full PEM).
-tls_server_opts(CertDer, KeyTerm, []) ->
-    #{cert => CertDer, key => KeyTerm};
-tls_server_opts(CertDer, KeyTerm, Chain) ->
-    #{cert => CertDer, key => KeyTerm, cert_chain => Chain}.
+tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
+    Base = case Chain of
+        [] -> #{cert => CertDer, key => KeyTerm};
+        _ -> #{cert => CertDer, key => KeyTerm, cert_chain => Chain}
+    end,
+    case maps:size(SniCerts) of
+        0 -> Base;
+        _ -> Base#{sni_certs => SniCerts}
+    end.
+
+load_sni_certs(Config) ->
+    Sites = maps:get(sites, Config, []),
+    DbPath = pertisk_eproxy_config:db_file(),
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} ->
+            RowsById = maps:from_list([
+                {integer_to_binary(maps:get(id, Row)), Row}
+             || Row <- Rows
+            ]),
+            RowsByName = maps:from_list([
+                {sni_ref_to_binary(maps:get(name, Row, <<>>)), Row}
+             || Row <- Rows
+            ]),
+            lists:foldl(
+                fun(Site, Acc) ->
+                    case {site_host_key(maps:get(host, Site, undefined)), maps:get(certificate, Site, undefined)} of
+                        {undefined, _} ->
+                            Acc;
+                        {_, undefined} ->
+                            Acc;
+                        {HostKey, CertRef} ->
+                            case resolve_sni_cert_entry(CertRef, RowsById, RowsByName) of
+                                {ok, Entry} -> maps:put(HostKey, Entry, Acc);
+                                _ -> Acc
+                            end
+                    end
+                end,
+                #{},
+                Sites
+            );
+        _ ->
+            #{}
+    end.
+
+resolve_sni_cert_entry(CertRef, RowsById, RowsByName) ->
+    RefBin = sni_ref_to_binary(CertRef),
+    Row = case maps:get(RefBin, RowsById, undefined) of
+        undefined -> maps:get(RefBin, RowsByName, undefined);
+        ById -> ById
+    end,
+    decode_sni_cert_row(Row).
+
+decode_sni_cert_row(#{cert_pem := CertPem0, key_pem := KeyPem0}) ->
+    CertPem = sni_text_bin(CertPem0),
+    KeyPem = sni_text_bin(KeyPem0),
+    case {CertPem, KeyPem} of
+        {undefined, _} -> {error, missing_cert_pem};
+        {_, undefined} -> {error, missing_key_pem};
+        {CertPemBin, KeyPemBin} ->
+            try
+                CertDers = [
+                    D
+                 || {'Certificate', D, not_encrypted} <- public_key:pem_decode(CertPemBin)
+                ],
+                case CertDers of
+                    [] ->
+                        {error, invalid_cert_pem};
+                    [Leaf | Chain] ->
+                        [KeyEntry | _] = public_key:pem_decode(KeyPemBin),
+                        {ok, #{
+                            cert => Leaf,
+                            cert_chain => Chain,
+                            private_key => public_key:pem_entry_decode(KeyEntry)
+                        }}
+                end
+            catch
+                _:_ -> {error, invalid_tls_material}
+            end
+    end;
+decode_sni_cert_row(_) ->
+    {error, missing_row}.
+
+site_host_key(undefined) ->
+    undefined;
+site_host_key(null) ->
+    undefined;
+site_host_key(Host) when is_list(Host) ->
+    site_host_key(unicode:characters_to_binary(Host, utf8));
+site_host_key(Host) when is_binary(Host) ->
+    Trim = re:replace(Host, <<"^\\s+|\\s+$">>, <<>>, [{return, binary}, global]),
+    case Trim of
+        <<>> -> undefined;
+        _ -> string:lowercase(Trim)
+    end;
+site_host_key(_) ->
+    undefined.
+
+sni_ref_to_binary(undefined) -> undefined;
+sni_ref_to_binary(null) -> undefined;
+sni_ref_to_binary(V) when is_binary(V) -> V;
+sni_ref_to_binary(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+sni_ref_to_binary(V) when is_integer(V) -> integer_to_binary(V);
+sni_ref_to_binary(_) -> undefined.
+
+sni_text_bin(undefined) -> undefined;
+sni_text_bin(null) -> undefined;
+sni_text_bin(V) when is_binary(V) -> V;
+sni_text_bin(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+sni_text_bin(_) -> undefined.
 
 %% Reinforce HTTP/3 on responses (Chrome caches Alt-Svc from the first successful H3 response).
 maybe_add_h3_alt_svc(Host, Headers) ->

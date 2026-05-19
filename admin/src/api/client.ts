@@ -429,12 +429,31 @@ function isChromiumBrowser(): boolean {
   return /Chrome\//.test(ua) && !/Edg\//.test(ua) && !/OPR\//.test(ua);
 }
 
+function preferSseRealtimeForChromium(): boolean {
+  return globalThis.window?.location.protocol === 'https:' && isChromiumBrowser();
+}
+
+type RealtimeTransportMode = 'auto' | 'sse' | 'ws';
+
+function realtimeTransportMode(): RealtimeTransportMode {
+  const env = import.meta.env as { VITE_REALTIME_TRANSPORT?: string };
+  const raw = (env.VITE_REALTIME_TRANSPORT ?? '').trim().toLowerCase();
+  if (raw === 'sse') return 'sse';
+  if (raw === 'ws' || raw === 'websocket') return 'ws';
+  return 'auto';
+}
+
 /**
  * Chromium keeps multiplexing fetch/XHR on the warm HTTP/2 connection opened for the document.
  * Opening a realtime WebSocket first (separate connection) helps establish the management path
  * early without leaking auth tokens in query parameters.
  */
 export function warmupHttp3ForChromium(): Promise<void> {
+  if (preferSseRealtimeForChromium()) {
+    chromiumH3WarmupDone = true;
+    chromiumH3WarmupPromise = null;
+    return Promise.resolve();
+  }
   if (chromiumH3WarmupDone) return Promise.resolve();
   if (chromiumH3WarmupPromise) return chromiumH3WarmupPromise;
   if (globalThis.window?.location.protocol !== 'https:' || !isChromiumBrowser()) {
@@ -743,7 +762,10 @@ function openRealtimeWebSocket(
   };
 }
 
-/** Live admin snapshots. WebSocket only (SSE is disabled to avoid token-in-URL auth). */
+/**
+ * Live admin snapshots.
+ * Chromium prefers SSE on HTTPS to avoid WS-first transport pinning that can suppress HTTP/3.
+ */
 export function openRealtimeStream(
   onMessage: (snapshot: RealtimeSnapshot) => void,
   onError?: (event: Event) => void,

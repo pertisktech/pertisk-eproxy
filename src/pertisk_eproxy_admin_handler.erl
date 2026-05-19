@@ -66,9 +66,11 @@ handle(<<"HEAD">>, version, Req) ->
     json_reply(200, #{}, Req);
 
 handle(<<"GET">>, proto, Req) ->
-    json_reply(200, proto_snapshot(Req), Req);
+    Snapshot = proto_snapshot(Req),
+    json_reply(200, Snapshot, Req, proto_debug_headers(Snapshot));
 handle(<<"HEAD">>, proto, Req) ->
-    json_reply(200, #{}, Req);
+    Snapshot = proto_snapshot(Req),
+    json_reply(200, #{}, Req, proto_debug_headers(Snapshot));
 
 handle(<<"GET">>, management, Req) ->
     json_reply(200, pertisk_eproxy_admin_management_snapshot:snapshot(), Req);
@@ -605,11 +607,14 @@ host_metric_bin(H) when is_binary(H) -> H;
 host_metric_bin(H) -> iolist_to_binary(io_lib:format("~s", [H])).
 
 json_reply(Status, Data, Req) ->
+    json_reply(Status, Data, Req, #{}).
+
+json_reply(Status, Data, Req, ExtraHeaders) when is_map(ExtraHeaders) ->
     inc_management_request_metric(Req, Status),
     Body = thoas:encode(Data),
     Req2 = reply_compressed(
         Status,
-        with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}),
+        maps:merge(with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}), ExtraHeaders),
         Body,
         Req
     ),
@@ -855,8 +860,8 @@ json_text(V) when is_list(V) -> list_to_binary(V);
 json_text(V) -> V.
 
 proto_snapshot(Req) ->
-    Version = io_lib:format("~p", [cowboy_req:version(Req)]),
-    Scheme = io_lib:format("~p", [cowboy_req:scheme(Req)]),
+    Version = normalize_http_version(cowboy_req:version(Req)),
+    Scheme = normalize_scheme(cowboy_req:scheme(Req)),
     Host = cowboy_req:host(Req),
     Port = cowboy_req:port(Req),
     {PeerIp, PeerPort} = cowboy_req:peer(Req),
@@ -872,9 +877,9 @@ proto_snapshot(Req) ->
     SecChUa = cowboy_req:header(<<"sec-ch-ua">>, Req, <<>>),
     SecChUaPlatform = cowboy_req:header(<<"sec-ch-ua-platform">>, Req, <<>>),
     SecChUaMobile = cowboy_req:header(<<"sec-ch-ua-mobile">>, Req, <<>>),
-    #{
-        <<"http_version">> => iolist_to_binary(Version),
-        <<"scheme">> => iolist_to_binary(Scheme),
+    Snapshot0 = #{
+        <<"http_version">> => Version,
+        <<"scheme">> => Scheme,
         <<"host">> => host_metric_bin(Host),
         <<"port">> => Port,
         <<"peer_ip">> => iolist_to_binary(inet:ntoa(PeerIp)),
@@ -891,6 +896,44 @@ proto_snapshot(Req) ->
         <<"sec_ch_ua">> => SecChUa,
         <<"sec_ch_ua_platform">> => SecChUaPlatform,
         <<"sec_ch_ua_mobile">> => SecChUaMobile
+    },
+    EffectiveClientProtoVersion =
+        case Xfpv of
+            <<>> -> Version;
+            _ -> Xfpv
+        end,
+    Snapshot0#{
+        <<"effective_client_proto_version">> => EffectiveClientProtoVersion,
+        <<"client_h3">> => is_http3(EffectiveClientProtoVersion)
+    }.
+
+normalize_http_version(V) when is_atom(V) -> atom_to_binary(V, utf8);
+normalize_http_version(V) when is_binary(V) -> V;
+normalize_http_version(V) -> iolist_to_binary(io_lib:format("~p", [V])).
+
+normalize_scheme(S) when is_binary(S) -> S;
+normalize_scheme(S) when is_atom(S) -> atom_to_binary(S, utf8);
+normalize_scheme(S) -> iolist_to_binary(io_lib:format("~p", [S])).
+
+is_http3(<<"HTTP/3">>) -> true;
+is_http3(<<"h3">>) -> true;
+is_http3(<<"h3-29">>) -> true;
+is_http3(_) -> false.
+
+bool_to_header(true) -> <<"true">>;
+bool_to_header(false) -> <<"false">>.
+
+proto_debug_headers(Snapshot) ->
+    ClientH3 = maps:get(<<"client_h3">>, Snapshot, false),
+    #{
+        <<"cache-control">> => <<"no-store">>,
+        <<"x-eproxy-debug-http-version">> => maps:get(<<"http_version">>, Snapshot, <<>>),
+        <<"x-eproxy-debug-scheme">> => maps:get(<<"scheme">>, Snapshot, <<>>),
+        <<"x-eproxy-debug-client-h3">> => bool_to_header(ClientH3),
+        <<"x-eproxy-debug-xfp">> => maps:get(<<"x_forwarded_proto">>, Snapshot, <<>>),
+        <<"x-eproxy-debug-xfp-version">> => maps:get(<<"x_forwarded_proto_version">>, Snapshot, <<>>),
+        <<"x-eproxy-debug-via">> => maps:get(<<"via">>, Snapshot, <<>>),
+        <<"x-eproxy-debug-cf-ray">> => maps:get(<<"cf_ray">>, Snapshot, <<>>)
     }.
 
 %% ---------------------------------------------------------------------------
