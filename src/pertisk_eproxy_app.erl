@@ -9,6 +9,7 @@ start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
     _ = install_quic_log_filter(),
     _ = application:ensure_all_started(inets),
+    ok = bootstrap_first_start_artifacts(),
     ok = pertisk_eproxy_metrics:setup(),
     ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
@@ -117,25 +118,14 @@ start_listeners() ->
     MgmtProtoOpts = #{
         env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
         logger => pertisk_eproxy_cowboy_logger,
-        %% RFC 8441: tunnel WebSocket frames inside an HTTP/2 CONNECT stream.
-        %% Active when the listener negotiates h2 via ALPN (TLS mode); harmless on HTTP/1.1.
-        enable_connect_protocol => true
+        %% Management/admin is intentionally plain HTTP/1.1.
+        enable_connect_protocol => false
     },
-    case management_tls_opts(Config) of
-        [] ->
-            {ok, _} = cowboy:start_clear(management,
-                #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
-                MgmtProtoOpts
-            ),
-            lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]);
-        MgmtTlsOpts ->
-            TlsSocketOpts = [{ip, MgmtAddr}, {port, MgmtPort} | MgmtTlsOpts],
-            {ok, _} = cowboy:start_tls(management,
-                #{num_acceptors => 10, socket_opts => TlsSocketOpts},
-                MgmtProtoOpts
-            ),
-            lager:info("Management API listening on ~s:~w (https, h2+http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort])
-    end,
+    {ok, _} = cowboy:start_clear(management,
+        #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
+        MgmtProtoOpts
+    ),
+    lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
@@ -250,6 +240,89 @@ stop_listener(Name) ->
     _ = catch cowboy:stop_listener(Name),
     ok.
 
+bootstrap_first_start_artifacts() ->
+    DbPath = pertisk_eproxy_config:db_file(),
+    case pertisk_eproxy_db:init(DbPath) of
+        {ok, _} ->
+            ok;
+        {error, Reason} ->
+            lager:warning("Database bootstrap failed (~p), startup will continue", [Reason]),
+            ok
+    end,
+    maybe_generate_fake_listener_tls(),
+    ok.
+
+maybe_generate_fake_listener_tls() ->
+    {CertPath, KeyPath} = listener_tls_paths(),
+    case {filelib:is_file(CertPath), filelib:is_file(KeyPath)} of
+        {true, true} ->
+            ok;
+        _ ->
+            generate_fake_listener_tls(CertPath, KeyPath)
+    end.
+
+listener_tls_paths() ->
+    Cert = normalize_tls_path(application:get_env(pertisk_eproxy, tls_cert_file, "priv/tls/listener.pem")),
+    Key = normalize_tls_path(application:get_env(pertisk_eproxy, tls_key_file, "priv/tls/listener.key")),
+    {Cert, Key}.
+
+generate_fake_listener_tls(CertPath, KeyPath) ->
+    case os:find_executable("openssl") of
+        false ->
+            lager:warning(
+                "TLS bootstrap skipped: openssl not found and listener PEM missing (~s, ~s)",
+                [CertPath, KeyPath]
+            ),
+            ok;
+        Openssl ->
+            ok = ensure_parent_dir(CertPath),
+            ok = ensure_parent_dir(KeyPath),
+            Cmd = iolist_to_binary([
+                shell_quote(Openssl),
+                " req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 ",
+                "-subj '/CN=localhost' ",
+                "-keyout ", shell_quote(KeyPath), " ",
+                "-out ", shell_quote(CertPath),
+                " 2>&1"
+            ]),
+            Output = os:cmd(binary_to_list(Cmd)),
+            case {filelib:is_file(CertPath), filelib:is_file(KeyPath)} of
+                {true, true} ->
+                    _ = try file:change_mode(KeyPath, 8#600) catch _:_ -> ok end,
+                    lager:warning(
+                        "Generated self-signed listener TLS certificate for first startup (~s, ~s)",
+                        [CertPath, KeyPath]
+                    ),
+                    ok;
+                _ ->
+                    lager:warning(
+                        "TLS bootstrap failed to generate listener PEM via openssl: ~s",
+                        [string:trim(Output)]
+                    ),
+                    ok
+            end
+    end.
+
+ensure_parent_dir(Path) ->
+    case filelib:ensure_dir(Path) of
+        ok -> ok;
+        {error, Reason} ->
+            lager:warning("Failed to create parent directory for ~s: ~p", [Path, Reason]),
+            ok
+    end.
+
+shell_quote(Path) when is_binary(Path) ->
+    shell_quote(binary_to_list(Path));
+shell_quote(Path) when is_list(Path) ->
+    [$' | shell_quote_1(Path)] ++ "'".
+
+shell_quote_1([]) ->
+    [];
+shell_quote_1([$' | Rest]) ->
+    "'\\''" ++ shell_quote_1(Rest);
+shell_quote_1([C | Rest]) ->
+    [C | shell_quote_1(Rest)].
+
 install_quic_log_filter() ->
     Filter = {fun ?MODULE:quic_noise_filter/2, #{}},
     case logger:add_primary_filter(quic_unknown_shutdown_filter, Filter) of
@@ -356,28 +429,6 @@ normalize_tls_path(null) -> undefined;
 normalize_tls_path(V) when is_binary(V) -> binary_to_list(V);
 normalize_tls_path(V) when is_list(V) -> V;
 normalize_tls_path(_) -> undefined.
-
-%% @doc TLS socket opts for the management listener.
-%% Returns [] when management_tls_enabled is false, or when no certs are configured.
-%% When TLS is enabled, advertises h2 then http/1.1 via ALPN so browsers negotiate HTTP/2,
-%% which allows WebSocket over HTTP/2 (RFC 8441 extended CONNECT).
-management_tls_opts(Config) ->
-    case maps:get(management_tls_enabled, Config, false) of
-        true ->
-            case tls_cert_key_paths(Config) of
-                {undefined, undefined} ->
-                    lager:warning("management_tls_enabled=true but no TLS cert/key found; "
-                                  "falling back to plain HTTP. Set tls_cert_file + tls_key_file "
-                                  "or place certs at priv/tls/listener.pem + priv/tls/listener.key"),
-                    [];
-                {CertFile, KeyFile} ->
-                    [{certfile, CertFile}, {keyfile, KeyFile},
-                     {versions, ['tlsv1.2', 'tlsv1.3']},
-                     {alpn_preferred_protocols, [<<"h2">>, <<"http/1.1">>]}]
-            end;
-        _ ->
-            []
-    end.
 
 build_sni_hosts(Config) ->
     Sites = maps:get(sites, Config, []),

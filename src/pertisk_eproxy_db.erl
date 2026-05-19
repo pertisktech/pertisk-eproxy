@@ -48,15 +48,27 @@ init(DbPath) ->
             lager:error("DB path ~s is a directory, not a file", [DbPath]),
             {error, is_directory};
         false ->
-            case init_schema(DbPath) of
-        ok ->
-            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
-            lager:info("Database initialized at ~s", [DbPath]),
-                    {ok, DbPath};
+            case ensure_db_parent_dir(DbPath) of
+                ok ->
+                    case init_schema(DbPath) of
+                        ok ->
+                            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
+                            lager:info("Database initialized at ~s", [DbPath]),
+                            {ok, DbPath};
+                        {error, Reason} ->
+                            lager:error("Failed to initialize schema: ~p", [Reason]),
+                            {error, Reason}
+                    end;
                 {error, Reason} ->
-                    lager:error("Failed to initialize schema: ~p", [Reason]),
-                    {error, Reason}
+                    lager:error("Failed to create DB directory for ~s: ~p", [DbPath, Reason]),
+                    {error, {db_dir, Reason}}
             end
+    end.
+
+ensure_db_parent_dir(DbPath) ->
+    case filelib:ensure_dir(DbPath) of
+        ok -> ok;
+        {error, Reason} -> {error, Reason}
     end.
 
 %% Create tables if they don't exist

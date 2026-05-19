@@ -310,13 +310,16 @@ export default function DnsProviders() {
 
       {showForm &&
         createPortal(
-          <dialog
+          <div
             className={styles.modalBackdrop}
-            open
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowForm(false);
+            }}
           >
-          <div className={styles.modal}>
+          <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="dns-provider-modal-title">
             <div className={styles.modalHeader}>
-              <h2>
+              <h2 id="dns-provider-modal-title">
                 <FaIcon className={editingId ? 'fas fa-pen-to-square' : 'fas fa-plus'} aria-hidden />{' '}
                 {editingId ? 'Edit DNS provider' : 'Add DNS provider'}
               </h2>
@@ -393,7 +396,7 @@ export default function DnsProviders() {
               </div>
             </form>
           </div>
-        </dialog>,
+        </div>,
           document.body,
         )}
 
