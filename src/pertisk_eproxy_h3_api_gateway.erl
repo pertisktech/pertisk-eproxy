@@ -335,17 +335,19 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
 -define(H3_KEEPALIVE_SECS_DEFAULT, 30).
 -define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1200).
 
-%% HTTP/3 SETTINGS sent to clients (Chrome expects default dynamic QPACK like Node/Go/Rust).
+%% HTTP/3 SETTINGS sent to clients.
+%% Force default dynamic QPACK for Chromium compatibility.
 h3_http_settings(Config) ->
-    case maps:get(h3_qpack_static, Config, true) of
+    case maps:get(h3_qpack_static, Config, false) of
         true ->
-            #{
-                qpack_max_table_capacity => 0,
-                qpack_blocked_streams => 0
-            };
-        false ->
-            #{}
-    end.
+            lager:warning(
+                "h3_qpack_static=true is deprecated and ignored; using default dynamic QPACK for Chromium compatibility",
+                []
+            );
+        _ ->
+            ok
+    end,
+    #{}.
 
 proxy_h3_upstream(
     Method,

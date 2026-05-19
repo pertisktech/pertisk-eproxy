@@ -12,8 +12,9 @@ header_value() ->
     Port = quic_udp_port(),
     PortBin = integer_to_binary(Port),
     %% RFC 7838: alternate authority is ":port" on the same host (e.g. h3=":443"), not "443".
-    %% Single `h3` entry (Chromium 124+); avoid comma-separated h3-29 duplicates confusing Alt-Svc cache.
-    <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
+        %% Advertise both h3 and h3-29 for broader client interop (matches pertisk-rproxy behavior).
+        <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1, ",
+            "h3-29=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
 
 %% @doc Add or replace Alt-Svc on a client-facing response map when appropriate.
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().

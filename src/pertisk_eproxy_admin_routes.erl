@@ -7,6 +7,7 @@
 api_routes() ->
     [
         {"/api/version", pertisk_eproxy_admin_handler, version},
+        {"/api/proto", pertisk_eproxy_admin_handler, proto},
         {"/api/management", pertisk_eproxy_admin_handler, management},
         {"/api/stats", pertisk_eproxy_admin_handler, stats},
         {"/api/realtime", pertisk_eproxy_admin_ws_handler, realtime},

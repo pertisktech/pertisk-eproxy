@@ -43,6 +43,8 @@ init(Req, Resource) ->
 auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
 auth_public(<<"HEAD">>, version) -> true;
+auth_public(<<"GET">>, proto) -> true;
+auth_public(<<"HEAD">>, proto) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
 auth_public(<<"HEAD">>, auth_config) -> true;
 auth_public(<<"GET">>, auth_check) -> true;
@@ -61,6 +63,11 @@ handle(<<"GET">>, version, Req) ->
     json_reply(200, #{<<"version">> => pertisk_eproxy_admin_management_snapshot:app_version()}, Req);
 handle(<<"HEAD">>, version, Req) ->
     %% Chrome probes public endpoints with HEAD over HTTP/3; must not require auth (GET is public).
+    json_reply(200, #{}, Req);
+
+handle(<<"GET">>, proto, Req) ->
+    json_reply(200, proto_snapshot(Req), Req);
+handle(<<"HEAD">>, proto, Req) ->
     json_reply(200, #{}, Req);
 
 handle(<<"GET">>, management, Req) ->
@@ -431,6 +438,7 @@ handle(<<"GET">>, root, Req) ->
         endpoints => [
             #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
             #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
+            #{method => <<"GET">>, path => <<"/api/proto">>, description => <<"Current request protocol diagnostics">>},
             #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
             #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
             #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
@@ -845,6 +853,45 @@ optional_challenge_type(_) -> undefined.
 json_text(V) when is_binary(V) -> V;
 json_text(V) when is_list(V) -> list_to_binary(V);
 json_text(V) -> V.
+
+proto_snapshot(Req) ->
+    Version = io_lib:format("~p", [cowboy_req:version(Req)]),
+    Scheme = io_lib:format("~p", [cowboy_req:scheme(Req)]),
+    Host = cowboy_req:host(Req),
+    Port = cowboy_req:port(Req),
+    {PeerIp, PeerPort} = cowboy_req:peer(Req),
+    Xfp = cowboy_req:header(<<"x-forwarded-proto">>, Req, <<>>),
+    Xff = cowboy_req:header(<<"x-forwarded-for">>, Req, <<>>),
+    Xfpv = cowboy_req:header(<<"x-forwarded-proto-version">>, Req, <<>>),
+    Xfh = cowboy_req:header(<<"x-forwarded-host">>, Req, <<>>),
+    Forwarded = cowboy_req:header(<<"forwarded">>, Req, <<>>),
+    CfVisitor = cowboy_req:header(<<"cf-visitor">>, Req, <<>>),
+    CfRay = cowboy_req:header(<<"cf-ray">>, Req, <<>>),
+    Via = cowboy_req:header(<<"via">>, Req, <<>>),
+    Ua = cowboy_req:header(<<"user-agent">>, Req, <<>>),
+    SecChUa = cowboy_req:header(<<"sec-ch-ua">>, Req, <<>>),
+    SecChUaPlatform = cowboy_req:header(<<"sec-ch-ua-platform">>, Req, <<>>),
+    SecChUaMobile = cowboy_req:header(<<"sec-ch-ua-mobile">>, Req, <<>>),
+    #{
+        <<"http_version">> => iolist_to_binary(Version),
+        <<"scheme">> => iolist_to_binary(Scheme),
+        <<"host">> => host_metric_bin(Host),
+        <<"port">> => Port,
+        <<"peer_ip">> => iolist_to_binary(inet:ntoa(PeerIp)),
+        <<"peer_port">> => PeerPort,
+        <<"x_forwarded_proto">> => Xfp,
+        <<"x_forwarded_for">> => Xff,
+        <<"x_forwarded_proto_version">> => Xfpv,
+        <<"x_forwarded_host">> => Xfh,
+        <<"forwarded">> => Forwarded,
+        <<"cf_visitor">> => CfVisitor,
+        <<"cf_ray">> => CfRay,
+        <<"via">> => Via,
+        <<"user_agent">> => Ua,
+        <<"sec_ch_ua">> => SecChUa,
+        <<"sec_ch_ua_platform">> => SecChUaPlatform,
+        <<"sec_ch_ua_mobile">> => SecChUaMobile
+    }.
 
 %% ---------------------------------------------------------------------------
 %% Misc

@@ -743,20 +743,12 @@ function openRealtimeWebSocket(
   };
 }
 
-/** Live admin snapshots. Defaults to WebSocket; set `VITE_REALTIME_USE_SSE=1` to force SSE fallback. */
+/** Live admin snapshots. WebSocket only (SSE is disabled to avoid token-in-URL auth). */
 export function openRealtimeStream(
   onMessage: (snapshot: RealtimeSnapshot) => void,
   onError?: (event: Event) => void,
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
-  const env = import.meta.env as {
-    VITE_REALTIME_USE_SSE?: string;
-    VITE_REALTIME_WEBSOCKET_URL?: string;
-  };
-  const forceSse = env.VITE_REALTIME_USE_SSE === '1';
-  if (forceSse) {
-    return openRealtimeSse(onMessage, onError);
-  }
   return openRealtimeWebSocket(onMessage, onError, onSslJobPush);
 }
 
