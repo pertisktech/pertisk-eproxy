@@ -60,7 +60,6 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `GET` | `/api/management` | Node, listeners, **`config_file`** (on-disk JSON path), `process_info`, CPU/memory fields, runtime capabilities, optional public IP snapshot |
 | `GET` | `/api/stats` | Counters for the admin UI (requests by protocol, bytes, connections, log buffer size, uptime, per-site maps, …) |
 | `GET` | `/api/realtime` | **WebSocket** — live snapshots (stats, management, logs, certificates, SSL jobs) |
-| `GET` | `/api/realtime-sse` | **Server-Sent Events** — same snapshot shape as WebSocket |
 | `GET` | `/api/logs` | Access log ring; optional query `type`, `host` |
 | `GET` | `/api/auth/config` | Auth mode and login-related fields |
 | `HEAD` | `/api/auth/config` | Same as `GET` (no JSON body) |
@@ -101,7 +100,7 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `GET` | `/api/metrics` | **Prometheus** metrics (text exposition) |
 | `POST` | `/api/reload` | Reload configuration from the on-disk config file |
 
-Handlers live in `src/pertisk_eproxy_app.erl` (`build_admin_api_routes/0`), `src/pertisk_eproxy_admin_handler.erl`, `src/pertisk_eproxy_admin_ws_handler.erl`, and `src/pertisk_eproxy_admin_sse_handler.erl`. Which routes allow unauthenticated access is defined by `auth_public/2` in `pertisk_eproxy_admin_handler.erl` (WebSocket/SSE follow the same auth rules as other management routes).
+Handlers live in `src/pertisk_eproxy_app.erl` (`build_admin_api_routes/0`), `src/pertisk_eproxy_admin_handler.erl`, and `src/pertisk_eproxy_admin_ws_handler.erl`. Which routes allow unauthenticated access is defined by `auth_public/2` in `pertisk_eproxy_admin_handler.erl`.
 
 ### Admin UI (production assets)
 

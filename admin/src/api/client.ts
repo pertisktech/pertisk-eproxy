@@ -676,8 +676,7 @@ function openRealtimeWebSocket(
 }
 
 /**
- * Live admin snapshots.
- * Chromium prefers SSE on HTTPS to avoid WS-first transport pinning that can suppress HTTP/3.
+ * Live admin snapshots via WebSocket.
  */
 export function openRealtimeStream(
   onMessage: (snapshot: RealtimeSnapshot) => void,
@@ -685,7 +684,8 @@ export function openRealtimeStream(
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
   const mode = realtimeTransportMode();
-  const useSse = mode === 'sse' || (mode === 'auto' && preferSseRealtimeForChromium());
+  // Use SSE only if explicitly configured; default to WebSocket
+  const useSse = mode === 'sse';
   if (useSse) {
     return openRealtimeSse(onMessage, onError);
   }

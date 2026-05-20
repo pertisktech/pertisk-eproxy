@@ -117,14 +117,4 @@ export const SUPPORTED_DNS_PROVIDERS: SupportedDnsProviderDef[] = [
     name: 'Gandi',
     fields: [{ key: 'api_token', label: 'API Token', type: 'password', required: true }],
   },
-  {
-    id: 'manual',
-    name: 'Manual',
-    fields: [],
-  },
-  {
-    id: 'label',
-    name: 'Simple label (name only)',
-    fields: [],
-  },
 ];

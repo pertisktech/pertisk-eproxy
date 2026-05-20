@@ -34,11 +34,6 @@ export const MANAGEMENT_API_ROUTES: readonly ManagementApiRouteRow[] = [
     path: '/api/realtime',
     purpose: 'WebSocket — live snapshots (stats, management, logs, certificates, SSL jobs)',
   },
-  {
-    method: 'GET',
-    path: '/api/realtime-sse',
-    purpose: 'Server-Sent Events — same snapshot shape as WebSocket',
-  },
   { method: 'GET', path: '/api/logs', purpose: 'Access log ring; optional query type, host' },
   { method: 'GET', path: '/api/auth/config', purpose: 'Auth mode and login-related fields' },
   { method: 'HEAD', path: '/api/auth/config', purpose: 'Same as GET (no JSON body)' },

@@ -29,8 +29,6 @@ try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
 
 h3_local_admin_path(<<"/api/realtime", _/binary>>) ->
     false;
-h3_local_admin_path(<<"/api/realtime-sse", _/binary>>) ->
-    false;
 h3_local_admin_path(<<"/api/", _/binary>>) ->
     true;
 h3_local_admin_path(_) ->

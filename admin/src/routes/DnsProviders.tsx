@@ -7,6 +7,8 @@ import {
   type SupportedDnsProvider,
   type SupportedDnsProviderField,
 } from '@/api/client';
+import { getCookieValue, setCookieValue } from '@/auth';
+import { formatDateTime } from '@/utils/dateFormat';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import Pagination from '@/components/Pagination';
 import { usePageSize } from '@/utils/usePageSize';
@@ -14,6 +16,12 @@ import { useToast } from '@/context/ToastContext';
 import styles from './DnsProviders.module.css';
 
 const DNS_LABEL_ID = 'label';
+const VIEW_MODE_COOKIE = 'pertisk_dns_providers_view';
+const VIEW_MODE_MAX_AGE_SECS = 60 * 60 * 24 * 365;
+
+function normalizeViewMode(value: string | null): 'card' | 'list' {
+  return value === 'card' ? 'card' : 'list';
+}
 
 export default function DnsProviders() {
   const [list, setList] = useState<DnsProviderRow[]>([]);
@@ -28,18 +36,46 @@ export default function DnsProviders() {
   const [fieldVisibility, setFieldVisibility] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [dbUnavailable, setDbUnavailable] = useState(false);
+  const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
+    normalizeViewMode(getCookieValue(VIEW_MODE_COOKIE))
+  );
   const pageSize = usePageSize();
   const [page, setPage] = useState(1);
+  type SortKey = 'name' | 'type' | 'created';
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmRow, setDeleteConfirmRow] = useState<DnsProviderRow | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const toast = useToast();
 
   const selectedProvider = supported.find((p) => p.id === formType);
-  let submitLabel = 'Create';
-  if (saving) {
-    submitLabel = 'Saving…';
-  } else if (editingId) {
-    submitLabel = 'Update';
+
+  function toggleSort(nextKey: SortKey) {
+    setPage(1);
+    setSortKey((prev) => {
+      if (prev === nextKey) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+        return prev;
+      }
+      setSortDir('asc');
+      return nextKey;
+    });
+  }
+
+  function sortIcon(key: SortKey) {
+    const active = sortKey === key;
+    const cls = !active ? 'fas fa-sort' : sortDir === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
+    return <FaIcon className={cls} aria-hidden />;
+  }
+
+  function compareStrings(a: string, b: string): number {
+    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  }
+
+  function updateViewMode(next: 'card' | 'list') {
+    setViewMode(next);
+    setCookieValue(VIEW_MODE_COOKIE, next, VIEW_MODE_MAX_AGE_SECS);
   }
 
   const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
@@ -49,7 +85,25 @@ export default function DnsProviders() {
 
   const startIndex = (page - 1) * pageSize;
   const endIndexExclusive = startIndex + pageSize;
-  const pagedList = list.slice(startIndex, endIndexExclusive);
+  const sortedList = sortKey
+    ? [...list].sort((a, b) => {
+        const dir = sortDir === 'asc' ? 1 : -1;
+        if (sortKey === 'name') return dir * compareStrings(a.name ?? '', b.name ?? '');
+        if (sortKey === 'type') {
+          const ad = getProviderDisplayName(a.provider_type ?? '');
+          const bd = getProviderDisplayName(b.provider_type ?? '');
+          return dir * compareStrings(ad, bd);
+        }
+        // created
+        const at = new Date(a.created_at).getTime();
+        const bt = new Date(b.created_at).getTime();
+        const safeAt = Number.isFinite(at) ? at : 0;
+        const safeBt = Number.isFinite(bt) ? bt : 0;
+        return dir * (safeAt - safeBt);
+      })
+    : list;
+
+  const pagedList = sortedList.slice(startIndex, endIndexExclusive);
 
   function load(): Promise<DnsProviderRow[]> {
     setLoading(true);
@@ -59,11 +113,15 @@ export default function DnsProviders() {
         const safeRows = Array.isArray(rows) ? rows : [];
         setList(safeRows);
         setSupported(Array.isArray(sup) ? sup : []);
+        setDbUnavailable(false);
         return safeRows;
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : 'Failed to load';
         setError(msg);
+        if (msg.includes('503') || msg.includes('database') || msg.includes('not configured')) {
+          setDbUnavailable(true);
+        }
         return [];
       })
       .finally(() => setLoading(false));
@@ -216,6 +274,16 @@ export default function DnsProviders() {
     );
   }
 
+  if (dbUnavailable) {
+    return (
+      <section className={styles.section}>
+        <p className={styles.error}>
+          DNS providers require the database. Start the proxy with <code>--db ./data/pertisk.db</code>.
+        </p>
+      </section>
+    );
+  }
+
   if (error) {
     return (
       <section className={styles.section}>
@@ -229,72 +297,129 @@ export default function DnsProviders() {
 
   return (
     <section className={styles.section}>
-      <div className="page-actions">
-        <button type="button" className={styles.btnPrimary} onClick={openAdd}>
-          <FaIcon className="fas fa-plus" aria-hidden /> Add DNS provider
-        </button>
+      <div className={styles.header}>
+        <div className={styles.headerActions}>
+          <div className={styles.viewToggle}>
+            <button
+              type="button"
+              className={viewMode === 'card' ? styles.viewBtnActive : styles.viewBtn}
+              onClick={() => updateViewMode('card')}
+            >
+              <FaIcon className="fas fa-th" aria-hidden /> Cards
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'list' ? styles.viewBtnActive : styles.viewBtn}
+              onClick={() => updateViewMode('list')}
+            >
+              <FaIcon className="fas fa-list" aria-hidden /> List
+            </button>
+          </div>
+          <button type="button" className={styles.btnPrimary} onClick={openAdd}>
+            <FaIcon className="fas fa-plus" aria-hidden /> Add DNS provider
+          </button>
+        </div>
       </div>
 
       {list.length === 0 ? (
         <div className={styles.emptyState}>
           <FaIcon className="fas fa-server" size={48} aria-hidden />
           <h3 className={styles.emptyTitle}>No DNS providers</h3>
+          <p className={styles.emptyText}>Add one for DNS-01 challenges (e.g. wildcard certs).</p>
           <button type="button" className={styles.btnPrimary} onClick={openAdd}>
             <FaIcon className="fas fa-plus" aria-hidden /> Add DNS provider
           </button>
+        </div>
+      ) : viewMode === 'card' ? (
+        <div className={styles.cardGrid}>
+          {pagedList.map((row) => (
+            <div key={row.id} className={styles.providerCard}>
+              <div className={styles.providerCardHeader}>
+                <h3 className={styles.providerCardName}>
+                  <FaIcon className="fas fa-server" aria-hidden />
+                  {row.name}
+                </h3>
+                <span className={styles.providerCardType}>{getProviderDisplayName(row.provider_type)}</span>
+              </div>
+              <div className={styles.providerCardBody}>
+                <div className={styles.providerCardMeta}>
+                  <span className={styles.metaLabel}>Created</span>
+                  <span className={styles.metaValue}>{formatDateTime(row.created_at)}</span>
+                </div>
+                <div className={styles.providerCardActions}>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={() => loadFullThenEdit(row.id)}
+                  >
+                    <FaIcon className="fas fa-edit" aria-hidden /> View / Edit
+                  </button>
+                  <button type="button" className={styles.btnDanger} onClick={() => openDeleteConfirm(row)}>
+                    <FaIcon className="fas fa-trash" aria-hidden /> Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th className={`${styles.actionsCol} ${styles.actionsTh}`} scope="col">
-                  Actions
+                <th aria-sort={sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('name')}>
+                    Name {sortIcon('name')}
+                  </button>
                 </th>
+                <th aria-sort={sortKey === 'type' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('type')}>
+                    Type {sortIcon('type')}
+                  </button>
+                </th>
+                <th aria-sort={sortKey === 'created' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('created')}>
+                    Created {sortIcon('created')}
+                  </button>
+                </th>
+                <th className={styles.actionsCol} />
               </tr>
             </thead>
             <tbody>
-              {pagedList.map((row) => {
-                const rawType = row.provider_type ?? '';
-                const typeLabel =
-                  rawType === DNS_LABEL_ID || rawType === ''
-                    ? 'Label'
-                    : getProviderDisplayName(rawType);
-                return (
-                  <tr key={row.id} className={styles.tableRow}>
-                    <td className={styles.nameCell}>
-                      <span className={styles.nameText}>{row.name}</span>
-                    </td>
-                    <td>
-                      <span className={styles.typeCell}>{typeLabel}</span>
-                    </td>
-                    <td className={`${styles.actionsCol} ${styles.actionsColTd}`}>
-                      <div className={styles.rowActions}>
-                        <button
-                          type="button"
-                          className={styles.iconBtn}
-                          onClick={() => loadFullThenEdit(row.id)}
-                          aria-label={`Edit ${row.name}`}
-                          title="Edit"
-                        >
-                          <FaIcon className="fas fa-edit" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
-                          className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                          onClick={() => openDeleteConfirm(row)}
-                          aria-label={`Remove ${row.name}`}
-                          title="Remove"
-                        >
-                          <FaIcon className="fas fa-trash" aria-hidden />
-                        </button>
+              {pagedList.map((row) => (
+                <tr key={row.id} className={styles.tableRow}>
+                  <td className={styles.name}>
+                    <div className={styles.primaryCell}>
+                      <div className={styles.providerIdentity}>
+                        <span className={styles.providerBadge}>
+                          <FaIcon className="fas fa-server" aria-hidden />
+                        </span>
+                        <span className={styles.nameText}>{row.name}</span>
                       </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                    </div>
+                  </td>
+                  <td>
+                    <span className={styles.statusPill}>{getProviderDisplayName(row.provider_type)}</span>
+                  </td>
+                  <td>
+                    <span className={styles.datePrimary}>{formatDateTime(row.created_at)}</span>
+                  </td>
+                  <td className={styles.actionsCol}>
+                    <div className={styles.rowActions}>
+                      <button
+                        type="button"
+                        className={styles.btnSecondary}
+                        onClick={() => loadFullThenEdit(row.id)}
+                      >
+                        View / Edit
+                      </button>
+                      <button type="button" className={styles.btnDanger} onClick={() => openDeleteConfirm(row)}>
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -391,7 +516,7 @@ export default function DnsProviders() {
                   Cancel
                 </button>
                 <button type="submit" className={styles.btnPrimary} disabled={saving}>
-                  {submitLabel}
+                  {saving ? 'Saving…' : editingId ? 'Update' : 'Create'}
                 </button>
               </div>
             </form>
