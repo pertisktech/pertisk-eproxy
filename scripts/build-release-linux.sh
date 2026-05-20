@@ -5,10 +5,31 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COWBOY_QUICER="${COWBOY_QUICER:-0}"
 COWBOY_QUIC="${COWBOY_QUIC:-0}"
 RELEASE_BUILD_IMAGE="${RELEASE_BUILD_IMAGE:-erlang:27}"
+RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-linux/amd64}"
+RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-0}"
 
 build_local() {
   cd "$ROOT_DIR"
   COWBOY_QUICER="$COWBOY_QUICER" COWBOY_QUIC="$COWBOY_QUIC" rebar3 as prod release
+}
+
+local_runtime_ok() {
+  if ! command -v erl >/dev/null 2>&1 || ! command -v rebar3 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  erl -noshell -eval '
+    HasNifError = erlang:function_exported(erlang, nif_error, 1),
+    ZlibOk =
+      case catch zlib:compress(<<"ok">>) of
+        Bin when is_binary(Bin) -> true;
+        _ -> false
+      end,
+    case HasNifError andalso ZlibOk of
+      true -> init:stop(0);
+      false -> init:stop(1)
+    end.
+  ' >/dev/null 2>&1
 }
 
 build_docker() {
@@ -20,6 +41,7 @@ build_docker() {
   mkdir -p "$ROOT_DIR/_build/prod/rel"
 
   docker run --rm \
+    --platform "$RELEASE_BUILD_PLATFORM" \
     -v "$ROOT_DIR:/src" \
     -e COWBOY_QUICER="$COWBOY_QUICER" \
     -e COWBOY_QUIC="$COWBOY_QUIC" \
@@ -44,7 +66,15 @@ build_docker() {
 
 case "$(uname -s)" in
   Linux)
-    build_local
+    if [[ "$RELEASE_BUILD_FORCE_DOCKER" == "1" ]]; then
+      build_docker
+    elif local_runtime_ok; then
+      build_local
+    else
+      echo "Local Erlang runtime check failed; falling back to Docker build." >&2
+      echo "Set RELEASE_BUILD_FORCE_DOCKER=1 to always build in Docker." >&2
+      build_docker
+    fi
     ;;
   *)
     build_docker

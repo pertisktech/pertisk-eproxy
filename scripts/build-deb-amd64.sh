@@ -9,6 +9,7 @@ REL_SRC="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
 OUT_DIR="$ROOT_DIR/release"
 WORK_DIR="$ROOT_DIR/_build/package-deb-amd64"
 PKG_ROOT="$WORK_DIR/pkg"
+TARGET_OPENSSL_ABI="${TARGET_OPENSSL_ABI:-any}"
 
 copy_tree() {
   local SRC="$1"
@@ -21,6 +22,40 @@ copy_tree() {
 if [ ! -d "$REL_SRC" ]; then
   echo "Release directory not found at $REL_SRC. Run 'make release' first." >&2
   exit 1
+fi
+
+ERLEXEC_PATH="$REL_SRC/erts-*/bin/erlexec"
+if ! command -v file >/dev/null 2>&1; then
+  echo "'file' command is required to validate release architecture." >&2
+  exit 1
+fi
+
+ERLEXEC_DESC="$(file -b $ERLEXEC_PATH 2>/dev/null || true)"
+if [[ -z "$ERLEXEC_DESC" ]] || [[ "$ERLEXEC_DESC" != *"x86-64"* ]]; then
+  echo "Release architecture mismatch for amd64 package." >&2
+  echo "Expected erlexec to be x86-64, got: ${ERLEXEC_DESC:-<unknown>}" >&2
+  echo "Rebuild release with: RELEASE_BUILD_PLATFORM=linux/amd64 make release" >&2
+  exit 1
+fi
+
+CRYPTO_SO_GLOB="$REL_SRC/lib/crypto-*/priv/lib/crypto.so"
+CRYPTO_SO_PATH="$(ls -1 $CRYPTO_SO_GLOB 2>/dev/null | head -n1 || true)"
+if [[ -n "$CRYPTO_SO_PATH" ]]; then
+  RELEASE_OPENSSL_ABI="unknown"
+  if command -v strings >/dev/null 2>&1 && strings "$CRYPTO_SO_PATH" | grep -q "OPENSSL_3.0.0"; then
+    RELEASE_OPENSSL_ABI="3"
+  elif command -v strings >/dev/null 2>&1 && strings "$CRYPTO_SO_PATH" | grep -q "OPENSSL_1_1"; then
+    RELEASE_OPENSSL_ABI="1"
+  fi
+
+  if [[ "$TARGET_OPENSSL_ABI" != "any" ]] && [[ "$RELEASE_OPENSSL_ABI" != "unknown" ]] && [[ "$TARGET_OPENSSL_ABI" != "$RELEASE_OPENSSL_ABI" ]]; then
+    echo "OpenSSL ABI mismatch for packaged release." >&2
+    echo "Release crypto NIF expects OpenSSL ABI: $RELEASE_OPENSSL_ABI" >&2
+    echo "Requested target OpenSSL ABI: $TARGET_OPENSSL_ABI" >&2
+    echo "Set RELEASE_BUILD_IMAGE to an Erlang image built against target OpenSSL ABI and rebuild release." >&2
+    echo "Example (OpenSSL 1.1 target): RELEASE_BUILD_IMAGE=erlang:27-bullseye TARGET_OPENSSL_ABI=1 make package-deb-amd64" >&2
+    exit 1
+  fi
 fi
 
 rm -rf "$WORK_DIR"

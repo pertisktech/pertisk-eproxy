@@ -1,4 +1,4 @@
-.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi docker-harbor-multi tls-smoke package-deb-amd64 package-rpm-amd64 quic-upstream-local
+.PHONY: all compile shell test clean release docker-release docker-build docker-push docker-eproxy-multi docker-harbor-multi tls-smoke package-deb-amd64 package-rpm-amd64 quic-upstream-local check-vm-args release-openssl11 package-rpm-amd64-openssl11
 
 REBAR = rebar3
 IMAGE ?= harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
@@ -42,6 +42,14 @@ quic-upstream-local:
 
 release:
 	@bash scripts/build-release-linux.sh
+
+## Build release with OpenSSL 1.1 ABI (useful for EL8-era hosts)
+release-openssl11:
+	@RELEASE_BUILD_FORCE_DOCKER=1 RELEASE_BUILD_PLATFORM=linux/amd64 RELEASE_BUILD_IMAGE=erlang:27-bullseye bash scripts/build-release-linux.sh
+
+check-vm-args:
+	@erl -noshell -args_file config/vm.args -eval 'halt().' >/dev/null
+	@echo "vm.args OK"
 
 docker-release:
 	docker build -f $(DOCKERFILE) -t $(IMAGE):$(VERSION) .
@@ -101,6 +109,10 @@ package-deb-x86_64: package-deb-amd64
 ## Build Linux x86_64 RPM package into release/
 package-rpm-amd64: release
 	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
+
+## Build Linux x86_64 RPM with OpenSSL 1.1-compatible release ABI
+package-rpm-amd64-openssl11: release-openssl11
+	@TARGET_OPENSSL_ABI=1 bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-rpm-x86_64: package-rpm-amd64
 
