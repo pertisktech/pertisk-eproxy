@@ -1,5 +1,5 @@
 #!/usr/bin/env escript
-%% Initialize SQLite database with sample data from proxy.json
+%% Initialize Mnesia database with sample data from proxy.json
 
 main([DbPath]) ->
     case pertisk_eproxy_db:init(DbPath) of

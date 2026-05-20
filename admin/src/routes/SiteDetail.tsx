@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, type Site, type ProxyConfig, type CertificateRow, type PathRewrite, normalizeDnsProviders } from '@/api/client';
+import {
+  api,
+  type Site,
+  type CertificateRow,
+  type PathRewrite,
+  type DnsProviderRow,
+} from '@/api/client';
 
 const PATH_TYPES = ['Prefix', 'Exact', 'ImplementationSpecific'] as const;
 
@@ -24,8 +30,8 @@ export default function SiteDetail() {
   const { host = '' } = useParams();
   const navigate = useNavigate();
   const [site, setSite] = useState<Site | null>(null);
-  const [config, setConfig] = useState<ProxyConfig | null>(null);
   const [tlsRows, setTlsRows] = useState<CertificateRow[]>([]);
+  const [dnsProviderRows, setDnsProviderRows] = useState<DnsProviderRow[]>([]);
   const [certificate, setCertificate] = useState('');
   const [dnsProvider, setDnsProvider] = useState('');
   const [routesForm, setRoutesForm] = useState<RouteFormRow[]>([{ path: '/', path_type: 'Prefix', rewrite: '/' }]);
@@ -35,10 +41,14 @@ export default function SiteDetail() {
   useEffect(() => {
     (async () => {
       try {
-        const [s, c, tls] = await Promise.all([api.site(host), api.config(), api.certificates.list()]);
+        const [s, tls, dns] = await Promise.all([
+          api.site(host),
+          api.certificates.list(),
+          api.dnsProviders.list().catch(() => [] as DnsProviderRow[]),
+        ]);
         setSite(s);
-        setConfig(c);
         setTlsRows(Array.isArray(tls) ? tls : []);
+        setDnsProviderRows(Array.isArray(dns) ? dns : []);
         setCertificate(s.certificate ?? '');
         setDnsProvider(s.dns_provider ?? '');
         setRoutesForm(
@@ -157,15 +167,23 @@ export default function SiteDetail() {
           </div>
           <div className="form-group">
             <label>DNS Provider</label>
-            <select value={dnsProvider} onChange={e => setDnsProvider(e.target.value)}>
+            <select value={dnsProvider} onChange={(e) => setDnsProvider(e.target.value)}>
               <option value="">— none —</option>
-              {[...new Set([
-                ...(site.dns_provider ? [site.dns_provider] : []),
-                ...normalizeDnsProviders(config?.dns_providers).map((e) => e.name),
-              ])].map(item => (
-                <option key={item} value={item}>{item}</option>
+              {dnsProviderRows.map((row) => (
+                <option key={row.id || row.name} value={row.name}>
+                  {row.provider_type ? `${row.name} (${row.provider_type})` : row.name}
+                </option>
               ))}
+              {dnsProvider &&
+              !dnsProviderRows.some((r) => r.name === dnsProvider) ? (
+                <option value={dnsProvider}>{dnsProvider} (saved)</option>
+              ) : null}
             </select>
+            {dnsProviderRows.length === 0 ? (
+              <p className="hint" style={{ marginTop: 6, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                No DNS providers configured. <Link to="/dns-providers">Add one</Link>.
+              </p>
+            ) : null}
           </div>
         </div>
 

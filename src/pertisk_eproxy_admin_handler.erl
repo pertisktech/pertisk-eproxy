@@ -1124,14 +1124,9 @@ imported_cert_name(CertPath0) ->
 
 insert_imported_certificate(Name, CertPath, KeyPath) ->
     case pertisk_eproxy_db:insert_certificate_pem(db_file_path(), Name, CertPath, KeyPath) of
-        {error, {sqlite_error, Msg}} ->
-            case string:str(Msg, "UNIQUE constraint failed: certificates.name") of
-                0 ->
-                    {error, {sqlite_error, Msg}};
-                _ ->
-                    Name2 = <<(json_text(Name))/binary, "-", (integer_to_binary(erlang:system_time(second)))/binary>>,
-                    pertisk_eproxy_db:insert_certificate_pem(db_file_path(), Name2, CertPath, KeyPath)
-            end;
+        {error, {unique_violation, name}} ->
+            Name2 = <<(json_text(Name))/binary, "-", (integer_to_binary(erlang:system_time(second)))/binary>>,
+            pertisk_eproxy_db:insert_certificate_pem(db_file_path(), Name2, CertPath, KeyPath);
         Other ->
             Other
     end.

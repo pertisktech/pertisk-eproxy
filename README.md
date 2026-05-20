@@ -24,7 +24,7 @@ Optional QUIC-related compile flags are documented in the `Makefile` (`COWBOY_QU
 rebar3 shell
 ```
 
-Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME-related keys). Proxy routing, sites, backends, and listener ports are loaded from the JSON file pointed to by `config_file` (default `config/proxy.json`). See `README_SQLITE.md` for database-backed certificate and DNS provider storage.
+Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME-related keys). Proxy routing, sites, backends, and listener ports are loaded from the JSON file pointed to by `config_file` (default `config/proxy.json`) and persisted in **Mnesia** (`mnesia_dir`, default `data/mnesia`). See `README_MNESIA.md` for certificate, DNS provider, and admin-user storage.
 
 ## Modes
 
@@ -112,7 +112,7 @@ cd admin && npm ci && npm run build
 
 ## Further reading
 
-- **`README_SQLITE.md`** — SQLite schema, certificates, DNS providers, and related operational notes.
+- **`README_MNESIA.md`** — Mnesia tables, bootstrap, and migration notes (replaces legacy SQLite storage).
 
 ## HTTP/3 transport verification
 

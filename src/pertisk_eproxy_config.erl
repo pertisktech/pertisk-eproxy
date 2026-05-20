@@ -1,6 +1,6 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
-%% Loads proxy config from SQLite database at startup.
+%% Loads proxy config from Mnesia at startup.
 %% Stores config in an ETS table for fast concurrent reads.
 %%
 %% Config is stored as JSON and cached in ETS:
@@ -28,7 +28,7 @@
 
 -define(TAB, pertisk_eproxy_config_tab).
 -define(SERVER, ?MODULE).
-%% Saves can block on SQLite (shell sqlite3) and backend supervisor sync; 15s was too tight in the field.
+%% Saves can block on Mnesia and backend supervisor sync; 15s was too tight in the field.
 -define(CONFIG_CALL_TIMEOUT_MS, 60000).
 
 %% ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ load_config() ->
         not_found ->
             load_config_from_file_and_seed(DbPath);
         {error, Reason} ->
-            lager:warning("Runtime config in SQLite unavailable (~p), falling back to file", [Reason]),
+            lager:warning("Runtime config in Mnesia unavailable (~p), falling back to file", [Reason]),
             load_config_from_file_and_seed(DbPath)
     end.
 
@@ -235,9 +235,13 @@ persist_runtime_config(DbPath, Config) ->
     pertisk_eproxy_db:put_runtime_config(DbPath, Config).
 
 db_file() ->
-    case application:get_env(pertisk_eproxy, db_file) of
+    case application:get_env(pertisk_eproxy, mnesia_dir) of
         {ok, F} -> F;
-        undefined -> "data/proxy.db"
+        undefined ->
+            case application:get_env(pertisk_eproxy, db_file) of
+                {ok, Legacy} -> Legacy;
+                undefined -> "data/mnesia"
+            end
     end.
 
 %% JSON `null` or non-lists must not crash list comprehensions (maps:get/3 default is

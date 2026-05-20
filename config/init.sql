@@ -1,4 +1,4 @@
--- SQLite database schema for pertisk_eproxy (proxy-only mode)
+-- Legacy SQLite schema (reference only; runtime storage uses Mnesia — see README_MNESIA.md)
 
 CREATE TABLE IF NOT EXISTS backends (
     name TEXT PRIMARY KEY,

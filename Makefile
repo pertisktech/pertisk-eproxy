@@ -15,8 +15,13 @@ PACKAGE_NAME ?= pertisk-eproxy
 
 all: compile
 
+admin:
+	cd admin && npm ci && npm run build
+
 compile:
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
+
+compile-with-admin: admin compile
 
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
@@ -62,7 +67,7 @@ docker-eproxy-multi:
 docker-harbor-multi: docker-eproxy-multi
 
 ## Start the proxy (development — reads config from config/proxy.json)
-run: compile
+run: compile-with-admin
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
 ## Hot-reload config from JSON

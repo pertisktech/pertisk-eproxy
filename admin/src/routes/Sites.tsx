@@ -1,6 +1,7 @@
 import FaIcon from '@/components/FaIcon';
 import { useEffect, useState, FormEvent, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import {
   api,
   type ProxyConfig,
@@ -8,7 +9,7 @@ import {
   type PathRewrite,
   type Backend,
   type CertificateRow,
-  normalizeDnsProviders,
+  type DnsProviderRow,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
 import { useToast } from '@/context/ToastContext';
@@ -27,6 +28,7 @@ const EMPTY_BACKENDS: Backend[] = [];
 type SitesCache = {
   config: ProxyConfig | null;
   issuedTlsCerts: CertificateRow[];
+  dnsProviderRows: DnsProviderRow[];
 };
 
 let sitesCache: SitesCache | null = null;
@@ -90,6 +92,19 @@ function toFormPathType(pt: string | undefined): string {
   return 'ImplementationSpecific';
 }
 
+function dnsProviderRowName(row: DnsProviderRow): string {
+  const n = row.name;
+  if (typeof n === 'string') return n.trim();
+  if (n == null) return '';
+  return String(n).trim();
+}
+
+function dnsProviderOptionLabel(row: DnsProviderRow): string {
+  const name = dnsProviderRowName(row);
+  const pt = (row.provider_type ?? '').toString().trim();
+  return pt ? `${name} (${pt})` : name;
+}
+
 type DisplaySiteItem = {
   key: string;
   site: Site;
@@ -131,14 +146,20 @@ export default function Sites() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
   const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
+  const [dnsProviderRows, setDnsProviderRows] = useState<DnsProviderRow[]>(
+    () => sitesCache?.dnsProviderRows ?? [],
+  );
   const toast = useToast();
   const wildcardLabel = wildcardDomainFromHost(formHost);
 
   const sites = config?.sites ?? EMPTY_SITES;
   const backends = config?.backends ?? EMPTY_BACKENDS;
-  const dnsNames = useMemo(
-    () => normalizeDnsProviders(config?.dns_providers).map((e) => e.name).filter((n) => n.length > 0),
-    [config?.dns_providers],
+  const dnsProvidersSorted = useMemo(
+    () =>
+      [...dnsProviderRows].sort((a, b) =>
+        (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' }),
+      ),
+    [dnsProviderRows],
   );
 
   const displaySiteItems: DisplaySiteItem[] = useMemo(
@@ -218,16 +239,20 @@ export default function Sites() {
     }
     setError(null);
     try {
-      const [nextConfig, certList] = await Promise.all([
+      const [nextConfig, certList, dnsList] = await Promise.all([
         api.config(),
         api.certificates.list().catch(() => [] as CertificateRow[]),
+        api.dnsProviders.list().catch(() => [] as DnsProviderRow[]),
       ]);
       const certs = Array.isArray(certList) ? certList : [];
+      const dnsRows = Array.isArray(dnsList) ? dnsList : [];
       setConfig(nextConfig);
       setIssuedTlsCerts(certs);
+      setDnsProviderRows(dnsRows);
       sitesCache = {
         config: nextConfig,
         issuedTlsCerts: certs,
+        dnsProviderRows: dnsRows,
       };
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load config');
@@ -261,6 +286,21 @@ export default function Sites() {
     root.classList.add('eproxy-scroll-lock');
     return () => {
       root.classList.remove('eproxy-scroll-lock');
+    };
+  }, [showForm]);
+
+  /** Refresh DNS provider list when add/edit modal opens (Mnesia may have changed since page load). */
+  useEffect(() => {
+    if (!showForm) return;
+    let cancelled = false;
+    void api.dnsProviders
+      .list()
+      .then((rows) => {
+        if (!cancelled) setDnsProviderRows(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
     };
   }, [showForm]);
 
@@ -396,8 +436,12 @@ export default function Sites() {
       setFormError('Choose a TLS certificate id when using “Certificate label” (see Certificates page).');
       return;
     }
-    if (formSslMode === 'auto_ssl' && !formDnsProviderName.trim()) {
-      setFormError('Choose a DNS provider for Auto Generate SSL.');
+    if (
+      formSslMode === 'auto_ssl' &&
+      (formChallengeType === 'dns-01' || formWildcard) &&
+      !formDnsProviderName.trim()
+    ) {
+      setFormError('Choose a DNS provider for DNS-01 / wildcard Auto Generate SSL.');
       return;
     }
     if (formSslMode === 'auto_ssl' && !formContactEmail.trim()) {
@@ -465,7 +509,10 @@ export default function Sites() {
     }
 
     const certificate = formSslMode === 'existing_cert' ? formCertName.trim() || null : null;
-    const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : null;
+    const dns_provider =
+      formSslMode === 'auto_ssl' && (formChallengeType === 'dns-01' || formWildcard)
+        ? formDnsProviderName.trim() || null
+        : null;
     const challenge_type = formSslMode === 'auto_ssl' ? formChallengeType : null;
     const wildcard = formSslMode === 'auto_ssl' ? formWildcard : false;
     const acme_wildcard_base =
@@ -990,27 +1037,44 @@ export default function Sites() {
                         <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                       </div>
                     </label>
-                    {formChallengeType === 'dns-01' && (
-                      <label className={styles.label}>
-                        DNS provider
-                        <div className={styles.selectWrap}>
-                          <FaIcon className={`fas fa-server ${styles.selectLeadIcon}`} aria-hidden />
-                          <select
-                            value={formDnsProviderName}
-                            onChange={(e) => setFormDnsProviderName(e.target.value)}
-                            className={`${styles.select} ${styles.selectWithLead}`}
-                          >
-                            <option value="">Select DNS provider…</option>
-                            {dnsNames.map((d) => (
-                              <option key={d} value={d}>
-                                {d}
+                    <label className={styles.label}>
+                      DNS provider
+                      <div className={styles.selectWrap}>
+                        <FaIcon className={`fas fa-server ${styles.selectLeadIcon}`} aria-hidden />
+                        <select
+                          value={formDnsProviderName}
+                          onChange={(e) => setFormDnsProviderName(e.target.value)}
+                          className={`${styles.select} ${styles.selectWithLead}`}
+                          required={formChallengeType === 'dns-01' || formWildcard}
+                        >
+                          <option value="">Select DNS provider…</option>
+                          {dnsProvidersSorted.map((row) => {
+                            const name = dnsProviderRowName(row);
+                            if (!name) return null;
+                            return (
+                              <option key={String(row.id ?? name)} value={name}>
+                                {dnsProviderOptionLabel(row)}
                               </option>
-                            ))}
-                          </select>
-                          <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
-                        </div>
-                      </label>
-                    )}
+                            );
+                          })}
+                          {formDnsProviderName &&
+                          !dnsProvidersSorted.some((r) => dnsProviderRowName(r) === formDnsProviderName) ? (
+                            <option value={formDnsProviderName}>{formDnsProviderName} (saved)</option>
+                          ) : null}
+                        </select>
+                        <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                      </div>
+                      {dnsProvidersSorted.length === 0 ? (
+                        <p className={styles.hint}>
+                          No DNS providers yet.{' '}
+                          <Link to="/dns-providers">Add a DNS provider</Link> (e.g. Cloudflare), then reopen this form.
+                        </p>
+                      ) : (
+                        <p className={styles.hint}>
+                          Required for DNS-01 or wildcard. Pick one from the list above.
+                        </p>
+                      )}
+                    </label>
                     <label className={styles.autoSslCheck}>
                       <input
                         type="checkbox"
@@ -1025,12 +1089,6 @@ export default function Sites() {
                       />
                       {`Wildcard certificate (${wildcardLabel})`}
                     </label>
-                    {formWildcard && (
-                      <p className={styles.hint}>
-                        Wildcard is auto-generated for <code>*.{wildcardBaseFromHost(formHost)}</code> and{' '}
-                        <code>{wildcardBaseFromHost(formHost)}</code>.
-                      </p>
-                    )}
                   </>
                 )}
               </div>
