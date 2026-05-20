@@ -271,7 +271,7 @@ reply_502_plain(H3Conn, StreamId) ->
 
 %% @doc Handle `/api/realtime-sse` over HTTP/3 by streaming SSE events directly.
 %% gun:await_body cannot forward an indefinite SSE stream, so we replicate the
-%% logic from pertisk_eproxy_admin_sse_handler in-process.
+%% Local admin handler processing for H3 requests.
 %% Strip a trailing :port for router matching (and log host), same idea as Cowboy's host/1.
 host_for_route(<<>>) ->
     <<>>;
