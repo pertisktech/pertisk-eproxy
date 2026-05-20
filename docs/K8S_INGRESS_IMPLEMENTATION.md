@@ -320,7 +320,7 @@ kubectl port-forward svc/pertisk-eproxy 9080:9080
 ## Key Integration Points in Existing Code
 
 ### 1. Config Sync (`src/pertisk_eproxy_config.erl`)
-- **Existing**: Loads config from disk (SQLite or JSON)
+- **Existing**: Loads config from disk/bootstrapped runtime config
 - **New**: Add K8s-sourced sites/backends in-memory
 - **Call**: `pertisk_eproxy_config:sync(Sites, Backends)` from reconciler
 

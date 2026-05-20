@@ -1,6 +1,6 @@
 # Mnesia storage (pertisk_eproxy)
 
-Runtime configuration, TLS certificate metadata, DNS providers, and local admin users are stored in **Mnesia** (OTP built-in DB), not SQLite.
+Runtime configuration, TLS certificate metadata, DNS providers, and local admin users are stored in **Mnesia** (OTP built-in DB).
 
 ## Directory
 
@@ -10,7 +10,7 @@ Set in `config/sys.config`:
 {mnesia_dir, "data/mnesia"}.
 ```
 
-Legacy `{db_file, "data/proxy.db"}` is still read; if it ends in `.db`, the app uses `data/mnesia` instead.
+Legacy `{db_file, "data/mnesia"}` is still read for compatibility; prefer `{mnesia_dir, "data/mnesia"}`.
 
 On first start with an empty database, the app loads `config/proxy.json` and persists the full config into Mnesia (`runtime_config` + `sites` projection).
 
@@ -40,12 +40,12 @@ mnesia:info().
 mnesia:dirty_read(pertisk_eproxy_runtime_state, runtime_config).
 ```
 
-## Migrating from SQLite
+## Migration / Reset
 
-There is no automatic import from `data/proxy.db`. Options:
+There is no automatic import path from older storage formats. Options:
 
 1. **Re-seed from JSON** — stop the app, remove `data/mnesia/`, ensure `config/proxy.json` is current, restart (default bootstrap path).
-2. **Manual export/import** — export certs/DNS from the old DB with `sqlite3`, then re-enter via the admin API or ACME flow.
+2. **Manual re-entry** — re-enter certs/DNS through the admin API or ACME flow.
 
 ## References
 

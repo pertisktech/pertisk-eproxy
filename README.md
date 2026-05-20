@@ -112,7 +112,7 @@ cd admin && npm ci && npm run build
 
 ## Further reading
 
-- **`README_MNESIA.md`** — Mnesia tables, bootstrap, and migration notes (replaces legacy SQLite storage).
+- **`README_MNESIA.md`** — Mnesia tables, bootstrap, and migration notes.
 
 ## HTTP/3 transport verification
 

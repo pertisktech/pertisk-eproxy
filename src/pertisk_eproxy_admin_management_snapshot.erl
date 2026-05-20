@@ -60,10 +60,15 @@ app_version() ->
     end.
 
 db_file_path() ->
-    case application:get_env(pertisk_eproxy, db_file) of
+    case application:get_env(pertisk_eproxy, mnesia_dir) of
         {ok, F} when is_list(F) -> F;
         {ok, F} when is_binary(F) -> binary_to_list(F);
-        _ -> "data/proxy.db"
+        _ ->
+            case application:get_env(pertisk_eproxy, db_file) of
+                {ok, F2} when is_list(F2) -> F2;
+                {ok, F2} when is_binary(F2) -> binary_to_list(F2);
+                _ -> "data/mnesia"
+            end
     end.
 
 config_file_path_bin() ->

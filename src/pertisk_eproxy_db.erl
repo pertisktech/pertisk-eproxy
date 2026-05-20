@@ -38,11 +38,11 @@
 
 -define(IGNORE_DB_PATH, _DbPath).
 
-%% @doc Initialize Mnesia under `Dir` (same argument as legacy `db_file` / `mnesia_dir`).
+%% @doc Initialize Mnesia under `Dir` (typically `mnesia_dir`).
 %% Returns `{ok, Dir}` for API compatibility.
 -spec init(string()) -> {ok, string()} | {error, term()}.
 init(Dir0) ->
-    Dir = normalize_storage_dir(Dir0),
+    Dir = ensure_list_path(Dir0),
     case storage_path_is_plain_file(Dir) of
         true ->
             lager:error("Mnesia dir ~s is a file, expected a directory", [Dir]),
@@ -55,14 +55,8 @@ init(Dir0) ->
 storage_path_is_plain_file(Path) when is_list(Path) ->
     filelib:is_file(Path) andalso not filelib:is_dir(Path).
 
-%% Legacy `db_file` pointed at `data/proxy.db` (SQLite file); Mnesia uses a directory.
-normalize_storage_dir(Dir) when is_list(Dir) ->
-    case filename:extension(Dir) of
-        ".db" -> filename:join(filename:dirname(Dir), "mnesia");
-        _ -> Dir
-    end;
-normalize_storage_dir(Dir) when is_binary(Dir) ->
-    normalize_storage_dir(binary_to_list(Dir)).
+ensure_list_path(Dir) when is_list(Dir) -> Dir;
+ensure_list_path(Dir) when is_binary(Dir) -> binary_to_list(Dir).
 
 init_mnesia_dir(Dir) ->
     case pertisk_eproxy_mnesia:ensure_started(Dir) of
