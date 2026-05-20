@@ -414,9 +414,6 @@ export type VersionResponse = { version: string };
 // HTTP helper
 // ---------------------------------------------------------------------------
 
-let chromiumH3WarmupDone = false;
-let chromiumH3WarmupPromise: Promise<void> | null = null;
-
 function reconnectDelayMs(attempt: number): number {
   const base = Math.min(30000, 1000 * Math.pow(2, attempt));
   const jitter = Math.floor(Math.random() * 300);
@@ -443,91 +440,7 @@ function realtimeTransportMode(): RealtimeTransportMode {
   return 'auto';
 }
 
-/**
- * Chromium keeps multiplexing fetch/XHR on the warm HTTP/2 connection opened for the document.
- * Opening a realtime WebSocket first (separate connection) helps establish the management path
- * early without leaking auth tokens in query parameters.
- */
-export function warmupHttp3ForChromium(): Promise<void> {
-  if (preferSseRealtimeForChromium()) {
-    chromiumH3WarmupDone = true;
-    chromiumH3WarmupPromise = null;
-    return Promise.resolve();
-  }
-  if (chromiumH3WarmupDone) return Promise.resolve();
-  if (chromiumH3WarmupPromise) return chromiumH3WarmupPromise;
-  if (globalThis.window?.location.protocol !== 'https:' || !isChromiumBrowser()) {
-    chromiumH3WarmupDone = true;
-    return Promise.resolve();
-  }
-
-  chromiumH3WarmupPromise = new Promise((resolve) => {
-    const proto = globalThis.window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = new URL(`${proto}://${globalThis.window.location.host}${API}/realtime`);
-    const token = getToken();
-
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      chromiumH3WarmupDone = true;
-      chromiumH3WarmupPromise = null;
-      resolve();
-    };
-
-    const ws = new WebSocket(url.toString());
-    const timer = globalThis.window.setTimeout(() => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-      console.debug('[h3-warmup] timeout (continuing)');
-      finish();
-    }, 2500);
-
-    ws.onopen = () => {
-      if (token) {
-        try {
-          ws.send(JSON.stringify({ type: 'auth', token }));
-        } catch {
-          // ignore
-        }
-      }
-    };
-    ws.onmessage = () => {
-      globalThis.window.clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-      console.debug('[h3-warmup] realtime WS path ready');
-      finish();
-    };
-    ws.onerror = () => {
-      globalThis.window.clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        // ignore
-      }
-      console.debug('[h3-warmup] realtime WS failed (continuing on TCP)');
-      finish();
-    };
-    ws.onclose = () => {
-      globalThis.window.clearTimeout(timer);
-      finish();
-    };
-  });
-
-  return chromiumH3WarmupPromise;
-}
-
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (globalThis.window.location.protocol === 'https:') {
-    await warmupHttp3ForChromium();
-  }
   const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -771,6 +684,11 @@ export function openRealtimeStream(
   onError?: (event: Event) => void,
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
+  const mode = realtimeTransportMode();
+  const useSse = mode === 'sse' || (mode === 'auto' && preferSseRealtimeForChromium());
+  if (useSse) {
+    return openRealtimeSse(onMessage, onError);
+  }
   return openRealtimeWebSocket(onMessage, onError, onSslJobPush);
 }
 

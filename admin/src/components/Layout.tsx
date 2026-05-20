@@ -4,7 +4,6 @@ import { NavLink, Outlet, useNavigate, useLocation, Link } from 'react-router-do
 import {
   api,
   openRealtimeStream,
-  warmupHttp3ForChromium,
   type CertificateRow,
   type LogEntry,
   type RealtimeSnapshot,
@@ -167,7 +166,6 @@ function LayoutShell() {
         const em = getEmail();
         if (em) setCurrentEmail(em);
         setCurrentAuthMethod(getAuthMethod());
-        await warmupHttp3ForChromium();
         if (cancelled) return;
         hasCheckedSessionRef.current = true;
         setSessionVerified(true);

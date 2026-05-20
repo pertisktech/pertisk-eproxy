@@ -2,7 +2,7 @@
 -module(pertisk_eproxy_admin_sse_handler).
 -behaviour(cowboy_handler).
 
--export([init/2]).
+-export([init/2, snapshot_json/0]).
 
 -define(TICK_MS, 2000).
 -define(MAX_TICKS, 1800). %% ~1 hour before client reconnect.

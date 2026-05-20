@@ -2566,7 +2566,6 @@ send_server_handshake_flight(Cipher, _TranscriptHashAfterSH, State) ->
     HandshakePayload =
         <<EncExtMsg/binary, CertReqMsg/binary, CertMsg/binary, CertVerifyMsg/binary,
             FinishedMsg/binary>>,
-    CryptoFrame = quic_frame:encode({crypto, 0, HandshakePayload}),
 
     %% Determine next TLS state based on verify option
     %% If verify=true, we expect Certificate from client next
@@ -2586,8 +2585,30 @@ send_server_handshake_flight(Cipher, _TranscriptHashAfterSH, State) ->
         key_state = KeyState
     },
 
-    %% Send in Handshake packet
-    send_handshake_packet(CryptoFrame, State1).
+    %% Send in Handshake packet(s), fragmenting to respect max_udp_payload_size.
+    %% A TLS certificate chain can be 3–5 KB; sending it as one UDP datagram
+    %% would exceed Chrome's 1472-byte max_udp_payload_size, causing ERR_MSG_TOO_BIG.
+    send_handshake_crypto_fragmented(HandshakePayload, 0, State1).
+
+%% @doc Fragment a TLS CRYPTO payload into HANDSHAKE-level packets, each fitting
+%% within max_udp_payload_size.  A TLS certificate chain can be 3-5 KB; without
+%% fragmentation the single oversized datagram is dropped by Chrome (ERR_MSG_TOO_BIG).
+send_handshake_crypto_fragmented(<<>>, _Offset, State) ->
+    State;
+send_handshake_crypto_fragmented(Payload, Offset, State) ->
+    %% Conservative fixed overhead per HANDSHAKE packet:
+    %%   27 bytes QUIC long header (version + DCID + SCID + length + PN)
+    %%   +  5 bytes CRYPTO frame header (type + offset varint + length varint)
+    %%   + 16 bytes AEAD tag
+    Overhead = 48,
+    MaxMtu = get_current_mtu(State),
+    ChunkSize = max(256, MaxMtu - Overhead),
+    DataSize = byte_size(Payload),
+    ActualChunk = min(DataSize, ChunkSize),
+    <<Chunk:ActualChunk/binary, Rest/binary>> = Payload,
+    CryptoFrame = quic_frame:encode({crypto, Offset, Chunk}),
+    State1 = send_handshake_packet(CryptoFrame, State),
+    send_handshake_crypto_fragmented(Rest, Offset + ActualChunk, State1).
 
 %% Server: Send HANDSHAKE_DONE frame after receiving client Finished
 send_handshake_done(State) ->

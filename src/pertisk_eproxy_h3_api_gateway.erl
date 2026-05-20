@@ -19,6 +19,9 @@
 -define(H3_BODY_AUTH_CAP_MS, 3000).
 -define(REQUEST_TIMEOUT, 60000).
 -define(CONNECT_TIMEOUT, 10000).
+%% SSE-over-H3: stream snapshots every 2 s for up to ~1 hour, then tell client to reconnect.
+-define(H3_SSE_TICK_MS, 2000).
+-define(H3_SSE_MAX_TICKS, 1800).
 
 start(Config) ->
     _ = ensure_quic_started(),
@@ -185,6 +188,16 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                         log_h3_access(LogHost, Method, PathOnly, 502, T0, <<>>),
                         ok;
                     {ok, UpstreamAddr} ->
+                        %% SSE over H3: stream directly instead of going through gun.
+                        %% gun:await_body blocks until the stream ends, so it cannot
+                        %% forward an indefinite SSE stream — handle it in-process.
+                        case is_management_upstream(UpstreamAddr) andalso
+                            PathOnly =:= <<"/api/realtime-sse">> of
+                            true ->
+                                handle_sse_h3_local(
+                                    H3Conn, StreamId, Qs, LogHost, Method, PathOnly, T0
+                                );
+                            false ->
                         ProxyResult =
                             proxy_h3_upstream(
                                 Method,
@@ -217,7 +230,15 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     RespBin
                                 ),
                                 ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Headers),
-                                _ = quic_h3:send_data(H3Conn, StreamId, RespOut, true),
+                                %% RFC 9114 §4.3.2: HEAD responses MUST NOT include a message body.
+                                %% Sending a DATA frame for HEAD causes Chrome to RST_STREAM and
+                                %% eventually mark the origin as H3-broken (falls back to TCP).
+                                RespData =
+                                    case normalize_h3_method(Method) of
+                                        <<"HEAD">> -> <<>>;
+                                        _ -> RespOut
+                                    end,
+                                _ = quic_h3:send_data(H3Conn, StreamId, RespData, true),
                                 UpstreamLog =
                                     case is_management_upstream(UpstreamAddr) of
                                         true -> <<"management-local">>;
@@ -238,6 +259,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 log_h3_access(LogHost, Method, PathOnly, 502, T0, UpstreamAddr),
                                 ok
                         end
+                        end  %% end case is_management SSE
                 end
         end
     catch
@@ -260,6 +282,68 @@ reply_502_plain(H3Conn, StreamId) ->
     ),
     _ = quic_h3:send_data(H3Conn, StreamId, <<"Bad Gateway">>, true),
     ok.
+
+%% @doc Handle `/api/realtime-sse` over HTTP/3 by streaming SSE events directly.
+%% gun:await_body cannot forward an indefinite SSE stream, so we replicate the
+%% logic from pertisk_eproxy_admin_sse_handler in-process.
+handle_sse_h3_local(H3Conn, StreamId, Qs, LogHost, Method, PathOnly, T0) ->
+    case authorize_sse_h3(Qs) of
+        {error, unauthorized} ->
+            pertisk_eproxy_metrics:inc_request(LogHost, <<"401">>, <<"h3">>),
+            ok = quic_h3:send_response(
+                H3Conn, StreamId, 401, [{<<"content-type">>, <<"application/json">>}]
+            ),
+            _ = quic_h3:send_data(H3Conn, StreamId, <<"{\"error\":\"Unauthorized\"}">>, true),
+            log_h3_access(LogHost, Method, PathOnly, 401, T0, <<"management-local">>);
+        ok ->
+            pertisk_eproxy_metrics:inc_request(LogHost, <<"200">>, <<"h3">>),
+            SseHeaders = [
+                {<<"content-type">>, <<"text/event-stream; charset=utf-8">>},
+                {<<"cache-control">>, <<"no-cache, no-transform">>},
+                {<<"x-accel-buffering">>, <<"no">>}
+            ],
+            ok = quic_h3:send_response(H3Conn, StreamId, 200, SseHeaders),
+            _ = send_sse_snapshot(H3Conn, StreamId),
+            log_h3_access(LogHost, Method, PathOnly, 200, T0, <<"management-local">>),
+            stream_sse_h3(H3Conn, StreamId, ?H3_SSE_MAX_TICKS)
+    end.
+
+stream_sse_h3(H3Conn, StreamId, 0) ->
+    EndEvent = <<"event: end\ndata: {\"reason\":\"reconnect\"}\n\n">>,
+    _ = quic_h3:send_data(H3Conn, StreamId, EndEvent, true),
+    ok;
+stream_sse_h3(H3Conn, StreamId, N) ->
+    receive
+    after ?H3_SSE_TICK_MS ->
+        case send_sse_snapshot(H3Conn, StreamId) of
+            ok -> stream_sse_h3(H3Conn, StreamId, N - 1);
+            {error, _} -> ok
+        end
+    end.
+
+send_sse_snapshot(H3Conn, StreamId) ->
+    Json = pertisk_eproxy_admin_sse_handler:snapshot_json(),
+    Payload = iolist_to_binary([<<"event: snapshot\ndata: ">>, Json, <<"\n\n">>]),
+    quic_h3:send_data(H3Conn, StreamId, Payload, false).
+
+%% @doc Authorize an H3 SSE request from the raw query string.
+authorize_sse_h3(Qs) ->
+    case pertisk_eproxy_auth:auth_mode() of
+        disabled ->
+            ok;
+        local ->
+            QsPairs = try uri_string:dissect_query(Qs) catch _:_ -> [] end,
+            Token = proplists:get_value(<<"token">>, QsPairs, <<>>),
+            case Token of
+                <<>> ->
+                    {error, unauthorized};
+                _ ->
+                    case pertisk_eproxy_auth:verify_token(Token) of
+                        {ok, _} -> ok;
+                        {error, _} -> {error, unauthorized}
+                    end
+            end
+    end.
 
 %% Strip a trailing :port for router matching (and log host), same idea as Cowboy's host/1.
 host_for_route(<<>>) ->
