@@ -173,12 +173,8 @@ reconcile_after_ingress_delete(Namespace, Name) ->
     }}.
 
 reconcile_after_ingress_write() ->
-    try
-        pertisk_ingress_watcher:reconcile_now()
-    catch
-        C:R:St ->
-            lager:warning("Ingress reconcile after admin write failed: ~p:~p ~p", [C, R, St])
-    end.
+    %% Do not block the admin HTTP response on a full-cluster reconcile (ingress/proxy timeouts).
+    pertisk_ingress_watcher:trigger_reconcile().
 
 %% ---------------------------------------------------------------------------
 %% Internal

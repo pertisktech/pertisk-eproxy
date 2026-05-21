@@ -297,7 +297,7 @@ export default function Sites() {
     setCookieValue(VIEW_MODE_COOKIE, next, VIEW_MODE_MAX_AGE_SECS);
   }
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
+  const load = useCallback(async (opts?: { silent?: boolean }): Promise<ProxyConfig | null> => {
     const silent = opts?.silent === true;
     if (!silent) {
       setLoading(true);
@@ -315,18 +315,30 @@ export default function Sites() {
         config: nextConfig,
         issuedTlsCerts: certs,
       };
+      return nextConfig;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load config');
       if (sitesCache == null) {
         setConfig(null);
         setIssuedTlsCerts([]);
       }
+      return null;
     } finally {
       if (!silent) {
         setLoading(false);
       }
     }
   }, []);
+
+  async function refreshSitesAfterIngressWrite(host: string) {
+    const want = host.trim().toLowerCase();
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const cfg = await load({ silent: true });
+      const found = (cfg?.sites ?? []).some((s) => s.host.trim().toLowerCase() === want);
+      if (found) return;
+      await new Promise((r) => window.setTimeout(r, 500));
+    }
+  }
 
   useEffect(() => {
     load({ silent: sitesCache != null });
@@ -622,15 +634,14 @@ export default function Sites() {
       }
       if (editingIngressRef) {
         await api.kubernetes.updateIngress(editingIngressRef.namespace, editingIngressRef.name, body);
-        setShowIngressForm(false);
         setEditingIngressRef(null);
         toast.success('Ingress updated.');
       } else {
         await api.kubernetes.createIngress(body);
-        setShowIngressForm(false);
         toast.success('Ingress created.');
       }
-      await load({ silent: true });
+      setShowIngressForm(false);
+      await refreshSitesAfterIngressWrite(host);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to save Ingress';
       setIngressFormError(msg);

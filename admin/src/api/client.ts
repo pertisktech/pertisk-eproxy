@@ -443,6 +443,8 @@ function realtimeTransportMode(): RealtimeTransportMode {
   return 'auto';
 }
 
+const API_REQUEST_TIMEOUT_MS = 90_000;
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -455,11 +457,24 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['X-Eproxy-Bearer'] = token;
   }
 
-  const res = await fetch(`${API}${path}`, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Request timed out — the server may still be processing; refresh the page.');
+    }
+    throw err instanceof Error ? err : new Error('Failed to fetch');
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   if (res.status === 401) {
     clearToken();
