@@ -345,6 +345,7 @@ json_to_config(Json) ->
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         h3_api_gateway_enabled =>
             case maps:get(<<"h3_api_gateway_enabled">>, Json, undefined) of
                 undefined -> undefined;

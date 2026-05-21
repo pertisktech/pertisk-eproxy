@@ -17,6 +17,7 @@ init([]) ->
     pertisk_ingress_status:init(),
     case pertisk_ingress_ekub:init() of
         {ok, Conn} ->
+            self() ! reconcile_now,
             self() ! start_watch,
             erlang:send_after(pertisk_ingress_env:reconcile_interval_ms(), self(), periodic_reconcile),
             {ok, #{
@@ -45,7 +46,7 @@ handle_info(start_watch, State = #{conn := Conn}) ->
     case ekub:watch(ingress, Query, Conn) of
         {ok, Ref} ->
             pertisk_ingress_status:set_watcher_state(connected),
-            self() ! reconcile_now,
+            %% Initial reconcile is triggered by periodic_reconcile at init; avoid duplicate reload storm.
             self() ! watch_poll,
             {noreply, State#{ingress_ref => Ref}};
         {error, Reason} ->

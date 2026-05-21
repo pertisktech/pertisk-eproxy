@@ -1,13 +1,15 @@
 {
-    "mode": "ingress",
-    "http_addr": "0.0.0.0",
-    "http_port": 8080,
-    "https_port": 8443,
-    "management_addr": "0.0.0.0",
-    "management_port": 9080,
-    "quic_enabled": false,
-    "h3_api_gateway_enabled": true,
-    "tls_http2_enabled": true,
-    "sites": [],
-    "backends": []
+  "mode": "ingress",
+  "http_addr": "0.0.0.0",
+  "http_port": 8080,
+  "https_port": 8443,
+  "quic_port": 8443,
+  "alt_svc_port": 443,
+  "management_addr": "0.0.0.0",
+  "management_port": 9080,
+  "quic_enabled": false,
+  "h3_api_gateway_enabled": true,
+  "tls_http2_enabled": true,
+  "sites": [],
+  "backends": []
 }

@@ -949,21 +949,66 @@ v4_server_name(?PROBE_SERVER) -> ?PROBE_SERVER_V4;
 v4_server_name(Other) -> Other.
 
 load_cert_and_key(Config) ->
-    CertPath = case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
-        undefined -> {error, {missing_tls_file, cert, no_listener_cert}};
-        Cert -> Cert
-    end,
-    KeyPath = case pertisk_eproxy_tls_paths:resolve_key_file(Config) of
-        undefined -> {error, {missing_tls_file, key, no_listener_key}};
-        Key -> Key
-    end,
-    case {CertPath, KeyPath} of
-        {{error, _}, _} ->
-            CertPath;
-        {_, {error, _}} ->
-            KeyPath;
-        {CP, KP} ->
-            load_cert_and_key_files(CP, KP)
+    case ingress_default_listener_tls(Config) of
+        {ok, Material} ->
+            {ok, Material};
+        error ->
+            CertPath = case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
+                undefined -> {error, {missing_tls_file, cert, no_listener_cert}};
+                Cert -> Cert
+            end,
+            KeyPath = case pertisk_eproxy_tls_paths:resolve_key_file(Config) of
+                undefined -> {error, {missing_tls_file, key, no_listener_key}};
+                Key -> Key
+            end,
+            case {CertPath, KeyPath} of
+                {{error, _}, _} ->
+                    CertPath;
+                {_, {error, _}} ->
+                    KeyPath;
+                {CP, KP} ->
+                    load_cert_and_key_files(CP, KP)
+            end
+    end.
+
+%% Prefer Kubernetes Ingress TLS (full chain from tls.crt) over packaged listener.pem.
+ingress_default_listener_tls(Config) ->
+    case pertisk_ingress_env:enabled() of
+        false ->
+            error;
+        true ->
+            Sites = maps:get(sites, Config, []),
+            ingress_default_listener_tls_sites(Sites)
+    end.
+
+ingress_default_listener_tls_sites([]) ->
+    error;
+ingress_default_listener_tls_sites([Site | Rest]) ->
+    Host = maps:get(host, Site, undefined),
+    case ingress_host_tls_material(Host) of
+        {ok, Material} ->
+            lager:info("HTTP/3 default TLS from ingress host ~s", [Host]),
+            {ok, Material};
+        error ->
+            ingress_default_listener_tls_sites(Rest)
+    end.
+
+ingress_host_tls_material(Host) ->
+    case pertisk_ingress_tls:paths_for_host(Host) of
+        {ok, {CertPath, KeyPath}} ->
+            load_cert_and_key_files(CertPath, KeyPath);
+        error ->
+            case pertisk_ingress_tls:lookup(Host) of
+                {ok, Entry} ->
+                    case pertisk_ingress_tls:decode_entry(Entry) of
+                        {ok, #{cert := CertDer, private_key := KeyTerm, cert_chain := Chain}} ->
+                            {ok, {CertDer, KeyTerm, Chain}};
+                        _ ->
+                            error
+                    end;
+                error ->
+                    error
+            end
     end.
 
 load_cert_and_key_files(CertPath, KeyPath) when is_list(CertPath), is_list(KeyPath) ->
@@ -1059,12 +1104,10 @@ merge_ingress_sni_certs(Sites, Acc) ->
                                 true ->
                                     A;
                                 false ->
-                                    case pertisk_ingress_tls:lookup(maps:get(host, Site, undefined)) of
-                                        {ok, Entry} ->
-                                            case pertisk_ingress_tls:decode_entry(Entry) of
-                                                {ok, Decoded} -> maps:put(HostKey, Decoded, A);
-                                                _ -> A
-                                            end;
+                                    Host = maps:get(host, Site, undefined),
+                                    case ingress_sni_tls_entry(Host) of
+                                        {ok, Decoded} ->
+                                            maps:put(HostKey, Decoded, A);
                                         error ->
                                             A
                                     end
@@ -1074,6 +1117,31 @@ merge_ingress_sni_certs(Sites, Acc) ->
                 Acc,
                 Sites
             )
+    end.
+
+ingress_sni_tls_entry(Host) ->
+    case pertisk_ingress_tls:paths_for_host(Host) of
+        {ok, {CertPath, KeyPath}} ->
+            case load_cert_and_key_files(CertPath, KeyPath) of
+                {ok, {CertDer, KeyTerm, Chain}} ->
+                    {ok, #{
+                        cert => CertDer,
+                        cert_chain => Chain,
+                        private_key => KeyTerm
+                    }};
+                _ ->
+                    ingress_sni_tls_entry_from_store(Host)
+            end;
+        error ->
+            ingress_sni_tls_entry_from_store(Host)
+    end.
+
+ingress_sni_tls_entry_from_store(Host) ->
+    case pertisk_ingress_tls:lookup(Host) of
+        {ok, Entry} ->
+            pertisk_ingress_tls:decode_entry(Entry);
+        error ->
+            error
     end.
 
 resolve_sni_cert_entry(CertRef, RowsById, RowsByName) ->

@@ -81,7 +81,17 @@ ready() ->
                 error ->
                     {error, <<"ingress watcher failed (check logs and RBAC)">>};
                 _ ->
-                    ok
+                    case maps:get(sites_count, S, 0) of
+                        N when N > 0 ->
+                            case maps:get(tls_secrets_count, S, 0) of
+                                T when T > 0 ->
+                                    ok;
+                                _ ->
+                                    {error, <<"waiting for ingress TLS secrets">>}
+                            end;
+                        _ ->
+                            {error, <<"waiting for ingress reconcile (no sites yet)">>}
+                    end
             end
     end.
 

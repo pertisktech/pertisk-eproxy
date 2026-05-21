@@ -50,12 +50,18 @@ https_front_request(Req) ->
 
 quic_udp_port() ->
     C = pertisk_eproxy_config:get_config(),
-    case maps:get(quic_port, C, undefined) of
+    %% Public port clients use (e.g. K8s Service :443). Differs from container bind port (8443).
+    case maps:get(alt_svc_port, C, undefined) of
         P when is_integer(P), P > 0 ->
             P;
         _ ->
-            case maps:get(https_port, C, undefined) of
-                H when is_integer(H), H > 0 -> H;
-                _ -> 443
+            case maps:get(quic_port, C, undefined) of
+                Q when is_integer(Q), Q > 0 ->
+                    Q;
+                _ ->
+                    case maps:get(https_port, C, undefined) of
+                        H when is_integer(H), H > 0 -> H;
+                        _ -> 443
+                    end
             end
     end.

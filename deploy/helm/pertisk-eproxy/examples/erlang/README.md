@@ -7,7 +7,8 @@ Compared with [pertisk-rproxy `pertisk-ingress`](https://github.com/pertisktech/
 
 ## Admin UI (pertisk-rproxy `pertisk-ingress-admin`)
 
-Standard `networking.k8s.io/v1` Ingress, `ingressClassName: pertisk-eproxy`, Service port **9080**.
+Standard `networking.k8s.io/v1` Ingress, `ingressClassName: pertisk-eproxy`, Service port **9080**.  
+The ingress image ships the admin SPA on `:9080` (same as pertisk-rproxy management UI).
 
 | File | Purpose |
 |------|---------|
@@ -24,6 +25,12 @@ helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-ep
   --set adminIngress.host=admin.erlang.thaidevops.co \
   --set adminIngress.tlsSecretName=admin-erlang-tls
 ```
+
+## HTTP/3 (QUIC)
+
+The controller binds UDP on container port **8443**; the Service exposes **443/udp**. Set **`alt_svc_port: 443`** in `controller.config` (Helm default) so `Alt-Svc` points browsers at the LB port, not 8443.
+
+TLS for QUIC/TCP comes from Ingress TLS Secrets (cert-manager). Ensure `tls.crt` includes the **full chain** (not leaf-only) so Chrome accepts QUIC.
 
 ## App traffic (standard Ingress)
 

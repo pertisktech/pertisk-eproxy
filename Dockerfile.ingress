@@ -2,6 +2,16 @@
 # Ingress controller image: same release as proxy, defaults to ingress mode + K8s watcher.
 # Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
 
+FROM node:20-alpine AS admin-builder
+
+WORKDIR /app/admin
+
+COPY admin/package.json admin/package-lock.json* ./
+RUN npm ci --ignore-scripts 2>/dev/null || npm install
+
+COPY admin/ ./
+RUN npm run build
+
 FROM erlang:27-alpine AS builder
 
 WORKDIR /src
@@ -9,8 +19,10 @@ WORKDIR /src
 RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl-dev ncurses-dev
 
 COPY . .
+COPY --from=admin-builder /app/priv/admin ./priv/admin
 
 RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+    /src/scripts/sync-quic-deps.sh \
     /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
     /src/scripts/verify-release-quic.sh \
     && rm -rf _build deps \
@@ -22,7 +34,8 @@ RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
     && find /src/_build -path '*/quic/ebin' -name '*.beam' -delete \
     && rebar3 as prod release \
     && /src/scripts/verify-release-build.sh /src \
-    && /src/scripts/verify-release-quic.sh /src
+    && /src/scripts/verify-release-quic.sh /src \
+    && test -f /src/_build/prod/rel/pertisk_eproxy/lib/pertisk_eproxy-0.1.0/priv/admin/index.html
 
 FROM alpine:3.20
 

@@ -15,7 +15,7 @@ apply(#{sites := Sites, backends := Backends, tls := Tls}) ->
         ok ->
             case pertisk_eproxy_config:sync_ingress(Sites, Backends) of
                 ok ->
-                    _ = catch pertisk_eproxy_app:reload_tls_listeners(),
+                    maybe_reload_proxy_tls(Sites, Backends, Tls),
                     pertisk_ingress_status:record_success(Sites, Backends, Tls),
                     ok;
                 {error, _} = Err ->
@@ -50,3 +50,24 @@ sync_tls(TlsEntries) when is_list(TlsEntries) ->
     ok;
 sync_tls(_) ->
     ok.
+
+maybe_reload_proxy_tls(Sites, Backends, Tls) ->
+    Sig = erlang:phash2({Sites, Backends, Tls}),
+    case persistent_term:get(pertisk_ingress_config_sync, last_sig, undefined) of
+        Sig ->
+            ok;
+        _ ->
+            persistent_term:put(pertisk_ingress_config_sync, last_sig, Sig),
+            case Tls =/= [] orelse Sites =/= [] of
+                true ->
+                    lager:info(
+                        "Ingress TLS/routing updated (~p site(s), ~p TLS secret(s)); reloading HTTPS/HTTP/3",
+                        [length(Sites), length(Tls)]
+                    ),
+                    _ = catch pertisk_eproxy_app:reload_proxy_tls_listeners();
+                false ->
+                    lager:info("Ingress reconcile empty; HTTPS/HTTP/3 not started (no localhost fallback)"),
+                    _ = catch pertisk_eproxy_app:reload_proxy_tls_listeners(),
+                    ok
+            end
+    end.

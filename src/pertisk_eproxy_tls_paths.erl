@@ -14,20 +14,38 @@ default_key_file() ->
 -spec resolve_cert_file(map() | undefined) -> string() | undefined.
 resolve_cert_file(Config) when is_map(Config) ->
     case maps:get(tls_cert_file, Config, undefined) of
-        undefined -> default_if_readable(default_cert_file());
+        undefined ->
+            case use_packaged_listener_pem() of
+                true -> default_if_readable(default_cert_file());
+                false -> undefined
+            end;
         V -> normalize(V)
     end;
 resolve_cert_file(_) ->
-    default_if_readable(default_cert_file()).
+    case use_packaged_listener_pem() of
+        true -> default_if_readable(default_cert_file());
+        false -> undefined
+    end.
 
 -spec resolve_key_file(map() | undefined) -> string() | undefined.
 resolve_key_file(Config) when is_map(Config) ->
     case maps:get(tls_key_file, Config, undefined) of
-        undefined -> default_if_readable(default_key_file());
+        undefined ->
+            case use_packaged_listener_pem() of
+                true -> default_if_readable(default_key_file());
+                false -> undefined
+            end;
         V -> normalize(V)
     end;
 resolve_key_file(_) ->
-    default_if_readable(default_key_file()).
+    case use_packaged_listener_pem() of
+        true -> default_if_readable(default_key_file());
+        false -> undefined
+    end.
+
+%% Ingress controller: never present self-signed listener.pem on the public proxy (avoids LB flapping).
+use_packaged_listener_pem() ->
+    not pertisk_ingress_env:enabled().
 
 default_if_readable(Path) ->
     case filelib:is_file(Path) of

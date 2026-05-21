@@ -67,6 +67,10 @@ controller:
     # Container ports (like pertisk-rproxy); Service still exposes 80/443/443-udp.
     http_port: 8080
     https_port: 8443
+    # UDP/TCP bind inside the pod; Service maps 443 → 8443.
+    quic_port: 8443
+    # Port in Alt-Svc (what browsers use on the public LB).
+    alt_svc_port: 443
     management_addr: "0.0.0.0"
     management_port: 9080
     quic_enabled: false

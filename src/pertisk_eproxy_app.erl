@@ -3,7 +3,11 @@
 -behaviour(application).
 
 -export([start/2, stop/1]).
--export([quic_noise_filter/2, reload_tls_listeners/0]).
+-export([
+    quic_noise_filter/2,
+    reload_tls_listeners/0,
+    reload_proxy_tls_listeners/0
+]).
 
 start(_StartType, _StartArgs) ->
     lager:info("Starting pertisk_eproxy"),
@@ -30,18 +34,21 @@ stop(_State) ->
     stop_listener(management),
     ok.
 
-%% @doc Reload listeners so updated TLS cert/key paths are applied immediately.
+%% @doc Full listener restart (management + proxy). Prefer {@link reload_proxy_tls_listeners/0} in ingress mode.
 reload_tls_listeners() ->
-    _ = pertisk_eproxy_h3_api_gateway:stop(),
-    _ = pertisk_eproxy_h3_api_gateway:stop_probe(),
+    stop_proxy_tls_listeners(),
     stop_listener(http4),
     stop_listener(http6),
-    stop_listener(https4),
-    stop_listener(https6),
-    stop_listener(quic4),
-    stop_listener(quic6),
     stop_listener(management),
     start_listeners().
+
+%% @doc Restart only HTTPS/HTTP/3 proxy listeners after ingress TLS reconcile.
+reload_proxy_tls_listeners() ->
+    Config = pertisk_eproxy_config:get_config(),
+    Routes = build_proxy_routes(),
+    stop_proxy_tls_listeners(),
+    start_proxy_tls_listeners(Config, Routes),
+    ok.
 
 %% -------------------------------------------------------------------------
 %% Internal
@@ -50,7 +57,7 @@ reload_tls_listeners() ->
 start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
     Routes = build_proxy_routes(),
-    AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
+    AdminRoutes = build_admin_routes(admin_listener_mode(Config)),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
@@ -76,9 +83,25 @@ start_listeners() ->
     ),
     lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
 
-    %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS.
-    %% If `https_port` is omitted but listener PEMs exist (defaults match the H3 gateway), TCP TLS uses 443.
-    %% Set https_port to a positive integer to choose a port; use https_port <= 0 in config to disable TCP HTTPS.
+    start_proxy_tls_listeners(Config, Routes),
+
+    %% Management / Admin listener (default all IPv4 interfaces; set management_addr in proxy.json to restrict)
+    MgmtAddr = maps:get(management_addr, Config, {0,0,0,0}),
+    MgmtPort = maps:get(management_port, Config, 9080),
+    MgmtProtoOpts = #{
+        env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
+        logger => pertisk_eproxy_cowboy_logger,
+        %% Management/admin is intentionally plain HTTP/1.1.
+        enable_connect_protocol => false
+    },
+    {ok, _} = cowboy:start_clear(management,
+        #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
+        MgmtProtoOpts
+    ),
+    lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+start_proxy_tls_listeners(Config, Routes) ->
     TlsOpts = tls_opts(Config),
     HttpsPortRes = case maps:find(https_port, Config) of
         {ok, P} when is_integer(P), P > 0 ->
@@ -98,35 +121,33 @@ start_listeners() ->
         {Kind, HttpsPort} when Kind =:= explicit; Kind =:= inferred ->
             case TlsOpts of
                 [] ->
-                    lager:warning(
-                        "HTTPS not started on port ~w: no tls_cert_file/tls_key_file and no readable "
-                        "packaged listener PEMs (code:priv_dir/tls) or tls_cert_file/tls_key_file in config",
-                        [HttpsPort]
-                    ),
+                    case pertisk_ingress_env:enabled() of
+                        true ->
+                            lager:info(
+                                "HTTPS/HTTP/3 on port ~w waiting for Kubernetes Ingress TLS (not using listener.pem)",
+                                [HttpsPort]
+                            );
+                        false ->
+                            lager:warning(
+                                "HTTPS not started on port ~w: no TLS material configured",
+                                [HttpsPort]
+                            )
+                    end,
                     ok;
-                _ when Kind =:= inferred ->
-                    start_https_proxy_listeners(HttpsPort, TlsOpts, Routes);
                 _ ->
                     start_https_proxy_listeners(HttpsPort, TlsOpts, Routes)
             end
     end,
-
     maybe_start_quic(Config, Routes),
+    ok.
 
-    %% Management / Admin listener (default all IPv4 interfaces; set management_addr in proxy.json to restrict)
-    MgmtAddr = maps:get(management_addr, Config, {0,0,0,0}),
-    MgmtPort = maps:get(management_port, Config, 9080),
-    MgmtProtoOpts = #{
-        env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
-        logger => pertisk_eproxy_cowboy_logger,
-        %% Management/admin is intentionally plain HTTP/1.1.
-        enable_connect_protocol => false
-    },
-    {ok, _} = cowboy:start_clear(management,
-        #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
-        MgmtProtoOpts
-    ),
-    lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
+stop_proxy_tls_listeners() ->
+    _ = pertisk_eproxy_h3_api_gateway:stop(),
+    _ = pertisk_eproxy_h3_api_gateway:stop_probe(),
+    stop_listener(https4),
+    stop_listener(https6),
+    stop_listener(quic4),
+    stop_listener(quic6),
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
@@ -373,14 +394,25 @@ build_proxy_routes() ->
         {"/[...]", pertisk_eproxy_handler, []}
     ].
 
+%% Ingress controller pods must serve the SPA on :9080 (and when proxied from :8443).
+admin_listener_mode(Config) ->
+    case maps:get(mode, Config, proxy_admin) of
+        ingress ->
+            ingress;
+        M ->
+            case pertisk_ingress_env:enabled() of
+                true -> ingress;
+                false -> M
+            end
+    end.
+
 build_admin_routes(proxy) ->
     build_admin_api_routes() ++ [
         {"/",                       pertisk_eproxy_admin_handler, root}
     ];
 build_admin_routes(ingress) ->
-    build_admin_api_routes() ++ [
-        {"/",                       pertisk_eproxy_admin_handler, root}
-    ];
+    %% Same SPA as proxy_admin (rproxy ingress: admin Ingress → Service :9080).
+    build_admin_routes(proxy_admin);
 build_admin_routes(proxy_admin) ->
     build_admin_api_routes() ++ [
         %% Static admin UI
@@ -417,12 +449,53 @@ tls_opts(Config) ->
 %% (same files as {@link pertisk_eproxy_h3_api_gateway}) when both exist on disk.
 -spec tls_cert_key_paths(map()) -> {undefined | string(), undefined | string()}.
 tls_cert_key_paths(Config) ->
-    Cert = pertisk_eproxy_tls_paths:resolve_cert_file(Config),
-    Key = pertisk_eproxy_tls_paths:resolve_key_file(Config),
+    case maps:get(tls_cert_file, Config, undefined) of
+        undefined ->
+            case ingress_default_cert_key_paths(Config) of
+                {C, K} when is_list(C), is_list(K) ->
+                    {C, K};
+                _ ->
+                    Cert = pertisk_eproxy_tls_paths:resolve_cert_file(Config),
+                    Key = pertisk_eproxy_tls_paths:resolve_key_file(Config),
+                    normalize_cert_key_pair(Cert, Key)
+            end;
+        Cert0 ->
+            Key0 = maps:get(tls_key_file, Config, undefined),
+            normalize_cert_key_pair(normalize_tls_path(Cert0), normalize_tls_path(Key0))
+    end.
+
+normalize_cert_key_pair(Cert, Key) ->
     case {Cert, Key} of
         {undefined, _} -> {undefined, undefined};
         {_, undefined} -> {undefined, undefined};
         {C, K} -> {C, K}
+    end.
+
+%% First reconciled Ingress host with TLS on disk (default cert for TCP/QUIC + SNI map).
+ingress_default_cert_key_paths(Config) ->
+    case pertisk_ingress_env:enabled() of
+        false ->
+            undefined;
+        true ->
+            Sites = maps:get(sites, Config, []),
+            lists:foldl(
+                fun(Site, Acc) ->
+                    case Acc of
+                        {_, _} ->
+                            Acc;
+                        undefined ->
+                            H = site_host_to_list(maps:get(host, Site, <<>>)),
+                            case ingress_sni_paths(H) of
+                                {ok, Paths} ->
+                                    Paths;
+                                error ->
+                                    undefined
+                            end
+                    end
+                end,
+                undefined,
+                Sites
+            )
     end.
 
 normalize_tls_path(undefined) -> undefined;

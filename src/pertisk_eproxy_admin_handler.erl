@@ -459,28 +459,20 @@ handle(<<"POST">>, tls_listener, Req) ->
     end);
 
 handle(<<"GET">>, root, Req) ->
-    API = #{
-        status => <<"ok">>,
-        name => <<"Pertisk eProxy">>,
-        version => <<"1.0.0">>,
-        endpoints => [
-            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
-            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
-            #{method => <<"GET">>, path => <<"/api/proto">>, description => <<"Current request protocol diagnostics">>},
-            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
-            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
-            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
-            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete a site">>},
-            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List all backends">>},
-            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add a backend">>},
-            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Get backend status">>},
-            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete a backend">>},
-            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Overall health">>},
-            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus metrics">>},
-            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload config">>}
-        ]
-    },
-    json_reply(200, API, Req);
+    case should_serve_admin_spa() of
+        true ->
+            pertisk_eproxy_spa_handler:init(Req, undefined);
+        false ->
+            json_reply(200, api_root_catalog(), Req)
+    end;
+
+handle(<<"HEAD">>, root, Req) ->
+    case should_serve_admin_spa() of
+        true ->
+            json_reply(200, #{}, Req);
+        false ->
+            json_reply(200, #{}, Req)
+    end;
 
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
@@ -1285,3 +1277,33 @@ bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).
 with_alt_svc(Req, Headers) ->
     Host = cowboy_req:host(Req),
     pertisk_eproxy_alt_svc:merge_response_headers(Req, Host, Headers).
+
+should_serve_admin_spa() ->
+    pertisk_eproxy_config:ingress_mode() andalso admin_index_exists().
+
+admin_index_exists() ->
+    Index = filename:join([code:priv_dir(pertisk_eproxy), "admin", "index.html"]),
+    filelib:is_regular(Index).
+
+api_root_catalog() ->
+    #{
+        status => <<"ok">>,
+        name => <<"Pertisk eProxy">>,
+        version => <<"1.0.0">>,
+        endpoints => [
+            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
+            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
+            #{method => <<"GET">>, path => <<"/api/proto">>, description => <<"Current request protocol diagnostics">>},
+            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
+            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
+            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
+            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete a site">>},
+            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List all backends">>},
+            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add a backend">>},
+            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Get backend status">>},
+            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete a backend">>},
+            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Overall health">>},
+            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus metrics">>},
+            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload config">>}
+        ]
+    }.

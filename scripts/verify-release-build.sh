@@ -11,4 +11,9 @@ PEM=$(find "${REL}/lib" -path '*/priv/tls/listener.pem' 2>/dev/null | head -1)
   echo "verify-release-build: listener.pem not in release priv" >&2
   exit 1
 }
-echo "verify-release-build: ok"
+ADMIN_INDEX=$(find "${REL}/lib" -path '*/priv/admin/index.html' 2>/dev/null | head -1)
+[ -n "$ADMIN_INDEX" ] || {
+  echo "verify-release-build: priv/admin/index.html missing (build admin UI in Docker)" >&2
+  exit 1
+}
+echo "verify-release-build: ok (admin UI at ${ADMIN_INDEX})"
