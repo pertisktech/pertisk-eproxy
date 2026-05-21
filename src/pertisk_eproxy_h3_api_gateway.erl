@@ -121,15 +121,30 @@ ensure_qpack_chrome_compat() ->
     end.
 
 qpack_ric0_prefix_ok() ->
-    try
-        %% Encode a static-only block; RFC 9204 requires RIC=0 and Base=0.
-        Encoded = quic_qpack:encode([{<<":status">>, <<"200">>}]),
-        case Encoded of
-            <<0, 0, _/binary>> -> true;
-            _ -> false
-        end
-    catch
-        _:_ -> false
+    case code:which(quic_qpack) of
+        non_existing ->
+            lager:error("quic_qpack module missing from release code path"),
+            false;
+        BeamFile ->
+            try
+                %% Encode a static-only block; RFC 9204 requires RIC=0 and Base=0.
+                Encoded = quic_qpack:encode([{<<":status">>, <<"200">>}]),
+                case Encoded of
+                    <<0, 0, _/binary>> ->
+                        lager:debug("quic_qpack RIC=0 ok (~s)", [BeamFile]),
+                        true;
+                    Bad ->
+                        lager:error(
+                            "quic_qpack bad prefix ~p from ~s (rebuild with patched deps/quic)",
+                            [Bad, BeamFile]
+                        ),
+                        false
+                end
+            catch
+                C:R:St ->
+                    lager:error("quic_qpack encode failed ~p:~p ~p", [C, R, St]),
+                    false
+            end
     end.
 
 do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
@@ -695,9 +710,18 @@ ensure_gun_started() ->
     end.
 
 ensure_quic_started() ->
-    _ = application:ensure_all_started(quic),
-    _ = application:ensure_all_started(quicer),
-    ok.
+    case application:ensure_all_started(quic) of
+        {ok, _} ->
+            ok;
+        {error, {already_started, quic}} ->
+            ok;
+        {error, Reason} ->
+            lager:error(
+                "quic application failed to start (~p); HTTP/3 requires vendored quic in the release",
+                [Reason]
+            ),
+            {error, Reason}
+    end.
 
 %% @doc Bind/stack hint for admin UI (matches {@link start_prefer_ipv6_server/2}).
 -spec management_listener_bind_stack() -> {Bind :: binary(), Stack :: binary()}.

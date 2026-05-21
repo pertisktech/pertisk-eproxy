@@ -20,6 +20,17 @@ check_ebin() {
   return 0
 }
 
+REL_LIB="${ROOT}/_build/prod/rel/pertisk_eproxy/lib"
+if [ ! -d "${REL_LIB}" ]; then
+  echo "verify-release-quic: release lib missing at ${REL_LIB}" >&2
+  exit 1
+fi
+REL_QUIC=$(find "${REL_LIB}" -maxdepth 1 -type d -name 'quic-*' 2>/dev/null | head -1)
+if [ -z "${REL_QUIC}" ]; then
+  echo "verify-release-quic: quic application not packaged in release (add quic to pertisk_eproxy.app.src)" >&2
+  exit 1
+fi
+
 FAILED=0
 for QUIC_EBIN in $(find "${ROOT}/_build" -path '*/quic/ebin' -type d 2>/dev/null | sort -u); do
   if check_ebin "${QUIC_EBIN}"; then
