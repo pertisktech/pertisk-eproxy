@@ -5,6 +5,8 @@
 # buildx sets the platform per matrix leg; do not use empty BUILDPLATFORM on FROM
 FROM erlang:27-alpine AS builder
 
+ARG VERSION=0.1.0
+
 WORKDIR /src
 
 RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl-dev ncurses-dev
@@ -12,7 +14,8 @@ RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers 
 COPY . .
 
 # ekub 0.2.0 sets fail_if_no_peer_cert (server-only) on K8s API client SSL — patch before compile.
-RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+RUN chmod +x /src/scripts/set-app-version.sh /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+    && /src/scripts/set-app-version.sh "$VERSION" \
     /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
     /src/scripts/verify-release-quic.sh \
     && rm -rf _build deps \

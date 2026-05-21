@@ -54,10 +54,27 @@ snapshot() ->
     maps:merge(Base, pertisk_eproxy_public_ip:snapshot()).
 
 app_version() ->
-    case application:get_key(pertisk_eproxy, vsn) of
-        {ok, V} when is_list(V) -> list_to_binary(V);
-        {ok, V} when is_binary(V) -> V;
-        _ -> <<"0.1.0">>
+    case env_version() of
+        undefined ->
+            case application:get_key(pertisk_eproxy, vsn) of
+                {ok, V} when is_list(V) -> list_to_binary(V);
+                {ok, V} when is_binary(V) -> V;
+                _ -> <<"0.1.0">>
+            end;
+        V ->
+            V
+    end.
+
+env_version() ->
+    case os:getenv("PERTISK_VERSION") of
+        false ->
+            undefined;
+        V ->
+            T = string:trim(V),
+            case T of
+                "" -> undefined;
+                _ -> list_to_binary(T)
+            end
     end.
 
 db_file_path() ->

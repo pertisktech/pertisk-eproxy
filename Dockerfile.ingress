@@ -14,6 +14,8 @@ RUN npm run build
 
 FROM erlang:27-alpine AS builder
 
+ARG VERSION=0.1.0
+
 WORKDIR /src
 
 RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl-dev ncurses-dev
@@ -21,7 +23,8 @@ RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers 
 COPY . .
 COPY --from=admin-builder /app/priv/admin ./priv/admin
 
-RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+RUN chmod +x /src/scripts/set-app-version.sh /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+    && /src/scripts/set-app-version.sh "$VERSION" \
     /src/scripts/sync-quic-deps.sh \
     /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
     /src/scripts/verify-release-quic.sh \
@@ -35,7 +38,7 @@ RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
     && rebar3 as prod release \
     && /src/scripts/verify-release-build.sh /src \
     && /src/scripts/verify-release-quic.sh /src \
-    && test -f /src/_build/prod/rel/pertisk_eproxy/lib/pertisk_eproxy-0.1.0/priv/admin/index.html
+    && test -n "$(find /src/_build/prod/rel/pertisk_eproxy/lib -path '*/priv/admin/index.html' -print -quit)"
 
 FROM alpine:3.20
 

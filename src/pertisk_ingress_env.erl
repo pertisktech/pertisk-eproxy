@@ -34,13 +34,11 @@ ingress_mode() ->
     end.
 
 namespace() ->
+    %% PERTISK_K8S_NAMESPACE set by Helm when ingress.watchNamespace is non-empty.
+    %% When unset, watch all namespaces (see deploy/helm README: empty watchNamespace = all).
     case env_nonempty(<<"PERTISK_K8S_NAMESPACE">>) of
         {ok, Ns} -> Ns;
-        error ->
-            case env_nonempty(<<"POD_NAMESPACE">>) of
-                {ok, Ns2} -> Ns2;
-                error -> all_namespaces
-            end
+        error -> all_namespaces
     end.
 
 ingress_class() ->

@@ -93,6 +93,7 @@ create_ingress(Body) ->
             {ok, Resource, Ns} ->
                 case ekub:create(Resource, Ns, Conn) of
                     {ok, _} ->
+                        pertisk_ingress_watcher:reconcile_now(),
                         Meta = maps:get(<<"metadata">>, Resource, #{}),
                         {ok, #{
                             message => <<"Ingress created">>,
@@ -115,6 +116,7 @@ update_ingress(Namespace, Name, Body) ->
                     {ok, Resource, Ns} ->
                         case ekub:replace(Resource, Ns, Conn) of
                             {ok, _} ->
+                                pertisk_ingress_watcher:reconcile_now(),
                                 {ok, #{
                                     message => <<"Ingress updated">>,
                                     name => Name,
@@ -135,27 +137,23 @@ delete_ingress(Namespace, Name) ->
     with_conn(fun(Conn) ->
         case ekub:delete(ingress, Namespace, Name, Conn) of
             {ok, _} ->
-                {ok, #{
-                    message => <<"Ingress deleted">>,
-                    name => Name,
-                    namespace => Namespace
-                }};
+                reconcile_after_ingress_delete(Namespace, Name);
             {error, #{<<"code">> := 404}} ->
-                {ok, #{
-                    message => <<"Ingress deleted">>,
-                    name => Name,
-                    namespace => Namespace
-                }};
+                reconcile_after_ingress_delete(Namespace, Name);
             {error, #{<<"reason">> := <<"NotFound">>}} ->
-                {ok, #{
-                    message => <<"Ingress deleted">>,
-                    name => Name,
-                    namespace => Namespace
-                }};
-            {error, Reason} ->
-                {error, Reason}
+                reconcile_after_ingress_delete(Namespace, Name);
+            {error, DelReason} ->
+                {error, DelReason}
         end
     end).
+
+reconcile_after_ingress_delete(Namespace, Name) ->
+    pertisk_ingress_watcher:reconcile_now(),
+    {ok, #{
+        message => <<"Ingress deleted">>,
+        name => Name,
+        namespace => Namespace
+    }}.
 
 %% ---------------------------------------------------------------------------
 %% Internal
@@ -337,7 +335,7 @@ build_ingress_resource(Body, Current) ->
             undefined -> Spec0;
             C -> Spec0#{<<"ingressClassName">> => C}
         end,
-        Spec2 = maybe_tls_spec(Spec1, Host, IngressNs, Body),
+        Spec2 = maybe_tls_spec(Spec1, Host, IngressNs, Body, Current),
         Meta0 = case Current of
             undefined ->
                 #{<<"name">> => IngressName, <<"namespace">> => IngressNs};
@@ -425,28 +423,33 @@ backend_port_from_body(Body) ->
             end
     end.
 
-maybe_tls_spec(Spec, Host, IngressNs, Body) ->
+maybe_tls_spec(Spec, Host, IngressNs, Body, Current) ->
     TlsNs = maps:get(<<"tls_secret_namespace">>, Body, undefined),
     TlsName = maps:get(<<"tls_secret_name">>, Body, undefined),
-    case {TlsNs, TlsName} of
-        {Ns, Name} when is_binary(Ns), Ns =/= <<>>, is_binary(Name), Name =/= <<>> ->
-            NsT = trim(Ns),
+    case {tls_bin(TlsNs), tls_bin(TlsName)} of
+        {Ns, Name} when Ns =/= <<>>, Name =/= <<>> ->
             if
-                NsT =/= IngressNs ->
+                Ns =/= IngressNs ->
                     throw({bad_request, <<"TLS secret must be in the same namespace as the Ingress">>});
                 true ->
                     Spec#{
                         <<"tls">> => [
                             #{
                                 <<"hosts">> => [Host],
-                                <<"secretName">> => trim(Name)
+                                <<"secretName">> => Name
                             }
                         ]
                     }
             end;
+        _ when Current =/= undefined ->
+            %% Replace must clear prior tls when admin UI selects "No TLS"
+            Spec#{<<"tls">> => []};
         _ ->
             Spec
     end.
+
+tls_bin(V) when is_binary(V) -> trim(V);
+tls_bin(_) -> <<>>.
 
 ingress_class_from_body(Body) ->
     case maps:get(<<"ingress_class_name">>, Body, undefined) of
@@ -494,7 +497,7 @@ maybe_null(undefined) -> null;
 maybe_null(V) -> V.
 
 trim(B) when is_binary(B) ->
-    binary:trim(B);
+    list_to_binary(string:trim(binary_to_list(B), both));
 trim(V) when is_list(V) ->
     trim(iolist_to_binary(V)).
 

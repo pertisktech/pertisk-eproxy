@@ -51,6 +51,8 @@ spec:
               protocol: UDP
             {{- end }}
           env:
+            - name: PERTISK_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
             - name: PERTISK_MODE
               value: ingress
             - name: PERTISK_K8S_INGRESS_ENABLED

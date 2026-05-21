@@ -12,6 +12,10 @@ HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress
 VERSION ?= x.x.x
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
+ifeq ($(PACKAGE_VERSION),x.x.x)
+PACKAGE_VERSION := 0.1.0
+endif
+DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION)
 BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
@@ -55,6 +59,7 @@ quic-upstream-local:
 	bash contrib/erlang_quic_upstream_patches/apply-local.sh
 
 release:
+	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
 	@bash scripts/build-release-linux.sh
 
 ## --- Docker: proxy (admin + SQLite config) ---
@@ -64,6 +69,7 @@ docker-proxy-push: docker-push
 
 docker-proxy-multi:
 	docker buildx build \
+		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
 		--sbom=$(BUILD_SBOM) \
@@ -75,15 +81,16 @@ docker-proxy-multi:
 
 ## --- Docker: ingress (K8s controller, read-only admin API) ---
 docker-ingress:
-	docker build -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 
 docker-ingress-push:
-	docker buildx build --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 	docker push $(HARBOR_INGRESS_IMAGE):$(VERSION)
 	docker push $(HARBOR_INGRESS_IMAGE):latest 2>/dev/null || docker tag $(HARBOR_INGRESS_IMAGE):$(VERSION) $(HARBOR_INGRESS_IMAGE):latest && docker push $(HARBOR_INGRESS_IMAGE):latest
 
 docker-ingress-multi:
 	docker buildx build \
+		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
 		--sbom=$(BUILD_SBOM) \
@@ -95,13 +102,13 @@ docker-ingress-multi:
 
 ## Back-compat (was single IMAGE; now use docker-ingress-multi for ingress chart)
 docker-release:
-	docker build -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-build:
-	docker buildx build --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-push:
-	docker buildx build --push -f $(DOCKERFILE) \
+	docker buildx build $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
 		-t $(HARBOR_PROXY_IMAGE):$(VERSION) \
 		-t $(HARBOR_PROXY_IMAGE):latest \
 		.

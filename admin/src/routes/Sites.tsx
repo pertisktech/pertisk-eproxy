@@ -12,6 +12,7 @@ import {
   type K8sServiceRow,
   type K8sTlsSecretRow,
   type IngressFormRouteRow,
+  type CreateIngressBody,
   normalizeDnsProviders,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
@@ -150,6 +151,7 @@ export default function Sites() {
   const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
   const [showIngressForm, setShowIngressForm] = useState(false);
   const [ingressHost, setIngressHost] = useState('');
+  const [ingressNamespace, setIngressNamespace] = useState('');
   const [ingressTlsNamespace, setIngressTlsNamespace] = useState('');
   const [ingressTlsName, setIngressTlsName] = useState('');
   const [ingressServiceNamespace, setIngressServiceNamespace] = useState('');
@@ -466,6 +468,7 @@ export default function Sites() {
   function openIngressAdd() {
     setEditingIngressRef(null);
     setIngressHost('');
+    setIngressNamespace('');
     setIngressTlsNamespace('');
     setIngressTlsName('');
     setIngressServiceNamespace('');
@@ -484,6 +487,7 @@ export default function Sites() {
       const row = await api.kubernetes.getIngress(ns, name);
       setEditingIngressRef({ namespace: row.namespace, name: row.name });
       setIngressHost(row.host);
+      setIngressNamespace(row.namespace);
       setIngressTlsNamespace(row.tls_secret_name ? row.namespace : '');
       setIngressTlsName(row.tls_secret_name ?? '');
       setIngressServiceNamespace(row.namespace);
@@ -584,21 +588,26 @@ export default function Sites() {
       }
     }
     const firstRoute = routes[0];
+    const ingressNs = ingressNamespace.trim() || serviceNamespace;
+    const tlsNs = ingressTlsNamespace.trim();
+    const tlsName = ingressTlsName.trim();
     setIngressSaving(true);
     try {
-      const body = {
+      const body: CreateIngressBody = {
         host,
         routes,
         path: firstRoute.path,
         path_type: firstRoute.path_type,
-        tls_secret_namespace: ingressTlsNamespace.trim() || undefined,
-        tls_secret_name: ingressTlsName.trim() || undefined,
         service_namespace: serviceNamespace,
         service_name: firstRoute.service_name,
         service_port: firstRoute.service_port ?? undefined,
         service_port_name: firstRoute.service_port_name || undefined,
-        ingress_namespace: serviceNamespace,
+        ingress_namespace: ingressNs,
       };
+      if (tlsNs && tlsName) {
+        body.tls_secret_namespace = tlsNs;
+        body.tls_secret_name = tlsName;
+      }
       if (editingIngressRef) {
         await api.kubernetes.updateIngress(editingIngressRef.namespace, editingIngressRef.name, body);
         setShowIngressForm(false);
@@ -610,7 +619,6 @@ export default function Sites() {
         toast.success('Ingress created.');
       }
       await load({ silent: true });
-      window.setTimeout(() => void load({ silent: true }), 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to save Ingress';
       setIngressFormError(msg);
@@ -1611,6 +1619,32 @@ export default function Sites() {
                   </label>
                 </div>
                 <div className={styles.formSection}>
+                  <h3 className={styles.sectionTitle}>Ingress placement</h3>
+                  <label className={styles.label}>
+                    Ingress namespace
+                    <div className={styles.selectWrap}>
+                      <select
+                        value={ingressNamespace || ingressServiceNamespace}
+                        onChange={(e) => setIngressNamespace(e.target.value)}
+                        className={styles.select}
+                        required
+                      >
+                        <option value="">— Same as service namespace —</option>
+                        {k8sNamespaces.map((n) => (
+                          <option key={n.name} value={n.name}>
+                            {n.name}
+                          </option>
+                        ))}
+                      </select>
+                      <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                    </div>
+                    <p className={styles.hint}>
+                      Where the Ingress object is created. Defaults to the service namespace (e.g.{' '}
+                      <code>pertisk-rproxy</code>).
+                    </p>
+                  </label>
+                </div>
+                <div className={styles.formSection}>
                   <h3 className={styles.sectionTitle}>TLS (optional)</h3>
                   <label className={styles.label}>
                     Certificate (TLS Secret)
@@ -1635,10 +1669,13 @@ export default function Sites() {
                         className={styles.select}
                       >
                         <option value="">— No TLS —</option>
-                        {(ingressServiceNamespace
-                          ? k8sTlsSecrets.filter((s) => s.namespace === ingressServiceNamespace)
-                          : k8sTlsSecrets
-                        ).map((s) => (
+                        {(() => {
+                          const ingressNs = ingressNamespace.trim() || ingressServiceNamespace.trim();
+                          const secrets = ingressNs
+                            ? k8sTlsSecrets.filter((s) => s.namespace === ingressNs)
+                            : k8sTlsSecrets;
+                          return secrets;
+                        })().map((s) => (
                           <option key={`${s.namespace}/${s.name}`} value={`${s.namespace}/${s.name}`}>
                             {s.namespace}/{s.name}
                           </option>
@@ -1647,8 +1684,8 @@ export default function Sites() {
                       <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                     </div>
                     <p className={styles.hint}>
-                      TLS secret must be in the same namespace as the Ingress. Select service namespace first to
-                      filter.
+                      Choose <strong>No TLS</strong> for HTTP-only ingress (no <code>spec.tls</code> in the manifest).
+                      TLS secret must be in the same namespace as the Ingress.
                     </p>
                   </label>
                 </div>
@@ -1670,7 +1707,8 @@ export default function Sites() {
                               service_port_name: '',
                             })),
                           );
-                          if (ingressTlsNamespace && ingressTlsNamespace !== ns) {
+                          const effectiveIngressNs = ingressNamespace.trim() || ns;
+                          if (ingressTlsNamespace && ingressTlsNamespace !== effectiveIngressNs) {
                             setIngressTlsNamespace('');
                             setIngressTlsName('');
                           }

@@ -2,7 +2,7 @@
 -module(pertisk_ingress_watcher).
 -behaviour(gen_server).
 
--export([start_link/0, trigger_reconcile/0]).
+-export([start_link/0, trigger_reconcile/0, reconcile_now/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(SERVER, ?MODULE).
@@ -12,6 +12,13 @@ start_link() ->
 
 trigger_reconcile() ->
     gen_server:cast(?SERVER, reconcile).
+
+%% @doc Run reconcile synchronously (admin CRUD waits for in-memory sites to update).
+reconcile_now() ->
+    case whereis(?SERVER) of
+        undefined -> ok;
+        _ -> gen_server:call(?SERVER, reconcile_now, 120000)
+    end.
 
 init([]) ->
     pertisk_ingress_status:init(),
@@ -31,6 +38,9 @@ init([]) ->
             pertisk_ingress_status:set_watcher_state(error),
             {ok, #{conn => undefined, error => Reason}}
     end.
+
+handle_call(reconcile_now, _From, State) ->
+    {reply, ok, maybe_reconcile(State)};
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
