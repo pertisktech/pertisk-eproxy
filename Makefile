@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub shell test clean release \
+.PHONY: all compile patch-ekub sync-quic shell test clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -27,8 +27,11 @@ DOCKERFILE_INGRESS ?= Dockerfile.ingress
 
 all: compile
 
+sync-quic:
+	@bash scripts/sync-quic-deps.sh
+
 # ekub 0.2.0: fail_if_no_peer_cert is server-only; breaks in-cluster K8s API TLS.
-patch-ekub:
+patch-ekub: sync-quic
 	@$(REBAR) get-deps
 	@bash scripts/patch-ekub.sh
 

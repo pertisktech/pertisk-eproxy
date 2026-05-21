@@ -299,7 +299,7 @@ site_advertise_http3(Host) ->
     Config = pertisk_eproxy_config:get_config(),
     Sites = maps:get(sites, Config, []),
     case find_site_for_host(Sites, normalize_host(Host)) of
-        undefined -> true;
+        undefined -> false;
         Site -> maps:get(advertise_http3, Site, true) =/= false
     end.
 

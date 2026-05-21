@@ -12,13 +12,19 @@ RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers 
 COPY . .
 
 # ekub 0.2.0 sets fail_if_no_peer_cert (server-only) on K8s API client SSL — patch before compile.
-RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
-    && rm -rf _build \
+RUN chmod +x /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+    /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
+    /src/scripts/verify-release-quic.sh \
+    && rm -rf _build deps \
+    && /src/scripts/sync-quic-deps.sh \
     && rebar3 get-deps \
     && /src/scripts/patch-ekub.sh \
+    && /src/scripts/patch-quic.sh \
     && /src/scripts/verify-deps.sh /src \
+    && find /src/_build -path '*/quic/ebin' -name '*.beam' -delete \
     && rebar3 as prod release \
-    && /src/scripts/verify-release-build.sh /src
+    && /src/scripts/verify-release-build.sh /src \
+    && /src/scripts/verify-release-quic.sh /src
 
 # Runtime must provide OpenSSL >= 3.4 symbols (e.g. EVP_MD_CTX_get_size_ex) for OTP 27 crypto NIF.
 # Alpine 3.20 apk openssl is too old; copy libs from erlang:27-alpine builder.

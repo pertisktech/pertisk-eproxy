@@ -46,7 +46,7 @@ empty() -> [].
 build(Sites) ->
     %% Merge rules by host so cross-site paths resolve correctly.
     Map = lists:foldl(fun(Site, Acc) ->
-        Host   = string:lowercase(maps:get(host, Site)),
+        Host   = normalize_host(maps:get(host, Site)),
         Backend = maps:get(backend, Site),
         Rules  = [#{
             path      => maps:get(path,      R, <<"/">>),
@@ -64,9 +64,17 @@ build(Sites) ->
 -spec route(binary(), binary()) -> {ok, route_match()} | {error, no_route}.
 route(Host, Path0) ->
     Router = pertisk_eproxy_config:get_router(),
-    HostLower = string:lowercase(Host),
+    HostLower = normalize_host(Host),
     NormPath  = case Path0 of <<>> -> <<"/">>; P -> P end,
     find_host(Router, HostLower, NormPath).
+
+normalize_host(H) when is_binary(H) ->
+    case binary:split(H, <<":">>) of
+        [Name, _] -> string:lowercase(Name);
+        [Name] -> string:lowercase(Name)
+    end;
+normalize_host(H) when is_list(H) ->
+    normalize_host(list_to_binary(H)).
 
 %% ---------------------------------------------------------------------------
 %% Internal

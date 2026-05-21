@@ -5,6 +5,7 @@
 -export([
     start_link/0,
     set_hosts/2,
+    set_hosts/5,
     remove_hosts/1,
     clear/0,
     lookup/1,

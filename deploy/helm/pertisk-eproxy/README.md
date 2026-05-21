@@ -71,7 +71,9 @@ Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`,
 |-----|--------|-----|
 | `ekub init failed: {options,{server_name_indication,undefined}}` | Old ekub SSL patch | Rebuild ingress image (current patch removes invalid SNI) |
 | `fail_if_no_peer_cert` | Old image | Rebuild with `scripts/patch-ekub.sh` in Docker build |
-| `incompatible quic_qpack` | Image built without `_checkouts/quic` | Rebuild; build fails at `verify-deps` if quic patch missing |
+| `incompatible quic_qpack` | Image built without patched quic | Rebuild; Docker fails at `verify-release-quic` if QPACK wrong |
+| `ekub init failed: nxdomain` | Default API host `kubernetes` does not resolve | Fixed: `pertisk_ingress_ekub` uses `KUBERNETES_SERVICE_HOST` |
+| Browser shows **localhost** cert on admin host | Ingress watcher failed → no TLS from Secret | Fix ekub; ensure `admin-*-tls` Secret exists (cert-manager) |
 
 ```bash
 make docker-ingress-multi VERSION=<tag>

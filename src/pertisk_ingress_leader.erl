@@ -23,7 +23,7 @@ init([]) ->
             pertisk_ingress_status:set_leader(true),
             {ok, #{enabled => false, leader => true}};
         true ->
-            case ekub:init() of
+            case pertisk_ingress_ekub:init() of
                 {ok, Conn} ->
                     Ns = pertisk_ingress_env:leader_namespace(),
                     Name = pertisk_ingress_env:leader_lease_name(),

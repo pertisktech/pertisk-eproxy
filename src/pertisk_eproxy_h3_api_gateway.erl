@@ -115,7 +115,7 @@ ensure_qpack_chrome_compat() ->
         false ->
             lager:error(
                 "HTTP/3 disabled: incompatible quic_qpack detected (RIC=0 Base encoding). "
-                "Rebuild with vendored _checkouts/quic (for example: make clean && make)."
+                "Rebuild with vendored quic (scripts/sync-quic-deps.sh + patch-quic.sh; Docker runs both)."
             ),
             {error, incompatible_quic_qpack}
     end.
