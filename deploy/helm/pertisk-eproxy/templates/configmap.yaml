@@ -1,0 +1,11 @@
+{{- if .Values.controller.configMap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pertisk-eproxy.fullname" . }}-config
+  labels:
+    {{- include "pertisk-eproxy.labels" . | nindent 4 }}
+data:
+  ingress.json: |
+    {{- mustToPrettyJson .Values.controller.config | nindent 4 }}
+{{- end }}

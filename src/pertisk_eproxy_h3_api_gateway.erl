@@ -969,7 +969,7 @@ tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
 load_sni_certs(Config) ->
     Sites = maps:get(sites, Config, []),
     DbPath = pertisk_eproxy_config:db_file(),
-    case pertisk_eproxy_db:list_certificates(DbPath) of
+    DbAcc = case pertisk_eproxy_db:list_certificates(DbPath) of
         {ok, Rows} ->
             RowsById = maps:from_list([
                 {integer_to_binary(maps:get(id, Row)), Row}
@@ -998,6 +998,39 @@ load_sni_certs(Config) ->
             );
         _ ->
             #{}
+    end,
+    merge_ingress_sni_certs(Sites, DbAcc).
+
+merge_ingress_sni_certs(Sites, Acc) ->
+    case pertisk_ingress_env:enabled() of
+        false ->
+            Acc;
+        true ->
+            lists:foldl(
+                fun(Site, A) ->
+                    case site_host_key(maps:get(host, Site, undefined)) of
+                        undefined ->
+                            A;
+                        HostKey ->
+                            case maps:is_key(HostKey, A) of
+                                true ->
+                                    A;
+                                false ->
+                                    case pertisk_ingress_tls:lookup(maps:get(host, Site, undefined)) of
+                                        {ok, Entry} ->
+                                            case pertisk_ingress_tls:decode_entry(Entry) of
+                                                {ok, Decoded} -> maps:put(HostKey, Decoded, A);
+                                                _ -> A
+                                            end;
+                                        error ->
+                                            A
+                                    end
+                            end
+                    end
+                end,
+                Acc,
+                Sites
+            )
     end.
 
 resolve_sni_cert_entry(CertRef, RowsById, RowsByName) ->

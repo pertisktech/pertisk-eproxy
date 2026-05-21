@@ -23,22 +23,39 @@
 
 init(Req, Resource) ->
     Method = cowboy_req:method(Req),
-    case auth_public(Method, Resource) of
+    case ingress_viewer_blocked(Method, Resource) of
         true ->
-            handle(Method, Resource, Req);
+            json_reply(403, #{<<"error">> => <<"read-only in ingress mode">>}, Req);
         false ->
-            case pertisk_eproxy_auth:auth_mode() of
-                disabled ->
+            case auth_public(Method, Resource) of
+                true ->
                     handle(Method, Resource, Req);
-                local ->
-                    case pertisk_eproxy_auth:verify_request(Req) of
-                        ok ->
+                false ->
+                    case pertisk_eproxy_auth:auth_mode() of
+                        disabled ->
                             handle(Method, Resource, Req);
-                        {error, _} ->
-                            json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
+                        local ->
+                            case pertisk_eproxy_auth:verify_request(Req) of
+                                ok ->
+                                    handle(Method, Resource, Req);
+                                {error, _} ->
+                                    json_reply(401, #{<<"error">> => <<"Unauthorized">>}, Req)
+                            end
                     end
             end
     end.
+
+ingress_viewer_blocked(Method, Resource) ->
+    pertisk_eproxy_config:ingress_mode() andalso ingress_mutating(Method, Resource).
+
+ingress_mutating(<<"GET">>, _) -> false;
+ingress_mutating(<<"HEAD">>, _) -> false;
+ingress_mutating(<<"POST">>, reload) -> false;
+ingress_mutating(_, ingress_status) -> false;
+ingress_mutating(_, ingress_watchers) -> false;
+ingress_mutating(_, ingress_errors) -> false;
+ingress_mutating(_, ingress_resources) -> false;
+ingress_mutating(_, _) -> true.
 
 auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
@@ -575,6 +592,28 @@ handle(<<"POST">>, reload, Req) ->
         ok         -> json_reply(200, #{status => <<"reloaded">>}, Req);
         {error, R} -> error_reply(500, R, Req)
     end;
+
+handle(<<"GET">>, ingress_status, Req) ->
+    json_reply(200, pertisk_ingress_status:snapshot(), Req);
+
+handle(<<"GET">>, ingress_watchers, Req) ->
+    S = pertisk_ingress_status:snapshot(),
+    json_reply(200, #{
+        <<"watcher">> => maps:get(<<"watcher">>, S, <<"disconnected">>),
+        <<"leader">> => maps:get(<<"leader">>, S, false)
+    }, Req);
+
+handle(<<"GET">>, ingress_errors, Req) ->
+    S = pertisk_ingress_status:snapshot(),
+    json_reply(200, #{<<"last_error">> => maps:get(<<"last_error">>, S, null)}, Req);
+
+handle(<<"GET">>, ingress_resources, Req) ->
+    Sites = pertisk_eproxy_config:get_sites(),
+    Backends = pertisk_eproxy_config:get_backends(),
+    json_reply(200, #{
+        <<"sites">> => [site_to_json(S) || S <- Sites],
+        <<"backends">> => [backend_to_json(B) || B <- Backends]
+    }, Req);
 
 handle(_Method, _Resource, Req) ->
     Req2 = reply_compressed(

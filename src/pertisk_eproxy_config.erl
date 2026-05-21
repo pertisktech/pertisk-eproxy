@@ -21,7 +21,8 @@
          get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
          management_upstream_bin/0,
-         reload/0, put_config/1, json_to_config_pub/1,
+         reload/0, put_config/1, sync_ingress/2,
+         ingress_mode/0, json_to_config_pub/1,
          db_file/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -109,6 +110,15 @@ get_router() ->
 reload() ->
     gen_server:call(?SERVER, reload, ?CONFIG_CALL_TIMEOUT_MS).
 
+%% @doc Replace sites/backends from Kubernetes ingress reconcile (does not persist to SQLite).
+-spec sync_ingress([map()], [map()]) -> ok | {error, term()}.
+sync_ingress(Sites, Backends) ->
+    gen_server:call(?SERVER, {sync_ingress, Sites, Backends}, ?CONFIG_CALL_TIMEOUT_MS).
+
+-spec ingress_mode() -> boolean().
+ingress_mode() ->
+    maps:get(mode, get_config(), proxy_admin) =:= ingress.
+
 %% Replace the in-memory config with a new map (does NOT write to file).
 %% Spawns/stops backend workers as needed and refreshes the router.
 -spec put_config(map()) -> ok | {error, term()}.
@@ -131,14 +141,26 @@ init([]) ->
     end.
 
 handle_call(reload, _From, State) ->
-    Reply = case load_config() of
-        {ok, Config} ->
-            apply_config(Config),
-            _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
+    Reply = case ingress_mode() of
+        true ->
+            pertisk_ingress_watcher:trigger_reconcile(),
             ok;
-        {error, R}   -> {error, R}
+        false ->
+            case load_config() of
+                {ok, Config} ->
+                    apply_config(Config),
+                    _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
+                    ok;
+                {error, R} -> {error, R}
+            end
     end,
     {reply, Reply, State};
+
+handle_call({sync_ingress, Sites, Backends}, _From, State) ->
+    Config0 = get_config(),
+    Config1 = Config0#{sites => Sites, backends => Backends},
+    apply_config(Config1),
+    {reply, ok, State};
 
 handle_call({put_config, Config}, _From, State) ->
     T0 = erlang:monotonic_time(millisecond),
@@ -185,9 +207,14 @@ code_change(_OldVsn, State, _Extra) ->
 %% ---------------------------------------------------------------------------
 
 config_file() ->
-    case application:get_env(pertisk_eproxy, config_file) of
-        {ok, F} -> F;
-        undefined -> "config/proxy.json"
+    case os:getenv("PERTISK_CONFIG_FILE") of
+        false ->
+            case application:get_env(pertisk_eproxy, config_file) of
+                {ok, F} -> F;
+                undefined -> "config/proxy.json"
+            end;
+        F when is_list(F), F =/= "" ->
+            F
     end.
 
 load_config() ->
@@ -197,11 +224,15 @@ load_config() ->
         {error, E} -> lager:warning("ensure_admin_users failed: ~p", [E])
     end,
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
-        {ok, Cfg} when is_map(Cfg) ->
+        {ok, Cfg0} when is_map(Cfg0) ->
+            Cfg = maybe_strip_ingress_runtime(Cfg0),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             %% Keep plain sites table in sync from persisted runtime config on every startup.
-            _ = persist_runtime_config(DbPath, Cfg),
+            case maps:get(mode, Cfg, proxy_admin) of
+                ingress -> ok;
+                _ -> _ = persist_runtime_config(DbPath, Cfg)
+            end,
             {ok, Cfg};
         not_found ->
             load_config_from_file_and_seed(DbPath);
@@ -403,6 +434,7 @@ parse_algorithm(_)                      -> round_robin.
 
 parse_mode(<<"proxy">>) -> proxy;
 parse_mode(<<"proxy_admin">>) -> proxy_admin;
+parse_mode(<<"ingress">>) -> ingress;
 parse_mode(_) -> proxy_admin.
 
 parse_upstreams(In) ->
@@ -440,6 +472,14 @@ parse_opt_challenge_type("dns-01") -> "dns-01";
 parse_opt_challenge_type(_) -> undefined.
 
 %% Apply a config map: store in ETS, sync backend workers, rebuild router.
+maybe_strip_ingress_runtime(Cfg) ->
+    case maps:get(mode, Cfg, proxy_admin) of
+        ingress ->
+            Cfg#{sites => [], backends => []};
+        _ ->
+            Cfg
+    end.
+
 apply_config(Config) ->
     Sites    = maps:get(sites,    Config, []),
     Backends = maps:get(backends, Config, []),

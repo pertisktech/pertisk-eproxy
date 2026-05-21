@@ -21,6 +21,7 @@ snapshot() ->
     ModeBin = case Mode0 of
         proxy -> <<"proxy">>;
         proxy_admin -> <<"proxy_admin">>;
+        ingress -> <<"ingress">>;
         M -> atom_to_binary(M, utf8)
     end,
     HttpsAddr = case maps:find(https_port, C) of

@@ -65,5 +65,18 @@ init([]) ->
           restart  => permanent,
           shutdown => 5000,
           type     => worker}
+        | ingress_children()
     ],
     {ok, {SupFlags, Children}}.
+
+ingress_children() ->
+    case pertisk_ingress_env:enabled() of
+        true ->
+            [#{id       => pertisk_ingress_sup,
+               start    => {pertisk_ingress_sup, start_link, []},
+               restart  => permanent,
+               shutdown => infinity,
+               type     => supervisor}];
+        false ->
+            []
+    end.

@@ -30,8 +30,24 @@ Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME
 
 - **`proxy_admin`** (typical): management port serves the **React admin UI** at `/` and JSON under `/api/…`.
 - **`proxy`**: management port is API-only; **`GET /`** returns a small JSON object with a short `endpoints` list (see `pertisk_eproxy_admin_handler.erl`).
+- **`ingress`**: Kubernetes ingress controller; sites/backends from cluster `Ingress` + TLS Secrets; management API is read-only.
 
-`mode` is part of the proxy JSON configuration (`proxy` vs `proxy_admin`).
+`mode` is part of the proxy JSON configuration (`proxy`, `proxy_admin`, or `ingress`), or set `PERTISK_MODE=ingress` for the ingress image.
+
+## Docker images (Harbor)
+
+| Mode | Dockerfile | Image |
+|------|------------|--------|
+| Proxy / admin | `Dockerfile` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` |
+| Ingress controller | `Dockerfile.ingress` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` |
+
+```bash
+make docker-proxy-multi VERSION=0.1.0      # push proxy
+make docker-ingress-multi VERSION=0.1.0  # push ingress
+make docker-harbor-multi VERSION=0.1.0   # push both
+```
+
+Helm chart `deploy/helm/pertisk-eproxy` uses the **ingress** image by default.
 
 ## Management listener
 

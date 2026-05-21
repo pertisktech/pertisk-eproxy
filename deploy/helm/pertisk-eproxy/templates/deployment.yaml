@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pertisk-eproxy.fullname" . }}
+  labels:
+    {{- include "pertisk-eproxy.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.autoscaling.enabled }}
+  replicas: {{ .Values.autoscaling.minReplicas }}
+  {{- else }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pertisk-eproxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pertisk-eproxy.selectorLabels" . | nindent 8 }}
+      {{- if .Values.controller.configMap.enabled }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pertisk-eproxy.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "pertisk-eproxy.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controller.config.http_port }}
+              protocol: TCP
+            - name: https
+              containerPort: {{ .Values.controller.config.https_port }}
+              protocol: TCP
+            - name: management
+              containerPort: {{ .Values.controller.config.management_port }}
+              protocol: TCP
+            {{- if .Values.service.http3Port }}
+            - name: http3
+              containerPort: {{ .Values.controller.config.https_port }}
+              protocol: UDP
+            {{- end }}
+          env:
+            - name: PERTISK_MODE
+              value: ingress
+            - name: PERTISK_K8S_INGRESS_ENABLED
+              value: {{ .Values.ingress.enabled | quote }}
+            - name: PERTISK_K8S_INGRESS_CLASS
+              value: {{ include "pertisk-eproxy.ingressClassName" . | quote }}
+            {{- if .Values.ingress.watchNamespace }}
+            - name: PERTISK_K8S_NAMESPACE
+              value: {{ .Values.ingress.watchNamespace | quote }}
+            {{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PERTISK_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PERTISK_K8S_LEADER_ELECTION_ENABLED
+              value: {{ .Values.leaderElection.enabled | quote }}
+            - name: PERTISK_K8S_LEADER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PERTISK_K8S_LEADER_NAME
+              value: {{ default (printf "%s-leader" (include "pertisk-eproxy.fullname" .)) .Values.leaderElection.leaseName | quote }}
+            - name: PERTISK_K8S_LEADER_LEASE_DURATION_SECONDS
+              value: {{ .Values.leaderElection.leaseDurationSeconds | quote }}
+            - name: PERTISK_K8S_LEADER_RENEW_INTERVAL_SECONDS
+              value: {{ .Values.leaderElection.renewIntervalSeconds | quote }}
+            - name: PERTISK_K8S_TLS_DIR
+              value: {{ .Values.persistence.mountPath }}/k8s-tls
+            {{- if .Values.controller.configMap.enabled }}
+            - name: PERTISK_CONFIG_FILE
+              value: /opt/pertisk_eproxy/config/ingress.json
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            {{- if .Values.controller.configMap.enabled }}
+            - name: config
+              mountPath: /opt/pertisk_eproxy/config/ingress.json
+              subPath: ingress.json
+              readOnly: true
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.controller.configMap.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "pertisk-eproxy.fullname" . }}-config
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          {{- if .Values.persistence.storageClass }}
+          persistentVolumeClaim:
+            claimName: {{ include "pertisk-eproxy.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

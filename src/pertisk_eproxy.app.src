@@ -8,7 +8,10 @@
         pertisk_eproxy_backend_sup,
         pertisk_eproxy_admin_realtime,
         pertisk_eproxy_public_ip,
-        pertisk_eproxy_acme_dns
+        pertisk_eproxy_acme_dns,
+        pertisk_ingress_sup,
+        pertisk_ingress_watcher,
+        pertisk_ingress_leader
     ]},
     {mod, {pertisk_eproxy_app, []}},
     {applications, [
@@ -23,7 +26,12 @@
         jose,
         lager,
         prometheus,
-        prometheus_cowboy
+        prometheus_cowboy,
+        ekub,
+        ewsc,
+        hackney,
+        jsx,
+        yamerl
     ]},
     {env, []},
     {modules, []}

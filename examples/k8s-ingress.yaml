@@ -1,0 +1,36 @@
+# Example Ingress + TLS Secret for pertisk-eproxy ingress controller.
+# Requires ingressClassName matching PERTISK_K8S_INGRESS_CLASS (default: pertisk-eproxy).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: myapp-tls
+  namespace: default
+type: kubernetes.io/tls
+data:
+  # Replace with base64-encoded PEM (tls.crt / tls.key)
+  tls.crt: ""
+  tls.key: ""
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp
+  namespace: default
+spec:
+  ingressClassName: pertisk-eproxy
+  tls:
+    - hosts:
+        - myapp.example.com
+      secretName: myapp-tls
+  rules:
+    - host: myapp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp
+                port:
+                  number: 8080

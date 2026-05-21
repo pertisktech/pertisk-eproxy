@@ -13,6 +13,7 @@ start(_StartType, _StartArgs) ->
     ok = pertisk_eproxy_metrics:setup(),
     ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
     {ok, Sup} = pertisk_eproxy_sup:start_link(),
+    ok = maybe_set_ingress_mode(),
     ok = start_listeners(),
     ok = pertisk_eproxy_auth0:maybe_prefetch_jwks(),
     {ok, Sup}.
@@ -365,6 +366,10 @@ build_admin_routes(proxy) ->
     build_admin_api_routes() ++ [
         {"/",                       pertisk_eproxy_admin_handler, root}
     ];
+build_admin_routes(ingress) ->
+    build_admin_api_routes() ++ [
+        {"/",                       pertisk_eproxy_admin_handler, root}
+    ];
 build_admin_routes(proxy_admin) ->
     build_admin_api_routes() ++ [
         %% Static admin UI
@@ -433,17 +438,25 @@ build_sni_hosts(Config) ->
     CertRowsById = cert_rows_by_id(DbPath),
     lists:reverse(
         lists:foldl(
-            fun(Site, Acc) ->
-                Host = site_host_to_list(maps:get(host, Site, <<>>)),
-                case {Host, resolve_site_cert_paths(Site, CertRowsById)} of
-                    {[], _} ->
-                        Acc;
-                    {_, undefined} ->
-                        Acc;
-                    {H, {CertPath, KeyPath}} ->
+                fun(Site, Acc) ->
+                H = site_host_to_list(maps:get(host, Site, <<>>)),
+                case ingress_sni_paths(H) of
+                    {ok, {CertPath, KeyPath}} ->
                         case lists:keymember(H, 1, Acc) of
                             true -> Acc;
                             false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+                        end;
+                    error ->
+                        case {H, resolve_site_cert_paths(Site, CertRowsById)} of
+                            {[], _} ->
+                                Acc;
+                            {_, undefined} ->
+                                Acc;
+                            {H, {CertPath, KeyPath}} ->
+                                case lists:keymember(H, 1, Acc) of
+                                    true -> Acc;
+                                    false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+                                end
                         end
                 end
             end,
@@ -501,3 +514,17 @@ cert_ref_to_binary(_) -> undefined.
 site_host_to_list(H) when is_list(H) -> H;
 site_host_to_list(H) when is_binary(H) -> binary_to_list(H);
 site_host_to_list(_) -> [].
+
+ingress_sni_paths(Host) ->
+    case pertisk_ingress_env:enabled() of
+        true -> pertisk_ingress_tls:paths_for_host(Host);
+        false -> error
+    end.
+
+maybe_set_ingress_mode() ->
+    case pertisk_ingress_env:ingress_mode() of
+        true ->
+            application:set_env(pertisk_eproxy, mode, ingress);
+        false ->
+            ok
+    end.

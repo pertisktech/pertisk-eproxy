@@ -37,7 +37,11 @@ api_routes() ->
         {"/api/sites/:host", pertisk_eproxy_admin_handler, site},
         {"/api/health", pertisk_eproxy_admin_handler, health},
         {"/api/metrics", pertisk_eproxy_admin_handler, metrics},
-        {"/api/reload", pertisk_eproxy_admin_handler, reload}
+        {"/api/reload", pertisk_eproxy_admin_handler, reload},
+        {"/api/ingress/status", pertisk_eproxy_admin_handler, ingress_status},
+        {"/api/ingress/watchers", pertisk_eproxy_admin_handler, ingress_watchers},
+        {"/api/ingress/errors", pertisk_eproxy_admin_handler, ingress_errors},
+        {"/api/ingress/resources", pertisk_eproxy_admin_handler, ingress_resources}
     ].
 
 -spec dispatch() -> cowboy_router:dispatch_rule().

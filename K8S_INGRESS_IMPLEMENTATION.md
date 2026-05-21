@@ -1,6 +1,6 @@
 # Kubernetes Ingress Implementation for pertisk-eproxy
 
-> **Status**: Planning Phase | **Date**: May 20, 2026  
+> **Status**: Phase 1 implemented (ekub + reconcile loop) | **Date**: May 21, 2026  
 > **Recommended Approach**: Option B (ekub-based, ~2 weeks)  
 > **Effort Level**: Moderate (development only, no infrastructure changes)
 
@@ -301,19 +301,28 @@ spec:
 
 ## Deployment via Helm
 
+Chart path (same layout as pertisk-rproxy): `deploy/helm/pertisk-eproxy/`
+
 ```bash
-# Deploy with Helm
-helm install pertisk-eproxy ./helm/pertisk-eproxy \
-  --set ingress.enabled=true \
-  --set ingress.ingressClass=pertisk-eproxy \
-  --set replicaCount=3  # For HA
+# Build & push ingress image (optional)
+make docker-ingress-multi VERSION=0.1.0
+# Or both proxy + ingress:
+make docker-harbor-multi VERSION=0.1.0
+
+# Install controller
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
+  -n pertisk-eproxy \
+  --create-namespace \
+  --set image.tag=0.1.0
 
 # Verify
 kubectl get ingress
-kubectl logs -f deployment/pertisk-eproxy -c eproxy
-kubectl port-forward svc/pertisk-eproxy 9080:9080
-# Visit http://localhost:9080/api/ingress/status
+kubectl logs -f deployment/pertisk-eproxy -n pertisk-eproxy
+kubectl port-forward -n pertisk-eproxy svc/pertisk-eproxy 9080:9080
+curl http://127.0.0.1:9080/api/ingress/status
 ```
+
+See `deploy/helm/pertisk-eproxy/README.md` for values reference.
 
 ---
 
@@ -346,12 +355,12 @@ kubectl port-forward svc/pertisk-eproxy 9080:9080
 ## Implementation Checklist
 
 ### Setup
-- [ ] Add `ekub` to `rebar.config` (v0.2.0)
-- [ ] `rebar3 compile` succeeds
-- [ ] Test ekub locally: `rebar3 shell`, `ekub:init()`
+- [x] Add `ekub` to `rebar.config` (v0.2.0)
+- [x] `rebar3 compile` succeeds
+- [ ] Test ekub locally: `rebar3 shell`, `ekub:init()` (requires kubeconfig or in-cluster SA)
 
 ### Module Creation (Week 1)
-- [ ] `src/ingress_watcher.erl` — Watch Ingress + Secret resources
+- [x] `src/pertisk_ingress_watcher.erl` — Watch Ingress + Secret resources
   - [ ] Initialize ekub connection at startup
   - [ ] Watch loop with error handling + reconnection
   - [ ] Parse event stream

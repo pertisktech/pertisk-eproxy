@@ -1,0 +1,36 @@
+Pertisk eProxy Ingress Controller has been installed.
+
+1. Management API (read-only in ingress mode):
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "pertisk-eproxy.fullname" . }} {{ .Values.service.managementPort }}:{{ .Values.service.managementPort }}
+
+  Open http://127.0.0.1:{{ .Values.service.managementPort }}/api/ingress/status
+
+2. Use this Ingress class on your Ingress resources:
+
+  spec:
+    ingressClassName: {{ include "pertisk-eproxy.ingressClassName" . }}
+
+3. TLS: reference Secrets (type kubernetes.io/tls) in Ingress spec.tls.
+
+4. Probes:
+   - Liveness:  GET /api/health (management port)
+   - Readiness: GET /api/ingress/status (management port)
+
+5. Example workload Ingress:
+
+  kubectl apply -f examples/k8s-ingress.yaml
+
+{{- if .Values.autoscaling.enabled }}
+
+6. HPA enabled: min {{ .Values.autoscaling.minReplicas }}, max {{ .Values.autoscaling.maxReplicas }} (leader election via Lease).
+
+{{- end }}
+
+{{- if eq .Values.service.type "LoadBalancer" }}
+
+7. External LB:
+
+  kubectl --namespace {{ .Release.Namespace }} get svc {{ include "pertisk-eproxy.fullname" . }} -w
+
+{{- end }}
