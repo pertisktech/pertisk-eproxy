@@ -100,7 +100,7 @@ start_listeners() ->
                 [] ->
                     lager:warning(
                         "HTTPS not started on port ~w: no tls_cert_file/tls_key_file and no readable "
-                        "priv/tls/listener.pem + priv/tls/listener.key (set paths in config or install PEMs)",
+                        "packaged listener PEMs (code:priv_dir/tls) or tls_cert_file/tls_key_file in config",
                         [HttpsPort]
                     ),
                     ok;
@@ -242,30 +242,41 @@ stop_listener(Name) ->
     ok.
 
 bootstrap_first_start_artifacts() ->
-    DbPath = pertisk_eproxy_config:db_file(),
-    case pertisk_eproxy_db:init(DbPath) of
-        {ok, _} ->
+    case pertisk_ingress_env:ingress_mode() of
+        true ->
             ok;
-        {error, Reason} ->
-            lager:warning("Database bootstrap failed (~p), startup will continue", [Reason]),
-            ok
+        false ->
+            DbPath = pertisk_eproxy_config:db_file(),
+            case pertisk_eproxy_db:init(DbPath) of
+                {ok, _} ->
+                    ok;
+                {error, Reason} ->
+                    lager:warning("Database bootstrap failed (~p), startup will continue", [Reason]),
+                    ok
+            end
     end,
     maybe_generate_fake_listener_tls(),
     ok.
 
 maybe_generate_fake_listener_tls() ->
-    {CertPath, KeyPath} = listener_tls_paths(),
-    case {filelib:is_file(CertPath), filelib:is_file(KeyPath)} of
-        {true, true} ->
-            ok;
-        _ ->
-            generate_fake_listener_tls(CertPath, KeyPath)
+    Packaged = {pertisk_eproxy_tls_paths:default_cert_file(),
+                pertisk_eproxy_tls_paths:default_key_file()},
+    case Packaged of
+        {Cert, Key} when is_list(Cert), is_list(Key) ->
+            case {filelib:is_file(Cert), filelib:is_file(Key)} of
+                {true, true} ->
+                    ok;
+                _ ->
+                    {Wcert, Wkey} = {writable_listener_cert_path(), writable_listener_key_path()},
+                    generate_fake_listener_tls(Wcert, Wkey)
+            end
     end.
 
-listener_tls_paths() ->
-    Cert = normalize_tls_path(application:get_env(pertisk_eproxy, tls_cert_file, "priv/tls/listener.pem")),
-    Key = normalize_tls_path(application:get_env(pertisk_eproxy, tls_key_file, "priv/tls/listener.key")),
-    {Cert, Key}.
+writable_listener_cert_path() ->
+    filename:join([pertisk_eproxy_config:data_dir(), "tls", "listener.pem"]).
+
+writable_listener_key_path() ->
+    filename:join([pertisk_eproxy_config:data_dir(), "tls", "listener.key"]).
 
 generate_fake_listener_tls(CertPath, KeyPath) ->
     case os:find_executable("openssl") of
@@ -406,24 +417,12 @@ tls_opts(Config) ->
 %% (same files as {@link pertisk_eproxy_h3_api_gateway}) when both exist on disk.
 -spec tls_cert_key_paths(map()) -> {undefined | string(), undefined | string()}.
 tls_cert_key_paths(Config) ->
-    Cert0 = maps:get(tls_cert_file, Config, undefined),
-    Key0 = maps:get(tls_key_file, Config, undefined),
-    Cert = normalize_tls_path(Cert0),
-    Key = normalize_tls_path(Key0),
+    Cert = pertisk_eproxy_tls_paths:resolve_cert_file(Config),
+    Key = pertisk_eproxy_tls_paths:resolve_key_file(Config),
     case {Cert, Key} of
-        {undefined, undefined} ->
-            DefC = "priv/tls/listener.pem",
-            DefK = "priv/tls/listener.key",
-            case {filelib:is_file(DefC), filelib:is_file(DefK)} of
-                {true, true} -> {DefC, DefK};
-                _ -> {undefined, undefined}
-            end;
-        {undefined, _} ->
-            {undefined, undefined};
-        {_, undefined} ->
-            {undefined, undefined};
-        {C, K} ->
-            {C, K}
+        {undefined, _} -> {undefined, undefined};
+        {_, undefined} -> {undefined, undefined};
+        {C, K} -> {C, K}
     end.
 
 normalize_tls_path(undefined) -> undefined;
@@ -524,7 +523,16 @@ ingress_sni_paths(Host) ->
 maybe_set_ingress_mode() ->
     case pertisk_ingress_env:ingress_mode() of
         true ->
-            application:set_env(pertisk_eproxy, mode, ingress);
+            application:set_env(pertisk_eproxy, mode, ingress),
+            case application:get_env(pertisk_eproxy, admin_auth) of
+                {ok, local} ->
+                    application:set_env(pertisk_eproxy, admin_auth, disabled),
+                    lager:info(
+                        "Ingress mode: SQLite admin login disabled; use Auth0 SSO or read-only viewer"
+                    );
+                _ ->
+                    ok
+            end;
         false ->
             ok
     end.

@@ -74,7 +74,7 @@ controller:
     sites: []
     backends: []
 
-# Writable paths (SQLite not used for sites in ingress mode; TLS cache + optional DB)
+# Writable data/ (K8s TLS PEM cache). Ingress mode does not use SQLite for routing.
 persistence:
   enabled: true
   # emptyDir by default; set storageClass for PVC

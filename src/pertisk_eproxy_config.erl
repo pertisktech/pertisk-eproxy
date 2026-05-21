@@ -1,7 +1,13 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
-%% Loads proxy config from SQLite database at startup.
-%% Stores config in an ETS table for fast concurrent reads.
+%% **Proxy / proxy_admin:** runtime config and sites/backends are stored in SQLite
+%% (`data/proxy.db`); JSON file seeds the DB on first start.
+%%
+%% **Ingress:** listener settings come from `config/ingress.json` (or `PERTISK_CONFIG_FILE`);
+%% sites/backends are applied only via {@link sync_ingress/2} from Kubernetes manifests
+%% (standard `networking.k8s.io/v1` Ingress + TLS Secrets). SQLite is not used.
+%%
+%% All modes cache the active config in ETS for fast concurrent reads.
 %%
 %% Config is stored as JSON and cached in ETS:
 %%   - mode (proxy | proxy_admin)
@@ -22,8 +28,8 @@
          get_backend/1, get_router/0,
          management_upstream_bin/0,
          reload/0, put_config/1, sync_ingress/2,
-         ingress_mode/0, json_to_config_pub/1,
-         db_file/0]).
+         ingress_mode/0, proxy_mode/0, json_to_config_pub/1,
+         db_file/0, data_dir/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -117,7 +123,12 @@ sync_ingress(Sites, Backends) ->
 
 -spec ingress_mode() -> boolean().
 ingress_mode() ->
-    maps:get(mode, get_config(), proxy_admin) =:= ingress.
+    pertisk_ingress_env:ingress_mode()
+        orelse maps:get(mode, get_config(), proxy_admin) =:= ingress.
+
+-spec proxy_mode() -> boolean().
+proxy_mode() ->
+    not ingress_mode().
 
 %% Replace the in-memory config with a new map (does NOT write to file).
 %% Spawns/stops backend workers as needed and refreshes the router.
@@ -163,6 +174,33 @@ handle_call({sync_ingress, Sites, Backends}, _From, State) ->
     {reply, ok, State};
 
 handle_call({put_config, Config}, _From, State) ->
+    case ingress_mode() of
+        true ->
+            {reply, {error, ingress_manifest_mode}, State};
+        false ->
+            put_config_proxy(Config, State)
+    end;
+
+handle_call(_Request, _From, State) ->
+    {reply, {error, unknown_call}, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, _State) ->
+    ok.
+
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%% ---------------------------------------------------------------------------
+%% Internal
+%% ---------------------------------------------------------------------------
+
+put_config_proxy(Config, State) ->
     T0 = erlang:monotonic_time(millisecond),
     case persist_runtime_config(Config) of
         ok ->
@@ -185,26 +223,7 @@ handle_call({put_config, Config}, _From, State) ->
             {reply, ok, State};
         {error, R} ->
             {reply, {error, {persist_runtime_config, R}}, State}
-    end;
-
-handle_call(_Request, _From, State) ->
-    {reply, {error, unknown_call}, State}.
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
-
-handle_info(_Info, State) ->
-    {noreply, State}.
-
-terminate(_Reason, _State) ->
-    ok.
-
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
-%% ---------------------------------------------------------------------------
-%% Internal
-%% ---------------------------------------------------------------------------
+    end.
 
 config_file() ->
     case os:getenv("PERTISK_CONFIG_FILE") of
@@ -218,6 +237,31 @@ config_file() ->
     end.
 
 load_config() ->
+    case ingress_mode() of
+        true -> load_ingress_config();
+        false -> load_proxy_config()
+    end.
+
+%% Ingress: JSON file for ports/TLS/H3 flags only; routing from K8s manifests via sync_ingress/2.
+load_ingress_config() ->
+    File = config_file(),
+    case read_config_file(File) of
+        {ok, Cfg0} ->
+            Cfg = Cfg0#{
+                mode => ingress,
+                sites => [],
+                backends => []
+            },
+            lager:info(
+                "Ingress mode: listener config from ~s; sites/backends from Kubernetes manifests"
+            ),
+            {ok, Cfg};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%% Proxy / proxy_admin: SQLite is source of truth; JSON file seeds DB on first start.
+load_proxy_config() ->
     DbPath = db_file(),
     case pertisk_eproxy_db:ensure_admin_users(DbPath) of
         ok -> ok;
@@ -225,42 +269,46 @@ load_config() ->
     end,
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
-            Cfg = maybe_strip_ingress_runtime(Cfg0),
+            Cfg = Cfg0,
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
-            %% Keep plain sites table in sync from persisted runtime config on every startup.
-            case maps:get(mode, Cfg, proxy_admin) of
-                ingress -> ok;
-                _ -> _ = persist_runtime_config(DbPath, Cfg)
-            end,
+            _ = persist_runtime_config(DbPath, Cfg),
             {ok, Cfg};
         not_found ->
-            load_config_from_file_and_seed(DbPath);
+            load_proxy_config_from_file_and_seed(DbPath);
         {error, Reason} ->
             lager:warning("Runtime config in SQLite unavailable (~p), falling back to file", [Reason]),
-            load_config_from_file_and_seed(DbPath)
+            load_proxy_config_from_file_and_seed(DbPath)
     end.
 
-load_config_from_file_and_seed(DbPath) ->
+load_proxy_config_from_file_and_seed(DbPath) ->
     File = config_file(),
+    case read_config_file(File) of
+        {ok, Cfg} ->
+            _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
+            _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+            _ = persist_runtime_config(DbPath, Cfg),
+            {ok, Cfg};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+read_config_file(File) ->
     case file:read_file(File) of
         {ok, Bin} ->
             case thoas:decode(Bin) of
-                {ok, Json} ->
-                    Cfg = json_to_config(Json),
-                    _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
-                    _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
-                    _ = persist_runtime_config(DbPath, Cfg),
-                    {ok, Cfg};
-                {error, Reason} ->
-                    {error, {json_parse, Reason}}
+                {ok, Json} -> {ok, json_to_config(Json)};
+                {error, Reason} -> {error, {json_parse, Reason}}
             end;
         {error, Reason} ->
             {error, {file_read, Reason}}
     end.
 
 persist_runtime_config(Config) ->
-    persist_runtime_config(db_file(), Config).
+    case ingress_mode() of
+        true -> ok;
+        false -> persist_runtime_config(db_file(), Config)
+    end.
 
 persist_runtime_config(DbPath, Config) ->
     pertisk_eproxy_db:put_runtime_config(DbPath, Config).
@@ -270,6 +318,11 @@ db_file() ->
         {ok, F} -> F;
         undefined -> "data/proxy.db"
     end.
+
+%% Writable data root (SQLite, generated TLS, K8s TLS cache).
+-spec data_dir() -> string().
+data_dir() ->
+    filename:dirname(db_file()).
 
 %% JSON `null` or non-lists must not crash list comprehensions (maps:get/3 default is
 %% ignored when the key is present with value `null`).
@@ -472,14 +525,6 @@ parse_opt_challenge_type("dns-01") -> "dns-01";
 parse_opt_challenge_type(_) -> undefined.
 
 %% Apply a config map: store in ETS, sync backend workers, rebuild router.
-maybe_strip_ingress_runtime(Cfg) ->
-    case maps:get(mode, Cfg, proxy_admin) of
-        ingress ->
-            Cfg#{sites => [], backends => []};
-        _ ->
-            Cfg
-    end.
-
 apply_config(Config) ->
     Sites    = maps:get(sites,    Config, []),
     Backends = maps:get(backends, Config, []),

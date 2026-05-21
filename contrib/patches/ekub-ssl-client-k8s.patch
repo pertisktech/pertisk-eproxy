@@ -1,6 +1,6 @@
 --- a/src/ekub_core.erl
 +++ b/src/ekub_core.erl
-@@ -253,7 +253,6 @@ ws_options(Options, Access) ->
+@@ -253,8 +253,7 @@ ws_options(Options, Access) ->
      ssl_options(Access) ++ Options.
  
  ssl_options(Access) ->
@@ -9,3 +9,4 @@
 +    [{server_name_indication, undefined} % not specifying at all
                                           % is not the same as 'undefined'
       |lists:filtermap(ssl_option_fun(Access), ?SslOptions)].
+ 

@@ -8,6 +8,15 @@
 
 ## Quick Summary
 
+### Config model (implemented)
+
+| Deployment | Sites / backends | Ports, HTTP/3, management |
+|------------|------------------|-------------------------|
+| **proxy** / **proxy_admin** | SQLite (`data/proxy.db`) | SQLite + optional `config/proxy.json` seed |
+| **ingress** (`PERTISK_MODE=ingress`) | Kubernetes **Ingress** + TLS **Secret** manifests | `config/ingress.json` / Helm `controller.config` only |
+
+Ingress mode does **not** open or seed SQLite; the watcher calls `pertisk_eproxy_config:sync_ingress/2` after each reconcile.
+
 ### The Ask
 Implement Kubernetes Ingress controller for pertisk-eproxy to enable:
 - Dynamic routing via native Kubernetes `Ingress` resources

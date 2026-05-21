@@ -45,9 +45,16 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 | `service.type` | Service type | `LoadBalancer` |
 | `service.http3Port` | UDP port for HTTP/3 (0/null to disable) | `443` |
 | `controller.config` | `ingress.json` body | see `values.yaml` |
-| `persistence.enabled` | `emptyDir` or PVC for `data/` | `true` |
+| `persistence.enabled` | `emptyDir` or PVC for `data/` (K8s TLS PEM cache) | `true` |
 
-Environment variables set on the pod match `pertisk_ingress_env` (`PERTISK_K8S_*`, `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`).
+### Config sources (proxy vs ingress)
+
+| Mode | Sites / backends | Listener ports / H3 flags | Admin login (local) |
+|------|------------------|---------------------------|---------------------|
+| **proxy** / **proxy_admin** | SQLite `data/proxy.db` | SQLite + `config/proxy.json` seed | SQLite `admin_users` |
+| **ingress** | Kubernetes `Ingress` + TLS `Secret` manifests | `controller.config` / `ingress.json` only | Auth0 SSO or read-only viewer (no SQLite) |
+
+Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*` (see `pertisk_ingress_env`).
 
 ## RBAC
 
@@ -72,5 +79,5 @@ Ensure `spec.ingressClassName` matches `ingress.className` (default `pertisk-epr
 | CRDs | Optional PertiskBackend/Ingress | Not included (standard Ingress only) |
 | Metrics | Dedicated `:9090` | `GET /api/metrics` on management port |
 | Probes | `/live`, `/ready` | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
-| Auth secret | `PERTISK_ADMIN` env | Baked `sys.config` / SQLite (ingress API read-only) |
+| Auth secret | `PERTISK_ADMIN` env | Auth0 / read-only viewer (no SQLite in ingress mode) |
 | Listen ports | 8080 / 8443 in container | 80 / 443 (configurable via `controller.config`) |

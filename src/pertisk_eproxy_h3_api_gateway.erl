@@ -42,7 +42,10 @@ start(Config) ->
 
 do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
     Config = pertisk_eproxy_config:get_config(),
-    CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
+    CertPath = case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
+        undefined -> pertisk_eproxy_tls_paths:default_cert_file();
+        P -> P
+    end,
     _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
     QuicOpts = quic_transport_opts(Config),
     case CertChain of
@@ -922,8 +925,24 @@ v4_server_name(?PROBE_SERVER) -> ?PROBE_SERVER_V4;
 v4_server_name(Other) -> Other.
 
 load_cert_and_key(Config) ->
-    CertPath = maps:get(tls_cert_file, Config, "priv/tls/listener.pem"),
-    KeyPath = maps:get(tls_key_file, Config, "priv/tls/listener.key"),
+    CertPath = case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
+        undefined -> {error, {missing_tls_file, cert, no_listener_cert}};
+        Cert -> Cert
+    end,
+    KeyPath = case pertisk_eproxy_tls_paths:resolve_key_file(Config) of
+        undefined -> {error, {missing_tls_file, key, no_listener_key}};
+        Key -> Key
+    end,
+    case {CertPath, KeyPath} of
+        {{error, _}, _} ->
+            CertPath;
+        {_, {error, _}} ->
+            KeyPath;
+        {CP, KP} ->
+            load_cert_and_key_files(CP, KP)
+    end.
+
+load_cert_and_key_files(CertPath, KeyPath) when is_list(CertPath), is_list(KeyPath) ->
     case {file:read_file(CertPath), file:read_file(KeyPath)} of
         {{ok, CertPem}, {ok, KeyPem}} ->
             decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath);
