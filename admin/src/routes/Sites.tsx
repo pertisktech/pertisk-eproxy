@@ -8,9 +8,14 @@ import {
   type PathRewrite,
   type Backend,
   type CertificateRow,
+  type K8sNamespaceRow,
+  type K8sServiceRow,
+  type K8sTlsSecretRow,
+  type IngressFormRouteRow,
   normalizeDnsProviders,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
+import { useMode } from '@/context/ModeContext';
 import { useToast } from '@/context/ToastContext';
 import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -94,7 +99,19 @@ type DisplaySiteItem = {
   key: string;
   site: Site;
   index: number;
+  sites: Site[];
+  indices: number[];
 };
+
+function emptyIngressRoute(): IngressFormRouteRow {
+  return {
+    path: '/',
+    path_type: 'Prefix',
+    service_name: '',
+    service_port: null,
+    service_port_name: '',
+  };
+}
 
 type SslMode = 'none' | 'existing_cert' | 'auto_ssl';
 type ChallengeType = 'http-01' | 'dns-01';
@@ -131,7 +148,22 @@ export default function Sites() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmIndex, setDeleteConfirmIndex] = useState<number | null>(null);
   const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(() => sitesCache?.issuedTlsCerts ?? []);
+  const [showIngressForm, setShowIngressForm] = useState(false);
+  const [ingressHost, setIngressHost] = useState('');
+  const [ingressTlsNamespace, setIngressTlsNamespace] = useState('');
+  const [ingressTlsName, setIngressTlsName] = useState('');
+  const [ingressServiceNamespace, setIngressServiceNamespace] = useState('');
+  const [ingressRoutes, setIngressRoutes] = useState<IngressFormRouteRow[]>([emptyIngressRoute()]);
+  const [ingressFormError, setIngressFormError] = useState<string | null>(null);
+  const [ingressSaving, setIngressSaving] = useState(false);
+  const [k8sNamespaces, setK8sNamespaces] = useState<K8sNamespaceRow[]>([]);
+  const [k8sTlsSecrets, setK8sTlsSecrets] = useState<K8sTlsSecretRow[]>([]);
+  const [k8sServices, setK8sServices] = useState<K8sServiceRow[]>([]);
+  const [editingIngressRef, setEditingIngressRef] = useState<{ namespace: string; name: string } | null>(null);
+  const [deleteConfirmIngress, setDeleteConfirmIngress] = useState<{ namespace: string; name: string } | null>(null);
   const toast = useToast();
+  const mode = useMode();
+  const readOnly = mode === 'ingress';
   const wildcardLabel = wildcardDomainFromHost(formHost);
 
   const sites = config?.sites ?? EMPTY_SITES;
@@ -141,15 +173,40 @@ export default function Sites() {
     [config?.dns_providers],
   );
 
-  const displaySiteItems: DisplaySiteItem[] = useMemo(
-    () =>
-      sites.map((site, index) => ({
+  const displaySiteItems: DisplaySiteItem[] = useMemo(() => {
+    if (mode !== 'ingress') {
+      return sites.map((site, index) => ({
         key: `${site.host}-${index}`,
         site,
         index,
-      })),
-    [sites],
-  );
+        sites: [site],
+        indices: [index],
+      }));
+    }
+    const groups = new Map<string, DisplaySiteItem>();
+    sites.forEach((site, index) => {
+      const ingressNamespace = site.ingress_namespace?.trim();
+      const ingressName = site.ingress_name?.trim();
+      const groupKey =
+        ingressNamespace && ingressName
+          ? `${ingressNamespace}/${ingressName}`
+          : `host::${site.host}`;
+      const existing = groups.get(groupKey);
+      if (existing) {
+        existing.sites.push(site);
+        existing.indices.push(index);
+      } else {
+        groups.set(groupKey, {
+          key: groupKey,
+          site,
+          index,
+          sites: [site],
+          indices: [index],
+        });
+      }
+    });
+    return Array.from(groups.values());
+  }, [sites, mode]);
 
   const totalPages = Math.max(1, Math.ceil(displaySiteItems.length / pageSize));
   useEffect(() => {
@@ -162,6 +219,21 @@ export default function Sites() {
   function upstreamForSite(site: Site): string {
     const be = backends.find((b) => b.name === site.backend);
     return be?.upstreams?.[0]?.addr ?? site.backend;
+  }
+
+  function upstreamsForItem(item: DisplaySiteItem): string[] {
+    return Array.from(new Set(item.sites.map((site) => upstreamForSite(site)).filter(Boolean)));
+  }
+
+  function routesForItem(item: DisplaySiteItem): PathRewrite[] {
+    const deduped = new Map<string, PathRewrite>();
+    item.sites.forEach((site) => {
+      (site.routes ?? []).forEach((route) => {
+        const key = `${route.path_type || 'prefix'}::${route.path}::${route.rewrite ?? ''}`;
+        if (!deduped.has(key)) deduped.set(key, route);
+      });
+    });
+    return Array.from(deduped.values());
   }
 
   function sslLabelForSite(site: Site): string {
@@ -198,8 +270,16 @@ export default function Sites() {
     ? [...displaySiteItems].sort((a, b) => {
         const dir = sortDir === 'asc' ? 1 : -1;
         if (sortKey === 'domain') return dir * compareStrings(a.site.host ?? '', b.site.host ?? '');
-        if (sortKey === 'upstream') return dir * compareStrings(upstreamForSite(a.site), upstreamForSite(b.site));
-        if (sortKey === 'routes') return dir * ((a.site.routes?.length ?? 0) - (b.site.routes?.length ?? 0));
+        if (sortKey === 'upstream') {
+          const upA = mode === 'ingress' ? upstreamsForItem(a).join(', ') : upstreamForSite(a.site);
+          const upB = mode === 'ingress' ? upstreamsForItem(b).join(', ') : upstreamForSite(b.site);
+          return dir * compareStrings(upA, upB);
+        }
+        if (sortKey === 'routes') {
+          const rA = mode === 'ingress' ? routesForItem(a).length : (a.site.routes?.length ?? 0);
+          const rB = mode === 'ingress' ? routesForItem(b).length : (b.site.routes?.length ?? 0);
+          return dir * (rA - rB);
+        }
         return dir * compareStrings(sslLabelForSite(a.site), sslLabelForSite(b.site));
       })
     : displaySiteItems;
@@ -256,13 +336,84 @@ export default function Sites() {
   }, [lastPush, load]);
 
   useEffect(() => {
-    if (!showForm) return;
+    if (!showForm && !showIngressForm) return;
     const root = document.documentElement;
     root.classList.add('eproxy-scroll-lock');
     return () => {
       root.classList.remove('eproxy-scroll-lock');
     };
-  }, [showForm]);
+  }, [showForm, showIngressForm]);
+
+  useEffect(() => {
+    if (showForm || showIngressForm || saving || ingressSaving) return;
+    let cancelled = false;
+    async function refreshConfig() {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const next = await api.config();
+        if (!cancelled) setConfig(next);
+      } catch {
+        /* keep existing */
+      }
+    }
+    const t = setInterval(refreshConfig, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [showForm, showIngressForm, saving, ingressSaving]);
+
+  useEffect(() => {
+    if (mode !== 'ingress' || !showIngressForm) return;
+    api.kubernetes.namespaces().then(setK8sNamespaces).catch(() => setK8sNamespaces([]));
+    api.kubernetes.tlsSecrets().then(setK8sTlsSecrets).catch(() => setK8sTlsSecrets([]));
+  }, [mode, showIngressForm]);
+
+  useEffect(() => {
+    if (mode !== 'ingress' || !ingressServiceNamespace.trim()) {
+      setK8sServices([]);
+      return;
+    }
+    api.kubernetes
+      .services({ namespace: ingressServiceNamespace.trim() })
+      .then(setK8sServices)
+      .catch(() => setK8sServices([]));
+  }, [mode, ingressServiceNamespace]);
+
+  useEffect(() => {
+    setIngressRoutes((routes) => {
+      let changed = false;
+      const next = routes.map((route) => {
+        const serviceName = route.service_name.trim();
+        if (!serviceName) {
+          if (route.service_port == null && !(route.service_port_name ?? '').trim()) return route;
+          changed = true;
+          return { ...route, service_port: null, service_port_name: '' };
+        }
+        const service = k8sServices.find((item) => item.name === serviceName);
+        const ports = service?.ports_detail ?? [];
+        if (ports.length === 0) {
+          if (route.service_port == null && !(route.service_port_name ?? '').trim()) return route;
+          changed = true;
+          return { ...route, service_port: null, service_port_name: '' };
+        }
+        if (route.service_port != null && ports.some((port) => port.port === route.service_port)) {
+          return route;
+        }
+        const byName = (route.service_port_name ?? '').trim()
+          ? ports.find((port) => port.name === route.service_port_name?.trim())
+          : undefined;
+        const resolvedPort = byName?.port ?? ports[0]?.port ?? null;
+        const resolvedName = byName?.name ?? '';
+        if (resolvedPort === route.service_port && resolvedName === (route.service_port_name ?? '')) {
+          return route;
+        }
+        changed = true;
+        return { ...route, service_port: resolvedPort, service_port_name: resolvedName };
+      });
+      return changed ? next : routes;
+    });
+  }, [k8sServices]);
 
   function addRoute() {
     setFormRoutes((r) => [...r, { path: '', path_type: 'Prefix', rewrite: '' }]);
@@ -284,7 +435,196 @@ export default function Sites() {
     });
   }
 
+  function ingressPortsForService(serviceName: string) {
+    return k8sServices.find((service) => service.name === serviceName.trim())?.ports_detail ?? [];
+  }
+
+  function addIngressRoute() {
+    setIngressRoutes((routes) => [...routes, emptyIngressRoute()]);
+  }
+
+  function removeIngressRoute(index: number) {
+    setIngressRoutes((routes) =>
+      routes.length > 1 ? routes.filter((_, routeIndex) => routeIndex !== index) : routes,
+    );
+  }
+
+  function updateIngressRoute(index: number, patch: Partial<IngressFormRouteRow>) {
+    setIngressRoutes((routes) =>
+      routes.map((route, routeIndex) => {
+        if (routeIndex !== index) return route;
+        const next = { ...route, ...patch };
+        if (Object.prototype.hasOwnProperty.call(patch, 'service_name')) {
+          next.service_port = null;
+          next.service_port_name = '';
+        }
+        return next;
+      }),
+    );
+  }
+
+  function openIngressAdd() {
+    setEditingIngressRef(null);
+    setIngressHost('');
+    setIngressTlsNamespace('');
+    setIngressTlsName('');
+    setIngressServiceNamespace('');
+    setIngressRoutes([emptyIngressRoute()]);
+    setIngressFormError(null);
+    setShowForm(false);
+    setShowIngressForm(true);
+  }
+
+  async function openIngressEdit(site: Site) {
+    const ns = site.ingress_namespace?.trim();
+    const name = site.ingress_name?.trim();
+    if (!ns || !name) return;
+    setIngressFormError(null);
+    try {
+      const row = await api.kubernetes.getIngress(ns, name);
+      setEditingIngressRef({ namespace: row.namespace, name: row.name });
+      setIngressHost(row.host);
+      setIngressTlsNamespace(row.tls_secret_name ? row.namespace : '');
+      setIngressTlsName(row.tls_secret_name ?? '');
+      setIngressServiceNamespace(row.namespace);
+      setIngressRoutes(
+        row.routes?.length
+          ? row.routes.map((route) => ({
+              path: route.path || '/',
+              path_type: route.path_type || 'Prefix',
+              service_name: route.service_name || '',
+              service_port: route.service_port ?? null,
+              service_port_name: route.service_port_name ?? '',
+            }))
+          : [
+              {
+                path: row.path || '/',
+                path_type: row.path_type || 'Prefix',
+                service_name: row.service_name || '',
+                service_port: row.service_port ?? null,
+                service_port_name: row.service_port_name ?? '',
+              },
+            ],
+      );
+      setShowForm(false);
+      setShowIngressForm(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load Ingress');
+    }
+  }
+
+  function openIngressDeleteConfirm(site: Site) {
+    const ns = site.ingress_namespace?.trim();
+    const ingName = site.ingress_name?.trim();
+    if (ns && ingName) setDeleteConfirmIngress({ namespace: ns, name: ingName });
+  }
+
+  async function deleteIngressSite() {
+    if (!deleteConfirmIngress) return;
+    const { namespace, name } = deleteConfirmIngress;
+    setDeleteConfirmIngress(null);
+    setIngressSaving(true);
+    try {
+      await api.kubernetes.deleteIngress(namespace, name);
+      await load({ silent: true });
+      toast.success('Ingress deleted.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete Ingress');
+    } finally {
+      setIngressSaving(false);
+    }
+  }
+
+  async function handleIngressSubmit(e: FormEvent) {
+    e.preventDefault();
+    setIngressFormError(null);
+    const host = ingressHost.trim();
+    if (!host) {
+      setIngressFormError('Host is required');
+      return;
+    }
+    const serviceNamespace = ingressServiceNamespace.trim();
+    if (!serviceNamespace) {
+      setIngressFormError('Service namespace is required');
+      return;
+    }
+    const routes = ingressRoutes
+      .map((route) => {
+        const path = route.path.trim() || '/';
+        const pathType = route.path_type?.trim() || 'Prefix';
+        const serviceName = route.service_name.trim();
+        const ports = ingressPortsForService(serviceName);
+        const selectedPort =
+          route.service_port != null ? ports.find((port) => port.port === route.service_port) : undefined;
+        const namedPort = (route.service_port_name ?? '').trim()
+          ? ports.find((port) => port.name === route.service_port_name?.trim())
+          : undefined;
+        const portNum = selectedPort?.port ?? namedPort?.port ?? route.service_port ?? null;
+        return {
+          path,
+          path_type: pathType,
+          service_name: serviceName,
+          service_port: portNum,
+          service_port_name: namedPort?.name ?? '',
+        };
+      })
+      .filter((route) => route.path);
+    if (routes.length === 0) {
+      setIngressFormError('At least one route is required');
+      return;
+    }
+    for (const route of routes) {
+      if (!route.service_name) {
+        setIngressFormError('Each route requires a service');
+        return;
+      }
+      if (route.service_port == null) {
+        setIngressFormError(`Select a service port for ${route.path}`);
+        return;
+      }
+    }
+    const firstRoute = routes[0];
+    setIngressSaving(true);
+    try {
+      const body = {
+        host,
+        routes,
+        path: firstRoute.path,
+        path_type: firstRoute.path_type,
+        tls_secret_namespace: ingressTlsNamespace.trim() || undefined,
+        tls_secret_name: ingressTlsName.trim() || undefined,
+        service_namespace: serviceNamespace,
+        service_name: firstRoute.service_name,
+        service_port: firstRoute.service_port ?? undefined,
+        service_port_name: firstRoute.service_port_name || undefined,
+        ingress_namespace: serviceNamespace,
+      };
+      if (editingIngressRef) {
+        await api.kubernetes.updateIngress(editingIngressRef.namespace, editingIngressRef.name, body);
+        setShowIngressForm(false);
+        setEditingIngressRef(null);
+        toast.success('Ingress updated.');
+      } else {
+        await api.kubernetes.createIngress(body);
+        setShowIngressForm(false);
+        toast.success('Ingress created.');
+      }
+      await load({ silent: true });
+      window.setTimeout(() => void load({ silent: true }), 1500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save Ingress';
+      setIngressFormError(msg);
+      toast.error(msg);
+    } finally {
+      setIngressSaving(false);
+    }
+  }
+
   function openAdd() {
+    if (mode === 'ingress') {
+      openIngressAdd();
+      return;
+    }
     setEditingIndex(null);
     setFormHost('');
     setFormUpstream('');
@@ -298,10 +638,12 @@ export default function Sites() {
     setFormAdvertiseHttp3(true);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
+    setShowIngressForm(false);
     setShowForm(true);
   }
 
   function openEdit(index: number) {
+    if (mode === 'ingress') return;
     const site = sites[index];
     if (!site) return;
     setEditingIndex(index);
@@ -561,9 +903,17 @@ export default function Sites() {
               <FaIcon className="fas fa-list" aria-hidden /> List
             </button>
           </div>
-          <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving}>
-            <FaIcon className="fas fa-plus" aria-hidden /> Add Site
-          </button>
+          {(!readOnly || mode === 'ingress') && (
+            <button
+              type="button"
+              className={styles.btnPrimary}
+              onClick={openAdd}
+              disabled={saving || ingressSaving || mode == null}
+              title={mode == null ? 'Loading mode…' : undefined}
+            >
+              <FaIcon className="fas fa-plus" aria-hidden /> Add Site
+            </button>
+          )}
         </div>
       </div>
 
@@ -573,16 +923,23 @@ export default function Sites() {
             <div className={styles.emptyState}>
               <FaIcon className="fas fa-globe" size={48} aria-hidden />
               <h3 className={styles.emptyTitle}>No sites configured</h3>
-              <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving}>
-                <FaIcon className="fas fa-plus" aria-hidden /> Add Your First Site
-              </button>
+              <p className={styles.emptyText}>
+                {mode === 'ingress'
+                  ? 'Create a Kubernetes Ingress to add a site (host, TLS secret, backend service)'
+                  : 'Get started by adding your first reverse proxy site'}
+              </p>
+              {(!readOnly || mode === 'ingress') && (
+                <button type="button" className={styles.btnPrimary} onClick={openAdd} disabled={saving || ingressSaving}>
+                  <FaIcon className="fas fa-plus" aria-hidden /> Add Your First Site
+                </button>
+              )}
             </div>
           ) : viewMode === 'card' ? (
             <div className={styles.cardGrid}>
               {pagedSiteItems.map((item) => {
                 const { site, index: i } = item;
-                const up = upstreamForSite(site);
-                const routes = site.routes ?? [];
+                const upstreams = upstreamsForItem(item);
+                const routes = routesForItem(item);
                 const ssl = sslLabelForSite(site);
                 return (
                   <div key={item.key} className={styles.siteCard}>
@@ -607,7 +964,17 @@ export default function Sites() {
                     <div className={styles.siteCardBody}>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Upstream</span>
-                        <span className={styles.metaValue}>{up || '—'}</span>
+                        {upstreams.length <= 1 ? (
+                          <span className={styles.metaValue}>{upstreams[0] ?? '—'}</span>
+                        ) : (
+                          <div className={styles.routes}>
+                            {upstreams.map((upstream) => (
+                              <span key={upstream} className={styles.routeChip}>
+                                {upstream}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Backend</span>
@@ -650,33 +1017,62 @@ export default function Sites() {
                         </div>
                       )}
                       <div className={styles.siteCardActions}>
-                        <button
-                          type="button"
-                          className={styles.btnEdit}
-                          onClick={() => openEdit(i)}
-                          disabled={saving}
-                          title="Edit"
-                        >
-                          <FaIcon className="fas fa-edit" aria-hidden /> Edit
-                        </button>
-                        <button
-                          type="button"
-                          className={styles.btnDuplicate}
-                          onClick={() => openDuplicate(i)}
-                          disabled={saving}
-                          title="Duplicate"
-                        >
-                          <FaIcon className="fas fa-copy" aria-hidden /> Duplicate
-                        </button>
-                        <button
-                          type="button"
-                          className={styles.btnDanger}
-                          onClick={() => setDeleteConfirmIndex(i)}
-                          disabled={saving}
-                          title="Delete"
-                        >
-                          <FaIcon className="fas fa-trash" aria-hidden /> Delete
-                        </button>
+                        {readOnly && !(site.ingress_namespace && site.ingress_name) ? (
+                          <span className={styles.readOnlyHint} title="View only (no Ingress ref)">
+                            <FaIcon className="fas fa-eye" aria-hidden /> View only
+                          </span>
+                        ) : readOnly && site.ingress_namespace && site.ingress_name ? (
+                          <>
+                            <button
+                              type="button"
+                              className={styles.btnEdit}
+                              onClick={() => openIngressEdit(site)}
+                              disabled={ingressSaving}
+                              title="Edit Ingress"
+                            >
+                              <FaIcon className="fas fa-edit" aria-hidden /> Edit
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnDanger}
+                              onClick={() => openIngressDeleteConfirm(site)}
+                              disabled={ingressSaving}
+                              title="Delete Ingress"
+                            >
+                              <FaIcon className="fas fa-trash" aria-hidden /> Delete
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className={styles.btnEdit}
+                              onClick={() => openEdit(i)}
+                              disabled={saving}
+                              title="Edit"
+                            >
+                              <FaIcon className="fas fa-edit" aria-hidden /> Edit
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnDuplicate}
+                              onClick={() => openDuplicate(i)}
+                              disabled={saving}
+                              title="Duplicate"
+                            >
+                              <FaIcon className="fas fa-copy" aria-hidden /> Duplicate
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.btnDanger}
+                              onClick={() => setDeleteConfirmIndex(i)}
+                              disabled={saving}
+                              title="Delete"
+                            >
+                              <FaIcon className="fas fa-trash" aria-hidden /> Delete
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -714,8 +1110,8 @@ export default function Sites() {
                 <tbody>
                   {pagedSiteItems.map((item) => {
                     const { site, index: i } = item;
-                    const up = upstreamForSite(site);
-                    const routes = site.routes ?? [];
+                    const upstreams = upstreamsForItem(item);
+                    const routes = routesForItem(item);
                     const ssl = sslLabelForSite(site);
                     const sslLive = jobsByHost[site.host];
                     return (
@@ -747,7 +1143,9 @@ export default function Sites() {
                         </td>
                         <td className={styles.upstream}>
                           <div className={styles.cellStack}>
-                            <span className={styles.monoPrimary}>{up || '—'}</span>
+                            <span className={styles.monoPrimary} title={upstreams.join(', ')}>
+                              {upstreams[0] ?? '—'}
+                            </span>
                             <span className={styles.cellSubtle}>{site.backend}</span>
                           </div>
                         </td>
@@ -780,36 +1178,67 @@ export default function Sites() {
                         </td>
                         <td className={styles.actionsCell}>
                           <div className={styles.rowActions}>
-                            <button
-                              type="button"
-                              className={styles.rowActionBtn}
-                              onClick={() => openEdit(i)}
-                              disabled={saving}
-                              title="Edit"
-                              aria-label={`Edit ${site.host}`}
-                            >
-                              <FaIcon className="fas fa-edit" aria-hidden />
-                            </button>
-                            <button
-                              type="button"
-                              className={styles.rowActionBtn}
-                              onClick={() => openDuplicate(i)}
-                              disabled={saving}
-                              title="Duplicate"
-                              aria-label={`Duplicate ${site.host}`}
-                            >
-                              <FaIcon className="fas fa-copy" aria-hidden />
-                            </button>
-                            <button
-                              type="button"
-                              className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
-                              onClick={() => setDeleteConfirmIndex(i)}
-                              disabled={saving}
-                              title="Delete"
-                              aria-label={`Delete ${site.host}`}
-                            >
-                              <FaIcon className="fas fa-trash" aria-hidden />
-                            </button>
+                            {readOnly && !(site.ingress_namespace && site.ingress_name) ? (
+                              <span className={styles.readOnlyHint} title="View only">
+                                <FaIcon className="fas fa-eye" aria-hidden />
+                              </span>
+                            ) : readOnly && site.ingress_namespace && site.ingress_name ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className={styles.rowActionBtn}
+                                  onClick={() => openIngressEdit(site)}
+                                  disabled={ingressSaving}
+                                  title="Edit Ingress"
+                                  aria-label={`Edit Ingress ${site.host}`}
+                                >
+                                  <FaIcon className="fas fa-edit" aria-hidden />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                                  onClick={() => openIngressDeleteConfirm(site)}
+                                  disabled={ingressSaving}
+                                  title="Delete Ingress"
+                                  aria-label={`Delete Ingress ${site.host}`}
+                                >
+                                  <FaIcon className="fas fa-trash" aria-hidden />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  className={styles.rowActionBtn}
+                                  onClick={() => openEdit(i)}
+                                  disabled={saving}
+                                  title="Edit"
+                                  aria-label={`Edit ${site.host}`}
+                                >
+                                  <FaIcon className="fas fa-edit" aria-hidden />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.rowActionBtn}
+                                  onClick={() => openDuplicate(i)}
+                                  disabled={saving}
+                                  title="Duplicate"
+                                  aria-label={`Duplicate ${site.host}`}
+                                >
+                                  <FaIcon className="fas fa-copy" aria-hidden />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                                  onClick={() => setDeleteConfirmIndex(i)}
+                                  disabled={saving}
+                                  title="Delete"
+                                  aria-label={`Delete ${site.host}`}
+                                >
+                                  <FaIcon className="fas fa-trash" aria-hidden />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -832,7 +1261,7 @@ export default function Sites() {
         </>
       )}
 
-      {showForm &&
+      {showForm && mode !== 'ingress' &&
         createPortal(
           <div
             className={styles.modalBackdrop}
@@ -1141,6 +1570,267 @@ export default function Sites() {
         </div>,
           document.body,
         )}
+
+      {showIngressForm &&
+        createPortal(
+          <div
+            className={styles.modalBackdrop}
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowIngressForm(false);
+            }}
+          >
+            <div className={`${styles.modal} ${styles.modalIngressWide}`} role="dialog" aria-modal="true">
+              <div className={styles.modalHeader}>
+                <h2>
+                  <FaIcon className={editingIngressRef ? 'fas fa-pen-to-square' : 'fas fa-plus'} aria-hidden />{' '}
+                  {editingIngressRef ? 'Edit Ingress' : 'Add Site (create Ingress)'}
+                </h2>
+                <button
+                  type="button"
+                  className={styles.modalClose}
+                  onClick={() => setShowIngressForm(false)}
+                  aria-label="Close"
+                >
+                  <FaIcon className="fas fa-times" aria-hidden />
+                </button>
+              </div>
+              <form onSubmit={handleIngressSubmit} className={styles.modalForm}>
+                <div className={styles.formSection}>
+                  <h3 className={styles.sectionTitle}>Basics</h3>
+                  <label className={styles.label}>
+                    Host
+                    <input
+                      type="text"
+                      value={ingressHost}
+                      onChange={(e) => setIngressHost(e.target.value)}
+                      placeholder="example.com"
+                      className={styles.input}
+                      required
+                    />
+                  </label>
+                </div>
+                <div className={styles.formSection}>
+                  <h3 className={styles.sectionTitle}>TLS (optional)</h3>
+                  <label className={styles.label}>
+                    Certificate (TLS Secret)
+                    <div className={styles.selectWrap}>
+                      <select
+                        value={
+                          ingressTlsNamespace && ingressTlsName
+                            ? `${ingressTlsNamespace}/${ingressTlsName}`
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (!v) {
+                            setIngressTlsNamespace('');
+                            setIngressTlsName('');
+                          } else {
+                            const [ns, name] = v.split('/');
+                            setIngressTlsNamespace(ns ?? '');
+                            setIngressTlsName(name ?? '');
+                          }
+                        }}
+                        className={styles.select}
+                      >
+                        <option value="">— No TLS —</option>
+                        {(ingressServiceNamespace
+                          ? k8sTlsSecrets.filter((s) => s.namespace === ingressServiceNamespace)
+                          : k8sTlsSecrets
+                        ).map((s) => (
+                          <option key={`${s.namespace}/${s.name}`} value={`${s.namespace}/${s.name}`}>
+                            {s.namespace}/{s.name}
+                          </option>
+                        ))}
+                      </select>
+                      <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                    </div>
+                    <p className={styles.hint}>
+                      TLS secret must be in the same namespace as the Ingress. Select service namespace first to
+                      filter.
+                    </p>
+                  </label>
+                </div>
+                <div className={styles.formSection}>
+                  <h3 className={styles.sectionTitle}>Backend</h3>
+                  <label className={styles.label}>
+                    Service namespace
+                    <div className={styles.selectWrap}>
+                      <select
+                        value={ingressServiceNamespace}
+                        onChange={(e) => {
+                          const ns = e.target.value;
+                          setIngressServiceNamespace(ns);
+                          setIngressRoutes((routes) =>
+                            routes.map((route) => ({
+                              ...route,
+                              service_name: '',
+                              service_port: null,
+                              service_port_name: '',
+                            })),
+                          );
+                          if (ingressTlsNamespace && ingressTlsNamespace !== ns) {
+                            setIngressTlsNamespace('');
+                            setIngressTlsName('');
+                          }
+                        }}
+                        className={styles.select}
+                        required
+                      >
+                        <option value="">— Select namespace —</option>
+                        {k8sNamespaces.map((n) => (
+                          <option key={n.name} value={n.name}>
+                            {n.name}
+                          </option>
+                        ))}
+                      </select>
+                      <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                    </div>
+                  </label>
+                </div>
+                <div className={styles.formSection}>
+                  <div className={styles.routesHeader}>
+                    <h3 className={styles.sectionTitle}>Routes</h3>
+                    <button type="button" className={styles.btnSecondary} onClick={addIngressRoute}>
+                      Add route
+                    </button>
+                  </div>
+                  <div className={styles.ingressRoutesList}>
+                    {ingressRoutes.map((route, index) => {
+                      const servicePorts = ingressPortsForService(route.service_name);
+                      return (
+                        <div key={`${index}-${route.path}-${route.service_name}`} className={styles.ingressRouteCard}>
+                          <div className={styles.ingressRouteHeader}>
+                            <span className={styles.ingressRouteTitle}>Route {index + 1}</span>
+                            <button
+                              type="button"
+                              className={styles.btnDanger}
+                              onClick={() => removeIngressRoute(index)}
+                              disabled={ingressRoutes.length === 1}
+                              title="Remove route"
+                            >
+                              <FaIcon className="fas fa-times" aria-hidden />
+                            </button>
+                          </div>
+                          <div className={styles.ingressRouteGrid}>
+                            <label className={styles.label}>
+                              Path
+                              <input
+                                type="text"
+                                value={route.path}
+                                onChange={(e) => updateIngressRoute(index, { path: e.target.value })}
+                                placeholder="/api"
+                                className={styles.input}
+                              />
+                            </label>
+                            <label className={styles.label}>
+                              Path type
+                              <div className={styles.selectWrap}>
+                                <select
+                                  value={route.path_type || 'Prefix'}
+                                  onChange={(e) => updateIngressRoute(index, { path_type: e.target.value })}
+                                  className={styles.select}
+                                >
+                                  {PATH_TYPES.map((t) => (
+                                    <option key={t} value={t}>
+                                      {t}
+                                    </option>
+                                  ))}
+                                </select>
+                                <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                              </div>
+                            </label>
+                            <label className={styles.label}>
+                              Service
+                              <div className={styles.selectWrap}>
+                                <select
+                                  value={route.service_name}
+                                  onChange={(e) => updateIngressRoute(index, { service_name: e.target.value })}
+                                  className={styles.select}
+                                  required
+                                  disabled={!ingressServiceNamespace}
+                                >
+                                  <option value="">— Select service —</option>
+                                  {k8sServices.map((service) => (
+                                    <option key={`${service.namespace}-${service.name}`} value={service.name}>
+                                      {service.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                              </div>
+                            </label>
+                            <label className={styles.label}>
+                              Service port
+                              <div className={styles.selectWrap}>
+                                <select
+                                  value={route.service_port != null ? String(route.service_port) : ''}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    updateIngressRoute(index, {
+                                      service_port: value ? parseInt(value, 10) : null,
+                                      service_port_name: '',
+                                    });
+                                  }}
+                                  className={styles.select}
+                                  required
+                                  disabled={servicePorts.length === 0}
+                                >
+                                  <option value="">— Select port —</option>
+                                  {servicePorts.map((port, portIndex) => (
+                                    <option key={portIndex} value={String(port.port)}>
+                                      {port.name != null && port.name !== ''
+                                        ? `${port.name} (${port.port}, ${port.protocol})`
+                                        : `${port.port} (${port.protocol})`}
+                                    </option>
+                                  ))}
+                                </select>
+                                <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
+                              </div>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {ingressFormError && <p className={styles.formError}>{ingressFormError}</p>}
+                <div className={styles.modalActions}>
+                  <button type="button" className={styles.btnSecondary} onClick={() => setShowIngressForm(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className={styles.btnPrimary} disabled={ingressSaving}>
+                    {ingressSaving
+                      ? editingIngressRef
+                        ? 'Updating…'
+                        : 'Creating…'
+                      : editingIngressRef
+                        ? 'Update Ingress'
+                        : 'Create Ingress'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      <ConfirmDialog
+        open={deleteConfirmIngress !== null}
+        title="Delete Ingress?"
+        message={
+          deleteConfirmIngress
+            ? `Delete Ingress "${deleteConfirmIngress.name}" in namespace "${deleteConfirmIngress.namespace}"? This cannot be undone.`
+            : 'Delete this Ingress?'
+        }
+        primaryLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        loading={ingressSaving}
+        onConfirm={() => void deleteIngressSite()}
+        onCancel={() => setDeleteConfirmIngress(null)}
+      />
 
       <ConfirmDialog
         open={deleteConfirmIndex !== null}

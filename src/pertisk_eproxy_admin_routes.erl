@@ -43,7 +43,12 @@ api_routes() ->
         {"/api/ingress/status", pertisk_eproxy_admin_handler, ingress_status},
         {"/api/ingress/watchers", pertisk_eproxy_admin_handler, ingress_watchers},
         {"/api/ingress/errors", pertisk_eproxy_admin_handler, ingress_errors},
-        {"/api/ingress/resources", pertisk_eproxy_admin_handler, ingress_resources}
+        {"/api/ingress/resources", pertisk_eproxy_admin_handler, ingress_resources},
+        {"/api/kubernetes/namespaces", pertisk_eproxy_admin_handler, kubernetes_namespaces},
+        {"/api/kubernetes/services", pertisk_eproxy_admin_handler, kubernetes_services},
+        {"/api/kubernetes/tls-secrets", pertisk_eproxy_admin_handler, kubernetes_tls_secrets},
+        {"/api/kubernetes/ingresses", pertisk_eproxy_admin_handler, kubernetes_ingresses},
+        {"/api/kubernetes/ingresses/:namespace/:name", pertisk_eproxy_admin_handler, kubernetes_ingress}
     ].
 
 -spec dispatch() -> cowboy_router:dispatch_rule().

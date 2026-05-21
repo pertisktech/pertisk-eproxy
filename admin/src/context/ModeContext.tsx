@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 
-/** `proxy` = reverse-proxy only; `proxy_admin` = same + embedded admin SPA on :9080; `ingress` = viewer-only. */
+/** `proxy` = reverse-proxy only; `proxy_admin` = same + embedded admin SPA on :9080; `ingress` = K8s controller (Sites via Ingress CRUD). */
 export type ApiMode = 'proxy' | 'proxy_admin' | 'ingress';
 
 const ModeContext = createContext<ApiMode | undefined>(undefined);

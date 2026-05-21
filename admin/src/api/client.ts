@@ -41,6 +41,9 @@ export interface Site {
   acme_wildcard_base?: string | null;
   advertise_http3?: boolean | null;
   acme_contact_email?: string | null;
+  /** Set in ingress mode when reconciled from a Kubernetes Ingress. */
+  ingress_namespace?: string | null;
+  ingress_name?: string | null;
   routes: PathRewrite[];
 }
 
@@ -69,7 +72,7 @@ export type DnsProviderJson = string | DnsProviderConfigEntry;
 
 export interface ProxyConfig {
   /** Runtime mode from config (management API echoes the same strings). */
-  mode: 'proxy' | 'proxy_admin';
+  mode: 'proxy' | 'proxy_admin' | 'ingress';
   http_port: number;
   management_port: number;
   certificates: string[];
@@ -838,20 +841,118 @@ export const api = {
   },
 
   kubernetes: {
-    namespaces: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    pods: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    deployments: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    services: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    configmaps: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    secrets: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    tlsSecrets: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    ingresses: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    createIngress: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    getIngress: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    updateIngress: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    deleteIngress: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    nodes: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    events: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
-    clusterSummary: () => Promise.reject(new Error('Kubernetes is not available on eProxy')),
+    namespaces: () => get<K8sNamespaceRow[]>('/kubernetes/namespaces'),
+    pods: () => k8sUnavailable('pods'),
+    deployments: () => k8sUnavailable('deployments'),
+    services: (params?: { namespace?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
+      const q = search.toString();
+      return get<K8sServiceRow[]>(q ? `/kubernetes/services?${q}` : '/kubernetes/services');
+    },
+    configmaps: () => k8sUnavailable('configmaps'),
+    secrets: () => k8sUnavailable('secrets'),
+    tlsSecrets: (params?: { namespace?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
+      const q = search.toString();
+      return get<K8sTlsSecretRow[]>(q ? `/kubernetes/tls-secrets?${q}` : '/kubernetes/tls-secrets');
+    },
+    ingresses: () => k8sUnavailable('ingresses list'),
+    createIngress: (body: CreateIngressBody) =>
+      post<CreateIngressResponse>('/kubernetes/ingresses', body),
+    getIngress: (namespace: string, name: string) =>
+      get<IngressFormRow>(
+        `/kubernetes/ingresses/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      ),
+    updateIngress: (namespace: string, name: string, body: CreateIngressBody) =>
+      put<CreateIngressResponse>(
+        `/kubernetes/ingresses/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+        body,
+      ),
+    deleteIngress: (namespace: string, name: string) =>
+      del<{ message: string; name: string; namespace: string }>(
+        `/kubernetes/ingresses/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      ),
+    nodes: () => k8sUnavailable('nodes'),
+    events: () => k8sUnavailable('events'),
+    clusterSummary: () => k8sUnavailable('cluster summary'),
   },
 };
+
+function k8sUnavailable(feature: string): Promise<never> {
+  return Promise.reject(new Error(`Kubernetes ${feature} is not available on eProxy`));
+}
+
+export interface K8sNamespaceRow {
+  name: string;
+  created_at: string | null;
+}
+
+export interface K8sServicePortDetail {
+  port: number;
+  name?: string | null;
+  protocol: string;
+}
+
+export interface K8sServiceRow {
+  name: string;
+  namespace: string;
+  type: string;
+  cluster_ip: string | null;
+  external_ip?: string | null;
+  ports: string[];
+  ports_detail: K8sServicePortDetail[];
+  created_at?: string | null;
+}
+
+export interface K8sTlsSecretRow {
+  namespace: string;
+  name: string;
+  issued_at?: string | null;
+  expires_at?: string | null;
+}
+
+export interface CreateIngressBody {
+  name?: string;
+  host: string;
+  routes?: IngressFormRouteRow[];
+  path?: string;
+  path_type?: string;
+  tls_secret_namespace?: string;
+  tls_secret_name?: string;
+  service_namespace: string;
+  service_name: string;
+  service_port?: number;
+  service_port_name?: string;
+  ingress_namespace?: string;
+  ingress_class_name?: string;
+}
+
+export interface CreateIngressResponse {
+  message: string;
+  name: string;
+  namespace: string;
+}
+
+export interface IngressFormRouteRow {
+  path: string;
+  path_type: string;
+  service_name: string;
+  service_port?: number | null;
+  service_port_name?: string | null;
+}
+
+export interface IngressFormRow {
+  namespace: string;
+  name: string;
+  host: string;
+  routes: IngressFormRouteRow[];
+  path: string;
+  path_type: string;
+  tls_secret_name?: string | null;
+  service_name: string;
+  service_port?: number | null;
+  service_port_name?: string | null;
+  ingress_class_name?: string | null;
+}

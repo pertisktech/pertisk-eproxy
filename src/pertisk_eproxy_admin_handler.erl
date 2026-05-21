@@ -57,6 +57,16 @@ ingress_mutating(_, ingress_status) -> false;
 ingress_mutating(_, ingress_watchers) -> false;
 ingress_mutating(_, ingress_errors) -> false;
 ingress_mutating(_, ingress_resources) -> false;
+ingress_mutating(_, kubernetes_namespaces) -> false;
+ingress_mutating(_, kubernetes_services) -> false;
+ingress_mutating(_, kubernetes_tls_secrets) -> false;
+ingress_mutating(<<"GET">>, kubernetes_ingresses) -> false;
+ingress_mutating(<<"HEAD">>, kubernetes_ingresses) -> false;
+ingress_mutating(<<"POST">>, kubernetes_ingresses) -> false;
+ingress_mutating(<<"GET">>, kubernetes_ingress) -> false;
+ingress_mutating(<<"HEAD">>, kubernetes_ingress) -> false;
+ingress_mutating(<<"PUT">>, kubernetes_ingress) -> false;
+ingress_mutating(<<"DELETE">>, kubernetes_ingress) -> false;
 ingress_mutating(_, _) -> true.
 
 auth_public(<<"GET">>, root) -> true;
@@ -635,6 +645,44 @@ handle(<<"GET">>, ingress_resources, Req) ->
         <<"backends">> => [backend_to_json(B) || B <- Backends]
     }, Req);
 
+handle(<<"GET">>, kubernetes_namespaces, Req) ->
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:namespaces(), Req);
+
+handle(<<"GET">>, kubernetes_services, Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    Ns = maps:get(<<"namespace">>, Qs, <<>>),
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:services(Ns), Req);
+
+handle(<<"GET">>, kubernetes_tls_secrets, Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    Ns = maps:get(<<"namespace">>, Qs, <<>>),
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:tls_secrets(Ns), Req);
+
+handle(<<"GET">>, kubernetes_ingresses, Req) ->
+    kubernetes_not_implemented(Req);
+
+handle(<<"POST">>, kubernetes_ingresses, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        kubernetes_reply(201, pertisk_eproxy_admin_kubernetes:create_ingress(Body), Req2)
+    end);
+
+handle(<<"GET">>, kubernetes_ingress, Req) ->
+    Ns = cowboy_req:binding(namespace, Req),
+    Name = cowboy_req:binding(name, Req),
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:get_ingress(Ns, Name), Req);
+
+handle(<<"PUT">>, kubernetes_ingress, Req) ->
+    Ns = cowboy_req:binding(namespace, Req),
+    Name = cowboy_req:binding(name, Req),
+    with_json_body(Req, fun(Body, Req2) ->
+        kubernetes_reply(pertisk_eproxy_admin_kubernetes:update_ingress(Ns, Name, Body), Req2)
+    end);
+
+handle(<<"DELETE">>, kubernetes_ingress, Req) ->
+    Ns = cowboy_req:binding(namespace, Req),
+    Name = cowboy_req:binding(name, Req),
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:delete_ingress(Ns, Name), Req);
+
 handle(_Method, _Resource, Req) ->
     Req2 = reply_compressed(
         405,
@@ -690,6 +738,45 @@ error_reply(Status, Reason, Req) ->
 
 not_found_reply(Req) ->
     json_reply(404, #{error => <<"not found">>}, Req).
+
+kubernetes_not_implemented(Req) ->
+    json_reply(404, #{error => <<"list ingresses is not implemented">>}, Req).
+
+kubernetes_reply(Result, Req) ->
+    kubernetes_reply(200, Result, Req).
+
+kubernetes_reply(Status, {ok, Data}, Req) when is_list(Data) ->
+    json_reply(Status, Data, Req);
+kubernetes_reply(Status, {ok, Data}, Req) when is_map(Data) ->
+    json_reply(Status, Data, Req);
+kubernetes_reply(_Status, {error, not_available}, Req) ->
+    json_reply(404, #{error => <<"Kubernetes API is only available in ingress mode">>}, Req);
+kubernetes_reply(_Status, {error, Msg}, Req) when is_binary(Msg) ->
+    json_reply(400, #{error => Msg}, Req);
+kubernetes_reply(_Status, {error, Reason}, Req) ->
+    ErrStatus = kubernetes_error_status(Reason),
+    json_reply(ErrStatus, #{error => kubernetes_error_message(Reason)}, Req).
+
+kubernetes_error_status({error, #{<<"code">> := 404}}) -> 404;
+kubernetes_error_status({error, #{<<"reason">> := <<"NotFound">>}}) -> 404;
+kubernetes_error_status({error, #{<<"code">> := 403}}) -> 403;
+kubernetes_error_status({error, #{<<"reason">> := <<"Forbidden">>}}) -> 403;
+kubernetes_error_status(#{<<"code">> := 404}) -> 404;
+kubernetes_error_status(#{<<"reason">> := <<"NotFound">>}) -> 404;
+kubernetes_error_status(#{<<"code">> := 403}) -> 403;
+kubernetes_error_status(#{<<"reason">> := <<"Forbidden">>}) -> 403;
+kubernetes_error_status(#{<<"status">> := #{<<"code">> := 403}}) -> 403;
+kubernetes_error_status(#{<<"status">> := #{<<"code">> := 404}}) -> 404;
+kubernetes_error_status(_) -> 500.
+
+kubernetes_error_message(Reason) when is_binary(Reason) ->
+    Reason;
+kubernetes_error_message(#{<<"message">> := Msg}) when is_binary(Msg) ->
+    Msg;
+kubernetes_error_message(#{<<"status">> := #{<<"message">> := Msg}}) when is_binary(Msg) ->
+    Msg;
+kubernetes_error_message(Reason) ->
+    iolist_to_binary(io_lib:format("~p", [Reason])).
 
 with_json_body(Req, Fun) ->
     case read_body_full(Req) of
@@ -818,9 +905,17 @@ site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
         undefined -> WithHttp3;
         WB -> WithHttp3#{acme_wildcard_base => json_text(WB)}
     end,
-    case maps:get(acme_contact_email, Site, undefined) of
+    WithEmail = case maps:get(acme_contact_email, Site, undefined) of
         undefined -> WithWildcardBase;
         E -> WithWildcardBase#{acme_contact_email => json_text(E)}
+    end,
+    WithIngressNs = case maps:get(ingress_namespace, Site, undefined) of
+        undefined -> WithEmail;
+        INs -> WithEmail#{ingress_namespace => json_text(INs)}
+    end,
+    case maps:get(ingress_name, Site, undefined) of
+        undefined -> WithIngressNs;
+        IName -> WithIngressNs#{ingress_name => json_text(IName)}
     end.
 
 route_to_json(R) ->
