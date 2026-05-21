@@ -1,12 +1,9 @@
 --- a/src/ekub_core.erl
 +++ b/src/ekub_core.erl
-@@ -253,8 +253,7 @@ ws_options(Options, Access) ->
-     ssl_options(Access) ++ Options.
- 
+@@ -255,8 +255,4 @@
  ssl_options(Access) ->
 -    [{fail_if_no_peer_cert, true},
 -     {server_name_indication, undefined} % not specifying at all
-+    [{server_name_indication, undefined} % not specifying at all
-                                          % is not the same as 'undefined'
-      |lists:filtermap(ssl_option_fun(Access), ?SslOptions)].
- 
+-                                         % is not the same as 'undefined'
+-     |lists:filtermap(ssl_option_fun(Access), ?SslOptions)].
++    lists:filtermap(ssl_option_fun(Access), ?SslOptions).

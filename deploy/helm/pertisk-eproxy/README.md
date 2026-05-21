@@ -56,6 +56,29 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 
 Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*` (see `pertisk_ingress_env`).
 
+### Ports (same idea as pertisk-rproxy)
+
+| Where | HTTP | HTTPS | HTTP/3 | Management |
+|-------|------|-------|--------|------------|
+| **Service** (LB) | 80 | 443 | 443/udp | 9080 |
+| **Container** | 8080 | 8443 | 8443/udp | 9080 |
+
+`EXPOSE` in the Docker image is documentation only; Kubernetes uses Service `targetPort` → named container ports. You do **not** need to publish 80/443 inside the container.
+
+### Troubleshooting pod logs
+
+| Log | Cause | Fix |
+|-----|--------|-----|
+| `ekub init failed: {options,{server_name_indication,undefined}}` | Old ekub SSL patch | Rebuild ingress image (current patch removes invalid SNI) |
+| `fail_if_no_peer_cert` | Old image | Rebuild with `scripts/patch-ekub.sh` in Docker build |
+| `incompatible quic_qpack` | Image built without `_checkouts/quic` | Rebuild; build fails at `verify-deps` if quic patch missing |
+
+```bash
+make docker-ingress-multi VERSION=<tag>
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy --set image.tag=<tag>
+kubectl rollout restart deployment -n pertisk-eproxy
+```
+
 ## RBAC
 
 ClusterRole grants:

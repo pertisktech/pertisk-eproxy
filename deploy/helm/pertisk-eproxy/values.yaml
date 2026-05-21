@@ -64,8 +64,9 @@ controller:
   config:
     mode: ingress
     http_addr: "0.0.0.0"
-    http_port: 80
-    https_port: 443
+    # Container ports (like pertisk-rproxy); Service still exposes 80/443/443-udp.
+    http_port: 8080
+    https_port: 8443
     management_addr: "0.0.0.0"
     management_port: 9080
     quic_enabled: false

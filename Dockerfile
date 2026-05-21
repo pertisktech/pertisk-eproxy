@@ -7,7 +7,7 @@ FROM erlang:27-alpine AS builder
 
 WORKDIR /src
 
-RUN apk add --no-cache bash git build-base cmake ninja perl linux-headers openssl-dev ncurses-dev
+RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl-dev ncurses-dev
 
 COPY . .
 
@@ -49,7 +49,7 @@ ENV PERTISK_CONFIG_FILE=/opt/pertisk_eproxy/config/proxy.json
 
 USER pertisk
 
-EXPOSE 80 443 9080
+EXPOSE 8080 8443 9080 8443/udp
 
 # Uses management listener (default 127.0.0.1:9080). Override in Compose/K8s if `management_port` differs.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
