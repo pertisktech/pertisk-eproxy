@@ -285,7 +285,7 @@ json_to_config(Json) ->
         %% split: separate 0.0.0.0 + [::] reuseport listeners (legacy curl -4 workaround).
         h3_udp_bind => parse_h3_udp_bind(maps:get(<<"h3_udp_bind">>, Json, <<"dual_stack">>)),
         %% true = default static-only QPACK (maximum browser interop); false = dynamic table.
-        h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
+        h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, false)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         %% When true, the management listener uses TLS (same certs as the HTTPS proxy).

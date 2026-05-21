@@ -7,9 +7,6 @@
 ## Heartbeat monitor (restart VM on crash)
 ## -heart
 
-## SMP auto-detect
-+S auto
-
 ## Async thread pool
 +A 32
 

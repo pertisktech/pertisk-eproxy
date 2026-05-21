@@ -29,8 +29,8 @@ mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
 copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
-copy_tree "$ROOT_DIR/data" "$PKG_ROOT/opt/$PKG_NAME/data"
-copy_tree "$ROOT_DIR/log" "$PKG_ROOT/opt/$PKG_NAME/log"
+# data/ and log/ are runtime state — never ship in the package to prevent
+# upgrade from overwriting the live database and ACME certs.
 
 cat > "$PKG_ROOT/usr/lib/systemd/system/$PKG_NAME.service" <<EOF
 [Unit]
@@ -46,6 +46,9 @@ ExecStart=/opt/$PKG_NAME/bin/pertisk_eproxy foreground
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -67,6 +70,13 @@ chmod +x "$WORK_DIR/preinstall.sh"
 cat > "$WORK_DIR/postinstall.sh" <<EOF
 #!/bin/sh
 set -e
+# Create runtime directories only when they do not already exist.
+# This preserves the database and ACME certs across upgrades.
+for d in data data/acme data/acme/certs data/mnesia log log/log; do
+  if [ ! -d /opt/$PKG_NAME/\$d ]; then
+    mkdir -p /opt/$PKG_NAME/\$d
+  fi
+done
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   systemctl enable $PKG_NAME || true

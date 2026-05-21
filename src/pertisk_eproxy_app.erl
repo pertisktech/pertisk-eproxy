@@ -52,37 +52,23 @@ start_listeners() ->
     AdminRoutes = build_admin_routes(maps:get(mode, Config, proxy_admin)),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
-    HttpPort   = maps:get(http_port, Config, 80),
-    {ok, _}    = cowboy:start_clear(http4,
-        #{
-            num_acceptors => 100,
-            socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
-        },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
-    ),
-    {ok, _}    = cowboy:start_clear(http6,
-        #{
-            num_acceptors => 100,
-            socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
-        },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
-    ),
-    lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
+    HttpPort = maps:get(http_port, Config, 80),
+    case HttpPort of
+        HttpP when is_integer(HttpP), HttpP > 0 ->
+            start_http_proxy_listeners(HttpP, Routes);
+        _ ->
+            lager:warning("HTTP proxy disabled: invalid http_port=~p", [HttpPort]),
+            ok
+    end,
 
     %% HTTPS listeners (proxy): dual-stack (IPv4 + IPv6), optional TLS.
     %% If `https_port` is omitted but listener PEMs exist (defaults match the H3 gateway), TCP TLS uses 443.
     %% Set https_port to a positive integer to choose a port; use https_port <= 0 in config to disable TCP HTTPS.
     TlsOpts = tls_opts(Config),
     HttpsPortRes = case maps:find(https_port, Config) of
-        {ok, P} when is_integer(P), P > 0 ->
-            {explicit, P};
-        {ok, P} when is_integer(P), P =< 0 ->
+        {ok, HttpsP} when is_integer(HttpsP), HttpsP > 0 ->
+            {explicit, HttpsP};
+        {ok, HttpsP} when is_integer(HttpsP), HttpsP =< 0 ->
             none;
         {ok, _} ->
             none;
@@ -121,11 +107,47 @@ start_listeners() ->
         %% Management/admin is intentionally plain HTTP/1.1.
         enable_connect_protocol => false
     },
-    {ok, _} = cowboy:start_clear(management,
+    _ = try_start_clear_listener(
+        management,
         #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
-        MgmtProtoOpts
+        MgmtProtoOpts,
+        io_lib:format("Management API (~s:~w)", [inet:ntoa(MgmtAddr), MgmtPort])
     ),
-    lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok.
+
+start_http_proxy_listeners(HttpPort, Routes) ->
+    ProtoOpts = #{
+        env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+        logger => pertisk_eproxy_cowboy_logger
+    },
+    R4 = try_start_clear_listener(
+        http4,
+        #{
+            num_acceptors => 100,
+            socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
+        },
+        ProtoOpts,
+        io_lib:format("HTTP proxy IPv4 (0.0.0.0:~w)", [HttpPort])
+    ),
+    R6 = try_start_clear_listener(
+        http6,
+        #{
+            num_acceptors => 100,
+            socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
+        },
+        ProtoOpts,
+        io_lib:format("HTTP proxy IPv6 ([::]:~w)", [HttpPort])
+    ),
+    case {R4, R6} of
+        {started, started} ->
+            lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]);
+        {started, _} ->
+            lager:info("HTTP proxy listening on 0.0.0.0:~w", [HttpPort]);
+        {_, started} ->
+            lager:info("HTTP proxy listening on [::]:~w", [HttpPort]);
+        _ ->
+            lager:warning("HTTP proxy not started on any socket for port ~w", [HttpPort])
+    end,
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
@@ -137,22 +159,59 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
         %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
         enable_connect_protocol => true
     },
-    {ok, _} = cowboy:start_tls(https4,
+    R4 = try_start_tls_listener(https4,
         #{
             num_acceptors => 100,
             socket_opts => TlsSocketOpts4
         },
-        HttpsProtoOpts
+        HttpsProtoOpts,
+        io_lib:format("HTTPS proxy IPv4 (0.0.0.0:~w)", [HttpsPort])
     ),
-    {ok, _} = cowboy:start_tls(https6,
+    R6 = try_start_tls_listener(https6,
         #{
             num_acceptors => 100,
             socket_opts => TlsSocketOpts6
         },
-        HttpsProtoOpts
+        HttpsProtoOpts,
+        io_lib:format("HTTPS proxy IPv6 ([::]:~w)", [HttpsPort])
     ),
-    lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]),
+    case {R4, R6} of
+        {started, started} ->
+            lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
+        {started, _} ->
+            lager:info("HTTPS proxy listening on 0.0.0.0:~w", [HttpsPort]);
+        {_, started} ->
+            lager:info("HTTPS proxy listening on [::]:~w", [HttpsPort]);
+        _ ->
+            lager:warning("HTTPS proxy not started on any socket for port ~w", [HttpsPort])
+    end,
     ok.
+
+try_start_clear_listener(Name, TransOpts, ProtoOpts, Label0) ->
+    Label = lists:flatten(Label0),
+    case cowboy:start_clear(Name, TransOpts, ProtoOpts) of
+        {ok, _} ->
+            started;
+        {error, eaddrinuse} ->
+            lager:warning("~s not started: address already in use", [Label]),
+            skipped;
+        {error, Reason} ->
+            lager:warning("~s not started: ~p", [Label, Reason]),
+            skipped
+    end.
+
+try_start_tls_listener(Name, TransOpts, ProtoOpts, Label0) ->
+    Label = lists:flatten(Label0),
+    case cowboy:start_tls(Name, TransOpts, ProtoOpts) of
+        {ok, _} ->
+            started;
+        {error, eaddrinuse} ->
+            lager:warning("~s not started: address already in use", [Label]),
+            skipped;
+        {error, Reason} ->
+            lager:warning("~s not started: ~p", [Label, Reason]),
+            skipped
+    end.
 
 maybe_start_quic(Config, Routes) ->
     GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
