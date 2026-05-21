@@ -659,7 +659,7 @@ handle(<<"GET">>, kubernetes_tls_secrets, Req) ->
     kubernetes_reply(pertisk_eproxy_admin_kubernetes:tls_secrets(Ns), Req);
 
 handle(<<"GET">>, kubernetes_ingresses, Req) ->
-    kubernetes_not_implemented(Req);
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:list_ingresses(), Req);
 
 handle(<<"POST">>, kubernetes_ingresses, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
@@ -738,9 +738,6 @@ error_reply(Status, Reason, Req) ->
 
 not_found_reply(Req) ->
     json_reply(404, #{error => <<"not found">>}, Req).
-
-kubernetes_not_implemented(Req) ->
-    json_reply(404, #{error => <<"list ingresses is not implemented">>}, Req).
 
 kubernetes_reply(Result, Req) ->
     kubernetes_reply(200, Result, Req).

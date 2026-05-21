@@ -858,7 +858,7 @@ export const api = {
       const q = search.toString();
       return get<K8sTlsSecretRow[]>(q ? `/kubernetes/tls-secrets?${q}` : '/kubernetes/tls-secrets');
     },
-    ingresses: () => k8sUnavailable('ingresses list'),
+    ingresses: () => get<K8sIngressListRow[]>('/kubernetes/ingresses'),
     createIngress: (body: CreateIngressBody) =>
       post<CreateIngressResponse>('/kubernetes/ingresses', body),
     getIngress: (namespace: string, name: string) =>
@@ -913,6 +913,14 @@ export interface K8sTlsSecretRow {
   expires_at?: string | null;
 }
 
+export interface K8sIngressListRow {
+  namespace: string;
+  name: string;
+  host: string;
+  ingress_class_name?: string | null;
+  tls_secret_name?: string | null;
+}
+
 export interface CreateIngressBody {
   name?: string;
   host: string;
@@ -950,6 +958,7 @@ export interface IngressFormRow {
   routes: IngressFormRouteRow[];
   path: string;
   path_type: string;
+  tls_secret_namespace?: string | null;
   tls_secret_name?: string | null;
   service_name: string;
   service_port?: number | null;

@@ -241,6 +241,10 @@ export default function Sites() {
   function sslLabelForSite(site: Site): string {
     const v = site.certificate?.trim();
     if (!v) return '—';
+    if (v.startsWith('k8s/')) {
+      const ref = v.slice(4);
+      return ref.includes('/') ? `TLS ${ref}` : ref;
+    }
     const row = issuedTlsCerts.find((r) => r.id === v);
     if (row?.hosts?.length) return row.hosts.join(', ');
     return v;
@@ -488,7 +492,9 @@ export default function Sites() {
       setEditingIngressRef({ namespace: row.namespace, name: row.name });
       setIngressHost(row.host);
       setIngressNamespace(row.namespace);
-      setIngressTlsNamespace(row.tls_secret_name ? row.namespace : '');
+      setIngressTlsNamespace(
+        row.tls_secret_name ? (row.tls_secret_namespace ?? row.namespace) : '',
+      );
       setIngressTlsName(row.tls_secret_name ?? '');
       setIngressServiceNamespace(row.namespace);
       setIngressRoutes(
@@ -589,8 +595,14 @@ export default function Sites() {
     }
     const firstRoute = routes[0];
     const ingressNs = ingressNamespace.trim() || serviceNamespace;
-    const tlsNs = ingressTlsNamespace.trim();
+    const tlsNs = ingressTlsNamespace.trim() || ingressNs;
     const tlsName = ingressTlsName.trim();
+    if (tlsName && tlsNs !== ingressNs) {
+      setIngressFormError(
+        `TLS secret must be in the Ingress namespace (${ingressNs}). Copy the secret or choose one from that namespace.`,
+      );
+      return;
+    }
     setIngressSaving(true);
     try {
       const body: CreateIngressBody = {
@@ -604,8 +616,8 @@ export default function Sites() {
         service_port_name: firstRoute.service_port_name || undefined,
         ingress_namespace: ingressNs,
       };
-      if (tlsNs && tlsName) {
-        body.tls_secret_namespace = tlsNs;
+      if (tlsName) {
+        body.tls_secret_namespace = ingressNs;
         body.tls_secret_name = tlsName;
       }
       if (editingIngressRef) {
@@ -1640,7 +1652,7 @@ export default function Sites() {
                     </div>
                     <p className={styles.hint}>
                       Where the Ingress object is created. Defaults to the service namespace (e.g.{' '}
-                      <code>pertisk-rproxy</code>).
+                      <code>pertisk-rproxy</code>). The backend Service must exist in this namespace.
                     </p>
                   </label>
                 </div>
@@ -1684,8 +1696,9 @@ export default function Sites() {
                       <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                     </div>
                     <p className={styles.hint}>
-                      Choose <strong>No TLS</strong> for HTTP-only ingress (no <code>spec.tls</code> in the manifest).
-                      TLS secret must be in the same namespace as the Ingress.
+                      Choose <strong>No TLS</strong> for HTTP-only ingress (no <code>spec.tls</code>). To use TLS like
+                      the Helm admin ingress, pick a secret in the <strong>Ingress namespace</strong> (e.g. copy{' '}
+                      <code>admin-erlang-tls</code> into <code>pertisk-rproxy</code>).
                     </p>
                   </label>
                 </div>
@@ -1826,6 +1839,11 @@ export default function Sites() {
                                 </select>
                                 <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                               </div>
+                              <p className={styles.hint}>
+                                Port <code>9080</code> is this controller&apos;s management API (same as admin
+                                Ingress). Use your app&apos;s HTTP port (e.g. <code>80</code> / <code>8080</code>) for
+                                public sites like <code>rproxy.erlang.thaidevops.co</code>.
+                              </p>
                             </label>
                           </div>
                         </div>

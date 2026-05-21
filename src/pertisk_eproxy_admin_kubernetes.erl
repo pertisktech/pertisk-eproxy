@@ -6,6 +6,7 @@
     namespaces/0,
     services/1,
     tls_secrets/1,
+    list_ingresses/0,
     get_ingress/2,
     create_ingress/1,
     update_ingress/3,
@@ -74,6 +75,22 @@ tls_secrets(Namespace) ->
         end
     end).
 
+list_ingresses() ->
+    with_conn(fun(Conn) ->
+        case ekub:read(ingress, list_query(), Conn) of
+            {ok, List} ->
+                ClassFilter = pertisk_ingress_env:ingress_class(),
+                Rows = [
+                    ingress_list_row(I)
+                    || I <- items_from_list(List),
+                       pertisk_ingress_reconciler:ingress_matches_class(I, ClassFilter)
+                ],
+                {ok, Rows};
+            {error, Reason} ->
+                {error, Reason}
+        end
+    end).
+
 get_ingress(Namespace, Name) ->
     with_conn(fun(Conn) ->
         case ekub:read(ingress, Namespace, Name, Conn) of
@@ -93,7 +110,7 @@ create_ingress(Body) ->
             {ok, Resource, Ns} ->
                 case ekub:create(Resource, Ns, Conn) of
                     {ok, _} ->
-                        pertisk_ingress_watcher:reconcile_now(),
+                        reconcile_after_ingress_write(),
                         Meta = maps:get(<<"metadata">>, Resource, #{}),
                         {ok, #{
                             message => <<"Ingress created">>,
@@ -116,7 +133,7 @@ update_ingress(Namespace, Name, Body) ->
                     {ok, Resource, Ns} ->
                         case ekub:replace(Resource, Ns, Conn) of
                             {ok, _} ->
-                                pertisk_ingress_watcher:reconcile_now(),
+                                reconcile_after_ingress_write(),
                                 {ok, #{
                                     message => <<"Ingress updated">>,
                                     name => Name,
@@ -148,12 +165,20 @@ delete_ingress(Namespace, Name) ->
     end).
 
 reconcile_after_ingress_delete(Namespace, Name) ->
-    pertisk_ingress_watcher:reconcile_now(),
+    reconcile_after_ingress_write(),
     {ok, #{
         message => <<"Ingress deleted">>,
         name => Name,
         namespace => Namespace
     }}.
+
+reconcile_after_ingress_write() ->
+    try
+        pertisk_ingress_watcher:reconcile_now()
+    catch
+        C:R:St ->
+            lager:warning("Ingress reconcile after admin write failed: ~p:~p ~p", [C, R, St])
+    end.
 
 %% ---------------------------------------------------------------------------
 %% Internal
@@ -226,6 +251,24 @@ external_ip_from_status(Status) ->
             null
     end.
 
+ingress_list_row(Ingress) ->
+    Ns = meta_namespace(Ingress),
+    Name = meta_name(Ingress),
+    Spec = maps:get(<<"spec">>, Ingress, #{}),
+    Rules = maps:get(<<"rules">>, Spec, []),
+    Host =
+        case Rules of
+            [#{<<"host">> := H} | _] when is_binary(H) -> H;
+            _ -> <<>>
+        end,
+    #{
+        namespace => Ns,
+        name => Name,
+        host => Host,
+        ingress_class_name => maps:get(<<"ingressClassName">>, Spec, null),
+        tls_secret_name => tls_secret_from_spec(Spec)
+    }.
+
 ingress_form_row(Ingress) ->
     Ns = meta_namespace(Ingress),
     Name = meta_name(Ingress),
@@ -248,6 +291,7 @@ ingress_form_row(Ingress) ->
                         routes => Routes,
                         path => maps:get(path, First, <<"/">>),
                         path_type => maps:get(path_type, First, <<"Prefix">>),
+                        tls_secret_namespace => tls_secret_namespace(TlsSecret, Ns),
                         tls_secret_name => TlsSecret,
                         service_name => maps:get(service_name, First, <<>>),
                         service_port => maps:get(service_port, First, null),
@@ -302,6 +346,11 @@ tls_secret_from_spec(Spec) ->
         _ -> null
     end.
 
+tls_secret_namespace(null, _Ns) ->
+    null;
+tls_secret_namespace(_, Ns) ->
+    Ns.
+
 build_ingress_resource(Body, Current) ->
     try
         Host = trim_required(maps:get(<<"host">>, Body, <<>>), <<"host is required">>),
@@ -351,8 +400,16 @@ build_ingress_resource(Body, Current) ->
         },
         {ok, Resource, IngressNs}
     catch
-        throw:{bad_request, Msg} -> {error, Msg}
+        throw:{bad_request, Msg} ->
+            {error, Msg};
+        error:Reason ->
+            {error, format_build_error(Reason)};
+        exit:Reason ->
+            {error, format_build_error(Reason)}
     end.
+
+format_build_error(Reason) ->
+    iolist_to_binary(io_lib:format("ingress build failed: ~p", [Reason])).
 
 paths_from_body(Body) ->
     Routes = maps:get(<<"routes">>, Body, undefined),
@@ -404,32 +461,43 @@ http_path(Path, PathType, SvcName, _ServiceNs, Port) ->
     }.
 
 backend_port_from_route(Route) ->
-    case maps:get(<<"service_port">>, Route, undefined) of
-        N when is_integer(N) -> #{<<"number">> => N};
-        _ ->
-            case maps:get(<<"service_port_name">>, Route, undefined) of
-                Name when is_binary(Name), Name =/= <<>> -> #{<<"name">> => trim(Name)};
-                _ -> throw({bad_request, <<"each route requires service_port or service_port_name">>})
-            end
-    end.
+    backend_port_from_fields(
+        maps:get(<<"service_port">>, Route, undefined),
+        maps:get(<<"service_port_name">>, Route, undefined),
+        <<"each route requires service_port or service_port_name">>
+    ).
 
 backend_port_from_body(Body) ->
-    case maps:get(<<"service_port">>, Body, undefined) of
-        N when is_integer(N) -> #{<<"number">> => N};
+    backend_port_from_fields(
+        maps:get(<<"service_port">>, Body, undefined),
+        maps:get(<<"service_port_name">>, Body, undefined),
+        <<"service_port or service_port_name is required">>
+    ).
+
+backend_port_from_fields(Port, PortName, ErrMsg) ->
+    case Port of
+        N when is_integer(N), N > 0 ->
+            #{<<"number">> => N};
         _ ->
-            case maps:get(<<"service_port_name">>, Body, undefined) of
-                Name when is_binary(Name), Name =/= <<>> -> #{<<"name">> => trim(Name)};
-                _ -> throw({bad_request, <<"service_port or service_port_name is required">>})
+            case coerce_binary(PortName) of
+                <<>> ->
+                    throw({bad_request, ErrMsg});
+                Name ->
+                    #{<<"name">> => Name}
             end
     end.
 
 maybe_tls_spec(Spec, Host, IngressNs, Body, Current) ->
-    TlsNs = maps:get(<<"tls_secret_namespace">>, Body, undefined),
+    TlsNs0 = maps:get(<<"tls_secret_namespace">>, Body, undefined),
     TlsName = maps:get(<<"tls_secret_name">>, Body, undefined),
-    case {tls_bin(TlsNs), tls_bin(TlsName)} of
-        {Ns, Name} when Ns =/= <<>>, Name =/= <<>> ->
+    TlsNs = case tls_bin(TlsNs0) of
+        <<>> -> IngressNs;
+        Ns -> Ns
+    end,
+    case {TlsNs, tls_bin(TlsName)} of
+        {SecretNs, Name} when SecretNs =/= <<>>, Name =/= <<>> ->
             if
-                Ns =/= IngressNs ->
+                SecretNs =/= IngressNs ->
                     throw({bad_request, <<"TLS secret must be in the same namespace as the Ingress">>});
                 true ->
                     Spec#{
@@ -494,16 +562,27 @@ meta_created_at(Obj) ->
     end.
 
 maybe_null(undefined) -> null;
+maybe_null(null) -> null;
 maybe_null(V) -> V.
 
-trim(B) when is_binary(B) ->
-    list_to_binary(string:trim(binary_to_list(B), both));
-trim(V) when is_list(V) ->
-    trim(iolist_to_binary(V)).
+trim(V) ->
+    case coerce_binary(V) of
+        <<>> -> <<>>;
+        B -> list_to_binary(string:trim(binary_to_list(B), both))
+    end.
 
-trim_required(B, Msg) ->
-    T = trim(B),
+trim_required(V, Msg) ->
+    T = trim(V),
     case T of
         <<>> -> throw({bad_request, Msg});
         _ -> T
     end.
+
+%% JSON null / numbers must not crash trim/trim_required (thoas decodes null as null).
+coerce_binary(null) -> <<>>;
+coerce_binary(undefined) -> <<>>;
+coerce_binary(B) when is_binary(B) -> B;
+coerce_binary(L) when is_list(L) -> list_to_binary(L);
+coerce_binary(N) when is_integer(N) -> integer_to_binary(N);
+coerce_binary(A) when is_atom(A) -> atom_to_binary(A, utf8);
+coerce_binary(_) -> <<>>.

@@ -245,7 +245,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     end,
                                 _ = quic_h3:send_data(H3Conn, StreamId, RespData, true),
                                 UpstreamLog =
-                                    case is_management_upstream(UpstreamAddr) of
+                                    case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
                                         true -> <<"management-local">>;
                                         false -> UpstreamAddr
                                     end,
@@ -394,8 +394,9 @@ proxy_h3_upstream(
     Body,
     ClientIp
 ) ->
-    case is_management_upstream(UpstreamAddr) of
+    case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
         true ->
+            Loopback = pertisk_eproxy_config:management_loopback_upstream_bin(),
             case pertisk_eproxy_h3_local_admin:try_dispatch(
                 Method, LogHost, PathOnly, Qs, Headers, Body, ClientIp
             ) of
@@ -403,7 +404,7 @@ proxy_h3_upstream(
                     {ok, Status, gun_resp_headers_to_h3(RespHeaders), RespBody};
                 {error, unsupported} ->
                     proxy_via_gun(
-                        Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
+                        Method, LogHost, UpPath, Qs, Loopback, Headers, Body, ClientIp
                     );
                 {error, Reason} ->
                     {error, {local_admin, Reason}}
@@ -447,33 +448,6 @@ quic_transport_opts(Config) ->
         _ ->
             Base#{keep_alive_interval => max(5000, KeepSecs * 1000)}
     end.
-
-is_management_upstream(UpstreamAddr) ->
-    try
-        {Host, Port, _} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
-        C = pertisk_eproxy_config:get_config(),
-        Port =:= maps:get(management_port, C, 9080) andalso
-            management_host_match(Host, maps:get(management_addr, C, {0, 0, 0, 0}))
-    catch
-        _:_ ->
-            false
-    end.
-
-management_host_match(Host, MgmtAddr) when is_binary(Host) ->
-    management_host_match(binary_to_list(Host), MgmtAddr);
-management_host_match(Host, MgmtAddr) when is_list(Host) ->
-    H = string:lowercase(string:trim(Host)),
-    Mgmt = string:lowercase(lists:flatten(inet:ntoa(MgmtAddr))),
-    lists:member(H, [
-        Mgmt,
-        "127.0.0.1",
-        "localhost",
-        "0.0.0.0",
-        "::1",
-        "[::1]",
-        "::",
-        "[::]"
-    ]).
 
 proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Body, ClientIp) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),

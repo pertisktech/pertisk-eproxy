@@ -1,9 +1,10 @@
 %% @doc Transform Kubernetes Ingress + Secret objects into eproxy sites/backends/TLS.
 -module(pertisk_ingress_reconciler).
 
--export([reconcile/2]).
+-export([reconcile/2, ingress_matches_class/2]).
 
 -define(DEFAULT_BACKEND_PORT, 80).
+-define(INGRESS_CLASS_ANNOTATION, <<"kubernetes.io/ingress.class">>).
 
 %% @doc Full reconcile from listed Ingress and Secret maps (ekub JSON objects).
 -spec reconcile([map()], [map()]) ->
@@ -64,7 +65,8 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
         Rules
     ),
     TlsRefs2 = collect_tls_refs(Spec, Ns, RuleHosts, TlsRefs1),
-    {Backends1, Sites1, TlsRefs2}.
+    CertRef = ingress_site_certificate(Ns, Spec),
+    {Backends1, sites_with_certificate(Sites1, CertRef), TlsRefs2}.
 
 reconcile_path(Path, Host, Ns, IngressName, Backends, Sites, TlsRefs) ->
     BackendSpec = maps:get(<<"backend">>, Path, #{}),
@@ -105,6 +107,23 @@ reconcile_path(Path, Host, Ns, IngressName, Backends, Sites, TlsRefs) ->
     },
     {Backends1, [Site | Sites], TlsRefs}.
 
+ingress_site_certificate(Ns, Spec) ->
+    case ingress_tls_secret_name(Spec) of
+        undefined -> undefined;
+        Secret -> pertisk_ingress_tls:cert_ref(Ns, Secret)
+    end.
+
+ingress_tls_secret_name(Spec) ->
+    case maps:get(<<"tls">>, Spec, []) of
+        [#{<<"secretName">> := S} | _] when is_binary(S), S =/= <<>> -> S;
+        _ -> undefined
+    end.
+
+sites_with_certificate(Sites, undefined) ->
+    Sites;
+sites_with_certificate(Sites, CertRef) ->
+    [S#{certificate => CertRef} || S <- Sites].
+
 collect_tls_refs(Spec, Ns, RuleHosts, TlsRefs) ->
     TlsList = maps:get(<<"tls">>, Spec, []),
     lists:foldl(
@@ -141,22 +160,45 @@ backend_port_number(_) -> ?DEFAULT_BACKEND_PORT.
 
 upstreams_from_backend(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> := Port}}, Ns) ->
     PortNum = backend_port_number(Port),
-    Addr = iolist_to_binary([
-        SvcName, <<".">>, Ns, <<".svc.cluster.local:">>, integer_to_binary(PortNum)
-    ]),
+    Addr = upstream_service_addr(SvcName, Ns, PortNum),
     [#{addr => Addr, weight => 1}];
 upstreams_from_backend(_, _) ->
     [].
 
+%% Ingress admin UI often targets Service :9080 (management). Use loopback, not *.svc.cluster.local.
+upstream_service_addr(_SvcName, _Ns, PortNum) ->
+    MgmtPort = maps:get(management_port, pertisk_eproxy_config:get_config(), 9080),
+    case {pertisk_ingress_env:ingress_mode(), PortNum =:= MgmtPort} of
+        {true, true} ->
+            pertisk_eproxy_config:management_loopback_upstream_bin();
+        _ ->
+            cluster_service_addr(_SvcName, _Ns, PortNum)
+    end.
+
+cluster_service_addr(SvcName, Ns, PortNum) ->
+    iolist_to_binary([
+        SvcName, <<".">>, Ns, <<".svc.cluster.local:">>, integer_to_binary(PortNum)
+    ]).
+
 ingress_matches_class(Ingress, {ok, WantClass}) ->
-    Spec = maps:get(<<"spec">>, Ingress, #{}),
-    case maps:get(<<"ingressClassName">>, Spec, undefined) of
-        undefined -> true;
-        Class when is_binary(Class) -> Class =:= WantClass;
-        _ -> false
-    end;
+    ingress_class_of(Ingress) =:= WantClass;
 ingress_matches_class(_Ingress, all) ->
     true.
+
+%% spec.ingressClassName or legacy kubernetes.io/ingress.class annotation
+ingress_class_of(Ingress) ->
+    Spec = maps:get(<<"spec">>, Ingress, #{}),
+    Meta = maps:get(<<"metadata">>, Ingress, #{}),
+    case maps:get(<<"ingressClassName">>, Spec, undefined) of
+        Class when is_binary(Class), Class =/= <<>> ->
+            Class;
+        _ ->
+            Annotations = maps:get(<<"annotations">>, Meta, #{}),
+            case maps:get(?INGRESS_CLASS_ANNOTATION, Annotations, undefined) of
+                Ann when is_binary(Ann), Ann =/= <<>> -> Ann;
+                _ -> undefined
+            end
+    end.
 
 parse_path_type(<<"Exact">>) -> exact;
 parse_path_type(<<"Prefix">>) -> prefix;

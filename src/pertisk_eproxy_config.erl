@@ -27,6 +27,8 @@
          get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
          management_upstream_bin/0,
+         management_loopback_upstream_bin/0,
+         is_management_upstream_addr/1,
          reload/0, put_config/1, sync_ingress/2,
          ingress_mode/0, proxy_mode/0, json_to_config_pub/1,
          db_file/0, data_dir/0]).
@@ -60,6 +62,22 @@ management_upstream_bin() ->
     Port = maps:get(management_port, C, 9080),
     Addr = maps:get(management_addr, C, {0, 0, 0, 0}),
     iolist_to_binary([inet:ntoa(Addr), $:, integer_to_list(Port)]).
+
+%% @doc Loopback address for in-pod hops to :9080 (avoids ClusterIP hairpin / missing Service DNS).
+-spec management_loopback_upstream_bin() -> binary().
+management_loopback_upstream_bin() ->
+    Port = maps:get(management_port, get_config(), 9080),
+    iolist_to_binary(["127.0.0.1:", integer_to_binary(Port)]).
+
+-spec is_management_upstream_addr(binary()) -> boolean().
+is_management_upstream_addr(UpstreamAddr) ->
+    try
+        {_Host, Port, _} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
+        Port =:= maps:get(management_port, get_config(), 9080)
+    catch
+        _:_ ->
+            false
+    end.
 
 %% Return list of site maps.
 -spec get_sites() -> [map()].
