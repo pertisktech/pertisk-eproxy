@@ -583,15 +583,17 @@ h3_connecting(enter, _OldState, State) ->
                 {ok, State2} ->
                     {keep_state, State2};
                 {error, {invalid_state, draining}} ->
-                    {next_state, closing, State1};
+                    {keep_state, State1, [{next_event, internal, close}]};
                 {error, Reason} ->
                     {stop, {error, Reason}}
             end;
         {error, {invalid_state, draining}} ->
-            {next_state, closing, State};
+            {keep_state, State, [{next_event, internal, close}]};
         {error, Reason} ->
             {stop, {error, Reason}}
     end;
+h3_connecting(internal, close, State) ->
+    {next_state, closing, State};
 h3_connecting(
     info,
     {quic, QuicConn, {stream_data, StreamId, Data, Fin}},
