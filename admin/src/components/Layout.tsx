@@ -241,7 +241,7 @@ function LayoutShell() {
       .then((cfg) => {
         if (cancelled) return;
         const dm = cfg.deployment_mode;
-        if (dm === 'proxy' || dm === 'proxy_admin') {
+        if (dm === 'proxy' || dm === 'proxy_admin' || dm === 'ingress') {
           setMode(dm);
         }
       })
