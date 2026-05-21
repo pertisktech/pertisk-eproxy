@@ -87,6 +87,29 @@ persistence:
   size: 1Gi
   mountPath: /opt/pertisk_eproxy/data
 
+# Admin auth for ingress management UI (env-based, no SQLite) — same model as pertisk-rproxy.
+auth:
+  mode: both
+  enabled: true
+  createSecret: true
+  secretName: ""
+  usernameKey: "PERTISK_ADMIN"
+  passwordKey: "PERTISK_PASSWORD"
+  apiTokenKey: "PERTISK_API_TOKEN"
+  signingSecretKey: "PERTISK_AUTH_SIGNING_SECRET"
+  username: "admin"
+  password: "admin"
+  apiToken: ""
+  signingSecret: ""
+
+auth0:
+  domain: ""
+  clientId: ""
+  audience: ""
+  domainKey: "PERTISK_AUTH0_DOMAIN"
+  clientIdKey: "PERTISK_AUTH0_CLIENT_ID"
+  audienceKey: "PERTISK_AUTH0_AUDIENCE"
+
 extraEnv: []
 # - name: PERTISK_K8S_INGRESS_CLASS
 #   value: pertisk-eproxy

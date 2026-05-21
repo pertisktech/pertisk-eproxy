@@ -87,6 +87,59 @@ spec:
             - name: PERTISK_CONFIG_FILE
               value: /opt/pertisk_eproxy/config/ingress.json
             {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: PERTISK_AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            - name: PERTISK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth.usernameKey | quote }}
+            - name: PERTISK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth.passwordKey | quote }}
+            - name: PERTISK_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth.apiTokenKey | quote }}
+                  optional: true
+            - name: PERTISK_AUTH_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth.signingSecretKey | quote }}
+                  optional: true
+            {{- end }}
+            {{- if and .Values.auth.enabled .Values.auth0.domain }}
+            - name: PERTISK_AUTH0_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth0.domainKey | quote }}
+                  optional: true
+            - name: PERTISK_AUTH0_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth0.clientIdKey | quote }}
+                  optional: true
+            - name: PERTISK_AUTH0_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pertisk-eproxy.authSecretName" . }}
+                  key: {{ .Values.auth0.audienceKey | quote }}
+                  optional: true
+            {{- else if .Values.auth0.domain }}
+            - name: PERTISK_AUTH0_DOMAIN
+              value: {{ .Values.auth0.domain | quote }}
+            - name: PERTISK_AUTH0_CLIENT_ID
+              value: {{ .Values.auth0.clientId | quote }}
+            - name: PERTISK_AUTH0_AUDIENCE
+              value: {{ .Values.auth0.audience | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -55,3 +55,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "pertisk-eproxy.ingressClassName" -}}
 {{- .Values.ingress.className }}
 {{- end }}
+
+{{- define "pertisk-eproxy.authSecretName" -}}
+{{- if .Values.auth.secretName }}
+{{- .Values.auth.secretName }}
+{{- else }}
+{{- printf "%s-auth" (include "pertisk-eproxy.fullname" .) }}
+{{- end }}
+{{- end }}

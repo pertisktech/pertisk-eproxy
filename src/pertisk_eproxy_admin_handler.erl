@@ -23,13 +23,13 @@
 
 init(Req, Resource) ->
     Method = cowboy_req:method(Req),
-    case ingress_viewer_blocked(Method, Resource) of
+    case auth_public(Method, Resource) of
         true ->
-            json_reply(403, #{<<"error">> => <<"read-only in ingress mode">>}, Req);
+            handle(Method, Resource, Req);
         false ->
-            case auth_public(Method, Resource) of
+            case ingress_viewer_blocked(Method, Resource) of
                 true ->
-                    handle(Method, Resource, Req);
+                    json_reply(403, #{<<"error">> => <<"read-only in ingress mode">>}, Req);
                 false ->
                     case pertisk_eproxy_auth:auth_mode() of
                         disabled ->
@@ -67,6 +67,7 @@ auth_public(<<"HEAD">>, proto) -> true;
 auth_public(<<"GET">>, auth_config) -> true;
 auth_public(<<"HEAD">>, auth_config) -> true;
 auth_public(<<"GET">>, auth_check) -> true;
+auth_public(<<"HEAD">>, auth_check) -> true;
 auth_public(<<"POST">>, auth_login) -> true;
 auth_public(<<"POST">>, auth_refresh) -> true;
 auth_public(<<"POST">>, auth_logout) -> true;
@@ -179,7 +180,12 @@ handle(<<"POST">>, auth_logout, Req) ->
     json_reply(200, #{<<"success">> => true}, Req);
 
 handle(<<"POST">>, admin_change_password, Req) ->
-    json_reply(501, #{<<"error">> => <<"Password change is not implemented for eProxy">>}, Req);
+    case pertisk_eproxy_config:ingress_mode() of
+        true ->
+            json_reply(403, #{<<"error">> => <<"read-only in ingress mode">>}, Req);
+        false ->
+            json_reply(501, #{<<"error">> => <<"Password change is not implemented for eProxy">>}, Req)
+    end;
 
 handle(<<"GET">>, admin_api_token, Req) ->
     json_reply(200, #{<<"has_token">> => false}, Req);

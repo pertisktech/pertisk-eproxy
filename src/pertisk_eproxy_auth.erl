@@ -22,6 +22,14 @@ auth_mode() ->
 
 auth_config_map() ->
     Dm = deployment_mode_bin(),
+    case pertisk_ingress_env:enabled() of
+        true ->
+            ingress_auth_config_map(Dm);
+        false ->
+            proxy_auth_config_map(Dm)
+    end.
+
+proxy_auth_config_map(Dm) ->
     case auth_mode() of
         local ->
             SsoCfg = pertisk_eproxy_auth0:auth0_public_config(),
@@ -48,6 +56,25 @@ auth_config_map() ->
             }
     end.
 
+ingress_auth_config_map(Dm) ->
+    SupportsLocal = pertisk_eproxy_env_auth:supports_local(),
+    SupportsSso = pertisk_eproxy_env_auth:supports_sso(),
+    SsoCfg = pertisk_eproxy_auth0:auth0_public_config(),
+    ModeBin =
+        case pertisk_eproxy_env_auth:auth_mode_atom() of
+            local -> <<"local">>;
+            sso -> <<"sso">>;
+            both -> <<"both">>
+        end,
+    Base = #{
+        <<"mode">> => ModeBin,
+        <<"supports_local">> => SupportsLocal,
+        <<"supports_sso">> => SupportsSso,
+        <<"guest_mode">> => not pertisk_eproxy_env_auth:login_required(),
+        <<"deployment_mode">> => Dm
+    },
+    maps:merge(Base, SsoCfg).
+
 deployment_mode_bin() ->
     C = pertisk_eproxy_config:get_config(),
     case maps:get(mode, C, proxy_admin) of
@@ -59,33 +86,55 @@ deployment_mode_bin() ->
 login(User, Pass) ->
     case auth_mode() of
         local ->
-            UBin = as_bin(User),
-            PBin = as_bin(Pass),
-            DbPath = pertisk_eproxy_config:db_file(),
-            case pertisk_eproxy_db:verify_admin_login(DbPath, UBin, PBin) of
-                ok ->
-                    Token = new_token(),
-                    Exp = erlang:system_time(second) + 86400,
-                    true = ets:insert(?TAB, #session{token = Token, user = UBin, exp = Exp}),
-                    {ok, #{token => Token, username => UBin, expires_in => 86400}};
-                {error, invalid_credentials} ->
-                    {error, invalid_credentials};
-                {error, sqlite3_executable_not_found} ->
-                    lager:warning(
-                        "admin login DB error: sqlite3 CLI not found (install package `sqlite3` and/or set "
-                        "`{sqlite3_executable, \"/usr/bin/sqlite3\"}` under `pertisk_eproxy` in sys.config "
-                        "when the VM has a minimal PATH)"
-                    ),
-                    {error, invalid_credentials};
-                {error, {sqlite3_cli, Msg}} ->
-                    lager:warning("admin login DB error: sqlite3 shell failed (~s)", [Msg]),
-                    {error, invalid_credentials};
-                {error, Reason} ->
-                    lager:warning("admin login DB error: ~p", [Reason]),
-                    {error, invalid_credentials}
+            case ingress_local_login_allowed() of
+                false ->
+                    {error, login_disabled};
+                true ->
+                    case use_env_login() of
+                        true ->
+                            pertisk_eproxy_env_auth:login(User, Pass);
+                        false ->
+                            sqlite_login(User, Pass)
+                    end
             end;
         _ ->
             {error, login_disabled}
+    end.
+
+ingress_local_login_allowed() ->
+    case pertisk_ingress_env:enabled() of
+        true -> pertisk_eproxy_env_auth:supports_local();
+        false -> true
+    end.
+
+use_env_login() ->
+    pertisk_ingress_env:enabled() orelse pertisk_eproxy_env_auth:env_credentials_configured().
+
+sqlite_login(User, Pass) ->
+    UBin = as_bin(User),
+    PBin = as_bin(Pass),
+    DbPath = pertisk_eproxy_config:db_file(),
+    case pertisk_eproxy_db:verify_admin_login(DbPath, UBin, PBin) of
+        ok ->
+            Token = new_token(),
+            Exp = erlang:system_time(second) + 86400,
+            true = ets:insert(?TAB, #session{token = Token, user = UBin, exp = Exp}),
+            {ok, #{token => Token, username => UBin, expires_in => 86400}};
+        {error, invalid_credentials} ->
+            {error, invalid_credentials};
+        {error, sqlite3_executable_not_found} ->
+            lager:warning(
+                "admin login DB error: sqlite3 CLI not found (install package `sqlite3` and/or set "
+                "`{sqlite3_executable, \"/usr/bin/sqlite3\"}` under `pertisk_eproxy` in sys.config "
+                "when the VM has a minimal PATH)"
+            ),
+            {error, invalid_credentials};
+        {error, {sqlite3_cli, Msg}} ->
+            lager:warning("admin login DB error: sqlite3 shell failed (~s)", [Msg]),
+            {error, invalid_credentials};
+        {error, Reason} ->
+            lager:warning("admin login DB error: ~p", [Reason]),
+            {error, invalid_credentials}
     end.
 
 verify_request(Req) ->
@@ -151,18 +200,41 @@ verify_token_uncaught(Token) when is_binary(Token) ->
         [#session{exp = Exp, user = U}] when Exp > Now ->
             {ok, U};
         _ ->
-            %% Local opaque sessions (`ept_…`) never validate as Auth0 JWTs — skip JWKS work.
-            case is_local_session_token(Token) of
+            case verify_env_or_sso_token(Token) of
+                {ok, U} ->
+                    {ok, U};
+                {error, _} ->
+                    {error, unauthorized}
+            end
+    end.
+
+verify_env_or_sso_token(Token) ->
+    case pertisk_eproxy_env_auth:verify_api_token(Token) of
+        {ok, U, _} ->
+            {ok, U};
+        error ->
+            case is_stateless_bearer_token(Token) of
                 true ->
-                    {error, unauthorized};
+                    case pertisk_eproxy_env_auth:verify_bearer_token(Token) of
+                        {ok, U, _} -> {ok, U};
+                        {error, _} -> verify_auth0_token(Token)
+                    end;
                 false ->
-                    case pertisk_eproxy_auth0:verify_bearer(Token) of
-                        {ok, User, _Exp} ->
-                            {ok, User};
-                        _ ->
-                            {error, unauthorized}
+                    case is_local_session_token(Token) of
+                        true ->
+                            {error, unauthorized};
+                        false ->
+                            verify_auth0_token(Token)
                     end
             end
+    end.
+
+verify_auth0_token(Token) ->
+    case pertisk_eproxy_auth0:verify_bearer(Token) of
+        {ok, User, _Exp} ->
+            {ok, User};
+        _ ->
+            {error, unauthorized}
     end.
 
 logout(Token) when is_binary(Token) ->
@@ -190,16 +262,26 @@ refresh_uncaught(Token) when is_binary(Token) ->
             true = ets:insert(?TAB, S#session{exp = Exp}),
             {ok, #{token => Token, username => U, expires_in => 86400}};
         _ ->
-            case is_local_session_token(Token) of
+            case is_stateless_bearer_token(Token) of
                 true ->
-                    {error, unauthorized};
-                false ->
-                    case pertisk_eproxy_auth0:verify_bearer(Token) of
-                        {ok, U, ExpAt} when ExpAt > (Now - 90) ->
-                            TTL = max(30, min(86400, ExpAt - Now)),
-                            {ok, #{token => Token, username => U, expires_in => TTL}};
-                        _ ->
+                    case pertisk_eproxy_env_auth:verify_bearer_token(Token) of
+                        {ok, U, _} ->
+                            pertisk_eproxy_env_auth:issue_bearer_token(U);
+                        {error, _} ->
                             {error, unauthorized}
+                    end;
+                false ->
+                    case is_local_session_token(Token) of
+                        true ->
+                            {error, unauthorized};
+                        false ->
+                            case pertisk_eproxy_auth0:verify_bearer(Token) of
+                                {ok, U, ExpAt} when ExpAt > (Now - 90) ->
+                                    TTL = max(30, min(86400, ExpAt - Now)),
+                                    {ok, #{token => Token, username => U, expires_in => TTL}};
+                                _ ->
+                                    {error, unauthorized}
+                            end
                     end
             end
     end.
@@ -228,6 +310,10 @@ new_token() ->
 %% Opaque local login tokens (not JWTs); avoids Auth0 JWKS when session expired or node restarted.
 is_local_session_token(<<"ept_", _/binary>>) -> true;
 is_local_session_token(_) -> false.
+
+%% Stateless ingress bearer (`ptskv1.…`), compatible with pertisk-rproxy.
+is_stateless_bearer_token(<<"ptskv1.", _/binary>>) -> true;
+is_stateless_bearer_token(_) -> false.
 
 as_bin(V) when is_binary(V) -> V;
 as_bin(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);

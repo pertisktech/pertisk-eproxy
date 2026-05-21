@@ -597,15 +597,7 @@ maybe_set_ingress_mode() ->
     case pertisk_ingress_env:ingress_mode() of
         true ->
             application:set_env(pertisk_eproxy, mode, ingress),
-            case application:get_env(pertisk_eproxy, admin_auth) of
-                {ok, local} ->
-                    application:set_env(pertisk_eproxy, admin_auth, disabled),
-                    lager:info(
-                        "Ingress mode: SQLite admin login disabled; use Auth0 SSO or read-only viewer"
-                    );
-                _ ->
-                    ok
-            end;
+            pertisk_eproxy_env_auth:configure();
         false ->
             ok
     end.

@@ -130,6 +130,7 @@ function decodeBase64Url(value: string): string | null {
 
 export function detectAuthMethodFromToken(token: string | null): AuthMethod | null {
   if (!token) return null;
+  if (token.startsWith('ptskv1.') || token.startsWith('ept_')) return 'local';
   const parts = token.split('.');
   if (parts.length < 2) return null;
   const headerJson = decodeBase64Url(parts[0]);
