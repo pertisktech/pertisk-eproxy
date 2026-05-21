@@ -1,0 +1,16 @@
+# Example PertiskBackend: reusable backend with upstreams and load balancing.
+# PertiskIngress references it via spec.backendRef.name (same namespace).
+apiVersion: proxy.pertisk.tech/v1alpha1
+kind: PertiskBackend
+metadata:
+  name: my-backend
+  namespace: default
+spec:
+  upstreams:
+    - address: my-service:80
+      weight: 1
+    - address: my-service-canary:80
+      weight: 2
+  algorithm: RoundRobin
+  healthPath: /health
+  healthIntervalSeconds: 10

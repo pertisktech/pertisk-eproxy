@@ -13,9 +13,10 @@ Pertisk eProxy Ingress Controller has been installed.
 
 3. TLS: reference Secrets (type kubernetes.io/tls) in Ingress spec.tls.
 
-4. Probes:
-   - Liveness:  GET /api/health (management port)
-   - Readiness: GET /api/ingress/status (management port)
+4. Probes (management port, no auth):
+   - Startup / liveness: GET /api/ingress/live
+   - Readiness: GET /api/ingress/ready (503 if watcher failed)
+   - Details: GET /api/ingress/status
 
 5. Example workload Ingress:
 

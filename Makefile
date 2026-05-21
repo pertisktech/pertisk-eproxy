@@ -1,4 +1,4 @@
-.PHONY: all compile shell test clean release \
+.PHONY: all compile patch-ekub shell test clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -27,7 +27,15 @@ DOCKERFILE_INGRESS ?= Dockerfile.ingress
 
 all: compile
 
-compile:
+# ekub 0.2.0: fail_if_no_peer_cert is server-only; breaks in-cluster K8s API TLS.
+patch-ekub:
+	@$(REBAR) get-deps
+	@find _build -path '*/ekub/src/ekub_core.erl' -exec sh -c '\
+		patch -p1 -d "$$(dirname "$$1")/.." -i contrib/patches/ekub-ssl-client-k8s.patch 2>/dev/null \
+		|| sed -i "" "/fail_if_no_peer_cert/d" "$$1" 2>/dev/null \
+		|| sed -i "/fail_if_no_peer_cert/d" "$$1"' _ {} \;
+
+compile: patch-ekub
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
 
 shell: compile

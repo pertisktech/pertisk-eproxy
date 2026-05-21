@@ -1,0 +1,24 @@
+# PertiskIngress CRD (proxy.pertisk.tech) — same shape as pertisk-rproxy, but the
+# Erlang ingress controller does NOT watch this API yet (only networking.k8s.io/v1 Ingress).
+# For admin UI like pertisk-rproxy, use ingress-admin-homelab.yaml or Helm adminIngress.
+#
+# Example PertiskIngress: host, paths, and reference to PertiskBackend.
+# Relation: spec.backendRef.name must match a PertiskBackend in the same namespace.
+# TLS: optional; references a Secret (kubernetes.io/tls) in the same namespace.
+apiVersion: proxy.pertisk.tech/v1alpha1
+kind: PertiskIngress
+metadata:
+  name: admin-eproxy-app
+  namespace: pertisk-eproxy
+spec:
+  host: admin.erlang.thaidevops.co
+  ingressClassName: pertisk-eproxy
+  backendRef:
+    name: my-backend   # references PertiskBackend (same namespace)
+  routes:
+    - path: /
+      pathType: Prefix
+  tls:
+    secretName: admin-erlang-tls   # Secret (kubernetes.io/tls) in same namespace
+    hosts:
+      - admin.erlang.thaidevops.co

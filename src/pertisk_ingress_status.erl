@@ -7,7 +7,9 @@
     record_error/1,
     set_leader/1,
     set_watcher_state/1,
-    snapshot/0
+    snapshot/0,
+    live_ok/0,
+    ready/0
 ]).
 
 -define(TAB, pertisk_ingress_status_tab).
@@ -60,6 +62,28 @@ set_watcher_state(State) when State =:= connected; State =:= disconnected; State
     Base = get_state(),
     ets:insert(?TAB, {state, Base#{watcher => State}}),
     ok.
+
+%% @doc Liveness: BEAM + management listener responding.
+-spec live_ok() -> ok.
+live_ok() ->
+    ok.
+
+%% @doc Readiness for K8s: watcher must not be in permanent error state.
+-spec ready() -> ok | {error, binary()}.
+ready() ->
+    case pertisk_ingress_env:enabled() of
+        false ->
+            ok;
+        true ->
+            init(),
+            S = get_state(),
+            case maps:get(watcher, S, disconnected) of
+                error ->
+                    {error, <<"ingress watcher failed (check logs and RBAC)">>};
+                _ ->
+                    ok
+            end
+    end.
 
 snapshot() ->
     init(),

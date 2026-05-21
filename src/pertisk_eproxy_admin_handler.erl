@@ -51,6 +51,8 @@ ingress_viewer_blocked(Method, Resource) ->
 ingress_mutating(<<"GET">>, _) -> false;
 ingress_mutating(<<"HEAD">>, _) -> false;
 ingress_mutating(<<"POST">>, reload) -> false;
+ingress_mutating(_, ingress_live) -> false;
+ingress_mutating(_, ingress_ready) -> false;
 ingress_mutating(_, ingress_status) -> false;
 ingress_mutating(_, ingress_watchers) -> false;
 ingress_mutating(_, ingress_errors) -> false;
@@ -70,6 +72,13 @@ auth_public(<<"POST">>, auth_refresh) -> true;
 auth_public(<<"POST">>, auth_logout) -> true;
 auth_public(<<"GET">>, metrics) -> true;
 auth_public(<<"GET">>, health) -> true;
+auth_public(<<"HEAD">>, health) -> true;
+auth_public(<<"GET">>, ingress_live) -> true;
+auth_public(<<"HEAD">>, ingress_live) -> true;
+auth_public(<<"GET">>, ingress_ready) -> true;
+auth_public(<<"HEAD">>, ingress_ready) -> true;
+auth_public(<<"GET">>, ingress_status) -> true;
+auth_public(<<"HEAD">>, ingress_status) -> true;
 auth_public(_, _) -> false.
 
 %% ---------------------------------------------------------------------------
@@ -593,8 +602,29 @@ handle(<<"POST">>, reload, Req) ->
         {error, R} -> error_reply(500, R, Req)
     end;
 
+handle(<<"GET">>, ingress_live, Req) ->
+    _ = pertisk_ingress_status:live_ok(),
+    json_reply(200, #{<<"status">> => <<"ok">>}, Req);
+handle(<<"HEAD">>, ingress_live, Req) ->
+    json_reply(200, #{}, Req);
+
+handle(<<"GET">>, ingress_ready, Req) ->
+    case pertisk_ingress_status:ready() of
+        ok ->
+            json_reply(200, #{<<"status">> => <<"ready">>}, Req);
+        {error, Reason} ->
+            json_reply(503, #{<<"status">> => <<"not_ready">>, <<"reason">> => Reason}, Req)
+    end;
+handle(<<"HEAD">>, ingress_ready, Req) ->
+    case pertisk_ingress_status:ready() of
+        ok -> json_reply(200, #{}, Req);
+        {error, _} -> json_reply(503, #{}, Req)
+    end;
+
 handle(<<"GET">>, ingress_status, Req) ->
     json_reply(200, pertisk_ingress_status:snapshot(), Req);
+handle(<<"HEAD">>, ingress_status, Req) ->
+    json_reply(200, #{}, Req);
 
 handle(<<"GET">>, ingress_watchers, Req) ->
     S = pertisk_ingress_status:snapshot(),

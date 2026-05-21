@@ -71,6 +71,6 @@ Ensure `spec.ingressClassName` matches `ingress.className` (default `pertisk-epr
 |--|--------------------------|-------------------------|
 | CRDs | Optional PertiskBackend/Ingress | Not included (standard Ingress only) |
 | Metrics | Dedicated `:9090` | `GET /api/metrics` on management port |
-| Probes | `/live`, `/ready` | `/api/health`, `/api/ingress/status` |
+| Probes | `/live`, `/ready` | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
 | Auth secret | `PERTISK_ADMIN` env | Baked `sys.config` / SQLite (ingress API read-only) |
 | Listen ports | 8080 / 8443 in container | 80 / 443 (configurable via `controller.config`) |

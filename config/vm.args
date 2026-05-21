@@ -1,23 +1,24 @@
-## Node name (for distributed Erlang / remsh)
+# Node name (for distributed Erlang / remsh)
 -name pertisk_eproxy@127.0.0.1
 
-## Cookie for distributed Erlang (change in production)
+# Cookie for distributed Erlang (change in production)
 -setcookie pertisk_eproxy_cookie
 
-## Heartbeat monitor (restart VM on crash)
-## -heart
+# Heartbeat monitor (restart VM on crash)
+# -heart
 
-## SMP auto-detect
-+S auto
+# Schedulers: do not use "+S auto" (invalid — VM exits with "bad amount of schedulers auto").
+# Omit +S to use all CPUs visible to the pod (respects cgroup limits in K8s).
+# Optional fixed count for small CPU limits: +S 2:2
 
-## Async thread pool
+# Async thread pool
 +A 32
 
-## Maximum number of ports (file descriptors)
+# Maximum number of ports (file descriptors)
 +Q 65536
 
-## Increase process limit
+# Increase process limit
 +P 1048576
 
-## Enable kernel poll
+# Enable kernel poll
 +K true

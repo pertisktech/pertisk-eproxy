@@ -94,9 +94,18 @@ resources:
     cpu: "1"
     memory: 512Mi
 
+startupProbe:
+  httpGet:
+    path: /api/ingress/live
+    port: management
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 24
+
 livenessProbe:
   httpGet:
-    path: /api/health
+    path: /api/ingress/live
     port: management
   initialDelaySeconds: 15
   periodSeconds: 30
@@ -105,7 +114,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /api/ingress/status
+    path: /api/ingress/ready
     port: management
   initialDelaySeconds: 10
   periodSeconds: 10

@@ -38,6 +38,8 @@ api_routes() ->
         {"/api/health", pertisk_eproxy_admin_handler, health},
         {"/api/metrics", pertisk_eproxy_admin_handler, metrics},
         {"/api/reload", pertisk_eproxy_admin_handler, reload},
+        {"/api/ingress/live", pertisk_eproxy_admin_handler, ingress_live},
+        {"/api/ingress/ready", pertisk_eproxy_admin_handler, ingress_ready},
         {"/api/ingress/status", pertisk_eproxy_admin_handler, ingress_status},
         {"/api/ingress/watchers", pertisk_eproxy_admin_handler, ingress_watchers},
         {"/api/ingress/errors", pertisk_eproxy_admin_handler, ingress_errors},

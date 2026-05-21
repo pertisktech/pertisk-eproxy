@@ -10,21 +10,34 @@ RUN apk add --no-cache bash git build-base cmake ninja perl linux-headers openss
 
 COPY . .
 
-RUN rm -rf _build && rebar3 as prod release
+RUN rm -rf _build \
+    && rebar3 get-deps \
+    && find _build -path '*/ekub/src/ekub_core.erl' -exec sh -c '\
+         patch -p1 -d "$$(dirname "$$1")/.." -i /src/contrib/patches/ekub-ssl-client-k8s.patch 2>/dev/null \
+           || sed -i "/fail_if_no_peer_cert/d" "$$1"' _ {} \; \
+    && rebar3 as prod release
 
 FROM alpine:3.20
 
 ARG APP_HOME=/opt/pertisk_eproxy
 
-RUN apk add --no-cache ca-certificates libstdc++ openssl ncurses-libs bash wget \
+RUN apk add --no-cache ca-certificates libstdc++ ncurses-libs bash wget sqlite openssl \
     && addgroup -S pertisk \
-    && adduser -S -G pertisk pertisk \
-    && mkdir -p "${APP_HOME}/data" "${APP_HOME}/data/k8s-tls"
+    && adduser -S -G pertisk pertisk
 
 WORKDIR ${APP_HOME}
 
+COPY --from=builder /usr/lib/libcrypto.so* /usr/lib/
+COPY --from=builder /usr/lib/libssl.so* /usr/lib/
+COPY --from=builder /lib/libcrypto.so* /lib/
+COPY --from=builder /lib/libssl.so* /lib/
+
 COPY --chown=pertisk:pertisk --from=builder /src/config/ingress.json ./config/ingress.json
 COPY --chown=pertisk:pertisk --from=builder /src/_build/prod/rel/pertisk_eproxy/ ./
+
+RUN mkdir -p "${APP_HOME}/log" "${APP_HOME}/data" "${APP_HOME}/data/k8s-tls" \
+    && chown -R pertisk:pertisk "${APP_HOME}" \
+    && chmod 775 "${APP_HOME}/log" "${APP_HOME}/data"
 
 ENV PERTISK_MODE=ingress \
     PERTISK_K8S_INGRESS_ENABLED=true \
@@ -36,7 +49,7 @@ USER pertisk
 EXPOSE 80 443 9080 443/udp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:9080/api/health || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:9080/api/ingress/live || exit 1
 
 ENTRYPOINT ["bin/pertisk_eproxy"]
 CMD ["foreground"]
