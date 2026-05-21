@@ -119,12 +119,14 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
+    # Requires image with pertisk_ingress_status:ready_from_runtime/0 (live sites + TLS).
+    # If pods stay 503 on /api/ingress/ready, temporarily set path: /api/ingress/live
     path: /api/ingress/ready
     port: management
-  initialDelaySeconds: 10
+  initialDelaySeconds: 15
   periodSeconds: 10
   timeoutSeconds: 5
-  failureThreshold: 3
+  failureThreshold: 6
 
 service:
   type: LoadBalancer

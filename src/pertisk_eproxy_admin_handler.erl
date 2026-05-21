@@ -601,17 +601,9 @@ handle(<<"HEAD">>, ingress_live, Req) ->
     json_reply(200, #{}, Req);
 
 handle(<<"GET">>, ingress_ready, Req) ->
-    case pertisk_ingress_status:ready() of
-        ok ->
-            json_reply(200, #{<<"status">> => <<"ready">>}, Req);
-        {error, Reason} ->
-            json_reply(503, #{<<"status">> => <<"not_ready">>, <<"reason">> => Reason}, Req)
-    end;
+    ingress_ready_reply(Req, true);
 handle(<<"HEAD">>, ingress_ready, Req) ->
-    case pertisk_ingress_status:ready() of
-        ok -> json_reply(200, #{}, Req);
-        {error, _} -> json_reply(503, #{}, Req)
-    end;
+    ingress_ready_reply(Req, false);
 
 handle(<<"GET">>, ingress_status, Req) ->
     json_reply(200, pertisk_ingress_status:snapshot(), Req);
@@ -1280,6 +1272,18 @@ with_alt_svc(Req, Headers) ->
 
 should_serve_admin_spa() ->
     pertisk_eproxy_config:ingress_mode() andalso admin_index_exists().
+
+ingress_ready_reply(Req, WithBody) ->
+    case pertisk_ingress_status:ready_from_runtime() of
+        ok when WithBody ->
+            json_reply(200, #{<<"status">> => <<"ready">>}, Req);
+        ok ->
+            json_reply(200, #{}, Req);
+        {error, Reason} when WithBody ->
+            json_reply(503, #{<<"status">> => <<"not_ready">>, <<"reason">> => Reason}, Req);
+        {error, _} ->
+            json_reply(503, #{}, Req)
+    end.
 
 admin_index_exists() ->
     Index = filename:join([code:priv_dir(pertisk_eproxy), "admin", "index.html"]),

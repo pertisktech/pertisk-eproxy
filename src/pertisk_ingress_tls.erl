@@ -13,7 +13,8 @@
     cert_ref/2,
     paths_for_host/1,
     decode_entry/1,
-    write_pem_files/4
+    write_pem_files/4,
+    restore_from_disk_sites/1
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -70,6 +71,50 @@ write_pem_files(Ns, Secret, CertPem, KeyPem) ->
 
 all_hosts() ->
     [H || {H, _} <- ets:tab2list(?TAB)].
+
+%% @doc Repopulate TLS store from on-disk PEMs when reconcile returns no TLS (watch races).
+-spec restore_from_disk_sites([map()]) -> ok.
+restore_from_disk_sites(Sites) when is_list(Sites) ->
+    lists:foreach(fun restore_site_from_disk/1, Sites),
+    ok.
+
+restore_site_from_disk(#{host := Host} = Site) when is_binary(Host) ->
+    Ns = maps:get(ingress_namespace, Site, namespace_for_restore()),
+    NsBin = case Ns of
+        B when is_binary(B) -> B;
+        L when is_list(L) -> list_to_binary(L);
+        _ -> namespace_for_restore()
+    end,
+    Dir = filename:join([
+        pertisk_ingress_env:k8s_tls_dir(),
+        binary_to_list(NsBin)
+    ]),
+    case filelib:wildcard(filename:join([Dir, "*", "tls.crt"])) of
+        [CertPath | _] ->
+            KeyPath = filename:join([filename:dirname(CertPath), "tls.key"]),
+            case {file:read_file(CertPath), file:read_file(KeyPath)} of
+                {{ok, CertPem}, {ok, KeyPem}} ->
+                    _ = set_hosts([Host], CertPem, KeyPem, CertPath, KeyPath),
+                    ok;
+                _ ->
+                    ok
+            end;
+        _ ->
+            ok
+    end;
+restore_site_from_disk(_) ->
+    ok.
+
+namespace_for_restore() ->
+    case pertisk_ingress_env:namespace() of
+        all_namespaces ->
+            case os:getenv("POD_NAMESPACE") of
+                false -> <<"default">>;
+                Ns -> list_to_binary(Ns)
+            end;
+        Ns when is_binary(Ns) ->
+            Ns
+    end.
 
 %% Certificate reference stored on sites (for debugging / admin UI).
 cert_ref(Namespace, SecretName) ->
