@@ -252,7 +252,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     BackendName, UpstreamAddr, error
                                 ),
                                 lager:warning(
-                                    "h3 proxy_via_gun failed: ~p host=~s path=~s upstream=~s",
+                                    "h3 upstream failed: ~p host=~s path=~s upstream=~s",
                                     [ProxyReason, LogHost, PathOnly, UpstreamAddr]
                                 ),
                                 reply_502_plain(H3Conn, StreamId),

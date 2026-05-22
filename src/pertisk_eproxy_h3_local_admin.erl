@@ -1,12 +1,12 @@
-%% @doc Run {@link pertisk_eproxy_admin_handler} in-process for HTTP/3 (no gun hop to :9080).
+%% @doc Serve management admin UI + `/api/*` in-process over HTTP/3 (no gun hop to :9080).
 -module(pertisk_eproxy_h3_local_admin).
 
 -export([try_dispatch/7]).
 
 -define(DISPATCH_TIMEOUT_MS, 60000).
+-define(ADMIN_PRIV, "admin").
 
-%% @doc Dispatch a management `/api/*` request via Cowboy admin handlers.
-%% Returns `{ok, Status, Headers, Body}` or `{error, unsupported}` / `{error, Reason}`.
+%% @doc Dispatch management traffic on HTTP/3.
 -spec try_dispatch(
     Method :: binary(),
     Host :: binary(),
@@ -20,41 +20,154 @@
     | {error, unsupported}
     | {error, term()}.
 try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
-    case h3_local_admin_path(Path) of
+    case h3_local_management_path(Path) of
         false ->
             {error, unsupported};
         true ->
-            dispatch_admin(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+            case serve_static_h3(Method, Host, Path) of
+                {ok, Status, Headers, RespBody} ->
+                    {ok, Status, Headers, RespBody};
+                not_found ->
+                    dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+            end
     end.
 
-h3_local_admin_path(<<"/api/realtime", _/binary>>) ->
+%% WebSocket realtime stays on the TCP management listener only.
+h3_local_management_path(<<"/api/realtime", _/binary>>) ->
     false;
-h3_local_admin_path(<<"/api/", _/binary>>) ->
-    true;
-h3_local_admin_path(_) ->
-    false.
+h3_local_management_path(_) ->
+    true.
 
-dispatch_admin(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
+%% cowboy_static uses cowboy_rest; the stub only captures cowboy_req:reply/4.
+serve_static_h3(Method, Host, Path) ->
+    case normalize_method(Method) of
+        <<"GET">> ->
+            read_static_file(Host, Path, false);
+        <<"HEAD">> ->
+            read_static_file(Host, Path, true);
+        _ ->
+            not_found
+    end.
+
+read_static_file(Host, Path, HeadOnly) ->
+    case static_disk_path(Path) of
+        {ok, FilePath} ->
+            case file:read_file(FilePath) of
+                {ok, Content} ->
+                    Body = case HeadOnly of
+                        true -> <<>>;
+                        false -> Content
+                    end,
+                    Headers = static_response_headers(Host, FilePath),
+                    {ok, 200, Headers, Body};
+                {error, enoent} ->
+                    not_found;
+                {error, Reason} ->
+                    {error, {static_read, Reason}}
+            end;
+        not_found ->
+            not_found
+    end.
+
+static_disk_path(<<"/favicon.svg">>) ->
+    {ok, filename:join([admin_dir(), "favicon.svg"])};
+static_disk_path(<<"/assets/", Rel/binary>>) ->
+    case safe_asset_relative(Rel) of
+        {ok, RelBin} ->
+            {ok, filename:join([admin_dir(), "assets", RelBin])};
+        error ->
+            not_found
+    end;
+static_disk_path(_) ->
+    not_found.
+
+admin_dir() ->
+    filename:join([code:priv_dir(pertisk_eproxy), ?ADMIN_PRIV]).
+
+%% Reject path traversal (same rules as cowboy_static validate_reserved).
+safe_asset_relative(Rel) ->
+    Parts = binary:split(Rel, <<"/">>, [global]),
+    case lists:any(fun bad_path_segment/1, Parts) of
+        true ->
+            error;
+        false ->
+            {ok, filename:join([binary_to_list(P) || P <- Parts, P =/= <<>>])}
+    end.
+
+bad_path_segment(<<>>) ->
+    false;
+bad_path_segment(<<".">>) ->
+    true;
+bad_path_segment(<<"..">>) ->
+    true;
+bad_path_segment(Seg) ->
+    reserved_in_segment(Seg).
+
+reserved_in_segment(<<>>) ->
+    false;
+reserved_in_segment(<<C, Rest/binary>>) ->
+    case C of
+        $/ -> true;
+        $\\ -> true;
+        $\0 -> true;
+        _ -> reserved_in_segment(Rest)
+    end.
+
+static_response_headers(Host, FilePath) ->
+    CT = static_content_type(FilePath),
+    Base = pertisk_eproxy_response_headers:merge(#{
+        <<"content-type">> => CT,
+        <<"cache-control">> => <<"public, max-age=31536000, immutable">>
+    }),
+    Base1 =
+        case pertisk_eproxy_handler:site_advertise_http3(Host) of
+            true -> Base#{<<"alt-svc">> => pertisk_eproxy_alt_svc:header_value()};
+            false -> Base
+        end,
+    maps:to_list(Base1).
+
+static_content_type(FilePath) ->
+    case filename:extension(FilePath) of
+        ".js" -> <<"application/javascript">>;
+        ".mjs" -> <<"application/javascript">>;
+        ".css" -> <<"text/css; charset=utf-8">>;
+        ".svg" -> <<"image/svg+xml">>;
+        ".png" -> <<"image/png">>;
+        ".jpg" -> <<"image/jpeg">>;
+        ".jpeg" -> <<"image/jpeg">>;
+        ".webp" -> <<"image/webp">>;
+        ".woff2" -> <<"font/woff2">>;
+        ".woff" -> <<"font/woff">>;
+        ".json" -> <<"application/json">>;
+        ".map" -> <<"application/json">>;
+        _ -> <<"application/octet-stream">>
+    end.
+
+dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
     Parent = self(),
     Stub = pertisk_eproxy_cowboy_stub_conn:start(Parent, Body),
     Req0 = build_req(Method, Host, Path, Qs, H3Headers, Body, ClientIp, Stub),
-    Env = #{dispatch => pertisk_eproxy_admin_routes:dispatch()},
+    Env = #{dispatch => pertisk_eproxy_admin_routes:management_dispatch()},
     try
         case cowboy_router:execute(Req0, Env) of
-            {ok, Req1, #{handler := pertisk_eproxy_admin_handler, handler_opts := Resource}} ->
-                _ = pertisk_eproxy_admin_handler:init(Req1, Resource),
-                await_response();
+            {ok, Req1, #{handler := Handler, handler_opts := Opts}} ->
+                case Handler of
+                    cowboy_static ->
+                        %% Should not match: /assets/* served above.
+                        {error, unsupported};
+                    _ ->
+                        run_handler_init(Handler, Req1, Opts),
+                        await_response()
+                end;
             {stop, _ReqStop} ->
                 await_response();
-            {ok, _Req1, #{handler := _Other}} ->
-                {error, unsupported};
             {ok, _Req1, _Env} ->
                 {error, unsupported}
         end
     catch
         Class:Reason:Stack ->
             lager:warning(
-                "h3 local admin dispatch failed: ~p:~p path=~s stack=~p",
+                "h3 local management dispatch failed: ~p:~p path=~s stack=~p",
                 [Class, Reason, Path, Stack]
             ),
             {error, {Class, Reason}}
@@ -62,6 +175,14 @@ dispatch_admin(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
         unlink(Stub),
         exit(Stub, kill)
     end.
+
+run_handler_init(pertisk_eproxy_admin_handler, Req, Opts) ->
+    _ = pertisk_eproxy_admin_handler:init(Req, Opts);
+run_handler_init(pertisk_eproxy_spa_handler, Req, Opts) ->
+    _ = pertisk_eproxy_spa_handler:init(Req, Opts);
+run_handler_init(Handler, Req, Opts) ->
+    lager:warning("h3 local management: unsupported handler ~p", [Handler]),
+    _ = Handler:init(Req, Opts).
 
 await_response() ->
     receive

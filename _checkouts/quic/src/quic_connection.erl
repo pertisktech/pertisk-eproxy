@@ -2596,13 +2596,9 @@ send_server_handshake_flight(Cipher, _TranscriptHashAfterSH, State) ->
 send_handshake_crypto_fragmented(<<>>, _Offset, State) ->
     State;
 send_handshake_crypto_fragmented(Payload, Offset, State) ->
-    %% Conservative fixed overhead per HANDSHAKE packet:
-    %%   27 bytes QUIC long header (version + DCID + SCID + length + PN)
-    %%   +  5 bytes CRYPTO frame header (type + offset varint + length varint)
-    %%   + 16 bytes AEAD tag
-    Overhead = 48,
-    MaxMtu = get_current_mtu(State),
-    ChunkSize = max(256, MaxMtu - Overhead),
+    MaxUdp = get_effective_max_udp_payload_size(State),
+    Overhead = handshake_long_header_overhead(State) + crypto_frame_header_max_overhead(),
+    ChunkSize = max(256, MaxUdp - Overhead),
     DataSize = byte_size(Payload),
     ActualChunk = min(DataSize, ChunkSize),
     <<Chunk:ActualChunk/binary, Rest/binary>> = Payload,
@@ -2937,22 +2933,33 @@ send_handshake_packet(Payload, State) ->
     Packet = quic_aead:protect_long_packet(
         Cipher, Key, IV, HP, PN, HeaderPrefix, PaddedPayload
     ),
-    NewSocketState = send_and_take_socket_state(Packet, State),
-
-    %% Emit qlog packet_sent event
-    quic_qlog:packet_sent(State#state.qlog_ctx, #{
-        packet_type => handshake,
-        packet_number => PN,
-        length => byte_size(Packet)
-    }),
-
-    %% Update PN space and packet counter
-    NewPNSpace = PNSpace#pn_space{next_pn = PN + 1},
-    State#state{
-        pn_handshake = NewPNSpace,
-        packets_sent = State#state.packets_sent + 1,
-        socket_state = NewSocketState
-    }.
+    PacketSize = byte_size(Packet),
+    MaxUdp = get_effective_max_udp_payload_size(State),
+    case PacketSize =< MaxUdp of
+        true ->
+            NewSocketState = send_and_take_socket_state(Packet, State),
+            quic_qlog:packet_sent(State#state.qlog_ctx, #{
+                packet_type => handshake,
+                packet_number => PN,
+                length => PacketSize
+            }),
+            NewPNSpace = PNSpace#pn_space{next_pn = PN + 1},
+            State#state{
+                pn_handshake = NewPNSpace,
+                packets_sent = State#state.packets_sent + 1,
+                socket_state = NewSocketState
+            };
+        false ->
+            ?LOG_WARNING(
+                #{
+                    what => handshake_packet_too_large,
+                    packet_size => PacketSize,
+                    max_udp_payload_size => MaxUdp
+                },
+                ?QUIC_LOG_META
+            ),
+            State
+    end.
 
 %% Send a 1-RTT (application) packet with a single frame (avoid encode/decode roundtrip)
 %% This is the preferred send function - encodes once and passes frame for loss tracking
@@ -9466,6 +9473,19 @@ handle_pmtu_probe_loss(
         _ ->
             State
     end.
+
+%% Long-header HANDSHAKE packet overhead (encrypted UDP size, conservative).
+-spec handshake_long_header_overhead(#state{}) -> non_neg_integer().
+handshake_long_header_overhead(#state{dcid = DCID, scid = SCID, pn_handshake = PNSpace}) ->
+    PN = PNSpace#pn_space.next_pn,
+    PNLen = quic_packet:pn_length(PN),
+    %% first byte + version + dcil/dcid + scil/scid + length varint (max 8) + PN + AEAD tag
+    1 + 4 + 1 + byte_size(DCID) + 1 + byte_size(SCID) + 8 + PNLen + 16.
+
+%% CRYPTO frame type + max offset/length varints (RFC 9000 §16).
+-spec crypto_frame_header_max_overhead() -> 17.
+crypto_frame_header_max_overhead() ->
+    17.
 
 %% @doc Get effective outbound UDP payload ceiling.
 %% This clamps local PMTU with peer-advertised max_udp_payload_size.

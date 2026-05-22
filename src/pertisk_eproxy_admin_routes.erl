@@ -1,7 +1,7 @@
 %% @doc Admin REST route table (shared by Cowboy management listener and HTTP/3 local dispatch).
 -module(pertisk_eproxy_admin_routes).
 
--export([api_routes/0, dispatch/0]).
+-export([api_routes/0, dispatch/0, management_ui_routes/0, management_dispatch/0]).
 
 -spec api_routes() -> [cowboy_router:route_path()].
 api_routes() ->
@@ -55,3 +55,19 @@ api_routes() ->
 -spec dispatch() -> cowboy_router:dispatch_rule().
 dispatch() ->
     cowboy_router:compile([{'_', api_routes()}]).
+
+%% SPA + static assets (management listener and HTTP/3 local dispatch).
+-spec management_ui_routes() -> [cowboy_router:route_path()].
+management_ui_routes() ->
+    AdminDir = filename:join([code:priv_dir(pertisk_eproxy), "admin"]),
+    [
+        {"/assets/[...]", cowboy_static, {dir, filename:join([AdminDir, "assets"])}},
+        {"/favicon.svg", cowboy_static, {file, filename:join([AdminDir, "favicon.svg"])}},
+        {"/", pertisk_eproxy_spa_handler, []},
+        {"/[...]", pertisk_eproxy_spa_handler, []}
+    ].
+
+%% Full management site: REST API + admin UI (used by HTTP/3 in-process dispatch).
+-spec management_dispatch() -> cowboy_router:dispatch_rule().
+management_dispatch() ->
+    cowboy_router:compile([{'_', api_routes() ++ management_ui_routes()}]).

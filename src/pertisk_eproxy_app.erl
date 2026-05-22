@@ -414,13 +414,7 @@ build_admin_routes(ingress) ->
     %% Same SPA as proxy_admin (rproxy ingress: admin Ingress → Service :9080).
     build_admin_routes(proxy_admin);
 build_admin_routes(proxy_admin) ->
-    build_admin_api_routes() ++ [
-        %% Static admin UI
-        {"/assets/[...]",          cowboy_static, {dir, filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets"])}},
-        {"/favicon.svg",           cowboy_static, {file, filename:join([code:priv_dir(pertisk_eproxy), "admin", "favicon.svg"])}},
-        {"/",                      pertisk_eproxy_spa_handler, []},
-        {"/[...]",                 pertisk_eproxy_spa_handler, []}
-    ].
+    build_admin_api_routes() ++ pertisk_eproxy_admin_routes:management_ui_routes().
 
 build_admin_api_routes() ->
     pertisk_eproxy_admin_routes:api_routes().
