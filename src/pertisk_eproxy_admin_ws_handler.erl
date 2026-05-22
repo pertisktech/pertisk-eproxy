@@ -13,10 +13,12 @@ init(Req, _State) ->
     case authorize(Req) of
         ok ->
             log_ws_upgrade(Req),
-            {cowboy_websocket, Req, #{authenticated => true}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
+            {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(Req),
+                #{authenticated => true}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
         pending_auth ->
             log_ws_upgrade(Req),
-            {cowboy_websocket, Req, #{authenticated => false}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
+            {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(Req),
+                #{authenticated => false}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
         {error, unauthorized} ->
             Req2 = cowboy_req:reply(
                 401,

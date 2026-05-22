@@ -29,8 +29,7 @@ mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/lib/systemd/system" "$OUT_DIR"
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
 copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
-copy_tree "$ROOT_DIR/data" "$PKG_ROOT/opt/$PKG_NAME/data"
-copy_tree "$ROOT_DIR/log" "$PKG_ROOT/opt/$PKG_NAME/log"
+mkdir -p "$PKG_ROOT/opt/$PKG_NAME/data/acme" "$PKG_ROOT/opt/$PKG_NAME/data/tls" "$PKG_ROOT/opt/$PKG_NAME/log"
 
 cat > "$PKG_ROOT/lib/systemd/system/$PKG_NAME.service" <<EOF
 [Unit]

@@ -1,7 +1,7 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
 %% **Proxy / proxy_admin:** runtime config and sites/backends are stored in SQLite
-%% (`data/proxy.db`); JSON file seeds the DB on first start.
+%% (`data/proxy.db`); JSON file seeds the DB only when that file does not exist yet.
 %%
 %% **Ingress:** listener settings come from `config/ingress.json` (or `PERTISK_CONFIG_FILE`);
 %% sites/backends are applied only via {@link sync_ingress/2} from Kubernetes manifests
@@ -297,13 +297,10 @@ load_ingress_config() ->
             {error, Reason}
     end.
 
-%% Proxy / proxy_admin: SQLite is source of truth; JSON file seeds DB on first start.
+%% Proxy / proxy_admin: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
 load_proxy_config() ->
     DbPath = db_file(),
-    case pertisk_eproxy_db:ensure_admin_users(DbPath) of
-        ok -> ok;
-        {error, E} -> lager:warning("ensure_admin_users failed: ~p", [E])
-    end,
+    _ = pertisk_eproxy_db:warn_legacy_mnesia_storage(data_dir()),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
             Cfg = Cfg0,
@@ -312,10 +309,35 @@ load_proxy_config() ->
             _ = persist_runtime_config(DbPath, Cfg),
             {ok, Cfg};
         not_found ->
+            case pertisk_eproxy_db:db_file_exists(DbPath) of
+                false ->
+                    load_proxy_config_first_deploy(DbPath);
+                true ->
+                    rebuild_runtime_config_from_db(DbPath)
+            end;
+        {error, Reason} ->
+            case pertisk_eproxy_db:db_file_exists(DbPath) of
+                true ->
+                    lager:error(
+                        "SQLite at ~s unavailable (~p); not re-seeding from proxy.json on upgrade",
+                        [DbPath, Reason]
+                    ),
+                    {error, Reason};
+                false ->
+                    load_proxy_config_first_deploy(DbPath)
+            end
+    end.
+
+load_proxy_config_first_deploy(DbPath) ->
+    case pertisk_eproxy_db:init(DbPath) of
+        {ok, _} ->
+            lager:info(
+                "First deploy: seeding SQLite from ~s into ~s",
+                [config_file(), DbPath]
+            ),
             load_proxy_config_from_file_and_seed(DbPath);
         {error, Reason} ->
-            lager:warning("Runtime config in SQLite unavailable (~p), falling back to file", [Reason]),
-            load_proxy_config_from_file_and_seed(DbPath)
+            {error, Reason}
     end.
 
 load_proxy_config_from_file_and_seed(DbPath) ->
@@ -325,9 +347,69 @@ load_proxy_config_from_file_and_seed(DbPath) ->
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = persist_runtime_config(DbPath, Cfg),
+            lager:info("SQLite seeded from ~s", [File]),
             {ok, Cfg};
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% Repair missing runtime_state row without overwriting sites/DNS from proxy.json defaults.
+rebuild_runtime_config_from_db(DbPath) ->
+    File = config_file(),
+    case read_config_file(File) of
+        {ok, Base} ->
+            Sites = load_sites_from_db(DbPath),
+            Backends = load_backends_from_db(DbPath),
+            Dns = load_dns_providers_from_db(DbPath),
+            Certs = load_certificate_names_from_db(DbPath),
+            Cfg = Base#{
+                sites => Sites,
+                backends => Backends,
+                dns_providers => Dns,
+                certificates => Certs
+            },
+            _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, Certs),
+            _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, Dns),
+            _ = persist_runtime_config(DbPath, Cfg),
+            lager:warning(
+                "Rebuilt runtime_config from SQLite tables (listener defaults from ~s)",
+                [File]
+            ),
+            {ok, Cfg};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+load_sites_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_sites(DbPath) of
+        {ok, Sites} -> Sites;
+        _ -> []
+    end.
+
+load_backends_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_backends(DbPath) of
+        {ok, Backends} -> Backends;
+        _ -> []
+    end.
+
+load_dns_providers_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_dns_providers(DbPath) of
+        {ok, Rows} ->
+            [#{
+                name => maps:get(name, R),
+                provider_type => maps:get(provider_type, R),
+                credentials => maps:get(credentials, R, #{})
+            } || R <- Rows];
+        _ ->
+            []
+    end.
+
+load_certificate_names_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Certs} ->
+            [maps:get(name, C) || C <- Certs, maps:is_key(name, C)];
+        _ ->
+            []
     end.
 
 read_config_file(File) ->

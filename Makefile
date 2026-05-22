@@ -60,7 +60,7 @@ quic-upstream-local:
 
 release:
 	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
-	@bash scripts/build-release-linux.sh
+	@COWBOY_QUICER=1 COWBOY_QUIC=1 bash scripts/build-release-linux.sh
 
 ## --- Docker: proxy (admin + SQLite config) ---
 docker-proxy: docker-release

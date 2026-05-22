@@ -10,7 +10,15 @@
 ]).
 
 start(_StartType, _StartArgs) ->
-    lager:info("Starting pertisk_eproxy"),
+    Vsn =
+        case application:get_key(pertisk_eproxy, vsn) of
+            {ok, V} -> V;
+            _ -> <<"unknown">>
+        end,
+    lager:info(
+        "Starting pertisk_eproxy ~s (config storage: SQLite, db=~s)",
+        [Vsn, pertisk_eproxy_config:db_file()]
+    ),
     _ = install_quic_log_filter(),
     _ = application:ensure_all_started(inets),
     ok = bootstrap_first_start_artifacts(),
@@ -61,27 +69,9 @@ start_listeners() ->
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
-    {ok, _}    = cowboy:start_clear(http4,
-        #{
-            num_acceptors => 100,
-            socket_opts => [{ip, {0,0,0,0}}, {port, HttpPort}]
-        },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
-    ),
-    {ok, _}    = cowboy:start_clear(http6,
-        #{
-            num_acceptors => 100,
-            socket_opts => [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpPort}]
-        },
-        #{
-            env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-            logger => pertisk_eproxy_cowboy_logger
-        }
-    ),
-    lager:info("HTTP proxy listening on 0.0.0.0:~w and [::]:~w", [HttpPort, HttpPort]),
+    ok = start_clear_listener(http4, HttpPort, {0, 0, 0, 0}, Routes, 100, []),
+    ok = start_clear_listener_ipv6(http6, HttpPort, Routes, 100),
+    lager:info("HTTP proxy listening on 0.0.0.0:~w (http4)", [HttpPort]),
 
     start_proxy_tls_listeners(Config, Routes),
 
@@ -94,10 +84,7 @@ start_listeners() ->
         %% Management/admin is intentionally plain HTTP/1.1.
         enable_connect_protocol => false
     },
-    {ok, _} = cowboy:start_clear(management,
-        #{num_acceptors => 10, socket_opts => [{ip, MgmtAddr}, {port, MgmtPort}]},
-        MgmtProtoOpts
-    ),
+    ok = start_clear_listener_opts(management, MgmtPort, MgmtAddr, 10, [], MgmtProtoOpts),
     lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
     ok.
 
@@ -159,22 +146,28 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
         %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
         enable_connect_protocol => true
     },
-    {ok, _} = cowboy:start_tls(https4,
-        #{
-            num_acceptors => 100,
-            socket_opts => TlsSocketOpts4
-        },
+    case cowboy:start_tls(https4,
+        #{num_acceptors => 100, socket_opts => TlsSocketOpts4},
         HttpsProtoOpts
-    ),
-    {ok, _} = cowboy:start_tls(https6,
-        #{
-            num_acceptors => 100,
-            socket_opts => TlsSocketOpts6
-        },
-        HttpsProtoOpts
-    ),
-    lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]),
-    ok.
+    ) of
+        {ok, _} ->
+            case cowboy:start_tls(https6,
+                #{num_acceptors => 100, socket_opts => TlsSocketOpts6},
+                HttpsProtoOpts
+            ) of
+                {ok, _} ->
+                    lager:info("HTTPS proxy listening on 0.0.0.0:~w and [::]:~w", [HttpsPort, HttpsPort]);
+                {error, Reason6} ->
+                    lager:warning(
+                        "HTTPS IPv6 listener https6 not started (~p); IPv4 https4 on :~w only",
+                        [Reason6, HttpsPort]
+                    )
+            end,
+            ok;
+        {error, Reason4} ->
+            lager:error("HTTPS IPv4 listener https4 failed on port ~p: ~p", [HttpsPort, Reason4]),
+            {error, Reason4}
+    end.
 
 maybe_start_quic(Config, Routes) ->
     GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
@@ -268,7 +261,7 @@ bootstrap_first_start_artifacts() ->
             ok;
         false ->
             DbPath = pertisk_eproxy_config:db_file(),
-            case pertisk_eproxy_db:init(DbPath) of
+            case pertisk_eproxy_db:ensure_ready(DbPath) of
                 {ok, _} ->
                     ok;
                 {error, Reason} ->
@@ -300,25 +293,25 @@ writable_listener_key_path() ->
     filename:join([pertisk_eproxy_config:data_dir(), "tls", "listener.key"]).
 
 generate_fake_listener_tls(CertPath, KeyPath) ->
-    case os:find_executable("openssl") of
-        false ->
+    case pertisk_eproxy_shell:openssl_executable() of
+        {error, openssl_not_found} ->
             lager:warning(
                 "TLS bootstrap skipped: openssl not found and listener PEM missing (~s, ~s)",
                 [CertPath, KeyPath]
             ),
             ok;
-        Openssl ->
+        {ok, Openssl} ->
             ok = ensure_parent_dir(CertPath),
             ok = ensure_parent_dir(KeyPath),
-            Cmd = iolist_to_binary([
-                shell_quote(Openssl),
+            Cmd = lists:flatten([
+                Openssl,
                 " req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 ",
                 "-subj '/CN=localhost' ",
                 "-keyout ", shell_quote(KeyPath), " ",
                 "-out ", shell_quote(CertPath),
                 " 2>&1"
             ]),
-            Output = os:cmd(binary_to_list(Cmd)),
+            Output = pertisk_eproxy_shell:os_cmd(Cmd),
             case {filelib:is_file(CertPath), filelib:is_file(KeyPath)} of
                 {true, true} ->
                     _ = try file:change_mode(KeyPath, 8#600) catch _:_ -> ok end,
@@ -595,3 +588,49 @@ maybe_set_ingress_mode() ->
         false ->
             ok
     end.
+
+start_clear_listener(Name, Port, Ip, Routes, NumAcceptors, ExtraSocketOpts) ->
+    ProtoOpts = #{
+        env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
+        logger => pertisk_eproxy_cowboy_logger
+    },
+    start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts).
+
+start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts) ->
+    SocketOpts = build_listen_socket_opts(Ip, Port, ExtraSocketOpts),
+    case cowboy:start_clear(Name,
+        #{num_acceptors => NumAcceptors, socket_opts => SocketOpts},
+        ProtoOpts
+    ) of
+        {ok, _} ->
+            ok;
+        {error, eacces} ->
+            lager:error(
+                "Cannot bind ~p on port ~p (eacces). Ports below 1024 require "
+                "CAP_NET_BIND_SERVICE in systemd, or use http_port/https_port >= 1024",
+                [Name, Port]
+            ),
+            {error, eacces};
+        {error, Reason} ->
+            lager:error("Cannot bind ~p on port ~p: ~p", [Name, Port, Reason]),
+            {error, Reason}
+    end.
+
+%% IPv6-only HTTP listener; optional when the host has no working IPv6 stack.
+start_clear_listener_ipv6(Name, Port, Routes, NumAcceptors) ->
+    case start_clear_listener(Name, Port, {0, 0, 0, 0, 0, 0, 0, 0}, Routes, NumAcceptors,
+        [inet6, {ipv6_v6only, true}]
+    ) of
+        ok ->
+            lager:info("HTTP proxy listening on [::]:~w (~p)", [Port, Name]),
+            ok;
+        {error, Reason} ->
+            lager:warning("HTTP/IPv6 listener ~p not started (~p); IPv4 only", [Name, Reason]),
+            ok
+    end.
+
+%% inet6 must be the bare atom `inet6`, not `{inet6, true}` (causes inet6_tcp badarg).
+build_listen_socket_opts({0, 0, 0, 0, 0, 0, 0, 0}, Port, Extra) ->
+    [{ip, {0, 0, 0, 0, 0, 0, 0, 0}}, inet6, {port, Port} | Extra];
+build_listen_socket_opts(Ip, Port, Extra) ->
+    [{ip, Ip}, {port, Port} | Extra].

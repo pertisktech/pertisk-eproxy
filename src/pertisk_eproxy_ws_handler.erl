@@ -51,8 +51,8 @@ init(Req, _State) ->
                         ws_out_buffer       => []
                     },
                     %% Upgrade the cowboy connection to WebSocket.
-                    {cowboy_websocket, Req, WsState,
-                     #{idle_timeout => 300000}}
+                    {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(Req),
+                        WsState, #{idle_timeout => 300000}}
             end
     end.
 

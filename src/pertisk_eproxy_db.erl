@@ -7,6 +7,9 @@
 -module(pertisk_eproxy_db).
 -export([
     init/1,
+    ensure_ready/1,
+    db_file_exists/1,
+    migrate_schema/1,
     get_config/1,
     get_runtime_config/1,
     put_runtime_config/2,
@@ -24,6 +27,7 @@
     update_dns_provider/5,
     delete_dns_provider/2,
     ensure_dns_providers_seeded/2,
+    warn_legacy_mnesia_storage/1,
     get_site/2,
     list_sites/1,
     insert_site/4,
@@ -39,10 +43,9 @@
 
 -include_lib("lager/include/lager.hrl").
 
-%% Initialize SQLite database with schema
-%% Returns {ok, DbPath} tuple (DbPath is kept for compatibility, all ops use system sqlite3)
+%% @doc First deploy only: create `proxy.db`, schema, and default admin user.
+-spec init(string()) -> {ok, string()} | {error, term()}.
 init(DbPath) ->
-    %% Ensure database file exists (will be created by sqlite3 if needed)
     case filelib:is_dir(DbPath) of
         true ->
             lager:error("DB path ~s is a directory, not a file", [DbPath]),
@@ -50,10 +53,10 @@ init(DbPath) ->
         false ->
             case ensure_db_parent_dir(DbPath) of
                 ok ->
-                    case init_schema(DbPath) of
+                    case migrate_schema(DbPath) of
                         ok ->
-                            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
-                            lager:info("Database initialized at ~s", [DbPath]),
+                            _ = ensure_admin_users(DbPath),
+                            lager:info("SQLite first deploy: created database at ~s", [DbPath]),
                             {ok, DbPath};
                         {error, Reason} ->
                             lager:error("Failed to initialize schema: ~p", [Reason]),
@@ -65,14 +68,58 @@ init(DbPath) ->
             end
     end.
 
+%% @doc On every start: if `proxy.db` exists run schema migration only; if not, config load creates it.
+-spec ensure_ready(string()) -> {ok, string()} | {error, term()}.
+ensure_ready(DbPath) ->
+    case ensure_db_parent_dir(DbPath) of
+        ok ->
+            case db_file_exists(DbPath) of
+                true ->
+                    case migrate_schema(DbPath) of
+                        ok ->
+                            _ = ensure_admin_users(DbPath),
+                            lager:info("SQLite migrate at ~s (existing database)", [DbPath]),
+                            {ok, DbPath};
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                false ->
+                    lager:info("SQLite ~s not found yet (first deploy)", [DbPath]),
+                    {ok, DbPath}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec db_file_exists(string()) -> boolean().
+db_file_exists(DbPath) ->
+    sqlite3_path_is_usable_file(DbPath).
+
 ensure_db_parent_dir(DbPath) ->
     case filelib:ensure_dir(DbPath) of
         ok -> ok;
         {error, Reason} -> {error, Reason}
     end.
 
-%% Create tables if they don't exist
-init_schema(DbPath) ->
+%% @doc Warn when an old Mnesia-era install left `data/mnesia` on disk (RPM/Docker upgrades).
+-spec warn_legacy_mnesia_storage(string()) -> ok.
+warn_legacy_mnesia_storage(DataDir) when is_list(DataDir) ->
+    MnesiaDir = filename:join(DataDir, "mnesia"),
+    case filelib:is_dir(MnesiaDir) of
+        true ->
+            lager:warning(
+                "Legacy Mnesia directory ~s found; this release uses SQLite. "
+                "After backup, archive or remove it (e.g. mv ~s ~s.bak). "
+                "Runtime config is read from ~s or seeded from config/proxy.json.",
+                [MnesiaDir, MnesiaDir, MnesiaDir, "data/proxy.db"]
+            );
+        false ->
+            ok
+    end.
+
+%% @doc Idempotent schema migration (`CREATE TABLE IF NOT EXISTS` on every deploy).
+-spec migrate_schema(string()) -> ok | {error, term()}.
+migrate_schema(DbPath) ->
     SQL = "CREATE TABLE IF NOT EXISTS runtime_state (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL

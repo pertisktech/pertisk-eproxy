@@ -278,19 +278,30 @@ issue_cloudflare(DbPath, Site, Host, Row) ->
             ZoneLabel = zone_name_bin(ZoneName),
             ssl_job(Host, <<"zone">>, iolist_to_binary([<<"Cloudflare zone: ">>, ZoneLabel])),
             Identifiers = site_identifiers(Site, Host),
-            {ok, #{csr_der := CsrDer, key_pem := KeyPem}} = pertisk_eproxy_acme_csr:generate_rsa_csr(Identifiers),
-            ssl_job(Host, <<"csr">>, <<"Generated private key and CSR">>),
-            AcmeDir = acme_directory(),
-            KidPathPre = filename:join(acme_data_dir(), "kid.txt"),
-            ok = maybe_drop_staging_kid_for_production(AcmeDir, KidPathPre),
-            Terms = application:get_env(pertisk_eproxy, acme_terms_agreed, false),
-            case Terms of
-                false ->
-                    lager:warning("ACME disabled: set {acme_terms_agreed, true} in sys.config to issue for ~s", [Host]),
-                    ssl_job_err(Host, terms_not_agreed),
-                    {error, terms_not_agreed};
-                true ->
-                    {Jwk, Kid} = load_account_key(),
+            case pertisk_eproxy_acme_csr:generate_rsa_csr(Identifiers) of
+                {error, Reason} ->
+                    ssl_job_err(Host, {csr_failed, Reason}),
+                    {error, {csr_failed, Reason}};
+                {ok, #{csr_der := CsrDer, key_pem := KeyPem}} ->
+                    ssl_job(Host, <<"csr">>, <<"Generated private key and CSR">>),
+                    issue_cloudflare_after_csr(
+                        DbPath, Site, Host, Row, Token, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem
+                    )
+            end
+    end.
+
+issue_cloudflare_after_csr(DbPath, Site, Host, _Row, Token, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem) ->
+    AcmeDir = acme_directory(),
+    KidPathPre = filename:join(acme_data_dir(), "kid.txt"),
+    ok = maybe_drop_staging_kid_for_production(AcmeDir, KidPathPre),
+    Terms = application:get_env(pertisk_eproxy, acme_terms_agreed, false),
+    case Terms of
+        false ->
+            lager:warning("ACME disabled: set {acme_terms_agreed, true} in sys.config to issue for ~s", [Host]),
+            ssl_job_err(Host, terms_not_agreed),
+            {error, terms_not_agreed};
+        true ->
+            {Jwk, Kid} = load_account_key(),
                     KidPathFile = filename:join(acme_data_dir(), "kid.txt"),
                     AddFun = fun(TxtFqdn, Digest) ->
                         RecName = pertisk_eproxy_dns_cloudflare:cf_txt_record_name(TxtFqdn, ZoneName),
@@ -329,8 +340,7 @@ issue_cloudflare(DbPath, Site, Host, Row) ->
                             ssl_job_done(Host, <<"TLS certificate issued and saved">>),
                             ok
                     end
-            end
-    end.
+            end.
 
 zone_name_bin(B) when is_binary(B) -> B;
 zone_name_bin(L) when is_list(L) -> unicode:characters_to_binary(L, utf8);

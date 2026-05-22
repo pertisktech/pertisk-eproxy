@@ -27,10 +27,11 @@ rm -rf "$WORK_DIR"
 mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"
 
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
+bash "$ROOT_DIR/scripts/bundle-openssl-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
 copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
-copy_tree "$ROOT_DIR/data" "$PKG_ROOT/opt/$PKG_NAME/data"
-copy_tree "$ROOT_DIR/log" "$PKG_ROOT/opt/$PKG_NAME/log"
+# Do not package data/ or log/ — would overwrite production SQLite and ACME state on upgrade.
+mkdir -p "$PKG_ROOT/opt/$PKG_NAME/data/acme" "$PKG_ROOT/opt/$PKG_NAME/data/tls" "$PKG_ROOT/opt/$PKG_NAME/log"
 
 cat > "$PKG_ROOT/usr/lib/systemd/system/$PKG_NAME.service" <<EOF
 [Unit]
@@ -42,6 +43,10 @@ Type=simple
 User=$PKG_NAME
 Group=$PKG_NAME
 WorkingDirectory=/opt/$PKG_NAME
+Environment=LD_LIBRARY_PATH=/opt/$PKG_NAME/lib/openssl
+# Bind HTTP :80 / HTTPS :443 / QUIC without running as root (see proxy.json ports).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ExecStart=/opt/$PKG_NAME/bin/pertisk_eproxy foreground
 Restart=on-failure
 RestartSec=2
@@ -67,24 +72,39 @@ chmod +x "$WORK_DIR/preinstall.sh"
 cat > "$WORK_DIR/postinstall.sh" <<EOF
 #!/bin/sh
 set -e
+DATA_DIR="/opt/$PKG_NAME/data"
+mkdir -p "\$DATA_DIR/acme" "\$DATA_DIR/tls" "/opt/$PKG_NAME/log"
+if [ -f "\$DATA_DIR/proxy.db" ]; then
+  echo "Deploy: existing data/proxy.db kept (schema migrated on service start)"
+else
+  echo "First install: data/proxy.db will be created on first service start"
+fi
+if [ -d "\$DATA_DIR/mnesia" ]; then
+  BAK="\$DATA_DIR/mnesia.bak"
+  rm -rf "\$BAK" 2>/dev/null || true
+  mv "\$DATA_DIR/mnesia" "\$BAK" 2>/dev/null || true
+  echo "Archived legacy Mnesia storage to \$BAK (this release uses SQLite at data/proxy.db)."
+fi
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "WARNING: sqlite3 not found in PATH. Install sqlite3 (e.g. dnf install sqlite) before starting $PKG_NAME." >&2
+fi
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload || true
   systemctl enable $PKG_NAME || true
 fi
 chown -R $PKG_NAME:$PKG_NAME /opt/$PKG_NAME || true
 
-cat << 'MSG'
-Pertisk eProxy installed.
+cat << MSG
+Pertisk eProxy installed (SQLite storage).
+
+Verify the new binary (journal should say "config storage: SQLite", not Mnesia):
+  journalctl -u $PKG_NAME -n 30 --no-pager | grep -E 'SQLite|Mnesia|pertisk_eproxy'
 
 Enable and start:
-  sudo systemctl enable pertisk-eproxy --now
-
-Service control:
-  sudo systemctl status pertisk-eproxy
-  sudo systemctl restart pertisk-eproxy
+  sudo systemctl enable $PKG_NAME --now
 
 Runtime path:
-  /opt/pertisk-eproxy
+  /opt/$PKG_NAME
 MSG
 exit 0
 EOF
@@ -106,7 +126,10 @@ FPM_ARGS=(
   -n "$PKG_NAME"
   -v "$VERSION"
   -a x86_64
-  --description "Pertisk Erlang reverse proxy"
+  --depends sqlite3
+  --depends openssl
+  --depends libstdc++
+  --description "Pertisk Erlang reverse proxy (bundled OpenSSL 3 for OTP crypto NIF)"
   --maintainer "Pertisk Team"
   --license "MIT"
   --vendor "Pertisk"
@@ -146,7 +169,10 @@ elif command -v docker >/dev/null 2>&1; then
       -n "$PKG_NAME" \
       -v "$VERSION" \
       -a x86_64 \
-      --description "Pertisk Erlang reverse proxy" \
+      --depends sqlite3 \
+      --depends openssl \
+      --depends libstdc++ \
+      --description "Pertisk Erlang reverse proxy (bundled OpenSSL 3 for OTP crypto NIF)" \
       --maintainer "Pertisk Team" \
       --license "MIT" \
       --vendor "Pertisk" \

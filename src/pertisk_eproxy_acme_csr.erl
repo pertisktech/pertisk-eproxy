@@ -8,10 +8,10 @@
 generate_rsa_csr([]) ->
     {error, empty_identities};
 generate_rsa_csr(Ids) when is_list(Ids) ->
-    case os:find_executable("openssl") of
-        false ->
+    case pertisk_eproxy_shell:openssl_executable() of
+        {error, openssl_not_found} ->
             {error, openssl_not_found};
-        Openssl ->
+        {ok, Openssl} ->
             do_openssl(Openssl, Ids)
     end.
 
@@ -28,14 +28,14 @@ do_openssl(Openssl, Ids) ->
             io_lib:format("~s req -new -newkey rsa:2048 -nodes -keyout ~s -out ~s -config ~s 2>&1",
                 [Openssl, KeyPath, CsrPath, CnfPath])
         ),
-        Log = os:cmd(ReqCmd),
+        Log = pertisk_eproxy_shell:os_cmd(ReqCmd),
         Res = case {file:read_file(KeyPath), file:read_file(CsrPath)} of
             {{ok, KeyPem}, {ok, _CsrPem}} ->
                 DerCmd = lists:flatten(
                     io_lib:format("~s req -in ~s -outform DER -out ~s 2>&1",
                         [Openssl, CsrPath, DerPath])
                 ),
-                _ = os:cmd(DerCmd),
+                _ = pertisk_eproxy_shell:os_cmd(DerCmd),
                 case file:read_file(DerPath) of
                     {ok, Der} when byte_size(Der) > 32 ->
                         {ok, #{key_pem => KeyPem, csr_der => Der}};

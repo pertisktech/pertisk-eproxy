@@ -1,7 +1,7 @@
 %% @doc App identity headers on every HTTP response (Cowboy map and HTTP/3 proplist).
 -module(pertisk_eproxy_response_headers).
 
--export([app_name/0, app_version/0, merge/1, merge_h3/1]).
+-export([app_name/0, app_version/0, merge/1, merge_h3/1, apply_cowboy_req/1]).
 
 -define(APP_NAME, <<"pertisk-eproxy">>).
 
@@ -20,6 +20,11 @@ merge(Headers) when is_map(Headers) ->
 -spec merge_h3([{term(), term()}]) -> [{binary(), binary()}].
 merge_h3(Headers) when is_list(Headers) ->
     identity_h3() ++ strip_identity_keys(Headers).
+
+%% Cowboy defaults to `server: Cowboy` on 101 WebSocket upgrade unless resp_headers are set.
+-spec apply_cowboy_req(cowboy_req:req()) -> cowboy_req:req().
+apply_cowboy_req(Req) ->
+    cowboy_req:set_resp_headers(identity_map(), Req).
 
 identity_map() ->
     #{
