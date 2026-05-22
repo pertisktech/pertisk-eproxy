@@ -9500,7 +9500,7 @@ get_effective_max_udp_payload_size(#state{transport_params = TP} = State) ->
 get_current_mtu(#state{pmtu_state = undefined}) ->
     1200;
 get_current_mtu(#state{pmtu_state = PMTUState}) ->
-    min(1200, quic_pmtu:current_mtu(PMTUState)).
+    quic_pmtu:current_mtu(PMTUState).
 
 %% @doc Get the local max UDP payload size for transport parameters.
 %% Returns the configured max MTU from PMTU state, or the default if not configured.
@@ -9508,7 +9508,7 @@ get_current_mtu(#state{pmtu_state = PMTUState}) ->
 get_local_max_udp_payload_size(#state{pmtu_state = undefined}) ->
     1200;
 get_local_max_udp_payload_size(#state{pmtu_state = PMTUState}) ->
-    min(1200, PMTUState#pmtu_state.max_mtu).
+    PMTUState#pmtu_state.max_mtu.
 
 %%====================================================================
 %% Test Helpers

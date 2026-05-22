@@ -403,9 +403,10 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
     end,
     Base#{<<"x-forwarded-for">> => XFF}.
 
-%% Match pertisk-rproxy defaults: 300s QUIC idle, 30s keepalive (ms in erlang_quic).
--define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 300).
--define(H3_KEEPALIVE_SECS_DEFAULT, 30).
+%% Keep H3 sessions stable across browser idle windows and NAT/LB churn.
+-define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 1800).
+-define(H3_IDLE_TIMEOUT_SECS_MIN, 900).
+-define(H3_KEEPALIVE_SECS_DEFAULT, 20).
 -define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1200).
 
 %% HTTP/3 SETTINGS sent to clients.
@@ -496,19 +497,42 @@ proxy_h3_upstream(
     end.
 
 quic_transport_opts(Config) ->
-    IdleSecs =
+    IdleSecs0 =
         case maps:get(h3_idle_timeout_secs, Config, undefined) of
             IdleS when is_integer(IdleS), IdleS >= 0 ->
                 IdleS;
             _ ->
                 ?H3_IDLE_TIMEOUT_SECS_DEFAULT
         end,
-    KeepSecs =
+    IdleSecs =
+        case IdleSecs0 of
+            0 -> 0;
+            _ -> max(?H3_IDLE_TIMEOUT_SECS_MIN, IdleSecs0)
+        end,
+    KeepSecs0 =
         case maps:get(h3_keepalive_interval_secs, Config, undefined) of
             KeepS when is_integer(KeepS), KeepS >= 0 ->
                 KeepS;
             _ ->
                 ?H3_KEEPALIVE_SECS_DEFAULT
+        end,
+    KeepSecs =
+        case {IdleSecs, KeepSecs0} of
+            {0, _} -> 0;
+            {_, 0} -> 0;
+            {I, K} ->
+                %% Keep keepalive below idle timeout so periodic PINGs refresh path state.
+                min(K, max(5, I div 3))
+        end,
+    _ =
+        case {IdleSecs0, IdleSecs} of
+            {I0, ClampedIdle} when I0 =/= 0, I0 < ClampedIdle ->
+                lager:warning(
+                    "h3_idle_timeout_secs=~w too low for stable browser idle behavior; clamped to ~w",
+                    [I0, ClampedIdle]
+                );
+            _ ->
+                ok
         end,
     Base = #{
         idle_timeout => IdleSecs * 1000,
