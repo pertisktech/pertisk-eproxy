@@ -28,6 +28,9 @@ spec:
     {{- toYaml .Values.service.sessionAffinityConfig | nindent 4 }}
   {{- end }}
   {{- end }}
+  {{- if and .Values.service.externalTrafficPolicy (ne (toString .Values.service.externalTrafficPolicy) "") }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
   ports:
     - name: http
       port: {{ .Values.service.httpPort }}

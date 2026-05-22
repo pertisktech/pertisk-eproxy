@@ -29,6 +29,7 @@
          management_upstream_bin/0,
          management_loopback_upstream_bin/0,
          is_management_upstream_addr/1,
+         backend_is_management_only/1,
          reload/0, put_config/1, sync_ingress/2,
          ingress_mode/0, proxy_mode/0, json_to_config_pub/1,
          db_file/0, data_dir/0]).
@@ -78,6 +79,24 @@ is_management_upstream_addr(UpstreamAddr) ->
         _:_ ->
             false
     end.
+
+%% @doc True when every upstream for this backend is the in-pod management listener.
+-spec backend_is_management_only(binary()) -> boolean().
+backend_is_management_only(BackendName) when is_binary(BackendName) ->
+    Mgmt = management_loopback_upstream_bin(),
+    case lists:filter(fun(#{name := N}) -> N =:= BackendName end, get_backends()) of
+        [#{upstreams := Ups}] when is_list(Ups), Ups =/= [] ->
+            lists:all(
+                fun(#{addr := Addr}) ->
+                    is_management_upstream_addr(Addr) orelse Addr =:= Mgmt
+                end,
+                Ups
+            );
+        _ ->
+            false
+    end;
+backend_is_management_only(_) ->
+    false.
 
 %% Return list of site maps.
 -spec get_sites() -> [map()].

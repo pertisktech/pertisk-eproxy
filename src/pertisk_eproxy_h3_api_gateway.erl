@@ -194,25 +194,24 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 ok;
             {ok, #{upstream_path := UpPath, backend := BackendName}} ->
                 ClientIp = client_ip_h3(H3Conn, Headers),
-                case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
+                ProxyCtx = #{
+                    method => Method,
+                    host => LogHost,
+                    path => PathOnly,
+                    up_path => UpPath,
+                    qs => Qs,
+                    headers => Headers,
+                    body => Body,
+                    client_ip => ClientIp,
+                    backend => BackendName
+                },
+                case h3_proxy_for_backend(ProxyCtx) of
                     {error, no_healthy_upstream} ->
                         pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
                         reply_502_plain(H3Conn, StreamId),
                         log_h3_access(LogHost, Method, PathOnly, 502, T0, <<>>),
                         ok;
-                    {ok, UpstreamAddr} ->
-                        ProxyResult =
-                            proxy_h3_upstream(
-                                Method,
-                                LogHost,
-                                PathOnly,
-                                UpPath,
-                                Qs,
-                                UpstreamAddr,
-                                Headers,
-                                Body,
-                                ClientIp
-                            ),
+                    {ok, UpstreamAddr, ProxyResult} ->
                         case ProxyResult of
                             {ok, Status0, RespHeaders, RespBody} ->
                                 Status = gun_response_status_int(Status0),
@@ -422,6 +421,47 @@ h3_http_settings(Config) ->
             ok
     end,
     #{}.
+
+%% Admin/management backends: skip LB health gate and gun loopback (in-process HTTP/3).
+h3_proxy_for_backend(#{
+    method := Method,
+    host := LogHost,
+    path := PathOnly,
+    up_path := UpPath,
+    qs := Qs,
+    headers := Headers,
+    body := Body,
+    client_ip := ClientIp,
+    backend := BackendName
+}) ->
+    case pertisk_eproxy_config:backend_is_management_only(BackendName) of
+        true ->
+            Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+            Result =
+                pertisk_eproxy_h3_local_admin:try_dispatch(
+                    Method, LogHost, PathOnly, Qs, Headers, Body, ClientIp
+                ),
+            {ok, Mgmt, Result};
+        false ->
+            case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
+                {error, no_healthy_upstream} ->
+                    {error, no_healthy_upstream};
+                {ok, UpstreamAddr} ->
+                    Result =
+                        proxy_h3_upstream(
+                            Method,
+                            LogHost,
+                            PathOnly,
+                            UpPath,
+                            Qs,
+                            UpstreamAddr,
+                            Headers,
+                            Body,
+                            ClientIp
+                        ),
+                    {ok, UpstreamAddr, Result}
+            end
+    end.
 
 proxy_h3_upstream(
     Method,

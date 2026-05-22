@@ -41,5 +41,6 @@ Chrome can still use HTTP/2 when:
 - **UDP** to `quic_port` / `alt_svc_port` is blocked (firewall, LB, K8s Service)
 - **Alt-Svc** not seen yet (first request is HTTPS/TCP) or a prior failed H3 attempt is cached
 - Chrome **Alt-Svc cache** marks QUIC broken after a failed attempt — clear at `chrome://net-internals/#alt-svc` or wait for `ma=86400` to expire
+- **Kubernetes: multiple replicas** — UDP LB often is not sticky per QUIC connection; use `replicaCount: 1`, `service.externalTrafficPolicy: Local`, or hostNetwork (see `deploy/helm/pertisk-eproxy/examples/cloud/README.md`)
 
 See `contrib/erlang_quic_upstream_patches/README.md` for upstreaming patches to [benoitc/erlang_quic](https://github.com/benoitc/erlang_quic).

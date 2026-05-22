@@ -28,7 +28,12 @@ try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
                 {ok, Status, Headers, RespBody} ->
                     {ok, Status, Headers, RespBody};
                 not_found ->
-                    dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+                    case serve_spa_h3(Method, Host, Path) of
+                        {ok, Status, Headers, RespBody} ->
+                            {ok, Status, Headers, RespBody};
+                        not_found ->
+                            dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+                    end
             end
     end.
 
@@ -80,6 +85,49 @@ static_disk_path(<<"/assets/", Rel/binary>>) ->
     end;
 static_disk_path(_) ->
     not_found.
+
+%% React client routes (/, /sites, …) — serve index.html without cowboy stub.
+serve_spa_h3(Method, Host, Path) ->
+    case Path of
+        <<"/api/", _/binary>> ->
+            not_found;
+        _ ->
+            case normalize_method(Method) of
+                <<"GET">> ->
+                    read_spa_index(Host, false);
+                <<"HEAD">> ->
+                    read_spa_index(Host, true);
+                _ ->
+                    not_found
+            end
+    end.
+
+read_spa_index(Host, HeadOnly) ->
+    IndexFile = filename:join([admin_dir(), "index.html"]),
+    case file:read_file(IndexFile) of
+        {ok, Html} ->
+            Body = case HeadOnly of
+                true -> <<>>;
+                false -> Html
+            end,
+            Headers = spa_response_headers(Host),
+            {ok, 200, Headers, Body};
+        {error, enoent} ->
+            not_found;
+        {error, Reason} ->
+            {error, {spa_read, Reason}}
+    end.
+
+spa_response_headers(Host) ->
+    Base = pertisk_eproxy_response_headers:merge(#{
+        <<"content-type">> => <<"text/html; charset=utf-8">>
+    }),
+    Base1 =
+        case pertisk_eproxy_handler:site_advertise_http3(Host) of
+            true -> Base#{<<"alt-svc">> => pertisk_eproxy_alt_svc:header_value()};
+            false -> Base
+        end,
+    maps:to_list(Base1).
 
 admin_dir() ->
     filename:join([code:priv_dir(pertisk_eproxy), ?ADMIN_PRIV]).

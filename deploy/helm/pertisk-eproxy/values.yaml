@@ -1,6 +1,10 @@
 # Default values for pertisk-eproxy (Kubernetes ingress controller mode).
 # Install: helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy --create-namespace
 
+# HTTP/3 (UDP) needs stable routing to the same pod as the QUIC connection.
+# With 3+ replicas behind a cloud LB, Chrome often falls back to HTTP/2 on TCP.
+# For reliable H3: use replicaCount: 1, or set service.externalTrafficPolicy: Local,
+# or enable hostNetwork on the controller (see examples/cloud/README.md).
 replicaCount: 3
 
 autoscaling:
@@ -168,6 +172,8 @@ service:
   sessionAffinityConfig:
     clientIP:
       timeoutSeconds: 10800
+  # Set to Local so UDP/TCP from a client tend to hit pods on the same node (helps HTTP/3).
+  externalTrafficPolicy: ""
 
 metrics:
   serviceMonitor:
