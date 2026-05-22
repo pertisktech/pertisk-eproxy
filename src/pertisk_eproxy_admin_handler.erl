@@ -1372,7 +1372,9 @@ bin_field(V) -> iolist_to_binary(io_lib:format("~p", [V])).
 
 with_alt_svc(Req, Headers) ->
     Host = cowboy_req:host(Req),
-    pertisk_eproxy_alt_svc:merge_response_headers(Req, Host, Headers).
+    pertisk_eproxy_alt_svc:merge_response_headers(
+        Req, Host, pertisk_eproxy_response_headers:merge(Headers)
+    ).
 
 should_serve_admin_spa() ->
     pertisk_eproxy_config:ingress_mode() andalso admin_index_exists().

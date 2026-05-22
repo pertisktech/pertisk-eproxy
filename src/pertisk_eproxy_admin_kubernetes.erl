@@ -28,7 +28,8 @@ pods(Namespace) ->
         end,
         case ekub_read_pods(Conn, Ns) of
             {ok, List} ->
-                {ok, controller_pod_rows(List)};
+                Metrics = ekub_read_pod_metrics_map(Conn, Ns),
+                {ok, controller_pod_rows(List, Metrics)};
             {error, Reason} ->
                 case is_k8s_forbidden(Reason) of
                     true -> {ok, []};
@@ -51,8 +52,92 @@ ekub_read_pods(Conn, Ns) ->
             ekub_core:http_request(Endpoint, [], Access)
     end.
 
-controller_pod_rows(List) ->
-    [pod_row(P) || P <- items_from_list(List), is_controller_pod(P)].
+%% PodMetrics (metrics-server); same ekub alias pitfall as core pods — pin API group/version.
+-define(METRICS_POD_GROUPS, [
+    {<<"metrics.k8s.io">>, <<"v1beta1">>},
+    {<<"metrics.k8s.io">>, <<"v1">>}
+]).
+
+ekub_read_pod_metrics_map(Conn, Ns) ->
+    lists:foldl(
+        fun(Group, Acc) ->
+            case map_size(Acc) > 0 of
+                true ->
+                    Acc;
+                false ->
+                    case ekub_read_pod_metrics(Conn, Ns, Group) of
+                        {ok, Map} -> Map;
+                        _ -> Acc
+                    end
+            end
+        end,
+        #{},
+        ?METRICS_POD_GROUPS
+    ).
+
+ekub_read_pod_metrics(Conn, Ns, Group) ->
+    {Api, Access} = Conn,
+    Endpoint = ekub_api:endpoint(Group, pod, Ns, "", {Api, Access}),
+    case Endpoint of
+        <<>> ->
+            {error, pod_metrics_not_found};
+        _ ->
+            case ekub_core:http_request(Endpoint, [], Access) of
+                {ok, List} ->
+                    {ok, pod_metrics_map(items_from_list(List))};
+                {error, Reason} = Err ->
+                    case is_k8s_forbidden(Reason) of
+                        true -> {ok, #{}};
+                        false -> Err
+                    end
+            end
+    end.
+
+pod_metrics_map(Items) ->
+    lists:foldl(
+        fun(Item, Acc) ->
+            Key = {meta_name(Item), meta_namespace(Item)},
+            maps:put(Key, pod_metrics_usage(Item), Acc)
+        end,
+        #{},
+        Items
+    ).
+
+pod_metrics_usage(Item) ->
+    Containers = maps:get(<<"containers">>, Item, []),
+    {CpuSum, MemSum, CpuAny, MemAny} = lists:foldl(
+        fun(C, {CAcc, MAcc, CAny, MAny}) ->
+            Usage = maps:get(<<"usage">>, C, #{}),
+            {C2, CAny2} = add_quantity(cpu_quantity_to_millicores(maps:get(<<"cpu">>, Usage, undefined)), CAcc, CAny),
+            {M2, MAny2} = add_quantity(memory_quantity_to_bytes(maps:get(<<"memory">>, Usage, undefined)), MAcc, MAny),
+            {C2, M2, CAny2, MAny2}
+        end,
+        {0, 0, false, false},
+        Containers
+    ),
+    {
+        usage_metric(CpuSum, CpuAny),
+        usage_metric(MemSum, MemAny)
+    }.
+
+add_quantity(undefined, Acc, Any) ->
+    {Acc, Any};
+add_quantity(null, Acc, Any) ->
+    {Acc, Any};
+add_quantity(V, Acc, _Any) when is_integer(V) ->
+    {Acc + V, true}.
+
+usage_metric(_Sum, false) ->
+    null;
+usage_metric(Sum, true) ->
+    Sum.
+
+controller_pod_rows(List, MetricsMap) ->
+    [
+        pod_row(P, maps:get({meta_name(P), meta_namespace(P)}, MetricsMap, {null, null}))
+     || P <- items_from_list(List),
+        is_controller_pod(P)
+    ].
 
 %% Match deployment pod name prefix OR Helm selector labels (not both required).
 is_controller_pod(Pod) ->
@@ -290,7 +375,7 @@ namespace_required(<<>>) ->
 namespace_required(Ns) when is_binary(Ns) ->
     {ok, Ns}.
 
-pod_row(Pod) ->
+pod_row(Pod, {CpuMilli, MemBytes}) ->
     Spec = maps:get(<<"spec">>, Pod, #{}),
     Status = maps:get(<<"status">>, Pod, #{}),
     NodeName = maps:get(<<"nodeName">>, Spec, undefined),
@@ -304,10 +389,78 @@ pod_row(Pod) ->
         <<"pod_ip">> => maybe_null(maps:get(<<"podIP">>, Status, undefined)),
         <<"ready">> => Ready,
         <<"restarts">> => Restarts,
-        <<"cpu_usage_millicores">> => null,
-        <<"memory_usage_bytes">> => null,
+        <<"cpu_usage_millicores">> => maybe_null(CpuMilli),
+        <<"memory_usage_bytes">> => maybe_null(MemBytes),
         <<"created_at">> => meta_created_at(Pod)
     }.
+
+%% Kubernetes resource.Quantity (subset; matches metrics-server / kubectl top).
+cpu_quantity_to_millicores(undefined) ->
+    undefined;
+cpu_quantity_to_millicores(Q) when is_binary(Q) ->
+    case parse_quantity_parts(Q) of
+        {ok, Num, <<>>} ->
+            trunc(Num * 1000);
+        {ok, Num, <<"n">>} ->
+            trunc(Num / 1000000);
+        {ok, Num, <<"u">>} ->
+            trunc(Num / 1000);
+        {ok, Num, <<"m">>} ->
+            trunc(Num);
+        _ ->
+            undefined
+    end.
+
+memory_quantity_to_bytes(undefined) ->
+    undefined;
+memory_quantity_to_bytes(Q) when is_binary(Q) ->
+    case parse_quantity_parts(Q) of
+        {ok, Num, <<>>} ->
+            trunc(Num);
+        {ok, Num, <<"Ki">>} ->
+            trunc(Num * 1024);
+        {ok, Num, <<"Mi">>} ->
+            trunc(Num * 1024 * 1024);
+        {ok, Num, <<"Gi">>} ->
+            trunc(Num * 1024 * 1024 * 1024);
+        {ok, Num, <<"Ti">>} ->
+            trunc(Num * 1024 * 1024 * 1024 * 1024);
+        {ok, Num, <<"Pi">>} ->
+            trunc(Num * 1024 * 1024 * 1024 * 1024 * 1024);
+        {ok, Num, <<"Ei">>} ->
+            trunc(Num * 1024 * 1024 * 1024 * 1024 * 1024 * 1024);
+        {ok, Num, <<"K">>} ->
+            trunc(Num * 1000);
+        {ok, Num, <<"M">>} ->
+            trunc(Num * 1000 * 1000);
+        {ok, Num, <<"G">>} ->
+            trunc(Num * 1000 * 1000 * 1000);
+        {ok, Num, <<"T">>} ->
+            trunc(Num * 1000 * 1000 * 1000 * 1000);
+        {ok, Num, <<"P">>} ->
+            trunc(Num * 1000 * 1000 * 1000 * 1000 * 1000);
+        {ok, Num, <<"E">>} ->
+            trunc(Num * 1000 * 1000 * 1000 * 1000 * 1000 * 1000);
+        _ ->
+            undefined
+    end.
+
+parse_quantity_parts(Q) ->
+    case re:run(Q, "^([0-9]+(?:\\.[0-9]+)?)([A-Za-z]*)$", [{capture, all_but_first, binary}]) of
+        {match, [NumBin, Suffix]} ->
+            try
+                Num =
+                    case binary:match(NumBin, <<".">>) of
+                        nomatch -> binary_to_integer(NumBin) * 1.0;
+                        _ -> binary_to_float(NumBin)
+                    end,
+                {ok, Num, Suffix}
+            catch
+                _:_ -> error
+            end;
+        _ ->
+            error
+    end.
 
 pod_ready_restarts([]) ->
     {<<"0/0">>, 0};

@@ -279,7 +279,9 @@ method_to_gun(<<"OPTIONS">>) -> <<"OPTIONS">>;
 method_to_gun(M)             -> M.
 
 maybe_add_alt_svc(Req, Host, Headers) ->
-    pertisk_eproxy_alt_svc:merge_response_headers(Req, normalize_host(Host), Headers).
+    pertisk_eproxy_alt_svc:merge_response_headers(
+        Req, normalize_host(Host), pertisk_eproxy_response_headers:merge(Headers)
+    ).
 
 %% Delegate websocket callbacks when this handler upgrades requests to websocket
 %% (Cowboy invokes callbacks on the original route module).

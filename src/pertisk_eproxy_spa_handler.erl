@@ -14,8 +14,9 @@ init(Req, State) ->
         {ok, Html} ->
             Host = cowboy_req:host(Req),
             Headers = pertisk_eproxy_alt_svc:merge_response_headers(
-                Req, Host,
-                #{<<"content-type">> => <<"text/html; charset=utf-8">>}
+                Req,
+                Host,
+                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"text/html; charset=utf-8">>})
             ),
             {OutHeaders, OutBody} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Html),
@@ -29,8 +30,9 @@ init(Req, State) ->
                      "</body></html>">>,
             Host = cowboy_req:host(Req),
             Headers = pertisk_eproxy_alt_svc:merge_response_headers(
-                Req, Host,
-                #{<<"content-type">> => <<"text/html; charset=utf-8">>}
+                Req,
+                Host,
+                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"text/html; charset=utf-8">>})
             ),
             {OutHeaders, OutBody} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Body),

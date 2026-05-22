@@ -18,8 +18,12 @@ init(Req, _State) ->
             log_ws_upgrade(Req),
             {cowboy_websocket, Req, #{authenticated => false}, #{idle_timeout => ?IDLE_TIMEOUT_MS}};
         {error, unauthorized} ->
-            Req2 = cowboy_req:reply(401, #{<<"content-type">> => <<"application/json">>},
-                                    <<"{\"error\":\"Unauthorized\"}">>, Req),
+            Req2 = cowboy_req:reply(
+                401,
+                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"application/json">>}),
+                <<"{\"error\":\"Unauthorized\"}">>,
+                Req
+            ),
             {ok, Req2, #{}}
     end.
 

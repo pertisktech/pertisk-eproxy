@@ -300,7 +300,8 @@ h3_send_data(H3Conn, StreamId, Data, Fin) ->
     end.
 
 h3_reply_status(H3Conn, StreamId, Status, Headers, Body) ->
-    case h3_send_response(H3Conn, StreamId, Status, Headers) of
+    H3Headers = pertisk_eproxy_response_headers:merge_h3(Headers),
+    case h3_send_response(H3Conn, StreamId, Status, H3Headers) of
         ok ->
             %% Always FIN the stream (required for HEAD with empty body too).
             h3_send_data(H3Conn, StreamId, Body, true);

@@ -26,12 +26,12 @@ init(Req, _State) ->
 
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
-            Req2 = cowboy_req:reply(404, #{}, <<"No route">>, Req),
+            Req2 = cowboy_req:reply(404, pertisk_eproxy_response_headers:merge(#{}), <<"No route">>, Req),
             {ok, Req2, #{}};
         {ok, #{upstream_path := UpPath, backend := BackendName}} ->
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
-                    Req2 = cowboy_req:reply(502, #{}, <<"No upstream">>, Req),
+                    Req2 = cowboy_req:reply(502, pertisk_eproxy_response_headers:merge(#{}), <<"No upstream">>, Req),
                     {ok, Req2, #{}};
                 {ok, UpstreamAddr} ->
                     FullPath = case Qs of

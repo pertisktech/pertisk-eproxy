@@ -5,7 +5,12 @@
 handle_request(Conn, StreamId, Method, Path, Headers) ->
     T0 = erlang:monotonic_time(millisecond),
     Host = authority_host(Headers),
-    ok = quic_h3:send_response(Conn, StreamId, 200, [{<<"content-type">>, <<"text/plain">>}]),
+    ok = quic_h3:send_response(
+        Conn,
+        StreamId,
+        200,
+        pertisk_eproxy_response_headers:merge_h3([{<<"content-type">>, <<"text/plain">>}])
+    ),
     _ = quic_h3:send_data(Conn, StreamId, <<"h3 probe ok">>, true),
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
     catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, 200, Dt, 'HTTP/3', <<"h3-probe">>),

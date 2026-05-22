@@ -11,19 +11,23 @@ init(Req, _State) ->
     case authorize(Req) of
         ok ->
             Host = cowboy_req:host(Req),
-            Headers0 = #{
+            Headers0 = pertisk_eproxy_response_headers:merge(#{
                 <<"content-type">> => <<"text/event-stream; charset=utf-8">>,
                 <<"cache-control">> => <<"no-cache, no-transform">>,
                 <<"connection">> => <<"keep-alive">>
-            },
+            }),
             Headers = pertisk_eproxy_alt_svc:merge_response_headers(Req, Host, Headers0),
             Req2 = cowboy_req:stream_reply(200, Headers, Req),
             Req3 = send_snapshot_event(Req2),
             stream_ticks(Req3, ?MAX_TICKS),
             {ok, Req3, #{}};
         {error, unauthorized} ->
-            Req2 = cowboy_req:reply(401, #{<<"content-type">> => <<"application/json">>},
-                                    <<"{\"error\":\"Unauthorized\"}">>, Req),
+            Req2 = cowboy_req:reply(
+                401,
+                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"application/json">>}),
+                <<"{\"error\":\"Unauthorized\"}">>,
+                Req
+            ),
             {ok, Req2, #{}}
     end.
 
