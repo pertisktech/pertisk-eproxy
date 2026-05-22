@@ -1,0 +1,22 @@
+# Certificate for *.1340p.thaidevops.co (covers admin.1340p.thaidevops.co and all subdomains).
+# Do not add admin.1340p.thaidevops.co here: Let's Encrypt rejects redundant domain + wildcard in the same request.
+# Issuer "letsencrypt-cloudflare" must exist in this namespace (cert-manager-issuer-cloudflare.yaml).
+# Apply: kubectl apply -f cert-manager-certificate-admin-homelab.yaml -n pertisk-eproxy
+# After ready, Secret "admin-homelab-tls" (kubernetes.io/tls) is created. Use in Ingress spec.tls.secretName.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: admin-arm-tls
+  namespace: pertisk-eproxy
+spec:
+  secretName: admin-arm-tls
+  issuerRef:
+    name: letsencrypt-cloudflare
+    kind: Issuer
+  dnsNames:
+    - "*.arm.thaidevops.co"
+  secretTemplate:
+    annotations:
+      reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"

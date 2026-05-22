@@ -1,0 +1,23 @@
+# Issuer for Let's Encrypt using Cloudflare DNS-01 (wildcard support).
+# Requires secret "cloudflare-dns" with key "api-token" (Cloudflare API Token, NOT Global API Key).
+# Apply: kubectl apply -f cert-manager-issuer-cloudflare.yaml -n pertisk-eproxy
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt-cloudflare
+  namespace: pertisk-eproxy
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: dotnetnat@gmail.com  # Change to your email for ACME account
+    privateKeySecretRef:
+      name: letsencrypt-cloudflare-account
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-dns
+              key: api-token
+            # Optional: restrict zone lookup (uncomment if 6003/6111 persists)
+            # zone: homelab.thaidevops.co
