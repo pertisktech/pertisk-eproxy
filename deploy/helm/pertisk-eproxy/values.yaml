@@ -75,6 +75,9 @@ controller:
     quic_port: 8443
     # Port in Alt-Svc (what browsers use on the public LB).
     alt_svc_port: 443
+    # Keep Alt-Svc short and non-sticky so clients retry H3 after transient failures.
+    alt_svc_ma_secs: 300
+    alt_svc_persist: false
     management_addr: "0.0.0.0"
     management_port: 9080
     quic_enabled: false

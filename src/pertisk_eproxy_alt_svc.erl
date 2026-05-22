@@ -11,10 +11,16 @@
 header_value() ->
     Port = quic_udp_port(),
     PortBin = integer_to_binary(Port),
+    MaBin = integer_to_binary(alt_svc_ma_secs()),
+    Persist = alt_svc_persist(),
     %% RFC 7838: alternate authority is ":port" on the same host (e.g. h3=":443"), not "443".
-        %% Advertise both h3 and h3-29 for broader client interop (matches pertisk-rproxy behavior).
-        <<"h3=\":", PortBin/binary, "\"; ma=86400; persist=1, ",
-            "h3-29=\":", PortBin/binary, "\"; ma=86400; persist=1">>.
+    %% Keep Alt-Svc non-sticky by default so clients recover from transient QUIC failures faster.
+    case Persist of
+        true ->
+                        <<"h3=\":", PortBin/binary, "\"; ma=", MaBin/binary, "; persist=1">>;
+        false ->
+                        <<"h3=\":", PortBin/binary, "\"; ma=", MaBin/binary>>
+    end.
 
 %% @doc Add or replace Alt-Svc on a client-facing response map when appropriate.
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().
@@ -65,3 +71,14 @@ quic_udp_port() ->
                     end
             end
     end.
+
+alt_svc_ma_secs() ->
+    C = pertisk_eproxy_config:get_config(),
+    case maps:get(alt_svc_ma_secs, C, 300) of
+        S when is_integer(S), S >= 30 -> S;
+        _ -> 300
+    end.
+
+alt_svc_persist() ->
+    C = pertisk_eproxy_config:get_config(),
+    maps:get(alt_svc_persist, C, false) =:= true.

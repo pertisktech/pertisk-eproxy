@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.58"
+VERSION="0.1.61"
 
 # make docker-ingress-multi VERSION=0.1.28
 make docker-ingress-multi VERSION="$VERSION"
 helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy \
   --set image.tag="$VERSION" \
+  --set replicaCount=1 \
+  --set autoscaling.enabled=false \
   --set auth.username=admin \
   --set auth.password='admin' \
   --set auth0.domain=dev-od6cfzs2tugxm53g.us.auth0.com \

@@ -82,7 +82,7 @@ sync_tls(TlsEntries) when is_list(TlsEntries) ->
     ok.
 
 maybe_reload_proxy_tls(Sites, Backends, Tls) ->
-    Sig = erlang:phash2({Sites, Backends, Tls}),
+    Sig = stable_reload_sig(Sites, Backends, Tls),
     Last = application:get_env(pertisk_eproxy, ingress_tls_reload_sig, undefined),
     case Last of
         Sig ->
@@ -122,3 +122,11 @@ safe_reload_proxy_tls() ->
             lager:error("reload_proxy_tls_listeners failed: ~p:~p ~p", [C, R, St]),
             ok
     end.
+
+stable_reload_sig(Sites, Backends, Tls) ->
+    %% K8s list/watch can return the same resources in different order.
+    %% Keep reload decisions stable across ordering-only changes.
+    StableSites = lists:sort(Sites),
+    StableBackends = lists:sort(Backends),
+    StableTls = lists:sort(Tls),
+    erlang:phash2({StableSites, StableBackends, StableTls}).
