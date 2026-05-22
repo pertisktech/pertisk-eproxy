@@ -470,3 +470,69 @@
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
+
+.k8sHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.65rem;
+}
+
+.k8sLabel {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.k8sHint {
+  font-size: 0.77rem;
+  color: var(--color-text-secondary);
+}
+
+.k8sTableWrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.k8sTable {
+  width: 100%;
+  min-width: 880px;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+.k8sTable th,
+.k8sTable td {
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  vertical-align: top;
+}
+
+.k8sTable th {
+  font-size: 0.69rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-hover) 44%, transparent);
+}
+
+.k8sTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.k8sNameCell {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.k8sEmpty {
+  text-align: center;
+  padding: 0.9rem !important;
+  color: var(--color-text-secondary);
+}

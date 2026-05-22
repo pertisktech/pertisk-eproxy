@@ -14,8 +14,11 @@ export const NAV_MAIN_ALL = [
 
 export type NavMainItem = (typeof NAV_MAIN_ALL)[number];
 
-/** eProxy: always full proxy nav (no Helm / no ingress-only views). */
-export function getNavMain(_mode: string): readonly NavMainItem[] {
+/** In ingress mode hide DNS providers (routing is via Kubernetes Ingress). */
+export function getNavMain(mode: string): readonly NavMainItem[] {
+  if (mode === 'ingress') {
+    return NAV_MAIN_ALL.filter((item) => item.to !== '/dns-providers');
+  }
   return NAV_MAIN_ALL;
 }
 

@@ -183,14 +183,12 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
-                ok = quic_h3:send_response(
-                    H3Conn, StreamId, 404, [{<<"content-type">>, <<"text/plain">>}]
-                ),
-                _ = quic_h3:send_data(
+                _ = h3_reply_status(
                     H3Conn,
                     StreamId,
-                    <<"No route found for host: ", LogHost/binary>>,
-                    true
+                    404,
+                    [{<<"content-type">>, <<"text/plain">>}],
+                    <<"No route found for host: ", LogHost/binary>>
                 ),
                 log_h3_access(LogHost, Method, PathOnly, 404, T0, <<>>),
                 ok;
@@ -234,16 +232,13 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     H3Headers0,
                                     RespBin
                                 ),
-                                ok = quic_h3:send_response(H3Conn, StreamId, Status, H3Headers),
                                 %% RFC 9114 §4.3.2: HEAD responses MUST NOT include a message body.
-                                %% Sending a DATA frame for HEAD causes Chrome to RST_STREAM and
-                                %% eventually mark the origin as H3-broken (falls back to TCP).
                                 RespData =
                                     case normalize_h3_method(Method) of
                                         <<"HEAD">> -> <<>>;
                                         _ -> RespOut
                                     end,
-                                _ = quic_h3:send_data(H3Conn, StreamId, RespData, true),
+                                _ = h3_reply_status(H3Conn, StreamId, Status, H3Headers, RespData),
                                 UpstreamLog =
                                     case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
                                         true -> <<"management-local">>;
@@ -268,24 +263,68 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         end
     catch
         Class:Reason:Stack ->
-            lager:error(
-                "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
-                [Class, Reason, LogHost, Path, Stack]
-            ),
-            _ = catch quic_h3:send_response(
-                H3Conn, StreamId, 500, [{<<"content-type">>, <<"text/plain">>}]
-            ),
-            _ = catch quic_h3:send_data(H3Conn, StreamId, <<"Internal Server Error">>, true),
-            log_h3_access(LogHost, Method, PathOnly, 500, T0, <<>>),
-            ok
+            case h3_send_failed_reason(Reason) of
+                connection_gone ->
+                    log_h3_access(LogHost, Method, PathOnly, 0, T0, <<>>),
+                    ok;
+                _ ->
+                    lager:error(
+                        "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
+                        [Class, Reason, LogHost, Path, Stack]
+                    ),
+                    _ = h3_reply_status(
+                        H3Conn,
+                        StreamId,
+                        500,
+                        [{<<"content-type">>, <<"text/plain">>}],
+                        <<"Internal Server Error">>
+                    ),
+                    log_h3_access(LogHost, Method, PathOnly, 500, T0, <<>>),
+                    ok
+            end
     end.
 
+%% Client reset or QUIC connection closed before we finish the response.
+h3_send_response(H3Conn, StreamId, Status, Headers) ->
+    case catch quic_h3:send_response(H3Conn, StreamId, Status, Headers) of
+        ok -> ok;
+        {'EXIT', {noproc, _}} -> {error, connection_gone};
+        {'EXIT', Reason} -> {error, Reason}
+    end.
+
+h3_send_data(H3Conn, StreamId, Data, Fin) ->
+    case catch quic_h3:send_data(H3Conn, StreamId, Data, Fin) of
+        ok -> ok;
+        {'EXIT', {noproc, _}} -> {error, connection_gone};
+        {'EXIT', Reason} -> {error, Reason}
+    end.
+
+h3_reply_status(H3Conn, StreamId, Status, Headers, Body) ->
+    case h3_send_response(H3Conn, StreamId, Status, Headers) of
+        ok ->
+            %% Always FIN the stream (required for HEAD with empty body too).
+            h3_send_data(H3Conn, StreamId, Body, true);
+        {error, connection_gone} ->
+            {error, connection_gone};
+        {error, _} = Err ->
+            Err
+    end.
+
+h3_send_failed_reason({noproc, {gen_statem, call, _}}) ->
+    connection_gone;
+h3_send_failed_reason({noproc, _}) ->
+    connection_gone;
+h3_send_failed_reason(_) ->
+    other.
+
 reply_502_plain(H3Conn, StreamId) ->
-    ok = quic_h3:send_response(
-        H3Conn, StreamId, 502, [{<<"content-type">>, <<"text/plain">>}]
-    ),
-    _ = quic_h3:send_data(H3Conn, StreamId, <<"Bad Gateway">>, true),
-    ok.
+    h3_reply_status(
+        H3Conn,
+        StreamId,
+        502,
+        [{<<"content-type">>, <<"text/plain">>}],
+        <<"Bad Gateway">>
+    ).
 
 %% @doc Handle `/api/realtime-sse` over HTTP/3 by streaming SSE events directly.
 %% gun:await_body cannot forward an indefinite SSE stream, so we replicate the

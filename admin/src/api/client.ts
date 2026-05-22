@@ -331,6 +331,12 @@ export interface ManagementInfo {
   version: string;
   db_path: string | null;
   mode: string;
+  leader_election?: {
+    enabled: boolean;
+    is_leader: boolean;
+    namespace: string;
+    lease_name: string;
+  } | null;
   http_versions?: string[];
   process_cpu_usage_percent?: number | null;
   process_memory_bytes?: number | null;
@@ -857,7 +863,12 @@ export const api = {
 
   kubernetes: {
     namespaces: () => get<K8sNamespaceRow[]>('/kubernetes/namespaces'),
-    pods: () => k8sUnavailable('pods'),
+    pods: (params?: { namespace?: string }) => {
+      const search = new URLSearchParams();
+      if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
+      const q = search.toString();
+      return get<K8sPodRow[]>(q ? `/kubernetes/pods?${q}` : '/kubernetes/pods');
+    },
     deployments: () => k8sUnavailable('deployments'),
     services: (params?: { namespace?: string }) => {
       const search = new URLSearchParams();
@@ -902,6 +913,20 @@ function k8sUnavailable(feature: string): Promise<never> {
 export interface K8sNamespaceRow {
   name: string;
   created_at: string | null;
+}
+
+export interface K8sPodRow {
+  name: string;
+  namespace: string;
+  phase: string;
+  node: string | null;
+  node_name?: string | null;
+  pod_ip?: string | null;
+  ready: string;
+  restarts?: number | null;
+  cpu_usage_millicores?: number | null;
+  memory_usage_bytes?: number | null;
+  created_at?: string | null;
 }
 
 export interface K8sServicePortDetail {

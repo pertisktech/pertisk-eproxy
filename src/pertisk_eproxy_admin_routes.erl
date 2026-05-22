@@ -45,6 +45,7 @@ api_routes() ->
         {"/api/ingress/errors", pertisk_eproxy_admin_handler, ingress_errors},
         {"/api/ingress/resources", pertisk_eproxy_admin_handler, ingress_resources},
         {"/api/kubernetes/namespaces", pertisk_eproxy_admin_handler, kubernetes_namespaces},
+        {"/api/kubernetes/pods", pertisk_eproxy_admin_handler, kubernetes_pods},
         {"/api/kubernetes/services", pertisk_eproxy_admin_handler, kubernetes_services},
         {"/api/kubernetes/tls-secrets", pertisk_eproxy_admin_handler, kubernetes_tls_secrets},
         {"/api/kubernetes/ingresses", pertisk_eproxy_admin_handler, kubernetes_ingresses},

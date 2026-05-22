@@ -1,0 +1,26 @@
+# Standard Kubernetes Ingress (networking.k8s.io).
+# Use ingressClassName: pertisk-eproxy so the controller picks it up; it will show in the Admin UI (Sites/Backends).
+# Replace namespace, host, and backend service with your own.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  ingressClassName: pertisk-eproxy
+  rules:
+    - host: my-app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-service
+                port:
+                  number: 80
+# Optional TLS (Secret must exist in same namespace):
+#  tls:
+#    - hosts:
+#        - my-app.example.com
+#      secretName: my-app-tls

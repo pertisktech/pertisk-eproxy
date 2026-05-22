@@ -42,7 +42,8 @@ snapshot() ->
         <<"https_addr">> => HttpsAddr,
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
         <<"config_file">> => config_file_path_bin(),
-        <<"db_path">> => iolist_to_binary(db_file_path()),
+        <<"db_path">> => db_path_bin(),
+        <<"leader_election">> => leader_election_json(),
         <<"http_versions">> => http_versions_list(C),
         <<"loaded_tls_cert_info_beam">> => TlsInfoBeam,
         <<"listeners">> => listeners_json(C, HttpPort, MgmtAddr, MgmtPort),
@@ -82,6 +83,26 @@ db_file_path() ->
         {ok, F} when is_list(F) -> F;
         {ok, F} when is_binary(F) -> binary_to_list(F);
         _ -> "data/proxy.db"
+    end.
+
+%% Ingress mode does not use SQLite for routing; omit path from management JSON.
+db_path_bin() ->
+    case pertisk_eproxy_config:ingress_mode() of
+        true -> null;
+        false -> list_to_binary(db_file_path())
+    end.
+
+leader_election_json() ->
+    case pertisk_eproxy_config:ingress_mode() of
+        false ->
+            null;
+        true ->
+            #{
+                <<"enabled">> => pertisk_ingress_env:leader_election_enabled(),
+                <<"is_leader">> => pertisk_ingress_leader:is_leader(),
+                <<"namespace">> => pertisk_ingress_env:leader_namespace(),
+                <<"lease_name">> => pertisk_ingress_env:leader_lease_name()
+            }
     end.
 
 config_file_path_bin() ->

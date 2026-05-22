@@ -20,6 +20,10 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list"]
+  # Dashboard: ingress controller pods in release namespace (read-only)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]

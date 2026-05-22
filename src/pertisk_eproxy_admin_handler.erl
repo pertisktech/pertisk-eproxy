@@ -58,6 +58,7 @@ ingress_mutating(_, ingress_watchers) -> false;
 ingress_mutating(_, ingress_errors) -> false;
 ingress_mutating(_, ingress_resources) -> false;
 ingress_mutating(_, kubernetes_namespaces) -> false;
+ingress_mutating(_, kubernetes_pods) -> false;
 ingress_mutating(_, kubernetes_services) -> false;
 ingress_mutating(_, kubernetes_tls_secrets) -> false;
 ingress_mutating(<<"GET">>, kubernetes_ingresses) -> false;
@@ -647,6 +648,11 @@ handle(<<"GET">>, ingress_resources, Req) ->
 
 handle(<<"GET">>, kubernetes_namespaces, Req) ->
     kubernetes_reply(pertisk_eproxy_admin_kubernetes:namespaces(), Req);
+
+handle(<<"GET">>, kubernetes_pods, Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    Ns = maps:get(<<"namespace">>, Qs, <<>>),
+    kubernetes_reply(pertisk_eproxy_admin_kubernetes:pods(Ns), Req);
 
 handle(<<"GET">>, kubernetes_services, Req) ->
     Qs = maps:from_list(cowboy_req:parse_qs(Req)),

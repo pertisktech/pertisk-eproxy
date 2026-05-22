@@ -85,8 +85,11 @@ kubectl rollout restart deployment -n pertisk-eproxy
 
 ClusterRole grants:
 
-- `ingresses`: get, list, watch
+- `ingresses`: get, list, watch, create, update, patch, delete
 - `secrets`: get, list, watch (TLS)
+- `namespaces`: list (Ingress form)
+- `services`: get, list (Ingress form)
+- `pods`: get, list, watch (dashboard — release namespace only)
 - `leases`: get, list, watch, create, update, patch
 
 ## Example Ingress
@@ -96,6 +99,18 @@ kubectl apply -f examples/k8s-ingress.yaml
 ```
 
 Ensure `spec.ingressClassName` matches `ingress.className` (default `pertisk-eproxy`).
+
+### Dashboard `GET /api/kubernetes/pods` returns 403
+
+The ServiceAccount needs `pods` **list** in the release namespace. Helm installs a namespaced **Role** (`*-dashboard`) plus ClusterRole rules.
+
+```bash
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy
+kubectl auth can-i list pods \
+  --as=system:serviceaccount:pertisk-eproxy:pertisk-eproxy -n pertisk-eproxy
+```
+
+If `can-i` is `no`, apply the chart again or check `rbac.create: true` in values.
 
 ## Differences from pertisk-rproxy chart
 

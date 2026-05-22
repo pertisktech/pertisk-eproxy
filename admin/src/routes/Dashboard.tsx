@@ -6,6 +6,7 @@ import {
   type ProxyConfig,
   type ManagementInfo,
   type Metrics,
+  type K8sPodRow,
 } from '@/api/client';
 import { formatBeamCpuPct, formatPertiskVmCpuLine, pertiskVmCpuTooltip } from '@/utils/beamCpu';
 import styles from './Dashboard.module.css';
@@ -29,6 +30,21 @@ function formatBytes(n: number | undefined | null): string {
   return `${(mb / 1024).toFixed(2)} GiB`;
 }
 
+function formatMillicores(millicores: number): string {
+  return `${millicores}m`;
+}
+
+function formatTopMemory(bytes: number): string {
+  if (bytes <= 0) return '0Mi';
+  const mib = bytes / (1024 * 1024);
+  if (mib < 1) {
+    const kib = bytes / 1024;
+    return `${Math.max(1, Math.round(kib))}Ki`;
+  }
+  if (mib < 1024) return `${Math.round(mib)}Mi`;
+  return `${(mib / 1024).toFixed(1)}Gi`;
+}
+
 function formatTs(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return '—';
   try {
@@ -50,8 +66,10 @@ export default function Dashboard() {
   const [health, setHealth] = useState<HealthReport | null>(() => dashboardCache?.health ?? null);
   const [management, setManagement] = useState<ManagementInfo | null>(() => dashboardCache?.management ?? null);
   const [stats, setStats] = useState<Metrics | null>(() => dashboardCache?.stats ?? null);
+  const [k8sPods, setK8sPods] = useState<K8sPodRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(() => dashboardCache == null);
+  const [k8sLoading, setK8sLoading] = useState(false);
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
@@ -83,6 +101,45 @@ export default function Dashboard() {
   useEffect(() => {
     void load({ silent: dashboardCache != null });
   }, [load]);
+
+  useEffect(() => {
+    if (management?.mode !== 'ingress') return;
+    let cancelled = false;
+    async function loadK8s() {
+      try {
+        setK8sLoading(true);
+        const pods = await api.kubernetes.pods();
+        if (!cancelled) {
+          setK8sPods(pods);
+        }
+      } catch {
+        if (!cancelled) {
+          setK8sPods([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setK8sLoading(false);
+        }
+      }
+    }
+    void loadK8s();
+    const t = setInterval(() => void loadK8s(), 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [management?.mode]);
+
+  const isIngressMode = management?.mode === 'ingress';
+  const ingressPods = k8sPods.filter((pod) => pod.name.includes('pertisk-eproxy'));
+  const leaderInfo = management?.leader_election ?? null;
+  const leaderStatus = leaderInfo
+    ? leaderInfo.enabled
+      ? leaderInfo.is_leader
+        ? 'Leader'
+        : 'Standby'
+      : 'Disabled'
+    : null;
 
   const pi = management?.process_info;
   const caps = management?.runtime_capabilities;
@@ -203,8 +260,20 @@ export default function Dashboard() {
                 </dd>
                 <dt>Architecture</dt>
                 <dd className="mono">{pi?.system_architecture ?? '—'}</dd>
-                <dt>Database</dt>
-                <dd className="mono">{management?.db_path ?? '—'}</dd>
+                {!isIngressMode ? (
+                  <>
+                    <dt>Database</dt>
+                    <dd className="mono">{management?.db_path ?? '—'}</dd>
+                  </>
+                ) : null}
+                {isIngressMode && leaderInfo && leaderStatus ? (
+                  <>
+                    <dt>Leader election</dt>
+                    <dd className="mono">
+                      {leaderStatus} ({leaderInfo.namespace}/{leaderInfo.lease_name})
+                    </dd>
+                  </>
+                ) : null}
               </dl>
             </div>
 
@@ -239,6 +308,72 @@ export default function Dashboard() {
               </dl>
             </div>
           </div>
+
+          {isIngressMode ? (
+            <div className={`card ${styles.panel}`}>
+              <h2 className={styles.panelTitle}>
+                <i className="fas fa-diagram-project" aria-hidden /> Kubernetes runtime
+              </h2>
+              <p className={styles.panelHint}>
+                Ingress controller pods (refreshes every 10s)
+              </p>
+              <div className={styles.k8sHeader}>
+                <span className={styles.k8sLabel}>Ingress pods</span>
+                <span className={styles.k8sHint}>
+                  {k8sLoading ? 'Loading…' : `${ingressPods.length} pods`}
+                </span>
+              </div>
+              <div className={styles.k8sTableWrap}>
+                <table className={styles.k8sTable}>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Namespace</th>
+                      <th>Phase</th>
+                      <th>Ready</th>
+                      <th>Restarts</th>
+                      <th>CPU</th>
+                      <th>Memory</th>
+                      <th>Pod IP</th>
+                      <th>Node</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ingressPods.map((pod) => (
+                      <tr key={`${pod.namespace}/${pod.name}`}>
+                        <td className={styles.k8sNameCell} title={pod.name}>
+                          {pod.name}
+                        </td>
+                        <td>{pod.namespace}</td>
+                        <td>{pod.phase}</td>
+                        <td>{pod.ready}</td>
+                        <td>{pod.restarts ?? 0}</td>
+                        <td>
+                          {pod.cpu_usage_millicores != null
+                            ? formatMillicores(pod.cpu_usage_millicores)
+                            : 'n/a'}
+                        </td>
+                        <td>
+                          {pod.memory_usage_bytes != null
+                            ? formatTopMemory(pod.memory_usage_bytes)
+                            : 'n/a'}
+                        </td>
+                        <td>{pod.pod_ip ?? 'n/a'}</td>
+                        <td>{pod.node_name ?? pod.node ?? 'n/a'}</td>
+                      </tr>
+                    ))}
+                    {ingressPods.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className={styles.k8sEmpty}>
+                          {k8sLoading ? 'Loading pods…' : 'No ingress pods found'}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
 
           <div className={`card ${styles.panel}`}>
             <h2 className={styles.panelTitle}>
