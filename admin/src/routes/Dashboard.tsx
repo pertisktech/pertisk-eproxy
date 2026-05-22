@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   api,
+  type BeamMemoryBreakdown,
   type HealthReport,
   type ProxyConfig,
   type ManagementInfo,
@@ -44,6 +45,15 @@ function formatTopMemory(bytes: number): string {
   if (mib < 1024) return `${Math.round(mib)}Mi`;
   return `${(mib / 1024).toFixed(1)}Gi`;
 }
+
+const MEMORY_BREAKDOWN_ROWS: { key: keyof BeamMemoryBreakdown; label: string; hint?: string }[] = [
+  { key: 'code', label: 'Code', hint: 'Erlang modules loaded in the VM (often higher in release embedded mode).' },
+  { key: 'processes', label: 'Processes' },
+  { key: 'system', label: 'System' },
+  { key: 'binary', label: 'Binary' },
+  { key: 'ets', label: 'ETS' },
+  { key: 'atom', label: 'Atom' },
+];
 
 function formatTs(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return '—';
@@ -145,10 +155,19 @@ export default function Dashboard() {
   const pi = management?.process_info;
   const caps = management?.runtime_capabilities;
   const listeners = Array.isArray(management?.listeners) ? management.listeners : [];
+  const memBreakdown = pi?.memory_breakdown_bytes;
   const memBytes =
     management?.process_memory_bytes ??
+    memBreakdown?.total ??
     (typeof pi?.memory_total_bytes === 'number' ? pi.memory_total_bytes : null);
+  const codeMemBytes = typeof memBreakdown?.code === 'number' ? memBreakdown.code : null;
   const beamCpu = management?.process_cpu_usage_percent;
+  const cpuSummary =
+    beamCpu != null && Number.isFinite(beamCpu) ? formatBeamCpuPct(beamCpu) : null;
+  const cpuSummarySub =
+    beamCpu != null && Number.isFinite(beamCpu)
+      ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
+      : null;
 
   return (
     <section className={styles.page}>
@@ -187,7 +206,27 @@ export default function Dashboard() {
       ) : (
         <>
           <div className={styles.glance}>
-            <div className={styles.glanceMetrics} role="group" aria-label="Key proxy metrics">
+            <div className={styles.glanceMetrics} role="group" aria-label="Dashboard summary">
+              <div
+                className={`${styles.metricTile} ${styles.metricTileResource}`}
+                title={pertiskVmCpuTooltip(pi?.logical_processors)}
+              >
+                <div className={styles.metricTileVal}>{cpuSummary ?? '—'}</div>
+                <div className={styles.metricTileLabel}>CPU</div>
+                {cpuSummarySub ? <div className={styles.metricTileSub}>{cpuSummarySub}</div> : null}
+              </div>
+              <div
+                className={`${styles.metricTile} ${styles.metricTileResource}`}
+                title={
+                  'erlang:memory(total) — VM allocated memory. Code is Erlang bytecode in RAM; release embedded mode preloads modules and can use more code memory than dev.'
+                }
+              >
+                <div className={styles.metricTileVal}>{memBytes != null ? formatBytes(memBytes) : '—'}</div>
+                <div className={styles.metricTileLabel}>Memory</div>
+                {codeMemBytes != null ? (
+                  <div className={styles.metricTileSub}>code {formatBytes(codeMemBytes)}</div>
+                ) : null}
+              </div>
               <div className={styles.metricTile}>
                 <div className={styles.metricTileVal}>{config?.sites?.length ?? 0}</div>
                 <div className={styles.metricTileLabel}>Sites</div>
@@ -226,10 +265,20 @@ export default function Dashboard() {
                       '—'
                     )}
                   </dd>
-                  <dt>Memory</dt>
+                  <dt>Memory (total)</dt>
                   <dd title="erlang:memory(total) — total allocated by the runtime.">
                     {memBytes != null ? `${formatBytes(memBytes)} allocated` : '—'}
                   </dd>
+                  {MEMORY_BREAKDOWN_ROWS.map(({ key, label, hint }) => {
+                    const n = memBreakdown?.[key];
+                    if (n == null || !Number.isFinite(n)) return null;
+                    return (
+                      <span key={key} className={styles.kvBreakdownPair}>
+                        <dt title={hint}>{label}</dt>
+                        <dd title={hint}>{formatBytes(n)}</dd>
+                      </span>
+                    );
+                  })}
                 </dl>
               </div>
 
@@ -380,10 +429,6 @@ export default function Dashboard() {
             <h2 className={styles.panelTitle}>
               <i className="fas fa-network-wired" aria-hidden /> Public egress (dual-stack)
             </h2>
-            <p className={styles.panelHint}>
-              Outbound addresses as seen by ipify (refreshed periodically). Useful when this host is behind NAT or
-              when validating IPv6 connectivity.
-            </p>
             <div className={styles.ipRow}>
               <div className={styles.ipBox}>
                 <span className={styles.ipLabel}>IPv4</span>
@@ -406,10 +451,6 @@ export default function Dashboard() {
             <h2 className={styles.panelTitle}>
               <i className="fas fa-plug" aria-hidden /> Listeners & ports
             </h2>
-            <p className={styles.panelHint}>
-              HTTP/HTTPS proxy uses separate Cowboy listeners on <strong>0.0.0.0</strong> and <strong>::</strong> (dual
-              stack). Management API binds to the configured address only.
-            </p>
             <div className={styles.tableScroll}>
               <table className={styles.table}>
                 <thead>

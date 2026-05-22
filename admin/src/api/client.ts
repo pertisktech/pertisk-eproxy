@@ -293,6 +293,18 @@ export interface ManagementListener {
   stack: string;
 }
 
+/** Subset of erlang:memory/0 (bytes per category). */
+export interface BeamMemoryBreakdown {
+  total?: number;
+  processes?: number;
+  processes_used?: number;
+  system?: number;
+  atom?: number;
+  binary?: number;
+  code?: number;
+  ets?: number;
+}
+
 export interface ManagementProcessInfo {
   node: string;
   os_pid: string;
@@ -308,6 +320,7 @@ export interface ManagementProcessInfo {
   process_count: number;
   process_limit: number;
   memory_total_bytes: number;
+  memory_breakdown_bytes?: BeamMemoryBreakdown;
   os_type: string;
   os_version: string;
 }

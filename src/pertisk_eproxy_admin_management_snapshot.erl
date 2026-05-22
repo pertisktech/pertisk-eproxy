@@ -246,9 +246,21 @@ process_info_json() ->
         <<"process_count">> => erlang:system_info(process_count),
         <<"process_limit">> => erlang:system_info(process_limit),
         <<"memory_total_bytes">> => TotMem,
+        <<"memory_breakdown_bytes">> => memory_breakdown_json(),
         <<"os_type">> => os_type_bin(),
         <<"os_version">> => os_version_bin()
     }.
+
+%% erlang:memory/0 categories (code, processes, system, …) — see erlang(3) memory/1.
+memory_breakdown_json() ->
+    try
+        maps:from_list([
+            {atom_to_binary(K, utf8), V}
+         || {K, V} <- erlang:memory(), is_integer(V), V >= 0
+        ])
+    catch _:_ ->
+        #{}
+    end.
 
 hostname_bin() ->
     case inet:gethostname() of
