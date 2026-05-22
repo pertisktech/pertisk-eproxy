@@ -402,7 +402,8 @@ cpu_quantity_to_millicores(Q) when is_binary(Q) ->
         {ok, Num, <<>>} ->
             trunc(Num * 1000);
         {ok, Num, <<"n">>} ->
-            trunc(Num / 1000000);
+            %% metrics-server reports CPU in nanocores (e.g. "18273417n"); round for kubectl-like display
+            round(Num / 1000000);
         {ok, Num, <<"u">>} ->
             trunc(Num / 1000);
         {ok, Num, <<"m">>} ->
