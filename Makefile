@@ -19,6 +19,7 @@ DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION)
 BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
+BUILDX_MULTI_BUILDER ?= pertisk-multiarch
 # Set to 1 to enable Cowboy QUIC/HTTP/3 hooks when supported by Cowboy build.
 COWBOY_QUICER ?= 0
 COWBOY_QUIC ?= 0
@@ -62,13 +63,19 @@ release:
 	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
 	@COWBOY_QUICER=1 COWBOY_QUIC=1 bash scripts/build-release-linux.sh
 
+docker-buildx-multi-builder:
+	@if ! docker buildx inspect $(BUILDX_MULTI_BUILDER) >/dev/null 2>&1; then \
+		docker buildx create --name $(BUILDX_MULTI_BUILDER) --driver docker-container >/dev/null; \
+	fi
+	@docker buildx inspect --bootstrap $(BUILDX_MULTI_BUILDER) >/dev/null
+
 ## --- Docker: proxy (admin + SQLite config) ---
 docker-proxy: docker-release
 
 docker-proxy-push: docker-push
 
-docker-proxy-multi:
-	docker buildx build \
+docker-proxy-multi: docker-buildx-multi-builder
+	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
@@ -88,8 +95,8 @@ docker-ingress-push:
 	docker push $(HARBOR_INGRESS_IMAGE):$(VERSION)
 	docker push $(HARBOR_INGRESS_IMAGE):latest 2>/dev/null || docker tag $(HARBOR_INGRESS_IMAGE):$(VERSION) $(HARBOR_INGRESS_IMAGE):latest && docker push $(HARBOR_INGRESS_IMAGE):latest
 
-docker-ingress-multi:
-	docker buildx build \
+docker-ingress-multi: docker-buildx-multi-builder
+	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \

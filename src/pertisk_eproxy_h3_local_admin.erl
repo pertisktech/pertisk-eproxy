@@ -247,7 +247,7 @@ build_req(Method, Host, Path, Qs, H3Headers, Body, ClientIp, Stub) ->
     Peer = peer_from_client_ip(ClientIp),
     #{
         method => normalize_method(Method),
-        version => 'HTTP/1.1',
+        version => 'HTTP/3',
         scheme => <<"https">>,
         host => Host,
         port => 443,
