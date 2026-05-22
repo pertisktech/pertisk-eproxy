@@ -19,26 +19,92 @@
 available() ->
     pertisk_eproxy_config:ingress_mode().
 
-%% Dashboard lists controller pods in the release namespace (not cluster-wide).
+%% Dashboard: all controller replicas in the release namespace.
 pods(Namespace) ->
     with_conn(fun(Conn) ->
         Ns = case trim_optional(Namespace) of
             <<>> -> pertisk_ingress_env:leader_namespace();
             N -> N
         end,
-        case ekub:read(pod, Ns, [], Conn) of
+        case ekub_read_pods(Conn, Ns) of
             {ok, List} ->
-                Rows = [pod_row(P) || P <- items_from_list(List)],
-                {ok, Rows};
+                {ok, controller_pod_rows(List)};
             {error, Reason} ->
                 case is_k8s_forbidden(Reason) of
-                    true ->
-                        {ok, self_pod_fallback_rows(Ns)};
-                    false ->
-                        {error, Reason}
+                    true -> {ok, []};
+                    false -> {error, Reason}
                 end
         end
     end).
+
+%% ekub API discovery registers "pod"/"pods" for every API group; later groups
+%% (e.g. metrics.k8s.io) overwrite the alias, so ekub:read(pod, ...) hits the wrong API.
+-define(CORE_V1_GROUP, {<<"">>, <<"v1">>}).
+
+ekub_read_pods(Conn, Ns) ->
+    {Api, Access} = Conn,
+    Endpoint = ekub_api:endpoint(?CORE_V1_GROUP, pod, Ns, "", {Api, Access}),
+    case Endpoint of
+        <<>> ->
+            {error, pod_resource_not_found};
+        _ ->
+            ekub_core:http_request(Endpoint, [], Access)
+    end.
+
+controller_pod_rows(List) ->
+    [pod_row(P) || P <- items_from_list(List), is_controller_pod(P)].
+
+%% Match deployment pod name prefix OR Helm selector labels (not both required).
+is_controller_pod(Pod) ->
+    controller_pod_by_name(Pod) orelse controller_pod_by_labels(Pod).
+
+controller_pod_by_name(Pod) ->
+    Name = meta_name(Pod),
+    Prefix = controller_pod_name_prefix(),
+    case byte_size(Prefix) of
+        0 ->
+            false;
+        _ ->
+            case binary:match(Name, Prefix) of
+                {0, _} -> true;
+                _ -> false
+            end
+    end.
+
+controller_pod_name_prefix() ->
+    <<(pertisk_ingress_env:controller_pod_name())/binary, "-">>.
+
+controller_pod_by_labels(Pod) ->
+    case pertisk_ingress_env:controller_pod_label_selector() of
+        <<>> ->
+            false;
+        Sel ->
+            pod_matches_label_selector(Pod, Sel)
+    end.
+
+pod_matches_label_selector(Pod, SelBin) ->
+    Labels = maps:get(<<"labels">>, maps:get(<<"metadata">>, Pod, #{}), #{}),
+    lists:all(
+        fun({Key, Val}) ->
+            maps:get(Key, Labels, undefined) =:= Val
+        end,
+        parse_label_selector(SelBin)
+    ).
+
+parse_label_selector(SelBin) when is_binary(SelBin) ->
+    Parts = string:split(binary_to_list(SelBin), ",", all),
+    lists:filtermap(
+        fun(Part) ->
+            P = string:trim(Part),
+            case string:split(P, "=", leading) of
+                [K, V] ->
+                    {true, {list_to_binary(string:trim(K)), list_to_binary(string:trim(V))}};
+                _ ->
+                    false
+            end
+        end,
+        Parts
+    ).
 
 namespaces() ->
     %% Cluster-scoped: never pass watch-namespace filter (unlike ingress/secret list).
@@ -230,17 +296,17 @@ pod_row(Pod) ->
     NodeName = maps:get(<<"nodeName">>, Spec, undefined),
     {Ready, Restarts} = pod_ready_restarts(maps:get(<<"containerStatuses">>, Status, [])),
     #{
-        name => meta_name(Pod),
-        namespace => meta_namespace(Pod),
-        phase => maps:get(<<"phase">>, Status, <<"Unknown">>),
-        node => maybe_null(NodeName),
-        node_name => maybe_null(NodeName),
-        pod_ip => maybe_null(maps:get(<<"podIP">>, Status, undefined)),
-        ready => Ready,
-        restarts => Restarts,
-        cpu_usage_millicores => null,
-        memory_usage_bytes => null,
-        created_at => meta_created_at(Pod)
+        <<"name">> => meta_name(Pod),
+        <<"namespace">> => meta_namespace(Pod),
+        <<"phase">> => maps:get(<<"phase">>, Status, <<"Unknown">>),
+        <<"node">> => maybe_null(NodeName),
+        <<"node_name">> => maybe_null(NodeName),
+        <<"pod_ip">> => maybe_null(maps:get(<<"podIP">>, Status, undefined)),
+        <<"ready">> => Ready,
+        <<"restarts">> => Restarts,
+        <<"cpu_usage_millicores">> => null,
+        <<"memory_usage_bytes">> => null,
+        <<"created_at">> => meta_created_at(Pod)
     }.
 
 pod_ready_restarts([]) ->
@@ -580,6 +646,8 @@ host_to_ingress_name(Host) ->
 
 items_from_list(#{<<"items">> := Items}) when is_list(Items) ->
     Items;
+items_from_list(Items) when is_list(Items) ->
+    Items;
 items_from_list(Obj) when is_map(Obj) ->
     case maps:is_key(<<"items">>, Obj) of
         true -> maps:get(<<"items">>, Obj, []);
@@ -648,46 +716,6 @@ is_k8s_forbidden(Reason) when is_map(Reason) ->
     end;
 is_k8s_forbidden(_) ->
     false.
-
-%% When RBAC denies pod list, expose at least this replica (from downward API).
-self_pod_fallback_rows(Ns) ->
-    PodName = env_bin([<<"PERTISK_POD_NAME">>, <<"POD_NAME">>]),
-    PodNs = env_bin([<<"POD_NAMESPACE">>]),
-    case {PodName, PodNs} of
-        {<<>>, _} -> [];
-        {_, <<>>} -> [];
-        {Name, Namespace} when Namespace =:= Ns ->
-            [#{
-                name => Name,
-                namespace => Namespace,
-                phase => <<"Running">>,
-                node => null,
-                node_name => null,
-                pod_ip => null,
-                ready => <<"1/1">>,
-                restarts => 0,
-                cpu_usage_millicores => null,
-                memory_usage_bytes => null,
-                created_at => null
-            }];
-        _ ->
-            []
-    end.
-
-env_bin(Keys) ->
-    case first_env(Keys) of
-        {ok, V} -> V;
-        error -> <<>>
-    end.
-
-first_env([Key | Rest]) ->
-    case os:getenv(binary_to_list(Key)) of
-        false -> first_env(Rest);
-        "" -> first_env(Rest);
-        V -> {ok, list_to_binary(string:trim(V))}
-    end;
-first_env([]) ->
-    error.
 
 %% JSON null / numbers must not crash trim/trim_required (thoas decodes null as null).
 coerce_binary(null) -> <<>>;

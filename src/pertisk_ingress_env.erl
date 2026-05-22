@@ -14,7 +14,9 @@
     renew_interval_seconds/0,
     watch_backoff_ms/0,
     reconcile_interval_ms/0,
-    k8s_tls_dir/0
+    k8s_tls_dir/0,
+    controller_pod_label_selector/0,
+    controller_pod_name/0
 ]).
 
 -define(DEFAULT_INGRESS_CLASS, <<"pertisk-eproxy">>).
@@ -94,6 +96,20 @@ k8s_tls_dir() ->
         false -> "data/k8s-tls";
         D when is_list(D) -> D;
         _ -> "data/k8s-tls"
+    end.
+
+%% Helm sets this to app.kubernetes.io/name=...,app.kubernetes.io/instance=<release>
+controller_pod_label_selector() ->
+    case env_nonempty(<<"PERTISK_K8S_POD_LABEL_SELECTOR">>) of
+        {ok, Sel} -> Sel;
+        error -> <<>>
+    end.
+
+%% Deployment name prefix for dashboard pod rows (Helm fullname, e.g. pertisk-eproxy-).
+controller_pod_name() ->
+    case env_nonempty(<<"PERTISK_K8S_CONTROLLER_NAME">>) of
+        {ok, N} -> N;
+        error -> <<"pertisk-eproxy">>
     end.
 
 %% ---------------------------------------------------------------------------

@@ -131,7 +131,8 @@ export default function Dashboard() {
   }, [management?.mode]);
 
   const isIngressMode = management?.mode === 'ingress';
-  const ingressPods = k8sPods.filter((pod) => pod.name.includes('pertisk-eproxy'));
+  /** API returns controller replicas only (Helm app.kubernetes.io/name + instance labels). */
+  const ingressPods = k8sPods;
   const leaderInfo = management?.leader_election ?? null;
   const leaderStatus = leaderInfo
     ? leaderInfo.enabled
@@ -315,7 +316,7 @@ export default function Dashboard() {
                 <i className="fas fa-diagram-project" aria-hidden /> Kubernetes runtime
               </h2>
               <p className={styles.panelHint}>
-                Ingress controller pods (refreshes every 10s)
+                All ingress controller replicas in the release namespace (refreshes every 10s)
               </p>
               <div className={styles.k8sHeader}>
                 <span className={styles.k8sLabel}>Ingress pods</span>
