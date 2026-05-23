@@ -461,9 +461,13 @@ json_to_config(Json) ->
         mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy_admin">>)),
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
         http_port       => maps:get(<<"http_port">>, Json, 80),
+        http_num_acceptors => parse_opt_int(maps:get(<<"http_num_acceptors">>, Json, null)),
         https_port      => parse_opt_int(maps:get(<<"https_port">>, Json, null)),
+        https_num_acceptors => parse_opt_int(maps:get(<<"https_num_acceptors">>, Json, null)),
         quic_enabled    => parse_opt_bool(maps:get(<<"quic_enabled">>, Json, false)),
         quic_port       => parse_opt_int(maps:get(<<"quic_port">>, Json, null)),
+        quic_num_acceptors => parse_opt_int(maps:get(<<"quic_num_acceptors">>, Json, null)),
+        proxy_max_connections => parse_opt_int(maps:get(<<"proxy_max_connections">>, Json, null)),
         alt_svc_port    => parse_opt_int(maps:get(<<"alt_svc_port">>, Json, null)),
         h3_api_gateway_enabled =>
             case maps:get(<<"h3_api_gateway_enabled">>, Json, undefined) of
@@ -492,6 +496,9 @@ json_to_config(Json) ->
         h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
+        management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
+        management_max_connections => parse_opt_int(maps:get(<<"management_max_connections">>, Json, null)),
+        upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
         %% When true, the management listener uses TLS (same certs as the HTTPS proxy).
         %% This allows browsers to negotiate HTTP/2 via ALPN, enabling WebSocket over HTTP/2 (RFC 8441).
         management_tls_enabled =>

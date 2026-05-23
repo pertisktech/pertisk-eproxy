@@ -66,11 +66,13 @@ start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
     Routes = build_proxy_routes(),
     AdminRoutes = build_admin_routes(admin_listener_mode(Config)),
+    HttpAcceptors = maps:get(http_num_acceptors, Config, 100),
+    MgmtAcceptors = maps:get(management_num_acceptors, Config, 20),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
-    ok = start_clear_listener(http4, HttpPort, {0, 0, 0, 0}, Routes, 100, []),
-    ok = start_clear_listener_ipv6(http6, HttpPort, Routes, 100),
+    ok = start_clear_listener(http4, HttpPort, {0, 0, 0, 0}, Routes, HttpAcceptors, []),
+    ok = start_clear_listener_ipv6(http6, HttpPort, Routes, HttpAcceptors),
     lager:info("HTTP proxy listening on 0.0.0.0:~w (http4)", [HttpPort]),
 
     start_proxy_tls_listeners(Config, Routes),
@@ -84,7 +86,7 @@ start_listeners() ->
         %% Management/admin is intentionally plain HTTP/1.1.
         enable_connect_protocol => false
     },
-    ok = start_clear_listener_opts(management, MgmtPort, MgmtAddr, 10, [], MgmtProtoOpts),
+    ok = start_clear_listener_opts(management, MgmtPort, MgmtAddr, MgmtAcceptors, [], MgmtProtoOpts),
     lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
     ok.
 
@@ -138,6 +140,9 @@ stop_proxy_tls_listeners() ->
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
+    Config = pertisk_eproxy_config:get_config(),
+    HttpsAcceptors = maps:get(https_num_acceptors, Config, 100),
+    ProxyMaxConns = listener_max_connections(https4, Config),
     TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
     TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
     HttpsProtoOpts = #{
@@ -147,12 +152,12 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
         enable_connect_protocol => true
     },
     case cowboy:start_tls(https4,
-        #{num_acceptors => 100, socket_opts => TlsSocketOpts4},
+        #{num_acceptors => HttpsAcceptors, max_connections => ProxyMaxConns, socket_opts => TlsSocketOpts4},
         HttpsProtoOpts
     ) of
         {ok, _} ->
             case cowboy:start_tls(https6,
-                #{num_acceptors => 100, socket_opts => TlsSocketOpts6},
+                #{num_acceptors => HttpsAcceptors, max_connections => ProxyMaxConns, socket_opts => TlsSocketOpts6},
                 HttpsProtoOpts
             ) of
                 {ok, _} ->
@@ -171,6 +176,8 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
 
 maybe_start_quic(Config, Routes) ->
     GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
+    QuicAcceptors = maps:get(quic_num_acceptors, Config, 100),
+    ProxyMaxConns = listener_max_connections(quic4, Config),
     _ = maybe_start_h3_api_gateway(Config),
     _ = maybe_start_h3_probe(Config),
     case {maps:get(quic_enabled, Config, false), GatewayEnabled} of
@@ -198,7 +205,8 @@ maybe_start_quic(Config, Routes) ->
                     R1 = catch erlang:apply(cowboy, StartQuic, [
                         quic4,
                         #{
-                            num_acceptors => 100,
+                            num_acceptors => QuicAcceptors,
+                            max_connections => ProxyMaxConns,
                             socket_opts => QuicSocketOpts4
                         },
                         QuicProtoOpts
@@ -604,9 +612,11 @@ start_clear_listener(Name, Port, Ip, Routes, NumAcceptors, ExtraSocketOpts) ->
     start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts).
 
 start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts) ->
+    Config = pertisk_eproxy_config:get_config(),
+    MaxConns = listener_max_connections(Name, Config),
     SocketOpts = build_listen_socket_opts(Ip, Port, ExtraSocketOpts),
     case cowboy:start_clear(Name,
-        #{num_acceptors => NumAcceptors, socket_opts => SocketOpts},
+        #{num_acceptors => NumAcceptors, max_connections => MaxConns, socket_opts => SocketOpts},
         ProtoOpts
     ) of
         {ok, _} ->
@@ -641,3 +651,8 @@ build_listen_socket_opts({0, 0, 0, 0, 0, 0, 0, 0}, Port, Extra) ->
     [{ip, {0, 0, 0, 0, 0, 0, 0, 0}}, inet6, {port, Port} | Extra];
 build_listen_socket_opts(Ip, Port, Extra) ->
     [{ip, Ip}, {port, Port} | Extra].
+
+listener_max_connections(Name, Config) when Name =:= management ->
+    maps:get(management_max_connections, Config, 2048);
+listener_max_connections(_Name, Config) ->
+    maps:get(proxy_max_connections, Config, 16384).

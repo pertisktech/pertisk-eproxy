@@ -29,6 +29,13 @@ init([]) ->
           shutdown => 5000,
           type     => worker},
 
+        %% Shared upstream Gun connection pool (reuses backend connections across requests).
+        #{id       => pertisk_eproxy_upstream_pool,
+          start    => {pertisk_eproxy_upstream_pool, start_link, []},
+          restart  => permanent,
+          shutdown => 5000,
+          type     => worker},
+
         #{id       => pertisk_eproxy_auth,
           start    => {pertisk_eproxy_auth, start_link, []},
           restart  => permanent,

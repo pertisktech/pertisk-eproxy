@@ -1,11 +1,12 @@
 {application, pertisk_eproxy, [
     {description, "Erlang Cowboy Reverse Proxy"},
-    {vsn, "0.1.71"},
+    {vsn, "0.1.77"},
     {registered, [
         pertisk_eproxy_sup,
         pertisk_eproxy_config,
         pertisk_eproxy_metrics,
         pertisk_eproxy_backend_sup,
+        pertisk_eproxy_upstream_pool,
         pertisk_eproxy_admin_realtime,
         pertisk_eproxy_public_ip,
         pertisk_eproxy_acme_dns,

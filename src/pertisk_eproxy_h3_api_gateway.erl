@@ -580,17 +580,14 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
     GunOpts = upstream_gun_opts(UpHost, Transport),
-    case gun:open(UpHost, UpPort, GunOpts) of
+    case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, http, GunOpts) of
         {error, Reason} ->
-            {error, {connect, Reason}};
+            {error, Reason};
         {ok, ConnPid} ->
-            case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
-                {error, Reason} ->
-                    gun:close(ConnPid),
-                    {error, {await_up, Reason}};
-                {ok, _Protocol} ->
+            Result =
+                try
                     StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
-                    Result = case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
                         {response, nofin, Status, RespHeaders} ->
                             case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
                                 {ok, RespBody} ->
@@ -603,10 +600,18 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                             {ok, Status, gun_resp_headers_to_h3(RespHeaders), <<>>};
                         {error, R} ->
                             {error, R}
-                    end,
-                    gun:close(ConnPid),
-                    Result
-            end
+                    end
+                catch
+                    Class:Reason ->
+                        {error, {Class, Reason}}
+                end,
+            case Result of
+                {error, _} ->
+                    pertisk_eproxy_upstream_pool:invalidate(ConnPid);
+                _ ->
+                    ok
+            end,
+            Result
     end.
 
 upstream_gun_opts(UpHost, tls) ->

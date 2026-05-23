@@ -131,17 +131,11 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
     ReqKind = detect_request_kind(Req),
     GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
 
-    case gun:open(UpHost, UpPort, GunOpts) of
+    case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) of
         {error, Reason} ->
-            {error, {connect, Reason}};
+            {error, Reason};
         {ok, ConnPid} ->
-            case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
-                {error, Reason} ->
-                    gun:close(ConnPid),
-                    {error, {await_up, Reason}};
-                {ok, _Protocol} ->
-                    do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp)
-            end
+            do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp)
     end.
 
 upstream_gun_opts(UpHost, tls, ReqKind) ->
@@ -178,30 +172,44 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
     Headers = maps:to_list(HeadersMap),
     {ok, Body} = read_body(Req),
 
-    GunMethod = method_to_gun(Method),
-    StreamRef = gun:request(ConnPid, GunMethod, FullPath, Headers, Body),
-
-    Result = case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-        {response, nofin, Status, RespHeaders} ->
-            {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
-            RespBin = iolist_to_binary(RespBody),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
-            RawHeaders  = headers_to_map(RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
-            {OutHeaders, OutBody} =
-                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, CowboyHeaders, RespBin),
-            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
-            {ok, Status, Req2};
-        {response, fin, Status, RespHeaders} ->
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
-            RawHeaders = headers_to_map(RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
-            Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),
-            {ok, Status, Req2};
-        {error, Reason} ->
-            {error, Reason}
+    Result =
+        try
+            GunMethod = method_to_gun(Method),
+            StreamRef = gun:request(ConnPid, GunMethod, FullPath, Headers, Body),
+            case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                {response, nofin, Status, RespHeaders} ->
+                    case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                        {ok, RespBody} ->
+                            RespBin = iolist_to_binary(RespBody),
+                            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
+                            RawHeaders  = headers_to_map(RespHeaders),
+                            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
+                            {OutHeaders, OutBody} =
+                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, CowboyHeaders, RespBin),
+                            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
+                            {ok, Status, Req2};
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {response, fin, Status, RespHeaders} ->
+                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
+                    RawHeaders = headers_to_map(RespHeaders),
+                    CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
+                    Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),
+                    {ok, Status, Req2};
+                {error, Reason} ->
+                    {error, Reason}
+            end
+        catch
+            Class:CrashReason ->
+                {error, {Class, CrashReason}}
+        end,
+    case Result of
+        {error, _} ->
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid);
+        _ ->
+            ok
     end,
-    gun:close(ConnPid),
     Result.
 
 %% -------------------------------------------------------------------------
