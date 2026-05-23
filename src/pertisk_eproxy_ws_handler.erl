@@ -26,11 +26,16 @@ init(Req, _State) ->
 
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
+            lager:warning("WS no route for host=~s path=~s", [Host, Path]),
             Req2 = cowboy_req:reply(404, pertisk_eproxy_response_headers:merge(#{}), <<"No route">>, Req),
             {ok, Req2, #{}};
         {ok, #{upstream_path := UpPath, backend := BackendName}} ->
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
+                    lager:warning(
+                        "WS no healthy upstream for backend=~s host=~s path=~s",
+                        [BackendName, Host, Path]
+                    ),
                     Req2 = cowboy_req:reply(502, pertisk_eproxy_response_headers:merge(#{}), <<"No upstream">>, Req),
                     {ok, Req2, #{}};
                 {ok, UpstreamAddr} ->
@@ -57,8 +62,8 @@ init(Req, _State) ->
     end.
 
 websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
-    {UpHost, UpPort, Transport} = parse_upstream(UpAddr),
-    GunOpts = #{transport => Transport, protocols => [http]},
+    {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
+    GunOpts = ws_gun_opts(Transport),
     case gun:open(UpHost, UpPort, GunOpts) of
         {ok, ConnPid} ->
             case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
@@ -71,12 +76,18 @@ websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_he
                         ws_out_buffer => []
                     }};
                 {error, Reason} ->
-                    lager:warning("WS upstream connect failed: ~p", [Reason]),
+                    lager:warning(
+                        "WS upstream connect failed host=~s port=~p upstream=~s path=~s reason=~p",
+                        [UpHost, UpPort, UpAddr, UpPath, Reason]
+                    ),
                     gun:close(ConnPid),
                     {stop, State}
             end;
         {error, Reason} ->
-            lager:warning("WS upstream open failed: ~p", [Reason]),
+            lager:warning(
+                "WS upstream open failed host=~s port=~p upstream=~s path=~s reason=~p",
+                [UpHost, UpPort, UpAddr, UpPath, Reason]
+            ),
             {stop, State}
     end.
 
@@ -112,6 +123,16 @@ websocket_info(
     lists:foreach(fun(F) -> gun:ws_send(ConnPid, SRef, F) end, Buf),
     {ok, State#{upstream_ws_ready => true, ws_out_buffer => []}};
 
+websocket_info(
+    {gun_response, ConnPid, SRef, _Fin, Status, Headers},
+    State = #{conn_pid := ConnPid, stream_ref := SRef, upstream_addr := UpAddr, upstream_path := UpPath}
+) when Status =/= 101 ->
+    lager:warning(
+        "WS upstream rejected upgrade upstream=~s path=~s status=~p headers=~p",
+        [UpAddr, UpPath, Status, Headers]
+    ),
+    {[close], State};
+
 websocket_info({gun_error, _ConnPid, _SRef, Reason}, State) ->
     lager:warning("WS upstream error: ~p", [Reason]),
     {[close], State};
@@ -122,6 +143,16 @@ websocket_info({gun_down, _ConnPid, _Proto, Reason, _Killed}, State) ->
 
 websocket_info(_Info, State) ->
     {ok, State}.
+
+ws_gun_opts(tls) ->
+    #{
+        transport => tls,
+        protocols => [http],
+        %% Force classic WS Upgrade over HTTP/1.1; upstream h2 ALPN can reject ws_upgrade.
+        transport_opts => [{alpn_advertised_protocols, [<<"http/1.1">>]}]
+    };
+ws_gun_opts(Transport) ->
+    #{transport => Transport, protocols => [http]}.
 
 terminate(_Reason, _Req, #{conn_pid := ConnPid, backend := BackendName,
                              upstream_addr := Addr})
@@ -143,24 +174,6 @@ client_ip(Req) ->
             list_to_binary(inet:ntoa(PeerIp));
         XFF ->
             hd(binary:split(XFF, [<<", ">>, <<",">>]))
-    end.
-
-parse_upstream(Addr) when is_binary(Addr) ->
-    parse_upstream(binary_to_list(Addr));
-parse_upstream("https://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 443),
-    {Host, Port, tls};
-parse_upstream("http://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 80),
-    {Host, Port, tcp};
-parse_upstream(Addr) ->
-    {Host, Port} = split_host_port(Addr, 80),
-    {Host, Port, tcp}.
-
-split_host_port(Addr, Default) ->
-    case string:split(Addr, ":", trailing) of
-        [Host, PortStr] -> {Host, list_to_integer(string:trim(PortStr, trailing, "/"))};
-        [Host]          -> {Host, Default}
     end.
 
 ws_forward_headers(Req, OrigHost, ClientIp) ->

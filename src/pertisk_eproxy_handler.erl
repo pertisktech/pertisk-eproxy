@@ -64,7 +64,7 @@ init(Req, State) ->
 handle_http(Req, State, Method, Host, Path, Qs) ->
     T0 = erlang:monotonic_time(millisecond),
     Vsn = cowboy_req:version(Req),
-    Proto = cowboy_req_proto_metric(Req),
+    Proto = request_proto_metric(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
@@ -128,9 +128,10 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
         _    -> <<UpstreamPath/binary, "?", Qs/binary>>
     end,
 
+    ReqKind = detect_request_kind(Req),
     GunOpts = #{
         transport  => Transport,
-        protocols  => [http],
+        protocols  => gun_protocols_for_request(ReqKind),
         connect_timeout => ?CONNECT_TIMEOUT
     },
 
@@ -229,7 +230,58 @@ headers_to_map(List) ->
 
 is_websocket_upgrade(Req) ->
     Upgrade = cowboy_req:header(<<"upgrade">>, Req, <<>>),
-    string:lowercase(Upgrade) =:= <<"websocket">>.
+    case string:lowercase(Upgrade) =:= <<"websocket">> of
+        true ->
+            true;
+        false ->
+            %% Some proxies/clients (e.g. HTTP/2 extended CONNECT paths)
+            %% may not carry classic Upgrade/Connection headers.
+            has_ws_handshake_headers(Req)
+    end.
+
+has_ws_handshake_headers(Req) ->
+    case cowboy_req:header(<<"sec-websocket-key">>, Req, undefined) of
+        undefined ->
+            case cowboy_req:header(<<"sec-websocket-version">>, Req, undefined) of
+                undefined -> false;
+                _ -> true
+            end;
+        _ ->
+            true
+    end.
+
+request_proto_metric(Req) ->
+    case detect_request_kind(Req) of
+        grpc -> <<"grpc">>;
+        _ -> cowboy_req_proto_metric(Req)
+    end.
+
+detect_request_kind(Req) ->
+    case is_websocket_upgrade(Req) of
+        true -> websocket;
+        false ->
+            case is_grpc_request(Req) of
+                true -> grpc;
+                false -> http
+            end
+    end.
+
+is_grpc_request(Req) ->
+    Ct = cowboy_req:header(<<"content-type">>, Req, <<>>),
+    CtLower = string:lowercase(Ct),
+    case CtLower of
+        <<"application/grpc", _/binary>> -> true;
+        _ ->
+            %% gRPC over HTTP/2 commonly carries TE: trailers.
+            Te = string:lowercase(cowboy_req:header(<<"te">>, Req, <<>>)),
+            Te =:= <<"trailers">>
+    end.
+
+gun_protocols_for_request(grpc) ->
+    %% gRPC requires HTTP/2 transport semantics.
+    [http2];
+gun_protocols_for_request(_) ->
+    [http].
 
 client_ip(Req) ->
     case cowboy_req:header(<<"x-forwarded-for">>, Req) of
@@ -251,22 +303,84 @@ read_body(Req, Acc) ->
 
 parse_upstream(Addr) when is_binary(Addr) ->
     parse_upstream(binary_to_list(Addr));
-parse_upstream("https://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 443),
-    {Host, Port, tls};
-parse_upstream("http://" ++ Rest) ->
-    {Host, Port} = split_host_port(Rest, 80),
-    {Host, Port, tcp};
 parse_upstream(Addr) ->
-    {Host, Port} = split_host_port(Addr, 80),
-    {Host, Port, tcp}.
+    Addr1 = string:trim(Addr),
+    Addr2 = string:trim(Addr1, trailing, "/"),
+    case string:find(Addr2, "://") of
+        nomatch ->
+            {Host, Port} = split_host_port(Addr2, 80),
+            {Host, Port, tcp};
+        _ ->
+            parse_upstream_uri(Addr2)
+    end.
+
+parse_upstream_uri(Addr) ->
+    try uri_string:parse(Addr) of
+        #{scheme := Scheme0} = Uri ->
+            Scheme = string:lowercase(uri_text_to_list(Scheme0)),
+            {Transport, DefaultPort} = scheme_to_transport(Scheme),
+            Host = uri_text_to_list(maps:get(host, Uri, <<"localhost">>)),
+            Port = maps:get(port, Uri, DefaultPort),
+            {Host, Port, Transport};
+        _ ->
+            {Host, Port} = split_host_port(Addr, 80),
+            {Host, Port, tcp}
+    catch
+        _:_ ->
+            {Host, Port} = split_host_port(Addr, 80),
+            {Host, Port, tcp}
+    end.
+
+scheme_to_transport("https") -> {tls, 443};
+scheme_to_transport("wss") -> {tls, 443};
+scheme_to_transport("grpcs") -> {tls, 443};
+scheme_to_transport("http") -> {tcp, 80};
+scheme_to_transport("ws") -> {tcp, 80};
+scheme_to_transport("grpc") -> {tcp, 80};
+scheme_to_transport(_) -> {tcp, 80}.
+
+uri_text_to_list(V) when is_binary(V) -> binary_to_list(V);
+uri_text_to_list(V) when is_list(V) -> V;
+uri_text_to_list(V) -> lists:flatten(io_lib:format("~p", [V])).
 
 split_host_port(Addr, DefaultPort) ->
-    case string:split(Addr, ":", trailing) of
-        [Host, PortStr] ->
-            {Host, list_to_integer(string:trim(PortStr, trailing, "/"))};
-        [Host] ->
-            {Host, DefaultPort}
+    case parse_bracket_host_port(Addr, DefaultPort) of
+        {ok, HostPort} ->
+            HostPort;
+        error ->
+            case string:split(Addr, ":", trailing) of
+                [Host, PortStr] ->
+                    case safe_port(PortStr) of
+                        {ok, Port} -> {Host, Port};
+                        error -> {Addr, DefaultPort}
+                    end;
+                [Host] ->
+                    {Host, DefaultPort}
+            end
+    end.
+
+parse_bracket_host_port([$[ | Rest], DefaultPort) ->
+    case string:split(Rest, "]", trailing) of
+        [Host, ""] ->
+            {ok, {Host, DefaultPort}};
+        [Host, [$: | PortStr]] ->
+            case safe_port(PortStr) of
+                {ok, Port} -> {ok, {Host, Port}};
+                error -> error
+            end;
+        _ ->
+            error
+    end;
+parse_bracket_host_port(_, _) ->
+    error.
+
+safe_port(PortStr0) ->
+    PortStr = string:trim(PortStr0, trailing, "/"),
+    try
+        {ok, list_to_integer(PortStr)}
+    catch
+        _:_ ->
+            error
     end.
 
 method_to_gun(<<"GET">>)     -> <<"GET">>;
