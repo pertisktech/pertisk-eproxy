@@ -1560,7 +1560,9 @@ export default function Sites() {
                     <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
                   </label>
                   <p className={styles.securityHintText}>
-                    Turn this off to force clients to stay on HTTP/1.1 or HTTP/2 for this host.
+                    Enabled by default. Turn this off to force clients to stay on HTTP/1.1 or HTTP/2 for this host.
+                    This setting is independent from HTTP/2 support, so HTTP/3 can remain available even when HTTP/2
+                    is disabled globally.
                   </p>
                   <label className={styles.securityOption}>
                     <input

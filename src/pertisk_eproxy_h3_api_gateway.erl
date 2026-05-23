@@ -1355,13 +1355,22 @@ maybe_add_h3_alt_svc(PathOnly, Qs, Host, Headers) ->
         true ->
             H = headers_without(Headers, [<<"alt-svc">>]),
             H ++ [{<<"alt-svc">>, pertisk_eproxy_alt_svc:header_value()}];
+        clear ->
+            H = headers_without(Headers, [<<"alt-svc">>]),
+            H ++ [{<<"alt-svc">>, <<"clear">>}];
         false ->
             Headers
     end.
 
 should_advertise_h3(PathOnly, Qs, Host) ->
-    not console_page_request(PathOnly, Qs) andalso
-        pertisk_eproxy_handler:site_advertise_http3(Host).
+    case console_page_request(PathOnly, Qs) of
+        true -> clear;
+        false ->
+            case pertisk_eproxy_handler:site_advertise_http3(Host) of
+                true -> true;
+                false -> clear
+            end
+    end.
 
 console_page_request(PathOnly, Qs) when is_binary(PathOnly), is_binary(Qs) ->
     IsConsoleQuery = binary:match(Qs, <<"console=">>) =/= nomatch,

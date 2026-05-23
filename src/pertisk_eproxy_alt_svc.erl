@@ -26,18 +26,30 @@ header_value() ->
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().
 merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
     Base = maps:without([<<"alt-svc">>], Headers),
-    case should_advertise(Req, Host) of
+    case alt_svc_action(Req, Host) of
         true ->
             AltSvc = header_value(),
             lager:debug("Alt-Svc attached host=~s value=~s", [Host, AltSvc]),
             Base#{<<"alt-svc">> => AltSvc};
+        clear ->
+            lager:info("Alt-Svc cleared host=~s (console page)", [Host]),
+            Base#{<<"alt-svc">> => <<"clear">>};
         false -> Base
     end.
 
-should_advertise(Req, Host) ->
-    https_front_request(Req) andalso
-        not console_page_request(cowboy_req:path(Req), cowboy_req:qs(Req)) andalso
-        pertisk_eproxy_handler:site_advertise_http3(Host).
+alt_svc_action(Req, Host) ->
+    case console_page_request(cowboy_req:path(Req), cowboy_req:qs(Req)) of
+        true -> clear;
+        false ->
+            case https_front_request(Req) of
+                true ->
+                    case pertisk_eproxy_handler:site_advertise_http3(Host) of
+                        true -> true;
+                        false -> clear
+                    end;
+                false -> false
+            end
+    end.
 
 https_front_request(Req) ->
     case cowboy_req:scheme(Req) of
