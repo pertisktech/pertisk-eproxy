@@ -362,9 +362,6 @@ export default function Certificates() {
         <div
           className={styles.modalBackdrop}
           role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeImportModal();
-          }}
         >
           <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="import-tls-title">
             <div className={styles.modalHeader}>
@@ -388,10 +385,10 @@ export default function Certificates() {
               )}
               <p className={styles.modalHint}>
                 {importMode === 'listener'
-                  ? 'Paste PEM or choose files. Listener TLS files are updated in running config.'
+                  ? 'Paste PEM or choose files.'
                   : importMode === 'existing'
-                    ? 'Paste PEM or choose files. Selected certificate PEM/key will be replaced.'
-                    : 'Paste PEM or choose files. A new certificate entry will be created and available for site selection.'}
+                    ? 'Paste PEM or choose files.'
+                    : 'Paste PEM or choose files.'}
               </p>
               <label className={styles.fieldLabel}>
                 Certificate PEM

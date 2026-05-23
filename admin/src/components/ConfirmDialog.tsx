@@ -43,9 +43,6 @@ export default function ConfirmDialog({
   return (
     <div
       className={styles.overlay}
-      onClick={(e) => {
-        if (!loading && e.target === e.currentTarget) onCancel();
-      }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"

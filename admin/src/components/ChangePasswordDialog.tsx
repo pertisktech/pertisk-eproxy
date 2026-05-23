@@ -170,9 +170,6 @@ export default function ChangePasswordDialog({ open, onClose }: ChangePasswordDi
   return (
     <div
       className={styles.overlay}
-      onClick={(e) => {
-        if (!loading && e.target === e.currentTarget) onClose();
-      }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="change-password-title"

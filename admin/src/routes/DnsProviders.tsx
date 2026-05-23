@@ -438,9 +438,6 @@ export default function DnsProviders() {
           <div
             className={styles.modalBackdrop}
             role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setShowForm(false);
-            }}
           >
           <div className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="dns-provider-modal-title">
             <div className={styles.modalHeader}>

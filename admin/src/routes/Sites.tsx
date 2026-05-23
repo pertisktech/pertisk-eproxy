@@ -1297,9 +1297,6 @@ export default function Sites() {
           <div
             className={styles.modalBackdrop}
             role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setShowForm(false);
-            }}
           >
             <div className={`${styles.modal} ${styles.modalSite}`} role="dialog" aria-modal="true">
             <div className={styles.modalHeader}>
@@ -1418,7 +1415,6 @@ export default function Sites() {
                 )}
                 {formSslMode === 'auto_ssl' && (
                   <>
-                    <p className={styles.hint}>Certificate is generated automatically when you save (no restart).</p>
                     <label className={styles.label}>
                       Contact email (Let&apos;s Encrypt)
                       <input
@@ -1429,7 +1425,6 @@ export default function Sites() {
                         className={styles.input}
                         required
                       />
-                      <p className={styles.hint}>Required for Let&apos;s Encrypt account. Used for expiry notifications.</p>
                     </label>
                     <label className={styles.label}>
                       Challenge type
@@ -1485,12 +1480,6 @@ export default function Sites() {
                       />
                       {`Wildcard certificate (${wildcardLabel})`}
                     </label>
-                    {formWildcard && (
-                      <p className={styles.hint}>
-                        Wildcard is auto-generated for <code>*.{wildcardBaseFromHost(formHost)}</code> and{' '}
-                        <code>{wildcardBaseFromHost(formHost)}</code>.
-                      </p>
-                    )}
                   </>
                 )}
               </div>
@@ -1549,7 +1538,7 @@ export default function Sites() {
               </div>
 
               <div className={styles.formSection}>
-                <h3 className={styles.sectionTitle}>Security headers</h3>
+                <h3 className={styles.sectionTitle}>Protocol & Security</h3>
                 <div className={styles.securitySectionWrap}>
                   <label className={styles.securityOption}>
                     <input
@@ -1559,11 +1548,6 @@ export default function Sites() {
                     />
                     <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
                   </label>
-                  <p className={styles.securityHintText}>
-                    Enabled by default. Turn this off to force clients to stay on HTTP/1.1 or HTTP/2 for this host.
-                    This setting is independent from HTTP/2 support, so HTTP/3 can remain available even when HTTP/2
-                    is disabled globally.
-                  </p>
                   <label className={styles.securityOption}>
                     <input
                       type="checkbox"
@@ -1572,11 +1556,6 @@ export default function Sites() {
                     />
                     <span className={styles.securityOptionTitle}>Override global security headers for this site</span>
                   </label>
-                  <p className={styles.securityHintText}>
-                    {formOverrideSecurityHeaders
-                      ? 'Custom per-site security headers are not yet persisted in eProxy.'
-                      : 'Using global security headers from Settings.'}
-                  </p>
                 </div>
               </div>
 
@@ -1609,9 +1588,6 @@ export default function Sites() {
           <div
             className={styles.modalBackdrop}
             role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setShowIngressForm(false);
-            }}
           >
             <div className={`${styles.modal} ${styles.modalIngressWide}`} role="dialog" aria-modal="true">
               <div className={styles.modalHeader}>
@@ -1630,7 +1606,6 @@ export default function Sites() {
               </div>
               <form onSubmit={handleIngressSubmit} className={styles.modalForm}>
                 <div className={styles.formSection}>
-                  <h3 className={styles.sectionTitle}>Basics</h3>
                   <label className={styles.label}>
                     Host
                     <input
@@ -1644,7 +1619,6 @@ export default function Sites() {
                   </label>
                 </div>
                 <div className={styles.formSection}>
-                  <h3 className={styles.sectionTitle}>Ingress placement</h3>
                   <label className={styles.label}>
                     Ingress namespace
                     <div className={styles.selectWrap}>
@@ -1654,7 +1628,6 @@ export default function Sites() {
                         className={styles.select}
                         required
                       >
-                        <option value="">— Same as service namespace —</option>
                         {k8sNamespaces.map((n) => (
                           <option key={n.name} value={n.name}>
                             {n.name}
@@ -1663,14 +1636,9 @@ export default function Sites() {
                       </select>
                       <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                     </div>
-                    <p className={styles.hint}>
-                      Where the Ingress object is created. Defaults to the service namespace (e.g.{' '}
-                      <code>pertisk-rproxy</code>). The backend Service must exist in this namespace.
-                    </p>
                   </label>
                 </div>
                 <div className={styles.formSection}>
-                  <h3 className={styles.sectionTitle}>TLS (optional)</h3>
                   <label className={styles.label}>
                     Certificate (TLS Secret)
                     <div className={styles.selectWrap}>
@@ -1693,7 +1661,7 @@ export default function Sites() {
                         }}
                         className={styles.select}
                       >
-                        <option value="">— No TLS —</option>
+                        <option value=""> </option>
                         {(() => {
                           const ingressNs = ingressNamespace.trim() || ingressServiceNamespace.trim();
                           const secrets = ingressNs
@@ -1708,15 +1676,9 @@ export default function Sites() {
                       </select>
                       <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                     </div>
-                    <p className={styles.hint}>
-                      Choose <strong>No TLS</strong> for HTTP-only ingress (no <code>spec.tls</code>). To use TLS like
-                      the Helm admin ingress, pick a secret in the <strong>Ingress namespace</strong> (e.g. copy{' '}
-                      <code>admin-erlang-tls</code> into <code>pertisk-rproxy</code>).
-                    </p>
                   </label>
                 </div>
                 <div className={styles.formSection}>
-                  <h3 className={styles.sectionTitle}>Backend</h3>
                   <label className={styles.label}>
                     Service namespace
                     <div className={styles.selectWrap}>
@@ -1742,7 +1704,6 @@ export default function Sites() {
                         className={styles.select}
                         required
                       >
-                        <option value="">— Select namespace —</option>
                         {k8sNamespaces.map((n) => (
                           <option key={n.name} value={n.name}>
                             {n.name}
@@ -1755,7 +1716,6 @@ export default function Sites() {
                 </div>
                 <div className={styles.formSection}>
                   <div className={styles.routesHeader}>
-                    <h3 className={styles.sectionTitle}>Routes</h3>
                     <button type="button" className={styles.btnSecondary} onClick={addIngressRoute}>
                       Add route
                     </button>
@@ -1852,11 +1812,6 @@ export default function Sites() {
                                 </select>
                                 <FaIcon className={`fas fa-chevron-down ${styles.selectIcon}`} aria-hidden />
                               </div>
-                              <p className={styles.hint}>
-                                Port <code>9080</code> is this controller&apos;s management API (same as admin
-                                Ingress). Use your app&apos;s HTTP port (e.g. <code>80</code> / <code>8080</code>) for
-                                public sites like <code>rproxy.erlang.thaidevops.co</code>.
-                              </p>
                             </label>
                           </div>
                         </div>
