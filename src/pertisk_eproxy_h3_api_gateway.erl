@@ -761,7 +761,9 @@ collect_body(Conn, StreamId, Acc, TimeoutMs, Cl) ->
     receive
         {quic_h3, Conn, {data, StreamId, Data, true}} ->
             Acc1 = <<Acc/binary, Data/binary>>,
-            body_acc_complete(Acc1, Cl);
+            %% A finished stream must yield the accumulated binary body, not the
+            %% completion sentinel used for intermediate length checks.
+            Acc1;
         {quic_h3, Conn, {data, StreamId, Data, false}} ->
             Acc1 = <<Acc/binary, Data/binary>>,
             case body_acc_complete(Acc1, Cl) of
