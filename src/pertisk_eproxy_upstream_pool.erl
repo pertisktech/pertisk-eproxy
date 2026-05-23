@@ -2,6 +2,12 @@
 %%
 %% Maintains a small reusable pool per upstream target + request profile
 %% (e.g. HTTP/1.1 vs gRPC/HTTP2) to avoid per-request connect/handshake cost.
+%%
+%% Idle eviction: connections not used for longer than `upstream_pool_idle_timeout_secs`
+%% (default 240 s = 4 min) are proactively closed and removed.  This prevents the
+%% 20-25 minute idle timeout symptom where firewalls/NAT tables silently close the
+%% TCP socket while the Gun process remains alive — causing the next request to hang
+%% until the full REQUEST_TIMEOUT expires.
 
 -module(pertisk_eproxy_upstream_pool).
 -behaviour(gen_server).
@@ -12,6 +18,13 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_POOL_SIZE, 16).
+%% 4 minutes — safely below common firewall/NAT idle TCP timeouts (usually 5–30 min).
+-define(DEFAULT_IDLE_TIMEOUT_MS, 240000).
+%% Sweep interval: evict stale connections proactively every minute.
+-define(SWEEP_INTERVAL_MS, 60000).
+
+%% Connections are stored as {Pid, LastUsedMs} tuples so idle time can be measured.
+-type conn_entry() :: {pid(), non_neg_integer()}.
 
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
@@ -42,6 +55,7 @@ invalidate(_) ->
     ok.
 
 init([]) ->
+    erlang:send_after(?SWEEP_INTERVAL_MS, self(), sweep_idle),
     {ok, #{pools => #{}}}.
 
 handle_call({checkout, UpHost, UpPort, Transport, ReqKind, GunOpts}, _From,
@@ -54,7 +68,7 @@ handle_call({checkout, UpHost, UpPort, Transport, ReqKind, GunOpts}, _From,
             case open_connection(UpHost, UpPort, GunOpts) of
                 {ok, ConnPid} ->
                     monitor(process, ConnPid),
-                    Entry2 = Entry1#{conns => [ConnPid], rr => 1},
+                    Entry2 = Entry1#{conns => [{ConnPid, now_ms()}], rr => 1},
                     {Entry3, State2} = maybe_async_fill(
                         Key, Entry2, UpHost, UpPort, ReqKind, GunOpts,
                         State#{pools => Pools0#{Key => Entry2}}
@@ -93,7 +107,7 @@ handle_cast({fill_one, Key, UpHost, UpPort, ReqKind, GunOpts},
                         {ok, ConnPid} ->
                             monitor(process, ConnPid),
                             Entry2 = Entry1#{
-                                conns => [ConnPid | Conns],
+                                conns => [{ConnPid, now_ms()} | Conns],
                                 filling => false
                             },
                             maybe_fill_again(Key, UpHost, UpPort, ReqKind, GunOpts, Entry2),
@@ -112,6 +126,14 @@ handle_cast({invalidate, Pid}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info(sweep_idle, State = #{pools := Pools0}) ->
+    erlang:send_after(?SWEEP_INTERVAL_MS, self(), sweep_idle),
+    Pools1 = maps:map(
+        fun(_Key, Entry) -> refresh_entry(Entry) end,
+        Pools0
+    ),
+    {noreply, State#{pools => Pools1}};
+
 handle_info({'DOWN', _Ref, process, Pid, _Reason}, State) ->
     {noreply, remove_pid_from_pools(Pid, State)};
 
@@ -121,7 +143,10 @@ handle_info(_Info, State) ->
 terminate(_Reason, #{pools := Pools}) ->
     lists:foreach(
         fun(#{conns := Conns}) ->
-            lists:foreach(fun(Pid) -> catch gun:close(Pid) end, Conns)
+            lists:foreach(
+                fun({Pid, _}) -> catch gun:close(Pid) end,
+                Conns
+            )
         end,
         maps:values(Pools)
     ),
@@ -138,17 +163,38 @@ empty_entry() ->
 put_pool(Key, Entry, State = #{pools := Pools}) ->
     State#{pools => Pools#{Key => Entry}}.
 
+%% Remove connections where the Gun process is dead OR the connection has been
+%% idle for longer than idle_timeout_ms (TCP socket likely closed by firewall/NAT).
+-spec refresh_entry(map()) -> map().
 refresh_entry(Entry = #{conns := Conns}) ->
-    Alive = [Pid || Pid <- Conns, is_process_alive(Pid)],
+    IdleMs = idle_timeout_ms(),
+    NowMs  = now_ms(),
+    Alive  = lists:filter(
+        fun({Pid, LastUsed}) ->
+            is_process_alive(Pid) andalso (NowMs - LastUsed) < IdleMs
+        end,
+        Conns
+    ),
+    %% Close evicted connections so the Gun process exits cleanly.
+    Evicted = [Pid || {Pid, _} <- Conns, not lists:keymember(Pid, 1, Alive)],
+    lists:foreach(fun(P) -> catch gun:close(P) end, Evicted),
     Entry#{conns => Alive};
 refresh_entry(Entry) ->
     Entry.
 
+-spec pick_rr([conn_entry()], map()) -> {pid(), map()}.
 pick_rr(Conns, Entry = #{rr := Rr0}) ->
     N = length(Conns),
     Idx = Rr0 rem N,
-    ConnPid = lists:nth(Idx + 1, Conns),
-    {ConnPid, Entry#{rr => Rr0 + 1}}.
+    {ConnPid, _} = lists:nth(Idx + 1, Conns),
+    %% Refresh last_used timestamp so the connection is not evicted while in-flight.
+    UpdatedConns = lists:map(
+        fun({P, _}) when P =:= ConnPid -> {P, now_ms()};
+            (Other) -> Other
+        end,
+        Conns
+    ),
+    {ConnPid, Entry#{rr => Rr0 + 1, conns => UpdatedConns}}.
 
 pool_key(UpHost, UpPort, Transport, ReqKind) ->
     {normalize_host(UpHost), UpPort, Transport, req_profile(ReqKind)}.
@@ -194,7 +240,7 @@ remove_pid_from_pools(Pid, State = #{pools := Pools0}) ->
     Pools1 = maps:map(
         fun(_Key, Entry0) ->
             Entry1 = refresh_entry(Entry0),
-            Conns1 = [C || C <- maps:get(conns, Entry1, []), C =/= Pid],
+            Conns1 = [{P, T} || {P, T} <- maps:get(conns, Entry1, []), P =/= Pid],
             Entry1#{conns => Conns1}
         end,
         Pools0
@@ -207,6 +253,16 @@ pool_target_size() ->
         N when is_integer(N), N > 0 -> N;
         _ -> ?DEFAULT_POOL_SIZE
     end.
+
+idle_timeout_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(upstream_pool_idle_timeout_secs, Config, undefined) of
+        N when is_integer(N), N > 0 -> N * 1000;
+        _ -> ?DEFAULT_IDLE_TIMEOUT_MS
+    end.
+
+now_ms() ->
+    erlang:monotonic_time(millisecond).
 
 open_connection(UpHost, UpPort, GunOpts) ->
     case gun:open(UpHost, UpPort, GunOpts) of

@@ -11,6 +11,7 @@
   "h3_api_gateway_enabled": true,
   "h3_idle_timeout_secs": 1800,
   "h3_keepalive_interval_secs": 20,
+  "upstream_pool_idle_timeout_secs": 240,
   "alt_svc_ma_secs": 300,
   "alt_svc_persist": false,
   "h3_udp_bind": "dual_stack",

@@ -499,6 +499,7 @@ json_to_config(Json) ->
         management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
         management_max_connections => parse_opt_int(maps:get(<<"management_max_connections">>, Json, null)),
         upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
+        upstream_pool_idle_timeout_secs => parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
         %% When true, the management listener uses TLS (same certs as the HTTPS proxy).
         %% This allows browsers to negotiate HTTP/2 via ALPN, enabling WebSocket over HTTP/2 (RFC 8441).
         management_tls_enabled =>

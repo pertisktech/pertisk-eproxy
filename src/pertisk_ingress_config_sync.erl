@@ -9,13 +9,15 @@
 apply_reconcile_result(#{sites := Sites, backends := Backends, tls := Tls}) ->
     apply(#{sites => Sites, backends => Backends, tls => Tls}).
 
--spec apply(map()) -> ok | {error, term()}.
 apply(#{sites := Sites, backends := Backends, tls := Tls}) ->
     try
         case sync_tls(Tls) of
             ok ->
-                case pertisk_eproxy_config:sync_ingress(Sites, Backends) of
-                    ok ->
+                case maybe_sync_ingress(Sites, Backends) of
+                    unchanged ->
+                        maybe_reload_proxy_tls(Sites, Backends, Tls),
+                        ok;
+                    synced ->
                         maybe_reload_proxy_tls(Sites, Backends, Tls),
                         pertisk_ingress_status:record_success(Sites, Backends, Tls),
                         ok;
@@ -130,3 +132,26 @@ stable_reload_sig(Sites, Backends, Tls) ->
     StableBackends = lists:sort(Backends),
     StableTls = lists:sort(Tls),
     erlang:phash2({StableSites, StableBackends, StableTls}).
+
+%% @doc Call pertisk_eproxy_config:sync_ingress only when sites/backends have
+%% actually changed.  Returns `unchanged` (no-op) or `synced` / error.
+%%
+%% Kubernetes watches reopen every few minutes and replay ADDED events for all
+%% existing resources.  Without this guard, each watch restart triggers a
+%% redundant apply_config even when nothing has changed.
+maybe_sync_ingress(Sites, Backends) ->
+    Sig = erlang:phash2({lists:sort(Sites), lists:sort(Backends)}),
+    LastSig = application:get_env(pertisk_eproxy, ingress_sync_sig, undefined),
+    case LastSig =:= Sig of
+        true ->
+            lager:debug("Ingress sync: sites/backends unchanged (hash ~p), skipping apply_config", [Sig]),
+            unchanged;
+        false ->
+            case pertisk_eproxy_config:sync_ingress(Sites, Backends) of
+                ok ->
+                    application:set_env(pertisk_eproxy, ingress_sync_sig, Sig),
+                    synced;
+                {error, _} = Err ->
+                    Err
+            end
+    end.
