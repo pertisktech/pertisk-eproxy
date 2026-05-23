@@ -1,9 +1,9 @@
-.PHONY: all compile patch-ekub sync-quic shell test clean release \
+.PHONY: all compile patch-ekub shell test clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
 	docker-eproxy-multi docker-harbor-multi \
-	tls-smoke package-deb-amd64 package-rpm-amd64 quic-upstream-local \
+	tls-smoke package-deb-amd64 package-rpm-amd64 \
 	run run-ingress reload config health metrics
 
 REBAR = rebar3
@@ -32,11 +32,8 @@ DOCKERFILE_INGRESS ?= Dockerfile.ingress
 
 all: compile
 
-sync-quic:
-	@bash scripts/sync-quic-deps.sh
-
 # ekub 0.2.0: fail_if_no_peer_cert is server-only; breaks in-cluster K8s API TLS.
-patch-ekub: sync-quic
+patch-ekub:
 	@$(REBAR) get-deps
 	@bash scripts/patch-ekub.sh
 
@@ -55,9 +52,6 @@ dialyzer:
 clean:
 	$(REBAR) clean
 	rm -rf _build
-
-quic-upstream-local:
-	bash contrib/erlang_quic_upstream_patches/apply-local.sh
 
 release:
 	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"

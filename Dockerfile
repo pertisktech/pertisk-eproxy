@@ -19,12 +19,10 @@ RUN chmod +x /src/scripts/set-app-version.sh /src/scripts/patch-ekub.sh /src/scr
     /src/scripts/verify-deps.sh /src/scripts/verify-release-build.sh \
     /src/scripts/verify-release-quic.sh \
     && rm -rf _build deps \
-    && /src/scripts/sync-quic-deps.sh \
     && rebar3 get-deps \
     && /src/scripts/patch-ekub.sh \
     && /src/scripts/patch-quic.sh \
     && /src/scripts/verify-deps.sh /src \
-    && find /src/_build -path '*/quic/ebin' -name '*.beam' -delete \
     && rebar3 as prod release \
     && /src/scripts/verify-release-build.sh /src \
     && /src/scripts/verify-release-quic.sh /src

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.68"
+VERSION="0.1.69"
 
 # make docker-ingress-multi VERSION=0.1.28
 make docker-ingress-multi VERSION="$VERSION"

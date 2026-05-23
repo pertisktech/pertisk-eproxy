@@ -192,13 +192,17 @@ maybe_start_quic(Config, Routes) ->
                 wt_max_sessions => 16,
                 enable_webtransport => true
             },
-            case erlang:function_exported(cowboy, start_quic, 3) of
+            StartQuic = quic_start_quic_fun(),
+            case erlang:function_exported(cowboy, StartQuic, 3) of
                 true ->
-                    R1 = catch cowboy:start_quic(quic4,
+                    R1 = catch erlang:apply(cowboy, StartQuic, [
+                        quic4,
                         #{
                             num_acceptors => 100,
                             socket_opts => QuicSocketOpts4
-                        }, QuicProtoOpts),
+                        },
+                        QuicProtoOpts
+                    ]),
                     case R1 of
                         {ok, _} ->
                             lager:info("QUIC proxy listening on udp/:~w", [Port]),
@@ -214,6 +218,9 @@ maybe_start_quic(Config, Routes) ->
         _ ->
             ok
     end.
+
+quic_start_quic_fun() ->
+    binary_to_atom(<<"start_quic">>, utf8).
 
 maybe_start_h3_api_gateway(Config) ->
     case maps:get(h3_api_gateway_enabled, Config, true) of

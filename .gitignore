@@ -15,8 +15,6 @@ deps
 .rebar3
 _build/
 _checkouts/*
-!_checkouts/quic/
-!_checkouts/quic/**
 log/
 data/
 

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Linux prod release (local or Docker on macOS). QUIC steps match Dockerfile:
-# sync-quic-deps, patch-quic, drop stale quic beams, verify-release-quic.
+# Linux prod release (local or Docker on macOS).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# HTTP/3 needs patched vendored quic + Cowboy QUIC hooks in release builds.
+# HTTP/3 release builds with Cowboy QUIC hooks enabled.
 COWBOY_QUICER="${COWBOY_QUICER:-1}"
 COWBOY_QUIC="${COWBOY_QUIC:-1}"
 ERLANG_BUILD_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:27}"
@@ -13,7 +12,6 @@ prepare_and_release() {
   cd "$ROOT_DIR"
   # Never reuse host _build/ in Docker (macOS beams break relx xref on Linux). Same as Dockerfile.
   rm -rf _build deps
-  bash scripts/sync-quic-deps.sh
   rebar3 get-deps
   bash scripts/patch-ekub.sh
   bash scripts/patch-quic.sh

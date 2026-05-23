@@ -174,19 +174,19 @@ compress(gzip, Body) ->
     {ok, zlib:gzip(Body)};
 compress(br, Body) ->
     case ensure_exported(brotli, encode, 1) of
-        true -> {ok, iolist_to_binary(brotli:encode(Body))};
+        true -> {ok, iolist_to_binary(call_optional(brotli, encode, [Body]))};
         false ->
             case ensure_exported(brotli, compress, 1) of
-                true -> {ok, iolist_to_binary(brotli:compress(Body))};
+                true -> {ok, iolist_to_binary(call_optional(brotli, compress, [Body]))};
                 false -> {error, unavailable}
             end
     end;
 compress(zstd, Body) ->
     case ensure_exported(ezstd, compress, 1) of
-        true -> {ok, iolist_to_binary(ezstd:compress(Body))};
+        true -> {ok, iolist_to_binary(call_optional(ezstd, compress, [Body]))};
         false ->
             case ensure_exported(zstd, compress, 1) of
-                true -> {ok, iolist_to_binary(zstd:compress(Body))};
+                true -> {ok, iolist_to_binary(call_optional(zstd, compress, [Body]))};
                 false -> {error, unavailable}
             end
     end.
@@ -203,6 +203,9 @@ ensure_exported(Module, Func, Arity) ->
         {module, Module} -> erlang:function_exported(Module, Func, Arity);
         _ -> false
     end.
+
+call_optional(Module, Func, Args) ->
+    erlang:apply(Module, Func, Args).
 
 merge_vary_header(undefined) ->
     <<"accept-encoding">>;

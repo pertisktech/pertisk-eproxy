@@ -115,7 +115,7 @@ ensure_qpack_chrome_compat() ->
         false ->
             lager:error(
                 "HTTP/3 disabled: incompatible quic_qpack detected (RIC=0 Base encoding). "
-                "Rebuild with vendored quic (scripts/sync-quic-deps.sh + patch-quic.sh; Docker runs both)."
+                "Rebuild with erlang_quic 1.4.0 or newer."
             ),
             {error, incompatible_quic_qpack}
     end.
@@ -135,7 +135,7 @@ qpack_ric0_prefix_ok() ->
                         true;
                     Bad ->
                         lager:error(
-                            "quic_qpack bad prefix ~p from ~s (rebuild with patched deps/quic)",
+                            "quic_qpack bad prefix ~p from ~s (expected erlang_quic 1.4.0+)",
                             [Bad, BeamFile]
                         ),
                         false
@@ -797,7 +797,7 @@ ensure_quic_started() ->
             ok;
         {error, Reason} ->
             lager:error(
-                "quic application failed to start (~p); HTTP/3 requires vendored quic in the release",
+                "quic application failed to start (~p); HTTP/3 requires erlang_quic in the release",
                 [Reason]
             ),
             {error, Reason}

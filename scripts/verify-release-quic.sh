@@ -55,7 +55,7 @@ if [ -d "${REL_LIB}" ]; then
 fi
 
 if [ "$FAILED" -ne 0 ]; then
-  echo "verify-release-quic: quic_qpack RIC=0 check failed (sync-quic-deps.sh + patch-quic.sh)" >&2
+  echo "verify-release-quic: quic_qpack RIC=0 check failed" >&2
   exit 1
 fi
 
