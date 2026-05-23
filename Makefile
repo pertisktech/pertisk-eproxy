@@ -21,8 +21,8 @@ BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
 BUILDX_MULTI_BUILDER ?= pertisk-multiarch
 # Set to 1 to enable Cowboy QUIC/HTTP/3 hooks when supported by Cowboy build.
-COWBOY_QUICER ?= 0
-COWBOY_QUIC ?= 0
+COWBOY_QUICER ?= 1
+COWBOY_QUIC ?= 1
 PACKAGE_NAME ?= pertisk-eproxy
 
 # Back-compat aliases (default IMAGE = proxy)

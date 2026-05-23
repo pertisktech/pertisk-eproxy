@@ -224,7 +224,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
-                                H3Headers0 = maybe_add_h3_alt_svc(LogHost, RespHeaders),
+                                H3Headers0 = maybe_add_h3_alt_svc(PathOnly, Qs, LogHost, RespHeaders),
                                 {H3Headers, RespOut} = pertisk_eproxy_compression:maybe_compress_h3(
                                     Status,
                                     Headers,
@@ -1350,14 +1350,26 @@ sni_text_bin(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
 sni_text_bin(_) -> undefined.
 
 %% Reinforce HTTP/3 on responses (Chrome caches Alt-Svc from the first successful H3 response).
-maybe_add_h3_alt_svc(Host, Headers) ->
-    case pertisk_eproxy_handler:site_advertise_http3(Host) of
+maybe_add_h3_alt_svc(PathOnly, Qs, Host, Headers) ->
+    case should_advertise_h3(PathOnly, Qs, Host) of
         true ->
             H = headers_without(Headers, [<<"alt-svc">>]),
             H ++ [{<<"alt-svc">>, pertisk_eproxy_alt_svc:header_value()}];
         false ->
             Headers
     end.
+
+should_advertise_h3(PathOnly, Qs, Host) ->
+    not console_page_request(PathOnly, Qs) andalso
+        pertisk_eproxy_handler:site_advertise_http3(Host).
+
+console_page_request(PathOnly, Qs) when is_binary(PathOnly), is_binary(Qs) ->
+    IsConsoleQuery = binary:match(Qs, <<"console=">>) =/= nomatch,
+    IsShellPath = binary:match(PathOnly, <<"/shell">>) =/= nomatch,
+    IsNoVncPath = binary:match(PathOnly, <<"/novnc">>) =/= nomatch,
+    IsConsoleQuery orelse IsShellPath orelse IsNoVncPath;
+console_page_request(_, _) ->
+    false.
 
 headers_without(Headers, DropKeys) ->
     DropLC = [string:lowercase(D) || D <- DropKeys],

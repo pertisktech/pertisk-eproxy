@@ -35,7 +35,9 @@ merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
     end.
 
 should_advertise(Req, Host) ->
-    https_front_request(Req) andalso pertisk_eproxy_handler:site_advertise_http3(Host).
+    https_front_request(Req) andalso
+        not console_page_request(cowboy_req:path(Req), cowboy_req:qs(Req)) andalso
+        pertisk_eproxy_handler:site_advertise_http3(Host).
 
 https_front_request(Req) ->
     case cowboy_req:scheme(Req) of
@@ -53,6 +55,16 @@ https_front_request(Req) ->
                     cowboy_req:port(Req) =:= 443
             end
     end.
+
+    console_page_request(Path, Qs) when is_binary(Path), is_binary(Qs) ->
+        IsConsoleQuery = binary:match(Qs, <<"console=">>) =/= nomatch,
+        IsShellPath = binary:match(Path, <<"/shell">>) =/= nomatch,
+        IsNoVncPath = binary:match(Path, <<"/novnc">>) =/= nomatch,
+        IsConsoleQuery orelse IsShellPath orelse IsNoVncPath;
+    console_page_request(Path, Qs) when is_list(Path), is_list(Qs) ->
+        console_page_request(list_to_binary(Path), list_to_binary(Qs));
+    console_page_request(_, _) ->
+        false.
 
 quic_udp_port() ->
     C = pertisk_eproxy_config:get_config(),
