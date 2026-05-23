@@ -38,6 +38,14 @@ leaderElection:
   leaseDurationSeconds: 15
   renewIntervalSeconds: 5
 
+# Helm history/view in admin UI (ingress mode).
+helm:
+  enabled: true
+  # Helm release namespace (defaults to .Release.Namespace when empty)
+  namespace: ""
+  # Max history revisions to return
+  historyMax: 20
+
 # Ingress controller (ekub watcher + reconciler)
 ingress:
   enabled: true

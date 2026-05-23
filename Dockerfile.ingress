@@ -41,7 +41,8 @@ FROM alpine:3.20
 
 ARG APP_HOME=/opt/pertisk_eproxy
 
-RUN apk add --no-cache ca-certificates libstdc++ ncurses-libs bash wget sqlite openssl patch \
+RUN apk add --no-cache ca-certificates libstdc++ ncurses-libs bash wget sqlite openssl patch helm \
+    && ln -sf /usr/bin/helm /usr/local/bin/helm \
     && addgroup -g 1000 -S pertisk \
     && adduser -u 1000 -S -G pertisk -h /opt/pertisk_eproxy -s /sbin/nologin pertisk
 

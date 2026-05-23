@@ -83,6 +83,16 @@ spec:
               value: {{ .Values.leaderElection.leaseDurationSeconds | quote }}
             - name: PERTISK_K8S_LEADER_RENEW_INTERVAL_SECONDS
               value: {{ .Values.leaderElection.renewIntervalSeconds | quote }}
+            - name: PERTISK_HELM_ENABLED
+              value: {{ .Values.helm.enabled | quote }}
+            - name: PERTISK_HELM_RELEASE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/instance']
+            - name: PERTISK_HELM_NAMESPACE
+              value: {{ default .Release.Namespace .Values.helm.namespace | quote }}
+            - name: PERTISK_HELM_HISTORY_MAX
+              value: {{ .Values.helm.historyMax | quote }}
             - name: PERTISK_K8S_TLS_DIR
               value: {{ .Values.persistence.mountPath }}/k8s-tls
             - name: PERTISK_K8S_CONTROLLER_NAME

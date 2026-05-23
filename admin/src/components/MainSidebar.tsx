@@ -9,17 +9,18 @@ export const NAV_MAIN_ALL = [
   { to: '/', end: true, label: 'Dashboard', icon: 'fa-home' },
   { to: '/sites', end: false, label: 'Sites', icon: 'fa-globe' },
   { to: '/certificates', end: false, label: 'Certificates', icon: 'fa-certificate' },
+  { to: '/helm', end: false, label: 'Helm', icon: 'fa-box' },
   { to: '/dns-providers', end: false, label: 'DNS providers', icon: 'fa-server' },
 ] as const;
 
 export type NavMainItem = (typeof NAV_MAIN_ALL)[number];
 
-/** In ingress mode hide DNS providers (routing is via Kubernetes Ingress). */
+/** In ingress mode show Helm and hide DNS providers; in proxy hide Helm. */
 export function getNavMain(mode: string): readonly NavMainItem[] {
   if (mode === 'ingress') {
     return NAV_MAIN_ALL.filter((item) => item.to !== '/dns-providers');
   }
-  return NAV_MAIN_ALL;
+  return NAV_MAIN_ALL.filter((item) => item.to !== '/helm');
 }
 
 export const NAV_BOTTOM = [

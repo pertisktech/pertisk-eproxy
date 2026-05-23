@@ -233,21 +233,107 @@ handle(<<"POST">>, backup_restore, Req) ->
     end);
 
 handle(<<"GET">>, helm_history, Req) ->
-    json_reply(200, #{<<"release">> => <<>>, <<"namespace">> => <<>>, <<"history">> => []}, Req);
+    case pertisk_eproxy_config:ingress_mode() of
+        false ->
+            json_reply(404, #{<<"error">> => <<"Helm history is only available in ingress mode">>}, Req);
+        true ->
+            case helm_release_name() of
+                {error, release_not_set} ->
+                    json_reply(400, #{<<"error">> => <<"PERTISK_HELM_RELEASE is not set">>}, Req);
+                {ok, Release} ->
+                    case helm_enabled() of
+                        false ->
+                            json_reply(404, #{<<"error">> => <<"Helm history is disabled">>}, Req);
+                        true ->
+                            Namespace = helm_namespace(),
+                            HistoryMax = helm_history_max(),
+                            Args0 = ["history", binary_to_list(Release), "-n", binary_to_list(Namespace), "--output", "json"],
+                            Args = case HistoryMax of
+                                undefined -> Args0;
+                                V -> Args0 ++ ["--max", integer_to_list(V)]
+                            end,
+                            case run_helm_cmd(Args) of
+                                {ok, Out} ->
+                                    case thoas:decode(iolist_to_binary(Out)) of
+                                        {ok, Parsed} ->
+                                            json_reply(200, #{
+                                                <<"release">> => Release,
+                                                <<"namespace">> => Namespace,
+                                                <<"history">> => Parsed
+                                            }, Req);
+                                        {error, Reason} ->
+                                            error_reply(500, {invalid_helm_output, Reason}, Req)
+                                    end;
+                                {error, not_found} ->
+                                    json_reply(500, #{<<"error">> => <<"Failed to run helm: binary not found">>}, Req);
+                                {error, {exit_status, _Code, Stderr}} ->
+                                    json_reply(502, #{<<"error">> => iolist_to_binary(Stderr)}, Req)
+                            end
+                    end
+            end
+    end;
 
 handle(<<"GET">>, helm_values, Req) ->
-    _Rev = cowboy_req:binding(revision, Req),
-    json_reply(404, #{<<"error">> => <<"Helm is not available on eProxy">>}, Req);
+    case pertisk_eproxy_config:ingress_mode() of
+        false ->
+            json_reply(404, #{<<"error">> => <<"Helm values is only available in ingress mode">>}, Req);
+        true ->
+            case parse_int_param(cowboy_req:binding(revision, Req)) of
+                {error, bad_id} ->
+                    json_reply(400, #{<<"error">> => <<"invalid revision">>}, Req);
+                {ok, Revision} when Revision < 0 ->
+                    json_reply(400, #{<<"error">> => <<"invalid revision">>}, Req);
+                {ok, Revision} ->
+                    case helm_release_name() of
+                        {error, release_not_set} ->
+                            json_reply(400, #{<<"error">> => <<"PERTISK_HELM_RELEASE is not set">>}, Req);
+                        {ok, Release} ->
+                            case helm_enabled() of
+                                false ->
+                                    json_reply(404, #{<<"error">> => <<"Helm values is disabled">>}, Req);
+                                true ->
+                                    Namespace = helm_namespace(),
+                                    Args = [
+                                        "get", "values",
+                                        binary_to_list(Release),
+                                        "-n", binary_to_list(Namespace),
+                                        "--revision", integer_to_list(Revision),
+                                        "--all"
+                                    ],
+                                    case run_helm_cmd(Args) of
+                                        {ok, Out} ->
+                                            json_reply(200, #{
+                                                <<"release">> => Release,
+                                                <<"namespace">> => Namespace,
+                                                <<"revision">> => Revision,
+                                                <<"values">> => iolist_to_binary(Out)
+                                            }, Req);
+                                        {error, not_found} ->
+                                            json_reply(500, #{<<"error">> => <<"Failed to run helm: binary not found">>}, Req);
+                                        {error, {exit_status, _Code, Stderr}} ->
+                                            json_reply(502, #{<<"error">> => iolist_to_binary(Stderr)}, Req)
+                                    end
+                            end
+                    end
+            end
+    end;
 
 handle(<<"GET">>, certificates, Req) ->
+    Config = pertisk_eproxy_config:get_config(),
+    Sites = maps:get(sites, Config, []),
+    IngressRows = ingress_certificate_rows(Sites),
     case pertisk_eproxy_db:list_certificates(db_file_path()) of
         {ok, Certs} ->
-            Config = pertisk_eproxy_config:get_config(),
-            Sites = maps:get(sites, Config, []),
-            AcmeRows = [certificate_row_json(C, Sites) || C <- Certs],
-            json_reply(200, AcmeRows, Req);
+            DbRows = [certificate_row_json(C, Sites) || C <- Certs],
+            json_reply(200, merge_certificate_rows(DbRows, IngressRows), Req);
         {error, Reason} ->
-            error_reply(500, Reason, Req)
+            case pertisk_eproxy_config:ingress_mode() of
+                true ->
+                    %% In ingress mode SQLite can be intentionally absent; use live Ingress TLS data.
+                    json_reply(200, IngressRows, Req);
+                false ->
+                    error_reply(500, Reason, Req)
+            end
     end;
 
 handle(<<"POST">>, certificates, Req) ->
@@ -1365,6 +1451,188 @@ sync_dns_providers_into_runtime_config() ->
         {error, _} ->
             ok
     end.
+
+merge_certificate_rows(DbRows, IngressRows) ->
+    {_, Acc} = lists:foldl(
+        fun(Row, {Seen, Rows}) ->
+            Id = maps:get(<<"id">>, Row, <<>>),
+            case maps:is_key(Id, Seen) of
+                true ->
+                    {Seen, Rows};
+                false ->
+                    {maps:put(Id, true, Seen), [Row | Rows]}
+            end
+        end,
+        {#{}, []},
+        DbRows ++ IngressRows
+    ),
+    lists:reverse(Acc).
+
+ingress_certificate_rows(Sites) ->
+    case pertisk_eproxy_config:ingress_mode() of
+        false ->
+            [];
+        true ->
+            Groups = ingress_cert_groups(Sites),
+            lists:sort(
+                fun(A, B) -> maps:get(<<"id">>, A, <<>>) =< maps:get(<<"id">>, B, <<>>) end,
+                maps:fold(
+                    fun(CertRef, Hosts, Acc) ->
+                        [ingress_cert_row_json(CertRef, Hosts, Sites) | Acc]
+                    end,
+                    [],
+                    Groups
+                )
+            )
+    end.
+
+ingress_cert_groups(Sites) ->
+    lists:foldl(
+        fun(Site, Acc) ->
+            Ref0 = maps:get(certificate, Site, undefined),
+            Host0 = maps:get(host, Site, undefined),
+            Ref = json_text(Ref0),
+            Host = json_text(Host0),
+            case is_k8s_cert_ref(Ref) andalso is_binary(Host) andalso Host =/= <<>> of
+                true ->
+                    Prev = maps:get(Ref, Acc, []),
+                    maps:put(Ref, lists:usort([Host | Prev]), Acc);
+                false ->
+                    Acc
+            end
+        end,
+        #{},
+        Sites
+    ).
+
+is_k8s_cert_ref(Bin) when is_binary(Bin) ->
+    byte_size(Bin) > 4 andalso binary:match(Bin, <<"k8s/">>) =:= {0, 4};
+is_k8s_cert_ref(_) ->
+    false.
+
+ingress_cert_row_json(CertRefBin, Hosts0, Sites) ->
+    Hosts = lists:sort([json_text(H) || H <- Hosts0, json_text(H) =/= <<>>]),
+    Domain = case Hosts of
+        [H | _] -> H;
+        _ -> CertRefBin
+    end,
+    case ingress_cert_pem_for_hosts(Hosts) of
+        undefined ->
+            #{
+                <<"id">> => CertRefBin,
+                <<"domain">> => Domain,
+                <<"hosts">> => Hosts,
+                <<"issuer">> => <<>>,
+                <<"challenge">> => <<"k8s secret">>,
+                <<"source_type">> => <<"kubernetes">>,
+                <<"created_at">> => <<>>,
+                <<"expires_at">> => <<>>,
+                <<"next_renew">> => <<>>,
+                <<"sites">> => sites_for_cert(Sites, CertRefBin, Domain)
+            };
+        CertPem ->
+            stored_pem_cert_row_json(
+                CertRefBin,
+                Domain,
+                CertPem,
+                Sites,
+                <<"kubernetes">>,
+                <<"k8s secret">>
+            )
+    end.
+
+ingress_cert_pem_for_hosts([]) ->
+    undefined;
+ingress_cert_pem_for_hosts([Host | Rest]) ->
+    case pertisk_ingress_tls:lookup(Host) of
+        {ok, #{cert_pem := CertPem}} when is_binary(CertPem), CertPem =/= <<>> ->
+            CertPem;
+        _ ->
+            ingress_cert_pem_for_hosts(Rest)
+    end.
+
+helm_enabled() ->
+    case lower_bin(helm_env_value("PERTISK_HELM_ENABLED")) of
+        undefined -> true;
+        <<"1">> -> true;
+        <<"true">> -> true;
+        <<"yes">> -> true;
+        _ -> false
+    end.
+
+helm_release_name() ->
+    case helm_env_value("PERTISK_HELM_RELEASE") of
+        undefined -> {error, release_not_set};
+        V -> {ok, V}
+    end.
+
+helm_namespace() ->
+    case helm_env_value("PERTISK_HELM_NAMESPACE") of
+        undefined ->
+            case helm_env_value("POD_NAMESPACE") of
+                undefined -> <<"default">>;
+                Ns -> Ns
+            end;
+        Ns -> Ns
+    end.
+
+helm_history_max() ->
+    case helm_env_value("PERTISK_HELM_HISTORY_MAX") of
+        undefined ->
+            undefined;
+        V ->
+            case catch binary_to_integer(V) of
+                N when is_integer(N), N > 0 -> N;
+                _ -> undefined
+            end
+    end.
+
+helm_env_value(Key) when is_list(Key) ->
+    case os:getenv(Key) of
+        false -> undefined;
+        V when is_list(V) ->
+            Trimmed = string:trim(V),
+            case Trimmed of
+                "" -> undefined;
+                _ -> list_to_binary(Trimmed)
+            end
+    end.
+
+run_helm_cmd(Args) when is_list(Args) ->
+    case os:find_executable("helm") of
+        false ->
+            {error, not_found};
+        HelmPath ->
+            Cmd = iolist_to_binary([
+                sh_quote(HelmPath),
+                " ",
+                string:join([sh_quote(A) || A <- Args], " "),
+                " 2>&1; __rc=$?; printf '\\n__PERTISK_HELM_RC__:%s\\n' \"$__rc\""
+            ]),
+            parse_host_cmd_result(pertisk_eproxy_shell:os_cmd(binary_to_list(Cmd)))
+    end.
+
+parse_host_cmd_result(Output0) when is_list(Output0) ->
+    case re:run(Output0, "\\n__PERTISK_HELM_RC__:(\\d+)\\n?$", [{capture, [1], list}]) of
+        {match, [CodeStr]} ->
+            Output = re:replace(Output0, "\\n__PERTISK_HELM_RC__:\\d+\\n?$", "", [{return, list}]),
+            Code = list_to_integer(CodeStr),
+            case Code of
+                0 -> {ok, Output};
+                _ -> {error, {exit_status, Code, string:trim(Output)}}
+            end;
+        nomatch ->
+            {error, {exit_status, 1, string:trim(Output0)}}
+    end.
+
+sh_quote(Bin) when is_binary(Bin) ->
+    sh_quote(binary_to_list(Bin));
+sh_quote(Str) when is_list(Str) ->
+    Escaped = lists:flatten(re:replace(Str, "'", "'\"'\"'", [global, {return, list}])),
+    [$' | Escaped] ++ [$'].
+
+lower_bin(undefined) -> undefined;
+lower_bin(Bin) when is_binary(Bin) -> list_to_binary(string:lowercase(binary_to_list(Bin))).
 
 bin_field(V) when is_binary(V) -> V;
 bin_field(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);

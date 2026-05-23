@@ -42,6 +42,9 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 | `ingress.className` | `ingressClassName` filter | `pertisk-eproxy` |
 | `ingress.watchNamespace` | Single namespace (empty = all) | `""` |
 | `leaderElection.enabled` | K8s Lease leader election | `true` |
+| `helm.enabled` | Enable Helm history/values API in ingress admin | `true` |
+| `helm.namespace` | Helm release namespace override (empty uses release namespace) | `""` |
+| `helm.historyMax` | Max Helm revisions returned by history API | `20` |
 | `service.type` | Service type | `LoadBalancer` |
 | `service.http3Port` | UDP port for HTTP/3 (0/null to disable) | `443` |
 | `controller.config` | `ingress.json` body | see `values.yaml` |
@@ -54,7 +57,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 | **proxy** / **proxy_admin** | SQLite `data/proxy.db` | SQLite + `config/proxy.json` seed | SQLite `admin_users` |
 | **ingress** | Kubernetes `Ingress` + TLS `Secret` manifests | `controller.config` / `ingress.json` only | Auth0 SSO or read-only viewer (no SQLite) |
 
-Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*` (see `pertisk_ingress_env`).
+Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*`, `PERTISK_HELM_*` (see `pertisk_ingress_env`).
 
 ### Ports (same idea as pertisk-rproxy)
 
