@@ -43,7 +43,8 @@ init(Req, _State) ->
                         <<>> -> UpPath;
                         _    -> <<UpPath/binary, "?", Qs/binary>>
                     end,
-                    WsHeaders = ws_forward_headers(Req, Host, ClientIp),
+                    WsHeaders = ws_forward_headers(Req, Host, ClientIp, FullPath),
+                    ReqWs = maybe_set_ws_subprotocol(Req),
                     WsState = #{
                         host                => Host,
                         backend             => BackendName,
@@ -56,14 +57,21 @@ init(Req, _State) ->
                         ws_out_buffer       => []
                     },
                     %% Upgrade the cowboy connection to WebSocket.
-                    {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(Req),
+                    {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
                         WsState, #{idle_timeout => 300000}}
             end
     end.
 
 websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
-    GunOpts = ws_gun_opts(Transport),
+    GunOpts = ws_gun_opts(UpHost, Transport),
+    HasCookie = lists:keymember(<<"cookie">>, 1, Headers),
+    HasProto = lists:keymember(<<"sec-websocket-protocol">>, 1, Headers),
+    HasOrigin = lists:keymember(<<"origin">>, 1, Headers),
+    lager:info(
+        "WS upstream opening host=~s port=~p upstream=~s path=~s cookie=~p subproto=~p origin=~p",
+        [UpHost, UpPort, UpAddr, UpPath, HasCookie, HasProto, HasOrigin]
+    ),
     case gun:open(UpHost, UpPort, GunOpts) of
         {ok, ConnPid} ->
             case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
@@ -117,9 +125,33 @@ websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
     {[Frame], State};
 
 websocket_info(
-    {gun_upgrade, ConnPid, SRef, [<<"websocket">>], _Headers},
+    {gun_upgrade, ConnPid, SRef, Protocols, Headers},
     State = #{conn_pid := ConnPid, stream_ref := SRef, ws_out_buffer := Buf}
 ) ->
+    case is_ws_upgrade_protocols(Protocols) of
+        true ->
+            lager:info(
+                "WS upstream upgraded protocols=~p buffered_frames=~p",
+                [Protocols, length(Buf)]
+            ),
+            lists:foreach(fun(F) -> gun:ws_send(ConnPid, SRef, F) end, Buf),
+            {ok, State#{upstream_ws_ready => true, ws_out_buffer => []}};
+        false ->
+            lager:warning(
+                "WS upstream unexpected upgrade protocols=~p headers=~p",
+                [Protocols, Headers]
+            ),
+            {[close], State}
+    end;
+
+websocket_info(
+    {gun_response, ConnPid, SRef, _Fin, 101, Headers},
+    State = #{conn_pid := ConnPid, stream_ref := SRef, ws_out_buffer := Buf}
+) ->
+    lager:info(
+        "WS upstream 101 response headers=~p buffered_frames=~p",
+        [Headers, length(Buf)]
+    ),
     lists:foreach(fun(F) -> gun:ws_send(ConnPid, SRef, F) end, Buf),
     {ok, State#{upstream_ws_ready => true, ws_out_buffer => []}};
 
@@ -144,15 +176,39 @@ websocket_info({gun_down, _ConnPid, _Proto, Reason, _Killed}, State) ->
 websocket_info(_Info, State) ->
     {ok, State}.
 
+is_ws_upgrade_protocols([<<"websocket">> | _]) ->
+    true;
+is_ws_upgrade_protocols([websocket | _]) ->
+    true;
+is_ws_upgrade_protocols(_) ->
+    false.
+
 ws_gun_opts(tls) ->
     #{
         transport => tls,
         protocols => [http],
         %% Force classic WS Upgrade over HTTP/1.1; upstream h2 ALPN can reject ws_upgrade.
-        transport_opts => [{alpn_advertised_protocols, [<<"http/1.1">>]}]
+        tls_opts => [{alpn_advertised_protocols, [<<"http/1.1">>]}]
     };
 ws_gun_opts(Transport) ->
     #{transport => Transport, protocols => [http]}.
+
+ws_gun_opts(UpHost, tls) ->
+    Base = ws_gun_opts(tls),
+    Tls0 = maps:get(tls_opts, Base, []),
+    Base#{tls_opts => [{verify, verify_none} | maybe_sni_opt(UpHost)] ++ Tls0};
+ws_gun_opts(_UpHost, Transport) ->
+    ws_gun_opts(Transport).
+
+maybe_sni_opt(UpHost) when is_list(UpHost) ->
+    case inet:parse_address(UpHost) of
+        {ok, _Ip} -> [{server_name_indication, disable}];
+        _ -> [{server_name_indication, UpHost}]
+    end;
+maybe_sni_opt(UpHost) when is_binary(UpHost) ->
+    maybe_sni_opt(binary_to_list(UpHost));
+maybe_sni_opt(_) ->
+    [{server_name_indication, disable}].
 
 terminate(_Reason, _Req, #{conn_pid := ConnPid, backend := BackendName,
                              upstream_addr := Addr})
@@ -176,7 +232,7 @@ client_ip(Req) ->
             hd(binary:split(XFF, [<<", ">>, <<",">>]))
     end.
 
-ws_forward_headers(Req, OrigHost, ClientIp) ->
+ws_forward_headers(Req, OrigHost, ClientIp, UpPath) ->
     InHeaders = cowboy_req:headers(Req),
     Proto = case cowboy_req:scheme(Req) of
         https -> <<"https">>;
@@ -184,25 +240,48 @@ ws_forward_headers(Req, OrigHost, ClientIp) ->
         _ -> <<"http">>
     end,
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
-    XFF = case maps:get(<<"x-forwarded-for">>, InHeaders, undefined) of
-        undefined -> ClientIp;
-        Existing -> <<Existing/binary, ", ", ClientIp/binary>>
-    end,
+    IsConsolePath = skip_forwarded_for(OrigHost, UpPath),
     %% Gun builds WS transport headers; only forward app-relevant headers.
-    Base = #{
+    Base0 = #{
         <<"host">> => OrigHost,
-        <<"x-forwarded-for">> => XFF,
         <<"x-forwarded-proto">> => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn
     },
-    Keep = [
-        <<"authorization">>,
-        <<"cookie">>,
-        <<"origin">>,
-        <<"user-agent">>,
-        <<"sec-websocket-protocol">>,
-        <<"x-eproxy-bearer">>
-    ],
+    Base =
+        case skip_forwarded_for(OrigHost, UpPath) of
+            true ->
+                Base0;
+            false ->
+                XFF = case maps:get(<<"x-forwarded-for">>, InHeaders, undefined) of
+                    undefined -> ClientIp;
+                    Existing -> <<Existing/binary, ", ", ClientIp/binary>>
+                end,
+                Base0#{<<"x-forwarded-for">> => XFF}
+        end,
+    %% Proxmox console WS can be strict; keep handshake headers minimal.
+    Keep =
+        case IsConsolePath of
+            true ->
+                [
+                    <<"authorization">>,
+                    <<"cookie">>,
+                    <<"origin">>,
+                    <<"referer">>,
+                    <<"user-agent">>,
+                    <<"sec-websocket-protocol">>,
+                    <<"x-eproxy-bearer">>
+                ];
+            false ->
+                [
+                    <<"authorization">>,
+                    <<"cookie">>,
+                    <<"origin">>,
+                    <<"referer">>,
+                    <<"user-agent">>,
+                    <<"sec-websocket-protocol">>,
+                    <<"x-eproxy-bearer">>
+                ]
+        end,
     Out = lists:foldl(
         fun(K, Acc) ->
             case maps:get(K, InHeaders, undefined) of
@@ -213,7 +292,44 @@ ws_forward_headers(Req, OrigHost, ClientIp) ->
         Base,
         Keep
     ),
-    maps:to_list(Out).
+    case IsConsolePath of
+        true ->
+            %% Keep this close to reverse-proxy defaults that are known to work with Proxmox consoles.
+            maps:to_list(maps:without([<<"x-forwarded-proto">>, <<"x-forwarded-proto-version">>], Out));
+        false ->
+            maps:to_list(Out)
+    end.
+
+skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
+    HostL = string:lowercase(Host),
+    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+    IsConsolePath =
+        binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
+    IsProxmoxHost andalso IsConsolePath;
+skip_forwarded_for(_, _) ->
+    false.
+
+maybe_set_ws_subprotocol(Req0) ->
+    case select_ws_subprotocol(cowboy_req:header(<<"sec-websocket-protocol">>, Req0, undefined)) of
+        undefined ->
+            Req0;
+        Proto ->
+            lager:info("WS selecting subprotocol ~s", [Proto]),
+            cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, Proto, Req0)
+    end.
+
+select_ws_subprotocol(undefined) ->
+    undefined;
+select_ws_subprotocol(<<>>) ->
+    undefined;
+select_ws_subprotocol(Bin) when is_binary(Bin) ->
+    case [string:trim(P, both) || P <- binary:split(Bin, <<",">>, [global])] of
+        [] -> undefined;
+        [<<>> | Rest] -> select_ws_subprotocol(list_to_binary(string:join([binary_to_list(R) || R <- Rest], ",")));
+        [First | _] -> First
+    end.
 
 version_to_bin('HTTP/1.0') -> <<"HTTP/1.0">>;
 version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;

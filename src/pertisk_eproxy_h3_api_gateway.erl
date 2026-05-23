@@ -380,7 +380,7 @@ h3_req_headers_map(Headers) ->
            binary:at(K, 0) =/= $:
     ]).
 
-forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
+forward_headers_h3(InMap, OrigHost, ClientIp, UpstreamPath) when is_binary(OrigHost) ->
     Filtered = maps:without(
         [
             <<"connection">>,
@@ -392,16 +392,32 @@ forward_headers_h3(InMap, OrigHost, ClientIp) when is_binary(OrigHost) ->
         ],
         InMap
     ),
-    Base = Filtered#{
+    Base0 = Filtered#{
         <<"host">> => OrigHost,
         <<"x-forwarded-proto">> => <<"https">>,
         <<"x-forwarded-proto-version">> => <<"HTTP/3">>
     },
-    XFF = case maps:find(<<"x-forwarded-for">>, Base) of
-        {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
-        error -> ClientIp
-    end,
-    Base#{<<"x-forwarded-for">> => XFF}.
+    case skip_forwarded_for(OrigHost, UpstreamPath) of
+        true ->
+            maps:remove(<<"x-forwarded-for">>, Base0);
+        false ->
+            XFF = case maps:find(<<"x-forwarded-for">>, Base0) of
+                {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
+                error -> ClientIp
+            end,
+            Base0#{<<"x-forwarded-for">> => XFF}
+    end.
+
+skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
+    HostL = string:lowercase(Host),
+    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+    IsConsolePath =
+        binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
+    IsProxmoxHost andalso IsConsolePath;
+skip_forwarded_for(_, _) ->
+    false.
 
 %% Keep H3 sessions stable across browser idle windows and NAT/LB churn.
 -define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 1800).
@@ -560,14 +576,10 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
         _ -> <<UpstreamPath/binary, "?", Qs/binary>>
     end,
     HMap = h3_req_headers_map(H3Headers),
-    HeadersMap = forward_headers_h3(HMap, OrigHost, ClientIp),
+    HeadersMap = forward_headers_h3(HMap, OrigHost, ClientIp, FullPath),
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
-    GunOpts = #{
-        transport => Transport,
-        protocols => [http],
-        connect_timeout => ?CONNECT_TIMEOUT
-    },
+    GunOpts = upstream_gun_opts(UpHost, Transport),
     case gun:open(UpHost, UpPort, GunOpts) of
         {error, Reason} ->
             {error, {connect, Reason}};
@@ -596,6 +608,33 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                     Result
             end
     end.
+
+upstream_gun_opts(UpHost, tls) ->
+    #{
+        transport => tls,
+        protocols => [http],
+        connect_timeout => ?CONNECT_TIMEOUT,
+        tls_opts => upstream_tls_opts(UpHost)
+    };
+upstream_gun_opts(_UpHost, Transport) ->
+    #{
+        transport => Transport,
+        protocols => [http],
+        connect_timeout => ?CONNECT_TIMEOUT
+    }.
+
+upstream_tls_opts(UpHost) ->
+    [{verify, verify_none} | maybe_sni_opt(UpHost)].
+
+maybe_sni_opt(UpHost) when is_list(UpHost) ->
+    case inet:parse_address(UpHost) of
+        {ok, _Ip} -> [{server_name_indication, disable}];
+        _ -> [{server_name_indication, UpHost}]
+    end;
+maybe_sni_opt(UpHost) when is_binary(UpHost) ->
+    maybe_sni_opt(binary_to_list(UpHost));
+maybe_sni_opt(_) ->
+    [{server_name_indication, disable}].
 
 method_to_gun(<<"GET">>) -> <<"GET">>;
 method_to_gun(<<"POST">>) -> <<"POST">>;
@@ -808,6 +847,8 @@ ensure_quic_started() ->
 management_listener_bind_stack() ->
     BindMode = maps:get(h3_udp_bind, pertisk_eproxy_config:get_config(), dual_stack),
     case {os:type(), BindMode} of
+        {{unix, darwin}, _} ->
+            {<<"0.0.0.0:udp">>, <<"ipv4">>};
         {{unix, linux}, dual_stack} ->
             {<<"[::]:udp">>, <<"dual_stack">>};
         {{unix, _}, dual_stack} ->
@@ -831,6 +872,8 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     Config = pertisk_eproxy_config:get_config(),
     BindMode = maps:get(h3_udp_bind, Config, dual_stack),
     case {os:type(), BindMode} of
+        {{unix, darwin}, _} ->
+            start_unix_ipv4_only_udp(ServerName, Port, BaseOpts);
         {{unix, linux}, split} ->
             start_linux_split_udp(ServerName, Port, BaseOpts);
         {{unix, linux}, dual_stack} ->
@@ -841,6 +884,22 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
         _ ->
             start_single_udp_listener(ServerName, Port, BaseOpts)
     end.
+
+%% macOS local dev: avoid IPv6 QUIC bind path that can fail with einval and
+%% emit noisy supervisor crash reports before falling back to IPv4.
+start_unix_ipv4_only_udp(ServerName, Port, BaseOpts) ->
+    QuicBase = maps:get(quic_opts, BaseOpts, #{}),
+    V4Opts = BaseOpts#{
+        quic_opts =>
+            maps:merge(QuicBase, #{
+                socket_backend => gen_udp,
+                reuseport => false,
+                pool_size => 0,
+                extra_socket_opts => []
+            })
+    },
+    _ = lager:info("HTTP/3 QUIC using IPv4-only listener on macOS (udp/0.0.0.0:~w)", [Port]),
+    start_single_udp_listener(ServerName, Port, V4Opts).
 
 %% Single [::] dual-stack socket on Linux (same model as pertisk-rproxy / Quinn / Node http3).
 start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->

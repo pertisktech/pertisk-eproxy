@@ -129,11 +129,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
     end,
 
     ReqKind = detect_request_kind(Req),
-    GunOpts = #{
-        transport  => Transport,
-        protocols  => gun_protocols_for_request(ReqKind),
-        connect_timeout => ?CONNECT_TIMEOUT
-    },
+    GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
 
     case gun:open(UpHost, UpPort, GunOpts) of
         {error, Reason} ->
@@ -148,8 +144,37 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
             end
     end.
 
+upstream_gun_opts(UpHost, tls, ReqKind) ->
+    #{
+        transport => tls,
+        protocols => gun_protocols_for_request(ReqKind),
+        connect_timeout => ?CONNECT_TIMEOUT,
+        tls_opts => upstream_tls_opts(UpHost)
+    };
+upstream_gun_opts(_UpHost, Transport, ReqKind) ->
+    #{
+        transport => Transport,
+        protocols => gun_protocols_for_request(ReqKind),
+        connect_timeout => ?CONNECT_TIMEOUT
+    }.
+
+upstream_tls_opts(UpHost) ->
+    %% Upstreams are often internal services with private/self-signed certs.
+    %% Keep reverse-proxy behavior permissive unless strict verification is introduced in config.
+    [{verify, verify_none} | maybe_sni_opt(UpHost)].
+
+maybe_sni_opt(UpHost) when is_list(UpHost) ->
+    case inet:parse_address(UpHost) of
+        {ok, _Ip} -> [{server_name_indication, disable}];
+        _ -> [{server_name_indication, UpHost}]
+    end;
+maybe_sni_opt(UpHost) when is_binary(UpHost) ->
+    maybe_sni_opt(binary_to_list(UpHost));
+maybe_sni_opt(_) ->
+    [{server_name_indication, disable}].
+
 do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
-    HeadersMap = forward_headers(Req, Host, ClientIp),
+    HeadersMap = forward_headers(Req, Host, ClientIp, FullPath),
     Headers = maps:to_list(HeadersMap),
     {ok, Body} = read_body(Req),
 
@@ -183,7 +208,7 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
 %% Header helpers
 %% -------------------------------------------------------------------------
 
-forward_headers(Req, OrigHost, ClientIp) ->
+forward_headers(Req, OrigHost, ClientIp, FullPath) ->
     InHeaders = cowboy_req:headers(Req),
     Proto     = case cowboy_req:port(Req) of
         443 -> <<"https">>;
@@ -197,18 +222,35 @@ forward_headers(Req, OrigHost, ClientIp) ->
                               <<"upgrade">>], InHeaders),
 
     %% Preserve original Host
-    Base = Filtered#{
+    Base0 = Filtered#{
         <<"host">>                     => OrigHost,
         <<"x-forwarded-proto">>        => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn
     },
 
-    %% X-Forwarded-For: append client IP
-    XFF = case maps:find(<<"x-forwarded-for">>, Base) of
-        {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
-        error          -> ClientIp
-    end,
-    Base#{<<"x-forwarded-for">> => XFF}.
+    %% Proxmox console ticket endpoints may validate source identity across
+    %% termproxy/vncproxy and vncwebsocket calls; avoid XFF drift between H3 and TCP.
+    case skip_forwarded_for(OrigHost, FullPath) of
+        true ->
+            maps:remove(<<"x-forwarded-for">>, Base0);
+        false ->
+            XFF = case maps:find(<<"x-forwarded-for">>, Base0) of
+                {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
+                error          -> ClientIp
+            end,
+            Base0#{<<"x-forwarded-for">> => XFF}
+    end.
+
+skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
+    HostL = string:lowercase(Host),
+    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+    IsConsolePath =
+        binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
+    IsProxmoxHost andalso IsConsolePath;
+skip_forwarded_for(_, _) ->
+    false.
 
 version_to_bin('HTTP/1.0') -> <<"HTTP/1.0">>;
 version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;
