@@ -42,11 +42,13 @@ start(Config) ->
 
 do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
     Config = pertisk_eproxy_config:get_config(),
-    CertPath = case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
-        undefined -> pertisk_eproxy_tls_paths:default_cert_file();
-        P -> P
+    case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
+        undefined ->
+            ok;
+        CertPath ->
+            _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
+            ok
     end,
-    _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
     QuicOpts = quic_transport_opts(Config),
     case CertChain of
         [] ->
