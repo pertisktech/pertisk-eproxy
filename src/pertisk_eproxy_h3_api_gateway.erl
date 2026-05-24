@@ -509,10 +509,89 @@ proxy_h3_upstream(
                     {error, {local_admin, Reason}}
             end;
         false ->
-            proxy_via_gun(
+            Result0 = proxy_via_gun(
                 Method, LogHost, UpPath, Qs, UpstreamAddr, Headers, Body, ClientIp
+            ),
+            maybe_fallback_local_admin(
+                Result0,
+                Method,
+                LogHost,
+                PathOnly,
+                Qs,
+                Headers,
+                Body,
+                ClientIp
             )
     end.
+
+maybe_fallback_local_admin(
+    {error, _} = UpstreamErr,
+    Method,
+    Host,
+    Path,
+    Qs,
+    Headers,
+    Body,
+    ClientIp
+) ->
+    case should_try_local_admin_fallback(Host, Path) of
+        false ->
+            UpstreamErr;
+        true ->
+            case pertisk_eproxy_h3_local_admin:try_dispatch(
+                Method,
+                Host,
+                Path,
+                Qs,
+                Headers,
+                Body,
+                ClientIp
+            ) of
+                {ok, Status, RespHeaders, RespBody} ->
+                    {ok, Status, gun_resp_headers_to_h3(RespHeaders), RespBody};
+                _ ->
+                    UpstreamErr
+            end
+    end;
+maybe_fallback_local_admin(
+    {ok, Status, _RespHeaders, _RespBody} = UpstreamResp,
+    Method,
+    Host,
+    Path,
+    Qs,
+    Headers,
+    Body,
+    ClientIp
+) when Status >= 500 ->
+    case should_try_local_admin_fallback(Host, Path) of
+        false ->
+            UpstreamResp;
+        true ->
+            case pertisk_eproxy_h3_local_admin:try_dispatch(
+                Method,
+                Host,
+                Path,
+                Qs,
+                Headers,
+                Body,
+                ClientIp
+            ) of
+                {ok, FallbackStatus, RespHeaders, RespBody} ->
+                    {ok, FallbackStatus, gun_resp_headers_to_h3(RespHeaders), RespBody};
+                _ ->
+                    UpstreamResp
+            end
+    end;
+maybe_fallback_local_admin(Result, _Method, _Host, _Path, _Qs, _Headers, _Body, _ClientIp) ->
+    Result.
+
+should_try_local_admin_fallback(_Host, <<"/api/realtime", _/binary>>) ->
+    false;
+should_try_local_admin_fallback(Host, <<"/api/", _/binary>>) ->
+    LowerHost = string:lowercase(Host),
+    binary:match(LowerHost, <<"admin.">>) =:= {0, byte_size(<<"admin.">>)};
+should_try_local_admin_fallback(_Host, _Path) ->
+    false.
 
 quic_transport_opts(Config) ->
     IdleSecs0 =
@@ -586,35 +665,88 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
         {error, Reason} ->
             {error, Reason};
         {ok, ConnPid} ->
-            Result =
-                try
-                    StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
-                    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-                        {response, nofin, Status, RespHeaders} ->
-                            case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-                                {ok, RespBody} ->
-                                    {ok, Status, gun_resp_headers_to_h3(RespHeaders),
-                                        safe_iolist_to_binary(RespBody)};
-                                {error, R} ->
-                                    {error, R}
-                            end;
-                        {response, fin, Status, RespHeaders} ->
-                            {ok, Status, gun_resp_headers_to_h3(RespHeaders), <<>>};
+            do_proxy_via_gun(
+                ConnPid,
+                GunMethod,
+                FullPath,
+                HeadersList,
+                Body,
+                UpHost,
+                UpPort,
+                Transport,
+                GunOpts,
+                0
+            )
+    end.
+
+do_proxy_via_gun(
+    ConnPid,
+    GunMethod,
+    FullPath,
+    HeadersList,
+    Body,
+    UpHost,
+    UpPort,
+    Transport,
+    GunOpts,
+    RetryCount
+) ->
+    Result =
+        try
+            StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
+            case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                {response, nofin, Status, RespHeaders} ->
+                    case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                        {ok, RespBody} ->
+                            {ok, Status, gun_resp_headers_to_h3(RespHeaders),
+                                safe_iolist_to_binary(RespBody)};
                         {error, R} ->
                             {error, R}
-                    end
-                catch
-                    Class:Reason ->
-                        {error, {Class, Reason}}
-                end,
-            case Result of
-                {error, _} ->
-                    pertisk_eproxy_upstream_pool:invalidate(ConnPid);
-                _ ->
-                    ok
-            end,
+                    end;
+                {response, fin, Status, RespHeaders} ->
+                    {ok, Status, gun_resp_headers_to_h3(RespHeaders), <<>>};
+                {error, R} ->
+                    {error, R}
+            end
+        catch
+            Class:CrashReason ->
+                {error, {Class, CrashReason}}
+        end,
+    case Result of
+        {error, Reason} ->
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid),
+            case RetryCount =:= 0 andalso retryable_upstream_error(Reason) of
+                true ->
+                    case pertisk_eproxy_upstream_pool:checkout(
+                        UpHost, UpPort, Transport, http, GunOpts
+                    ) of
+                        {ok, ConnPid2} ->
+                            do_proxy_via_gun(
+                                ConnPid2,
+                                GunMethod,
+                                FullPath,
+                                HeadersList,
+                                Body,
+                                UpHost,
+                                UpPort,
+                                Transport,
+                                GunOpts,
+                                1
+                            );
+                        {error, _} = RetryErr ->
+                            RetryErr
+                    end;
+                false ->
+                    {error, Reason}
+            end;
+        _ ->
             Result
     end.
+
+retryable_upstream_error({down, normal}) -> true;
+retryable_upstream_error({down, shutdown}) -> true;
+retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
+retryable_upstream_error(_) -> false.
 
 upstream_gun_opts(UpHost, tls) ->
     #{

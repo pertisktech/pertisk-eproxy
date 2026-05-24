@@ -36,10 +36,26 @@ checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) ->
         undefined ->
             open_connection(UpHost, UpPort, GunOpts);
         _Pid ->
-            Timeout = maps:get(connect_timeout, GunOpts, 10000) + 1000,
-            gen_server:call(?SERVER,
-                {checkout, UpHost, UpPort, Transport, ReqKind, GunOpts},
-                Timeout)
+            %% Pool lookup is non-blocking; opening a new Gun connection happens
+            %% in the CALLER's process so that a slow / unreachable upstream
+            %% cannot serialize the singleton gen_server and stall checkouts
+            %% for unrelated upstreams.
+            case gen_server:call(?SERVER,
+                                 {try_checkout, UpHost, UpPort, Transport, ReqKind},
+                                 5000) of
+                {ok, ConnPid} ->
+                    {ok, ConnPid};
+                empty ->
+                    case open_connection(UpHost, UpPort, GunOpts) of
+                        {ok, ConnPid} ->
+                            gen_server:cast(?SERVER,
+                                {register, UpHost, UpPort, Transport, ReqKind,
+                                 GunOpts, ConnPid}),
+                            {ok, ConnPid};
+                        {error, _} = Err ->
+                            Err
+                    end
+            end
     end.
 
 -spec invalidate(pid()) -> ok.
@@ -58,36 +74,48 @@ init([]) ->
     erlang:send_after(?SWEEP_INTERVAL_MS, self(), sweep_idle),
     {ok, #{pools => #{}}}.
 
-handle_call({checkout, UpHost, UpPort, Transport, ReqKind, GunOpts}, _From,
+handle_call({try_checkout, UpHost, UpPort, Transport, ReqKind}, _From,
             State = #{pools := Pools0}) ->
     Key = pool_key(UpHost, UpPort, Transport, ReqKind),
     Entry0 = maps:get(Key, Pools0, empty_entry()),
     Entry1 = refresh_entry(Entry0),
     case maps:get(conns, Entry1) of
         [] ->
-            case open_connection(UpHost, UpPort, GunOpts) of
-                {ok, ConnPid} ->
-                    monitor(process, ConnPid),
-                    Entry2 = Entry1#{conns => [{ConnPid, now_ms()}], rr => 1},
-                    {Entry3, State2} = maybe_async_fill(
-                        Key, Entry2, UpHost, UpPort, ReqKind, GunOpts,
-                        State#{pools => Pools0#{Key => Entry2}}
-                    ),
-                    {reply, {ok, ConnPid}, put_pool(Key, Entry3, State2)};
-                {error, Reason} ->
-                    {reply, {error, Reason}, put_pool(Key, Entry1, State)}
-            end;
+            {reply, empty, put_pool(Key, Entry1, State)};
         Conns ->
             {ConnPid, Entry2} = pick_rr(Conns, Entry1),
-            {Entry3, State2} = maybe_async_fill(
-                Key, Entry2, UpHost, UpPort, ReqKind, GunOpts,
-                State#{pools => Pools0#{Key => Entry2}}
-            ),
-            {reply, {ok, ConnPid}, put_pool(Key, Entry3, State2)}
+            {reply, {ok, ConnPid}, put_pool(Key, Entry2, State)}
     end;
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_call}, State}.
+
+handle_cast({register, UpHost, UpPort, Transport, ReqKind, GunOpts, ConnPid},
+            State = #{pools := Pools0}) ->
+    Key = pool_key(UpHost, UpPort, Transport, ReqKind),
+    Entry0 = maps:get(Key, Pools0, empty_entry()),
+    Entry1 = refresh_entry(Entry0),
+    case is_process_alive(ConnPid) of
+        false ->
+            {noreply, put_pool(Key, Entry1, State)};
+        true ->
+            monitor(process, ConnPid),
+            Conns = maps:get(conns, Entry1),
+            Target = pool_target_size(),
+            Entry2 = case length(Conns) >= Target of
+                true ->
+                    %% Pool already full; drop the just-registered connection.
+                    catch gun:close(ConnPid),
+                    Entry1;
+                false ->
+                    Entry1#{conns => [{ConnPid, now_ms()} | Conns]}
+            end,
+            {Entry3, State2} = maybe_async_fill(
+                Key, Entry2, UpHost, UpPort, ReqKind, GunOpts,
+                put_pool(Key, Entry2, State)
+            ),
+            {noreply, put_pool(Key, Entry3, State2)}
+    end;
 
 handle_cast({fill_one, Key, UpHost, UpPort, ReqKind, GunOpts},
             State = #{pools := Pools0}) ->
@@ -103,20 +131,31 @@ handle_cast({fill_one, Key, UpHost, UpPort, ReqKind, GunOpts},
                     Entry2 = Entry1#{filling => false},
                     {noreply, put_pool(Key, Entry2, State)};
                 false ->
-                    case open_connection(UpHost, UpPort, GunOpts) of
-                        {ok, ConnPid} ->
-                            monitor(process, ConnPid),
-                            Entry2 = Entry1#{
-                                conns => [{ConnPid, now_ms()} | Conns],
-                                filling => false
-                            },
-                            maybe_fill_again(Key, UpHost, UpPort, ReqKind, GunOpts, Entry2),
-                            {noreply, put_pool(Key, Entry2, State)};
-                        {error, _Reason} ->
-                            Entry2 = Entry1#{filling => false},
-                            {noreply, put_pool(Key, Entry2, State)}
-                    end
+                    %% Open the connection in a spawned helper so the gen_server
+                    %% never blocks on gun:await_up. The helper casts {register,...}
+                    %% back on success and clears the `filling` flag on failure.
+                    Self = self(),
+                    spawn(fun() ->
+                        case open_connection(UpHost, UpPort, GunOpts) of
+                            {ok, ConnPid} ->
+                                gen_server:cast(Self,
+                                    {register, UpHost, UpPort,
+                                     transport_from_key(Key), ReqKind, GunOpts,
+                                     ConnPid});
+                            {error, _} ->
+                                gen_server:cast(Self, {fill_done, Key})
+                        end
+                    end),
+                    {noreply, put_pool(Key, Entry1, State)}
             end
+    end;
+
+handle_cast({fill_done, Key}, State = #{pools := Pools0}) ->
+    case maps:find(Key, Pools0) of
+        error -> {noreply, State};
+        {ok, Entry0} ->
+            Entry1 = Entry0#{filling => false},
+            {noreply, put_pool(Key, Entry1, State)}
     end;
 
 handle_cast({invalidate, Pid}, State) ->
@@ -209,6 +248,10 @@ normalize_host(H) ->
 req_profile(grpc) -> grpc;
 req_profile(_) -> http.
 
+%% Extract the Transport field from a pool_key tuple. Used by the fill helper
+%% so it can produce a {register,...} cast that matches the original key.
+transport_from_key({_Host, _Port, Transport, _Profile}) -> Transport.
+
 maybe_async_fill(Key, Entry, UpHost, UpPort, ReqKind, GunOpts, State) ->
     Target = pool_target_size(),
     Conns = maps:get(conns, Entry),
@@ -222,18 +265,6 @@ maybe_async_fill(Key, Entry, UpHost, UpPort, ReqKind, GunOpts, State) ->
             {Entry#{filling => true}, State};
         false ->
             {Entry, State}
-    end.
-
-maybe_fill_again(Key, UpHost, UpPort, ReqKind, GunOpts, Entry) ->
-    Target = pool_target_size(),
-    case length(maps:get(conns, Entry)) < Target of
-        true ->
-            gen_server:cast(
-                ?SERVER,
-                {fill_one, Key, UpHost, UpPort, ReqKind, GunOpts}
-            );
-        false ->
-            ok
     end.
 
 remove_pid_from_pools(Pid, State = #{pools := Pools0}) ->

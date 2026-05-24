@@ -79,14 +79,30 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             ClientIp = client_ip(Req),
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
-                    pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
-                    H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
-                    Body502 = <<"Bad Gateway: no healthy upstream">>,
-                    {H502Out, Body502Out} =
-                        pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
-                    Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
-                    log_access(Host, Method, Path, 502, T0, Vsn, <<>>),
-                    {ok, Req2, State};
+                    case maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp) of
+                        {ok, StatusCode, Req2} ->
+                            StatusBin = integer_to_binary(StatusCode),
+                            pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                            log_access(
+                                Host,
+                                Method,
+                                Path,
+                                StatusCode,
+                                T0,
+                                Vsn,
+                                pertisk_eproxy_config:management_loopback_upstream_bin()
+                            ),
+                            {ok, Req2, State};
+                        _ ->
+                            pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
+                            H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                            Body502 = <<"Bad Gateway: no healthy upstream">>,
+                            {H502Out, Body502Out} =
+                                pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
+                            Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
+                            log_access(Host, Method, Path, 502, T0, Vsn, <<>>),
+                            {ok, Req2, State}
+                    end;
                 {ok, UpstreamAddr} ->
                     Result = proxy_request(Req, Method, Host, UpstreamPath, Qs,
                                            UpstreamAddr, ClientIp),
@@ -98,20 +114,56 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
                             {ok, Req2, State};
                         {error, Reason} ->
-                            pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
-                            lager:warning("Proxy error ~p for ~s~s -> ~s",
-                                          [Reason, Host, Path, UpstreamAddr]),
-                            H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
-                            Body502 = <<"Bad Gateway">>,
-                            {H502Out, Body502Out} =
-                                pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
-                            Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
-                            log_access(Host, Method, Path, 502, T0, Vsn, UpstreamAddr),
-                            {ok, Req2, State}
+                            case maybe_proxy_via_local_management(
+                                Req,
+                                Method,
+                                Host,
+                                UpstreamPath,
+                                Qs,
+                                ClientIp
+                            ) of
+                                {ok, StatusCode, Req2} ->
+                                    StatusBin = integer_to_binary(StatusCode),
+                                    pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                                    log_access(
+                                        Host,
+                                        Method,
+                                        Path,
+                                        StatusCode,
+                                        T0,
+                                        Vsn,
+                                        pertisk_eproxy_config:management_loopback_upstream_bin()
+                                    ),
+                                    {ok, Req2, State};
+                                _ ->
+                                    pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
+                                    lager:warning("Proxy error ~p for ~s~s -> ~s",
+                                                  [Reason, Host, Path, UpstreamAddr]),
+                                    H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                                    Body502 = <<"Bad Gateway">>,
+                                    {H502Out, Body502Out} =
+                                        pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
+                                    Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
+                                    log_access(Host, Method, Path, 502, T0, Vsn, UpstreamAddr),
+                                    {ok, Req2, State}
+                            end
                     end
             end
     end.
+
+maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp) ->
+    case should_try_local_management_fallback(Host, UpstreamPath) of
+        false ->
+            no_fallback;
+        true ->
+            Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+            proxy_request(Req, Method, Host, UpstreamPath, Qs, Mgmt, ClientIp)
+    end.
+
+should_try_local_management_fallback(Host, _Path) ->
+    LowerHost = string:lowercase(Host),
+    binary:match(LowerHost, <<"admin.">>) =:= {0, byte_size(<<"admin.">>)}.
 
 log_access(Host, Method, Path, Status, T0, Vsn, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
@@ -130,12 +182,27 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
 
     ReqKind = detect_request_kind(Req),
     GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
+    {ok, Body} = read_body(Req),
 
     case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) of
         {error, Reason} ->
             {error, Reason};
         {ok, ConnPid} ->
-            do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp)
+            do_proxy(
+                Req,
+                ConnPid,
+                Method,
+                Host,
+                FullPath,
+                ClientIp,
+                Body,
+                UpHost,
+                UpPort,
+                Transport,
+                ReqKind,
+                GunOpts,
+                0
+            )
     end.
 
 upstream_gun_opts(UpHost, tls, ReqKind) ->
@@ -167,10 +234,23 @@ maybe_sni_opt(UpHost) when is_binary(UpHost) ->
 maybe_sni_opt(_) ->
     [{server_name_indication, disable}].
 
-do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
+do_proxy(
+    Req,
+    ConnPid,
+    Method,
+    Host,
+    FullPath,
+    ClientIp,
+    Body,
+    UpHost,
+    UpPort,
+    Transport,
+    ReqKind,
+    GunOpts,
+    RetryCount
+) ->
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath),
     Headers = maps:to_list(HeadersMap),
-    {ok, Body} = read_body(Req),
 
     Result =
         try
@@ -201,16 +281,47 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
                     {error, Reason}
             end
         catch
-            Class:CrashReason ->
-                {error, {Class, CrashReason}}
+            Class:CaughtReason ->
+                {error, {Class, CaughtReason}}
         end,
     case Result of
-        {error, _} ->
-            pertisk_eproxy_upstream_pool:invalidate(ConnPid);
+        {error, ProxyReason} ->
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid),
+            case RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
+                true ->
+                    case pertisk_eproxy_upstream_pool:checkout(
+                        UpHost, UpPort, Transport, ReqKind, GunOpts
+                    ) of
+                        {ok, ConnPid2} ->
+                            do_proxy(
+                                Req,
+                                ConnPid2,
+                                Method,
+                                Host,
+                                FullPath,
+                                ClientIp,
+                                Body,
+                                UpHost,
+                                UpPort,
+                                Transport,
+                                ReqKind,
+                                GunOpts,
+                                1
+                            );
+                        {error, _} = RetryErr ->
+                            RetryErr
+                    end;
+                false ->
+                    {error, ProxyReason}
+            end;
         _ ->
-            ok
-    end,
-    Result.
+            Result
+    end.
+
+retryable_upstream_error({down, normal}) -> true;
+retryable_upstream_error({down, shutdown}) -> true;
+retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
+retryable_upstream_error(_) -> false.
 
 %% -------------------------------------------------------------------------
 %% Header helpers
@@ -510,11 +621,27 @@ site_advertise_http3(Host) ->
     end.
 
 find_site_for_host([], _Host) -> undefined;
-find_site_for_host([Site | Rest], Host) ->
+find_site_for_host(Sites, Host) ->
+    %% Try exact-host sites first so a wildcard like "*.example.com" cannot
+    %% shadow a more specific "admin.example.com".
+    {Exact, Wild} = lists:partition(
+        fun(S) ->
+            case maps:get(host, S, <<>>) of
+                <<"*.", _/binary>> -> false;
+                _ -> true
+            end
+        end, Sites),
+    case find_site_first_match(Exact, Host) of
+        undefined -> find_site_first_match(Wild, Host);
+        Site -> Site
+    end.
+
+find_site_first_match([], _Host) -> undefined;
+find_site_first_match([Site | Rest], Host) ->
     SiteHost = string:lowercase(maps:get(host, Site, <<>>)),
     case host_matches(Host, SiteHost) of
         true -> Site;
-        false -> find_site_for_host(Rest, Host)
+        false -> find_site_first_match(Rest, Host)
     end.
 
 host_matches(Host, <<"*.", Suffix/binary>>) ->

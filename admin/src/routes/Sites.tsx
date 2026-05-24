@@ -66,8 +66,14 @@ function wildcardDomainFromHost(host: string): string {
   const noScheme = raw.replace(/^[a-z]+:\/\//, '');
   const noPath = noScheme.split('/')[0] ?? '';
   const noPort = noPath.split(':')[0] ?? '';
+  const startsWithWildcard = noPort.startsWith('*.');
   const h = noPort.replace(/^\*\./, '').replace(/\.$/, '');
   if (!h) return '*.domain';
+  // If the user already typed an explicit wildcard host (e.g. `*.erlang.thaidevops.co`),
+  // preserve the exact base — do NOT collapse it to a parent zone like `*.thaidevops.co`.
+  if (startsWithWildcard) {
+    return `*.${h}`;
+  }
   const parts = h.split('.').filter(Boolean);
   if (parts.length >= 3) {
     return `*.${parts.slice(1).join('.')}`;
@@ -78,6 +84,23 @@ function wildcardDomainFromHost(host: string): string {
 function wildcardBaseFromHost(host: string): string {
   const wildcard = wildcardDomainFromHost(host);
   return wildcard.startsWith('*.') ? wildcard.slice(2) : wildcard;
+}
+
+/** True when the host is a wildcard subdomain pattern (e.g. `*.example.com`). */
+function isWildcardHost(host: string): boolean {
+  return host.trim().startsWith('*.');
+}
+
+/** Strip a leading `*.` from a host, returning the base domain. */
+function stripWildcardPrefix(host: string): string {
+  const h = host.trim();
+  return h.startsWith('*.') ? h.slice(2) : h;
+}
+
+/** Ensure a host starts with `*.` (used when the wildcard toggle is on). */
+function applyWildcardPrefix(host: string): string {
+  const h = host.trim().replace(/^\*+\.*/, '');
+  return h ? `*.${h}` : '';
 }
 
 /** Map UI path type to eProxy API (lowercase). */
@@ -166,7 +189,12 @@ export default function Sites() {
   const toast = useToast();
   const mode = useMode();
   const readOnly = mode === 'ingress';
-  const wildcardLabel = wildcardDomainFromHost(formHost);
+  // When the user types an explicit wildcard host (e.g. `*.erlang.thaidevops.co`), the
+  // ACME wildcard certificate must cover that exact host — NOT a collapsed parent zone
+  // like `*.thaidevops.co`.
+  const wildcardLabel = isWildcardHost(formHost)
+    ? `*.${stripWildcardPrefix(formHost.trim()) || 'domain'}`
+    : wildcardDomainFromHost(formHost);
 
   const sites = config?.sites ?? EMPTY_SITES;
   const backends = config?.backends ?? EMPTY_BACKENDS;
@@ -711,7 +739,7 @@ export default function Sites() {
     const site = sites[index];
     if (!site) return;
     setEditingIndex(null);
-    setFormHost(`${site.host}-copy`);
+    setFormHost(isWildcardHost(site.host) ? site.host : `${site.host}-copy`);
     const be = backends.find((b) => b.name === site.backend);
     setFormUpstream(be?.upstreams?.[0]?.addr ?? '');
     setFormRoutes(
@@ -751,6 +779,10 @@ export default function Sites() {
     const host = formHost.trim();
     if (!host) {
       setFormError('Domain is required');
+      return;
+    }
+    if (host === '*.' || host === '*') {
+      setFormError('Wildcard requires a base domain (e.g. *.example.com).');
       return;
     }
     const rawUpstream = formUpstream.trim();
@@ -841,8 +873,14 @@ export default function Sites() {
     const dns_provider = formSslMode === 'auto_ssl' ? formDnsProviderName.trim() || null : null;
     const challenge_type = formSslMode === 'auto_ssl' ? formChallengeType : null;
     const wildcard = formSslMode === 'auto_ssl' ? formWildcard : false;
+    // For an explicit reverse-wildcard host (`*.erlang.thaidevops.co`) the cert base must be the
+    // exact left-stripped host (`erlang.thaidevops.co`), NOT an auto-collapsed parent zone.
     const acme_wildcard_base =
-      formSslMode === 'auto_ssl' && formWildcard ? wildcardBaseFromHost(host) : null;
+      formSslMode === 'auto_ssl' && formWildcard
+        ? isWildcardHost(host)
+          ? stripWildcardPrefix(host)
+          : wildcardBaseFromHost(host)
+        : null;
     const acme_contact_email = formSslMode === 'auto_ssl' ? formContactEmail.trim() || null : null;
 
     const newSite: Site = {
@@ -978,6 +1016,14 @@ export default function Sites() {
                       <h3 className={styles.siteCardDomain}>
                         <FaIcon className="fas fa-globe" aria-hidden />
                         <span className={styles.hostText}>{site.host}</span>
+                        {isWildcardHost(site.host) && (
+                          <span
+                            title="Wildcard host: matches any subdomain"
+                            style={{ marginLeft: '0.4rem', padding: '0.05rem 0.4rem', borderRadius: '0.4rem', background: 'var(--color-primary)', color: '#fff', fontSize: '0.7rem', fontWeight: 600 }}
+                          >
+                            <FaIcon className="fas fa-asterisk" aria-hidden /> wildcard
+                          </span>
+                        )}
                         {domainUrl(site.host) && (
                           <a
                             href={domainUrl(site.host)}
@@ -1155,6 +1201,14 @@ export default function Sites() {
                               </span>
                               <span className={styles.hostTextGroup}>
                                 <span className={styles.hostText}>{site.host}</span>
+                                {isWildcardHost(site.host) && (
+                                  <span
+                                    title="Wildcard host: matches any subdomain"
+                                    style={{ marginLeft: '0.4rem', padding: '0.05rem 0.4rem', borderRadius: '0.4rem', background: 'var(--color-primary)', color: '#fff', fontSize: '0.7rem', fontWeight: 600 }}
+                                  >
+                                    <FaIcon className="fas fa-asterisk" aria-hidden /> wildcard
+                                  </span>
+                                )}
                                 <span className={styles.cellSubtle}>Cert {ssl}</span>
                               </span>
                             </div>
@@ -1318,7 +1372,7 @@ export default function Sites() {
                       type="text"
                       value={formHost}
                       onChange={(e) => setFormHost(e.target.value)}
-                      placeholder="example.com"
+                      placeholder="example.com or *.erlang.thaidevops.co"
                       className={styles.input}
                       required
                     />
@@ -1329,7 +1383,7 @@ export default function Sites() {
                       type="text"
                       value={formUpstream}
                       onChange={(e) => setFormUpstream(e.target.value)}
-                      placeholder="http://localhost:8080 or 127.0.0.1:3000"
+                      placeholder="http://localhost:8080 or https://10.1.1.18:443"
                       className={styles.input}
                       required
                     />

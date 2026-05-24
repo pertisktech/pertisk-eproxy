@@ -57,7 +57,25 @@ build(Sites) ->
         maps:update_with(Host, fun(Existing) -> Existing ++ Rules end,
                          Rules, Acc)
     end, #{}, Sites),
-    maps:to_list(Map).
+    %% Order matters: `find_host/3` returns on the first matching host, so
+    %% exact-host sites MUST be tried before wildcard sites. Otherwise a
+    %% wildcard like "*.example.com" could shadow a more specific
+    %% "admin.example.com" depending on map insertion order.
+    lists:sort(fun host_entry_less/2, maps:to_list(Map)).
+
+%% Comparison: non-wildcard hosts sort before wildcard hosts; within each
+%% group, longer (more specific) hosts sort first.
+host_entry_less({HostA, _}, {HostB, _}) ->
+    WA = is_wildcard_host(HostA),
+    WB = is_wildcard_host(HostB),
+    case {WA, WB} of
+        {false, true}  -> true;
+        {true,  false} -> false;
+        _ -> byte_size(HostA) >= byte_size(HostB)
+    end.
+
+is_wildcard_host(<<"*.", _/binary>>) -> true;
+is_wildcard_host(_) -> false.
 
 %% Find the backend and upstream path for a (Host, Path) pair.
 %% Returns {ok, route_match()} or {error, no_route}.
