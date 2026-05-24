@@ -1431,7 +1431,38 @@ resolve_sni_cert_entry(CertRef, RowsById, RowsByName) ->
         undefined -> maps:get(RefBin, RowsByName, undefined);
         ById -> ById
     end,
+    decode_sni_cert_ref(RefBin, Row).
+
+decode_sni_cert_ref(<<"acme/", _/binary>> = RefBin, _Row) ->
+    acme_sni_cert_entry(RefBin);
+decode_sni_cert_ref(_RefBin, #{name := Name} = Row) ->
+    case sni_ref_to_binary(Name) of
+        <<"acme/", _/binary>> = AcmeRef ->
+            acme_sni_cert_entry(AcmeRef);
+        _ ->
+            decode_sni_cert_row(Row)
+    end;
+decode_sni_cert_ref(_RefBin, Row) ->
     decode_sni_cert_row(Row).
+
+acme_sni_cert_entry(<<"acme/", Slug/binary>>) ->
+    AcmeDir = case application:get_env(pertisk_eproxy, acme_data_dir) of
+        {ok, D} when is_list(D) -> D;
+        _ -> "data/acme"
+    end,
+    Dir = filename:join([AcmeDir, "certs", binary_to_list(Slug)]),
+    CertPath = filename:join(Dir, "fullchain.pem"),
+    KeyPath = filename:join(Dir, "privkey.pem"),
+    case load_cert_and_key_files(CertPath, KeyPath) of
+        {ok, {CertDer, KeyTerm, Chain}} ->
+            {ok, #{
+                cert => CertDer,
+                cert_chain => Chain,
+                private_key => KeyTerm
+            }};
+        {error, _} = Err ->
+            Err
+    end.
 
 decode_sni_cert_row(#{cert_pem := CertPem0, key_pem := KeyPem0}) ->
     CertPem = sni_text_bin(CertPem0),
