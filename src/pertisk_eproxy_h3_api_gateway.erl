@@ -907,13 +907,16 @@ start_unix_ipv4_only_udp(ServerName, Port, BaseOpts) ->
     start_single_udp_listener(ServerName, Port, V4Opts).
 
 %% Single [::] dual-stack socket on Linux (same model as pertisk-rproxy / Quinn / Node http3).
+%% Must use gen_udp backend: the socket backend ignores extra_socket_opts for server sockets
+%% (open_socket_backend hardcodes `inet` family), so inet6/ipv6_v6only opts are silently
+%% dropped. gen_udp backend appends extra_socket_opts after the base `inet` flag so the
+%% last entry (inet6) wins, producing a dual-stack [::] socket identical to the Rust rproxy.
 start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
     QuicBase = maps:get(quic_opts, BaseOpts, #{}),
     Opts = BaseOpts#{
         quic_opts =>
             maps:merge(QuicBase, #{
-                socket_backend => socket,
-                backend => socket,
+                socket_backend => gen_udp,
                 reuseport => false,
                 pool_size => 0,
                 extra_socket_opts => [inet6, {ipv6_v6only, false}]
@@ -1015,11 +1018,11 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     })
             },
             %% Native IPv6 only (::, V6ONLY=1). Do not use V6ONLY=0 when v4 is also bound.
+            %% Must use gen_udp backend: socket backend ignores extra_socket_opts (hardcodes inet).
             V6Opts = BaseOpts#{
                 quic_opts =>
                     maps:merge(QuicBase, #{
-                        socket_backend => socket,
-                        backend => socket,
+                        socket_backend => gen_udp,
                         reuseport => true,
                         pool_size => 0,
                         extra_socket_opts => [inet6, {ipv6_v6only, true}]
@@ -1027,7 +1030,7 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
             },
 
             _ = lager:info(
-                "HTTP/3 starting QUIC listeners on udp/:~w (v4=~p gen_udp, v6=~p socket)",
+                "HTTP/3 starting QUIC listeners on udp/:~w (v4=~p gen_udp, v6=~p gen_udp)",
                 [Port, V4Name, ServerName]
             ),
 
@@ -1051,11 +1054,11 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                         V6Opts;
                     false ->
                         %% Single [::] socket with V6ONLY=0 when dedicated IPv4 bind failed.
+                        %% Must use gen_udp backend: socket backend ignores extra_socket_opts.
                         BaseOpts#{
                             quic_opts =>
                                 maps:merge(QuicBase, #{
-                                    socket_backend => socket,
-                                    backend => socket,
+                                    socket_backend => gen_udp,
                                     reuseport => false,
                                     pool_size => 0,
                                     extra_socket_opts => [inet6, {ipv6_v6only, false}]

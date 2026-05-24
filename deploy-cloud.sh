@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.78"
+VERSION="${VERSION:-0.2.6}"
+NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 
-# make docker-ingress-multi VERSION=0.1.28
+# Build and push the ingress image, then deploy/update the Kubernetes release.
 make docker-ingress-multi VERSION="$VERSION"
-helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy \
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n "$NAMESPACE" \
+  --create-namespace \
   --set image.tag="$VERSION" \
   --set auth.username=admin \
   --set auth.password='admin' \
