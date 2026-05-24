@@ -464,11 +464,16 @@ function realtimeTransportMode(): RealtimeTransportMode {
 
 const API_REQUEST_TIMEOUT_MS = 90_000;
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+type ApiRequestOptions = RequestInit & {
+  suppressAuthRedirect?: boolean;
+};
+
+async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { suppressAuthRedirect = false, ...fetchOptions } = options;
   const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
+    ...(fetchOptions.headers as Record<string, string>),
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
@@ -481,7 +486,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API}${path}`, {
-      ...options,
+      ...fetchOptions,
       headers,
       credentials: 'include',
       signal: controller.signal,
@@ -496,10 +501,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (res.status === 401) {
-    clearToken();
-    clearUsername();
-    if (!globalThis.window.location.pathname.startsWith('/login')) {
-      globalThis.window.location.href = '/login';
+    if (!suppressAuthRedirect) {
+      clearToken();
+      clearUsername();
+      if (!globalThis.window.location.pathname.startsWith('/login')) {
+        globalThis.window.location.href = '/login';
+      }
     }
     throw new Error('Unauthorized');
   }
@@ -525,8 +532,8 @@ async function get<T>(path: string): Promise<T> {
   return request<T>(path, { cache: 'no-store' });
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  return request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+async function post<T>(path: string, body: unknown, options: ApiRequestOptions = {}): Promise<T> {
+  return request<T>(path, { ...options, method: 'POST', body: JSON.stringify(body) });
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
@@ -772,7 +779,8 @@ export const api = {
   login: (username: string, password: string) =>
     post<LoginResponse>('/auth/login', { username, password }),
   authConfig: () => get<AuthConfigResponse>('/auth/config'),
-  authRefresh: () => post<AuthRefreshResponse>('/auth/refresh', {}),
+  /* Refresh can transiently 401 during hot-reload/restart races; caller handles retry. */
+  authRefresh: () => post<AuthRefreshResponse>('/auth/refresh', {}, { suppressAuthRedirect: true }),
   authCheck: () => get<AuthCheckResponse>('/auth/check'),
   logout: () => post<{ success: boolean }>('/auth/logout', {}),
   changePassword: (currentPassword: string, newPassword: string) =>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.2.27}"
+VERSION="${VERSION:-0.2.28}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 
 # Build and push the ingress image, then deploy/update the Kubernetes release.

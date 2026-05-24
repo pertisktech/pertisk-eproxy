@@ -220,7 +220,9 @@ function LayoutShell() {
         }
         scheduleNext(res.expires_in);
       } catch {
-        // Auth refresh errors are handled by the API client (401 redirects).
+        if (cancelled) return;
+        // Avoid login bounce on transient restart/hot-reload races.
+        scheduleNext(60);
       }
     }
 
