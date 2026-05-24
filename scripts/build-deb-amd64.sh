@@ -45,6 +45,8 @@ ExecStart=/opt/$PKG_NAME/bin/pertisk_eproxy foreground
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
