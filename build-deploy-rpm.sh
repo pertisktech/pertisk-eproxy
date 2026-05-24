@@ -1,2 +1,2 @@
-make package-rpm-amd64 PACKAGE_VERSION=0.2.28
-scp release/pertisk-eproxy-0.2.28-1.x86_64.rpm root@135.181.197.40:/tmp     
+make package-rpm-amd64 PACKAGE_VERSION=0.2.30
+scp release/pertisk-eproxy-0.2.30-1.x86_64.rpm root@135.181.197.40:/tmp     

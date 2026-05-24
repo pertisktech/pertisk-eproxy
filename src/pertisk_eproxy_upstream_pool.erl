@@ -35,7 +35,7 @@ checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) ->
     case erlang:whereis(?SERVER) of
         undefined ->
             open_connection(UpHost, UpPort, GunOpts);
-        _Pid ->
+        ServerPid ->
             %% Pool lookup is non-blocking; opening a new Gun connection happens
             %% in the CALLER's process so that a slow / unreachable upstream
             %% cannot serialize the singleton gen_server and stall checkouts
@@ -48,10 +48,16 @@ checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) ->
                 empty ->
                     case open_connection(UpHost, UpPort, GunOpts) of
                         {ok, ConnPid} ->
-                            gen_server:cast(?SERVER,
-                                {register, UpHost, UpPort, Transport, ReqKind,
-                                 GunOpts, ConnPid}),
-                            {ok, ConnPid};
+                            case ensure_owner(ConnPid, ServerPid) of
+                                ok ->
+                                    gen_server:cast(?SERVER,
+                                        {register, UpHost, UpPort, Transport, ReqKind,
+                                         GunOpts, ConnPid}),
+                                    {ok, ConnPid};
+                                {error, _} = OwnerErr ->
+                                    catch gun:close(ConnPid),
+                                    OwnerErr
+                            end;
                         {error, _} = Err ->
                             Err
                     end
@@ -138,10 +144,16 @@ handle_cast({fill_one, Key, UpHost, UpPort, ReqKind, GunOpts},
                     spawn(fun() ->
                         case open_connection(UpHost, UpPort, GunOpts) of
                             {ok, ConnPid} ->
-                                gen_server:cast(Self,
-                                    {register, UpHost, UpPort,
-                                     transport_from_key(Key), ReqKind, GunOpts,
-                                     ConnPid});
+                                case ensure_owner(ConnPid, Self) of
+                                    ok ->
+                                        gen_server:cast(Self,
+                                            {register, UpHost, UpPort,
+                                             transport_from_key(Key), ReqKind, GunOpts,
+                                             ConnPid});
+                                    {error, _} ->
+                                        catch gun:close(ConnPid),
+                                        gen_server:cast(Self, {fill_done, Key})
+                                end;
                             {error, _} ->
                                 gen_server:cast(Self, {fill_done, Key})
                         end
@@ -308,4 +320,19 @@ open_connection(UpHost, UpPort, GunOpts) ->
             end;
         {error, Reason} ->
             {error, {connect, Reason}}
+    end.
+
+ensure_owner(ConnPid, OwnerPid) when is_pid(ConnPid), is_pid(OwnerPid) ->
+    case erlang:function_exported(gun, set_owner, 2) of
+        true ->
+            case catch gun:set_owner(ConnPid, OwnerPid) of
+                ok -> ok;
+                {'EXIT', Reason} -> {error, {set_owner_exit, Reason}};
+                {error, Reason} -> {error, {set_owner, Reason}};
+                Other -> {error, {set_owner_unexpected, Other}}
+            end;
+        false ->
+            %% Older gun versions do not expose set_owner/2.
+            %% In that case, keep current owner semantics.
+            ok
     end.

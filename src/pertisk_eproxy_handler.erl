@@ -286,7 +286,7 @@ do_proxy(
         end,
     case Result of
         {error, ProxyReason} ->
-            pertisk_eproxy_upstream_pool:invalidate(ConnPid),
+            maybe_invalidate_connection(ConnPid, ProxyReason),
             case RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
                 true ->
                     case pertisk_eproxy_upstream_pool:checkout(
@@ -322,6 +322,17 @@ retryable_upstream_error({down, normal}) -> true;
 retryable_upstream_error({down, shutdown}) -> true;
 retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
 retryable_upstream_error(_) -> false.
+
+maybe_invalidate_connection(ConnPid, Reason) ->
+    case is_connection_fatal_error(Reason) of
+        true ->
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid);
+        false ->
+            ok
+    end.
+
+is_connection_fatal_error({stream_error, {closing, owner_down}}) -> false;
+is_connection_fatal_error(_) -> true.
 
 %% -------------------------------------------------------------------------
 %% Header helpers
