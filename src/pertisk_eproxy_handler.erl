@@ -182,20 +182,20 @@ do_proxy(Req, ConnPid, Method, Host, FullPath, ClientIp) ->
                         {ok, RespBody} ->
                             RespBin = iolist_to_binary(RespBody),
                             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
-                            RawHeaders  = headers_to_map(RespHeaders),
-                            CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
+                            {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+                            CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
                             {OutHeaders, OutBody} =
-                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, CowboyHeaders, RespBin),
-                            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
+                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders, RespBin),
+                            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
                             {ok, Status, Req2};
                         {error, Reason} ->
                             {error, Reason}
                     end;
                 {response, fin, Status, RespHeaders} ->
                     ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
-                    RawHeaders = headers_to_map(RespHeaders),
-                    CowboyHeaders = maybe_add_alt_svc(Req, Host, RawHeaders),
-                    Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req),
+                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+                    Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req1),
                     {ok, Status, Req2};
                 {error, Reason} ->
                     {error, Reason}
@@ -265,14 +265,54 @@ version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;
 version_to_bin('HTTP/2')   -> <<"HTTP/2">>;
 version_to_bin(_)          -> <<"HTTP/1.1">>.
 
-headers_to_map(List) ->
-    %% Remove hop-by-hop headers from upstream response
-    HopByHop = [<<"connection">>, <<"keep-alive">>, <<"proxy-authenticate">>,
-                 <<"proxy-authorization">>, <<"te">>, <<"trailers">>,
-                 <<"transfer-encoding">>, <<"upgrade">>],
-    Filtered = [{K, V} || {K, V} <- List,
-                            not lists:member(string:lowercase(K), HopByHop)],
-    maps:from_list(Filtered).
+response_headers_to_req(Req, List) when is_list(List) ->
+    {Req1, Filtered} = lists:foldl(
+        fun({K, V}, {ReqAcc, HeadersAcc}) ->
+            case string:lowercase(K) of
+                <<"set-cookie">> ->
+                    case cow_cookie:parse_set_cookie(iolist_to_binary(V)) of
+                        {ok, Name, Value, Attrs} ->
+                            Opts = cookie_attrs_to_opts(Attrs),
+                            {cowboy_req:set_resp_cookie(Name, Value, ReqAcc, Opts), HeadersAcc};
+                        ignore ->
+                            {ReqAcc, HeadersAcc}
+                    end;
+                LowerK ->
+                    {ReqAcc, [{LowerK, V} | HeadersAcc]}
+            end
+        end,
+        {Req, []},
+        List
+    ),
+    {Req1, maps:from_list(Filtered)}.
+
+%% cow_cookie:parse_set_cookie/1 returns `max_age` as an absolute calendar
+%% datetime, and may include `expires`. cowboy_req:set_resp_cookie/4 expects
+%% `max_age` as a non-negative integer (seconds) and does not accept `expires`.
+%% Translate so we don't crash with {badarg, {max_age, {{Y,M,D},{H,M,S}}}}.
+cookie_attrs_to_opts(Attrs) when is_map(Attrs) ->
+    Attrs1 = maps:remove(expires, Attrs),
+    case maps:find(max_age, Attrs1) of
+        {ok, {{_, _, _}, {_, _, _}} = DT} ->
+            try
+                NowSecs = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+                ExpSecs = calendar:datetime_to_gregorian_seconds(DT),
+                Diff = ExpSecs - NowSecs,
+                MaxAge = if Diff < 0 -> 0; true -> Diff end,
+                Attrs1#{max_age => MaxAge}
+            catch
+                _:_ ->
+                    maps:remove(max_age, Attrs1)
+            end;
+        {ok, MA} when is_integer(MA), MA >= 0 ->
+            Attrs1;
+        {ok, _} ->
+            maps:remove(max_age, Attrs1);
+        error ->
+            Attrs1
+    end;
+cookie_attrs_to_opts(_) ->
+    #{}.
 
 %% -------------------------------------------------------------------------
 %% Utilities

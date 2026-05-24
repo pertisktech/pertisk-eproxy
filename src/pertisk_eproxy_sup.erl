@@ -42,6 +42,12 @@ init([]) ->
           shutdown => 5000,
           type     => worker},
 
+        #{id       => pertisk_eproxy_couchdb_log,
+          start    => {pertisk_eproxy_couchdb_log, start_link, []},
+          restart  => permanent,
+          shutdown => 5000,
+          type     => worker},
+
         #{id       => pertisk_eproxy_access_log,
           start    => {pertisk_eproxy_access_log, start_link, []},
           restart  => permanent,

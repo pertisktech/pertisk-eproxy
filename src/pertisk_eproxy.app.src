@@ -1,6 +1,6 @@
 {application, pertisk_eproxy, [
     {description, "Erlang Cowboy Reverse Proxy"},
-    {vsn, "0.2.6"},
+    {vsn, "0.2.9"},
     {registered, [
         pertisk_eproxy_sup,
         pertisk_eproxy_config,
@@ -27,6 +27,7 @@
         thoas,
         jose,
         lager,
+        couchbeam,
         prometheus,
         prometheus_cowboy,
         ekub,

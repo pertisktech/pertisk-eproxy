@@ -25,7 +25,7 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto) ->
 
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream) ->
-    gen_server:cast(?SERVER, {push, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}).
+    gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}).
 
 -spec list(binary() | undefined, binary() | undefined) -> [map()].
 list(Type, HostFilter) ->
@@ -69,7 +69,7 @@ handle_call(count, _From, #st{entries = Es} = St) ->
 handle_call(_Req, _From, St) ->
     {reply, {error, unknown}, St}.
 
-handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}, #st{entries = Es}) ->
+handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}, #st{entries = Es}) ->
     Ts = iolist_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])),
     Level = case Status of
         S when S >= 500 -> <<"error">>;
@@ -96,6 +96,7 @@ handle_cast({push, Host, Method, Path, Status, DurationMs, ClientProto, Upstream
             U when is_binary(U), byte_size(U) > 0 -> Base#{<<"upstream">> => U};
             _ -> Base
         end,
+    _ = catch pertisk_eproxy_couchdb_log:log(Entry),
     Es2 = trim([Entry | Es], ?MAX),
     {noreply, #st{entries = Es2}};
 

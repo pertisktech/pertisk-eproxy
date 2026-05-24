@@ -72,6 +72,26 @@ if [ -n "$SOCKET" ]; then
 fi
 
 LISTENER=$(find "${ROOT}/_build" -path '*/quic/src/quic_listener.erl' 2>/dev/null | head -1)
+
+# H3 shutdown handling: treat peer-close and draining as normal exits so
+# expected QUIC teardown does not show up as crash reports.
+h3_found=0
+for f in $(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3_connection.erl' 2>/dev/null | sort -u); do
+  h3_found=1
+
+  if grep -q 'invalid_state, draining' "$f" && grep -q '{stop, normal, State}' "$f"; then
+    continue
+  fi
+
+  perl -i -0pe '
+    s/h3_connecting\(enter, _OldState, State\) ->\n    %% Open critical streams and send SETTINGS\n    case open_critical_streams\(State\) of\n        \{ok, State1\} ->\n            case send_settings\(State1\) of\n                \{ok, State2\} ->\n                    \{keep_state, State2\};\n                \{error, Reason\} ->\n                    \{stop, \{error, Reason\}\}\n            end;\n        \{error, Reason\} ->\n            \{stop, \{error, Reason\}\}\n    end;/h3_connecting(enter, _OldState, State) ->\n    %% Open critical streams and send SETTINGS\n    case open_critical_streams(State) of\n        {ok, State1} ->\n            case send_settings(State1) of\n                {ok, State2} ->\n                    {keep_state, State2};\n                {error, {invalid_state, draining}} ->\n                    {keep_state, State1, [{next_event, cast, close}]};\n                {error, Reason} ->\n                    {stop, {error, Reason}}\n            end;\n        {error, {invalid_state, draining}} ->\n            {keep_state, State, [{next_event, cast, close}]};\n        {error, Reason} ->\n            {stop, {error, Reason}}\n    end;/s;
+    s/\{stop, quic_closed, State\}/\{stop, normal, State\}/g
+  ' "$f"
+done
+
+if [ "$h3_found" -eq 0 ]; then
+  echo "patch-quic: warning: no quic_h3_connection.erl under _build (run rebar3 get-deps first)" >&2
+fi
 if [ -n "$LISTENER" ]; then
   if grep -q 'Family = case lists:member(inet6' "$LISTENER"; then
     echo "patch-quic: quic_listener inet6 ok"
