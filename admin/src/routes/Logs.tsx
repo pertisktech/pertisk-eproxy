@@ -44,11 +44,15 @@ function protoColorClass(e: LogEntry): string {
 
 type LogFilterType = 'all' | 'system' | 'proxy';
 
-export default function Logs() {
+type LogsProps = {
+  initialLogType?: LogFilterType | 'crash_error';
+};
+
+export default function Logs({ initialLogType = 'all' }: LogsProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [logType, setLogType] = useState<LogFilterType>('all');
+  const [logType, setLogType] = useState<LogFilterType | 'crash_error'>(initialLogType);
   const [hostFilter, setHostFilter] = useState('');
 
   useEffect(() => {
@@ -60,6 +64,16 @@ export default function Logs() {
     function acceptType(entry: LogEntry): boolean {
       if (logType === 'all') return true;
       if (logType === 'proxy') return entry.type === 'proxy' || entry.type === 'request' || entry.type === 'response';
+      if (logType === 'crash_error') {
+        const message = (entry.message ?? '').toLowerCase();
+        return (
+          entry.level === 'error' ||
+          entry.type === 'error' ||
+          message.includes('crash') ||
+          message.includes('exception') ||
+          message.includes('fatal')
+        );
+      }
       return entry.type === 'system' || entry.type === 'error';
     }
 
@@ -100,20 +114,21 @@ export default function Logs() {
               <select
                 className={styles.dropdown}
                 value={logType}
-                onChange={(e) => setLogType(e.target.value as LogFilterType)}
+                onChange={(e) => setLogType(e.target.value as LogFilterType | 'crash_error')}
                 title="Filter by log type"
                 aria-label="Log type filter"
               >
                 <option value="all">All logs</option>
                 <option value="system">System logs</option>
                 <option value="proxy">Domain logs</option>
+                <option value="crash_error">Crash/Error logs</option>
               </select>
               <span className={styles.dropdownChevron} aria-hidden>
                 <FaIcon className="fas fa-chevron-down" />
               </span>
             </div>
           </div>
-          {(logType === 'proxy' || logType === 'all') && (
+          {(logType === 'proxy' || logType === 'all' || logType === 'crash_error') && (
             <div className={styles.dropdownWrap}>
               <label className={styles.dropdownLabel}>Host</label>
               <input

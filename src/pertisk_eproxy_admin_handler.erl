@@ -585,7 +585,7 @@ handle(<<"GET">>, config, Req) ->
         <<"content-type">> => <<"application/json">>,
         <<"cache-control">> => <<"no-store, max-age=0">>
     },
-    Req2 = cowboy_req:reply(200, with_alt_svc(Req, Headers), Body, Req),
+    Req2 = cowboy_req:reply(200, with_tracking_id_header(Req, with_alt_svc(Req, Headers)), Body, Req),
     {ok, Req2, undefined};
 
 handle(<<"PUT">>, config, Req) ->
@@ -820,9 +820,25 @@ json_reply(Status, Data, Req, ExtraHeaders) when is_map(ExtraHeaders) ->
     {ok, Req2, undefined}.
 
 reply_compressed(Status, Headers, Body, Req) ->
+    HeadersWithTracking = with_tracking_id_header(Req, Headers),
     {OutHeaders, OutBody} =
-        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, Headers, Body),
+        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, HeadersWithTracking, Body),
     cowboy_req:reply(Status, OutHeaders, OutBody, Req).
+
+with_tracking_id_header(Req, Headers) when is_map(Headers) ->
+    Headers#{<<"x-request-id">> => request_tracking_id(Req)}.
+
+request_tracking_id(Req) ->
+    case cowboy_req:header(<<"x-request-id">>, Req, <<>>) of
+        <<>> -> generate_tracking_id();
+        Existing -> Existing
+    end.
+
+generate_tracking_id() ->
+    hex_bin(crypto:strong_rand_bytes(16)).
+
+hex_bin(Bin) when is_binary(Bin) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B:8>> <= Bin]).
 
 error_reply(Status, Reason, Req) ->
     Msg = iolist_to_binary(io_lib:format("~p", [Reason])),

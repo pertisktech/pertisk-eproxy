@@ -65,10 +65,15 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
     T0 = erlang:monotonic_time(millisecond),
     Vsn = cowboy_req:version(Req),
     Proto = request_proto_metric(Req),
+    TrackingId = request_tracking_id(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
-            H404 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+            H404 = maybe_add_alt_svc(
+                Req,
+                Host,
+                with_tracking_id_header(TrackingId, #{<<"content-type">> => <<"text/plain">>})
+            ),
             Body404 = <<"No route found for host: ", Host/binary>>,
             {H404Out, Body404Out} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(404, Req, H404, Body404),
@@ -79,7 +84,15 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             ClientIp = client_ip(Req),
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
-                    case maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp) of
+                    case maybe_proxy_via_local_management(
+                        Req,
+                        Method,
+                        Host,
+                        UpstreamPath,
+                        Qs,
+                        ClientIp,
+                        TrackingId
+                    ) of
                         {ok, StatusCode, Req2} ->
                             StatusBin = integer_to_binary(StatusCode),
                             pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
@@ -95,7 +108,11 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             {ok, Req2, State};
                         _ ->
                             pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
-                            H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                            H502 = maybe_add_alt_svc(
+                                Req,
+                                Host,
+                                with_tracking_id_header(TrackingId, #{<<"content-type">> => <<"text/plain">>})
+                            ),
                             Body502 = <<"Bad Gateway: no healthy upstream">>,
                             {H502Out, Body502Out} =
                                 pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
@@ -105,7 +122,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                     end;
                 {ok, UpstreamAddr} ->
                     Result = proxy_request(Req, Method, Host, UpstreamPath, Qs,
-                                           UpstreamAddr, ClientIp),
+                                           UpstreamAddr, ClientIp, TrackingId),
                     case Result of
                         {ok, StatusCode, Req2} ->
                             StatusBin = integer_to_binary(StatusCode),
@@ -121,7 +138,8 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                 Host,
                                 UpstreamPath,
                                 Qs,
-                                ClientIp
+                                ClientIp,
+                                TrackingId
                             ) of
                                 {ok, StatusCode, Req2} ->
                                     StatusBin = integer_to_binary(StatusCode),
@@ -140,7 +158,11 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                     pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
                                     lager:warning("Proxy error ~p for ~s~s -> ~s",
                                                   [Reason, Host, Path, UpstreamAddr]),
-                                    H502 = maybe_add_alt_svc(Req, Host, #{<<"content-type">> => <<"text/plain">>}),
+                                    H502 = maybe_add_alt_svc(
+                                        Req,
+                                        Host,
+                                        with_tracking_id_header(TrackingId, #{<<"content-type">> => <<"text/plain">>})
+                                    ),
                                     Body502 = <<"Bad Gateway">>,
                                     {H502Out, Body502Out} =
                                         pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
@@ -152,13 +174,13 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             end
     end.
 
-maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp) ->
+maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp, TrackingId) ->
     case should_try_local_management_fallback(Host, UpstreamPath) of
         false ->
             no_fallback;
         true ->
             Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
-            proxy_request(Req, Method, Host, UpstreamPath, Qs, Mgmt, ClientIp)
+            proxy_request(Req, Method, Host, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId)
     end.
 
 should_try_local_management_fallback(Host, _Path) ->
@@ -173,7 +195,7 @@ log_access(Host, Method, Path, Status, T0, Vsn, Upstream) ->
 %% Core proxy logic using gun
 %% -------------------------------------------------------------------------
 
-proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
+proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
     {UpHost, UpPort, Transport} = parse_upstream(UpstreamAddr),
     FullPath = case Qs of
         <<>> -> UpstreamPath;
@@ -195,6 +217,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp) ->
                 Host,
                 FullPath,
                 ClientIp,
+                TrackingId,
                 Body,
                 UpHost,
                 UpPort,
@@ -241,6 +264,7 @@ do_proxy(
     Host,
     FullPath,
     ClientIp,
+    TrackingId,
     Body,
     UpHost,
     UpPort,
@@ -249,7 +273,7 @@ do_proxy(
     GunOpts,
     RetryCount
 ) ->
-    HeadersMap = forward_headers(Req, Host, ClientIp, FullPath),
+    HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
 
     Result =
@@ -264,8 +288,9 @@ do_proxy(
                             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
                             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
                             CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+                            CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
                             {OutHeaders, OutBody} =
-                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders, RespBin),
+                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
                             Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
                             {ok, Status, Req2};
                         {error, Reason} ->
@@ -275,7 +300,7 @@ do_proxy(
                     ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
                     {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
                     CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                    Req2 = cowboy_req:reply(Status, CowboyHeaders, <<>>, Req1),
+                    Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
                     {ok, Status, Req2};
                 {error, Reason} ->
                     {error, Reason}
@@ -300,6 +325,7 @@ do_proxy(
                                 Host,
                                 FullPath,
                                 ClientIp,
+                                TrackingId,
                                 Body,
                                 UpHost,
                                 UpPort,
@@ -338,7 +364,7 @@ is_connection_fatal_error(_) -> true.
 %% Header helpers
 %% -------------------------------------------------------------------------
 
-forward_headers(Req, OrigHost, ClientIp, FullPath) ->
+forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
     InHeaders = cowboy_req:headers(Req),
     Proto     = case cowboy_req:port(Req) of
         443 -> <<"https">>;
@@ -355,7 +381,8 @@ forward_headers(Req, OrigHost, ClientIp, FullPath) ->
     Base0 = Filtered#{
         <<"host">>                     => OrigHost,
         <<"x-forwarded-proto">>        => Proto,
-        <<"x-forwarded-proto-version">> => ProtoVsn
+        <<"x-forwarded-proto-version">> => ProtoVsn,
+        <<"x-request-id">> => TrackingId
     },
 
     %% Proxmox console ticket endpoints may validate source identity across
@@ -608,6 +635,21 @@ maybe_add_alt_svc(Req, Host, Headers) ->
     pertisk_eproxy_alt_svc:merge_response_headers(
         Req, normalize_host(Host), pertisk_eproxy_response_headers:merge(Headers)
     ).
+
+with_tracking_id_header(TrackingId, Headers) when is_map(Headers) ->
+    Headers#{<<"x-request-id">> => TrackingId}.
+
+request_tracking_id(Req) ->
+    case cowboy_req:header(<<"x-request-id">>, Req, <<>>) of
+        <<>> -> generate_tracking_id();
+        Existing -> Existing
+    end.
+
+generate_tracking_id() ->
+    hex_bin(crypto:strong_rand_bytes(16)).
+
+hex_bin(Bin) when is_binary(Bin) ->
+    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B:8>> <= Bin]).
 
 %% Delegate websocket callbacks when this handler upgrades requests to websocket
 %% (Cowboy invokes callbacks on the original route module).
