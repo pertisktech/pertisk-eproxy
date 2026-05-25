@@ -1515,10 +1515,27 @@ site_host_key(Host) when is_binary(Host) ->
     Trim = re:replace(Host, <<"^\\s+|\\s+$">>, <<>>, [{return, binary}, global]),
     case Trim of
         <<>> -> undefined;
-        _ -> string:lowercase(Trim)
+        _ -> normalize_site_host_key(Trim)
     end;
 site_host_key(_) ->
     undefined.
+
+normalize_site_host_key(HostBin0) when is_binary(HostBin0) ->
+    Lower = string:lowercase(HostBin0),
+    NoScheme =
+        re:replace(
+            Lower,
+            <<"^[a-z][a-z0-9+.-]*://">>,
+            <<>>,
+            [{return, binary}]
+        ),
+    NoPath = hd(binary:split(NoScheme, <<"/">>, [global])),
+    NoPort = hd(binary:split(NoPath, <<":">>, [global])),
+    NoDot = re:replace(NoPort, <<"\\.$">>, <<>>, [{return, binary}]),
+    case NoDot of
+        <<>> -> undefined;
+        _ -> NoDot
+    end.
 
 sni_ref_to_binary(undefined) -> undefined;
 sni_ref_to_binary(null) -> undefined;

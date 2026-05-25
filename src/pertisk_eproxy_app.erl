@@ -510,10 +510,11 @@ build_sni_hosts(Config) ->
     Sites = maps:get(sites, Config, []),
     DbPath = pertisk_eproxy_config:db_file(),
     CertRowsById = cert_rows_by_id(DbPath),
-    lists:reverse(
+    sort_sni_hosts(
+        lists:reverse(
         lists:foldl(
                 fun(Site, Acc) ->
-                H = site_host_to_list(maps:get(host, Site, <<>>)),
+                H = normalize_site_host(site_host_to_list(maps:get(host, Site, <<>>))),
                 case ingress_sni_paths(H) of
                     {ok, {CertPath, KeyPath}} ->
                         case lists:keymember(H, 1, Acc) of
@@ -537,7 +538,26 @@ build_sni_hosts(Config) ->
             [],
             Sites
         )
+        )
     ).
+
+sort_sni_hosts(Hosts) ->
+    lists:sort(fun sni_host_entry_less/2, Hosts).
+
+sni_host_entry_less({H1, _}, {H2, _}) ->
+    R1 = sni_host_rank(H1),
+    R2 = sni_host_rank(H2),
+    case R1 =:= R2 of
+        true -> H1 =< H2;
+        false -> R1 < R2
+    end.
+
+%% Prefer exact host matches before wildcards. For wildcards, longer suffix wins.
+sni_host_rank(H) ->
+    case lists:prefix("*.", H) of
+        true -> {1, -length(H)};
+        false -> {0, -length(H)}
+    end.
 
 cert_rows_by_id(DbPath) ->
     case pertisk_eproxy_db:list_certificates(DbPath) of
@@ -588,6 +608,25 @@ cert_ref_to_binary(_) -> undefined.
 site_host_to_list(H) when is_list(H) -> H;
 site_host_to_list(H) when is_binary(H) -> binary_to_list(H);
 site_host_to_list(_) -> [].
+
+normalize_site_host([]) -> [];
+normalize_site_host(Host0) when is_list(Host0) ->
+    Trim = string:trim(Host0),
+    Lower = string:lowercase(Trim),
+    NoScheme =
+        re:replace(
+            Lower,
+            "^[a-z][a-z0-9+.-]*://",
+            "",
+            [{return, list}]
+        ),
+    NoPath = hd(string:split(NoScheme, "/", all)),
+    NoPort = hd(string:split(NoPath, ":", all)),
+    NoDot = re:replace(NoPort, "\\.$", "", [{return, list}]),
+    case string:trim(NoDot) of
+        "" -> [];
+        Out -> Out
+    end.
 
 ingress_sni_paths(Host) ->
     case pertisk_ingress_env:enabled() of
