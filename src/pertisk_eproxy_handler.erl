@@ -275,35 +275,60 @@ do_proxy(
 ) ->
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
+    ReqBodyBytes = byte_size(Body),
 
     Result =
         try
             GunMethod = method_to_gun(Method),
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, Headers, Body),
-            case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-                {response, nofin, Status, RespHeaders} ->
-                    case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-                        {ok, RespBody} ->
-                            RespBin = iolist_to_binary(RespBody),
-                            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), byte_size(RespBin)),
+            case ReqKind of
+                grpc ->
+                    do_proxy_grpc_streaming(
+                        Req,
+                        ConnPid,
+                        StreamRef,
+                        Host,
+                        TrackingId,
+                        ReqBodyBytes
+                    );
+                _ ->
+                    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                        {response, nofin, Status, RespHeaders} ->
+                            case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                                {ok, RespBody} ->
+                                    RespBin = iolist_to_binary(RespBody),
+                                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, byte_size(RespBin)),
+                                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+                                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+                                    CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
+                                    {OutHeaders, OutBody} =
+                                        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
+                                    Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
+                                    {ok, Status, Req2};
+                                {ok, RespBody, _Trailers} ->
+                                    RespBin = iolist_to_binary(RespBody),
+                                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, byte_size(RespBin)),
+                                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+                                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+                                    CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
+                                    {OutHeaders, OutBody} =
+                                        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
+                                    Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
+                                    {ok, Status, Req2};
+                                {error, Reason} ->
+                                    {error, Reason};
+                                Other ->
+                                    {error, {await_body_unexpected, Other}}
+                            end;
+                        {response, fin, Status, RespHeaders} ->
+                            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
                             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
                             CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                            CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
-                            {OutHeaders, OutBody} =
-                                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
-                            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
+                            Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
                             {ok, Status, Req2};
                         {error, Reason} ->
                             {error, Reason}
-                    end;
-                {response, fin, Status, RespHeaders} ->
-                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, byte_size(Body), 0),
-                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                    Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
-                    {ok, Status, Req2};
-                {error, Reason} ->
-                    {error, Reason}
+                    end
             end
         catch
             Class:CaughtReason ->
@@ -312,7 +337,7 @@ do_proxy(
     case Result of
         {error, ProxyReason} ->
             maybe_invalidate_connection(ConnPid, ProxyReason),
-            case RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
+            case ReqKind =/= grpc andalso RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
                 true ->
                     case pertisk_eproxy_upstream_pool:checkout(
                         UpHost, UpPort, Transport, ReqKind, GunOpts
@@ -343,6 +368,81 @@ do_proxy(
         _ ->
             Result
     end.
+
+do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes) ->
+    %% gRPC watch/stream calls may stay idle before the first message; do not
+    %% enforce the generic HTTP request timeout on initial response await.
+    case gun:await(ConnPid, StreamRef, infinity) of
+        {response, nofin, Status, RespHeaders} ->
+            {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+            CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+            StreamReq = cowboy_req:stream_reply(
+                Status,
+                with_tracking_id_header(TrackingId, CowboyHeaders),
+                Req1
+            ),
+            proxy_grpc_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status);
+        {response, fin, Status, RespHeaders} ->
+            {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+            CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+            Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
+            {ok, Status, Req2};
+        {error, Reason} ->
+            {error, Reason};
+        Other ->
+            {error, {await_response_unexpected, Other}}
+    end.
+
+proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
+    case gun:await(ConnPid, StreamRef, infinity) of
+        {data, nofin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            ok = cowboy_req:stream_body(ChunkBin, nofin, Req),
+            proxy_grpc_stream_loop(
+                ConnPid,
+                StreamRef,
+                Req,
+                Host,
+                ReqBodyBytes,
+                RespBytes + byte_size(ChunkBin),
+                Status
+            );
+        {data, fin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            ok = cowboy_req:stream_body(ChunkBin, fin, Req),
+            FinalRespBytes = RespBytes + byte_size(ChunkBin),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, FinalRespBytes),
+            {ok, Status, Req};
+        {trailers, Trailers} ->
+            ok = maybe_stream_trailers(Req, Trailers),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            {ok, Status, Req};
+        {error, Reason} ->
+            {error, Reason};
+        Other ->
+            {error, {await_stream_unexpected, Other}}
+    end.
+
+maybe_stream_trailers(Req, Trailers) when is_list(Trailers) ->
+    TrailerMap = maps:from_list(Trailers),
+    case erlang:function_exported(cowboy_req, stream_trailers, 2) of
+        true ->
+            _ = catch apply(cowboy_req, stream_trailers, [TrailerMap, Req]),
+            ok;
+        false ->
+            ok
+    end;
+maybe_stream_trailers(Req, Trailers) when is_map(Trailers) ->
+    case erlang:function_exported(cowboy_req, stream_trailers, 2) of
+        true ->
+            _ = catch apply(cowboy_req, stream_trailers, [Trailers, Req]),
+            ok;
+        false ->
+            ok
+    end;
+maybe_stream_trailers(_Req, _Trailers) ->
+    ok.
 
 retryable_upstream_error({down, normal}) -> true;
 retryable_upstream_error({down, shutdown}) -> true;
@@ -510,11 +610,30 @@ is_grpc_request(Req) ->
     CtLower = string:lowercase(Ct),
     case CtLower of
         <<"application/grpc", _/binary>> -> true;
+        <<"application/grpc-web", _/binary>> -> true;
+        <<"application/connect+", _/binary>> -> true;
         _ ->
-            %% gRPC over HTTP/2 commonly carries TE: trailers.
+            %% gRPC over HTTP/2 commonly carries TE: trailers. Browser grpc-web
+            %% requests may omit TE but include grpc-metadata-* headers.
             Te = string:lowercase(cowboy_req:header(<<"te">>, Req, <<>>)),
-            Te =:= <<"trailers">>
+            (Te =:= <<"trailers">>) orelse has_grpc_metadata_headers(Req)
     end.
+
+has_grpc_metadata_headers(Req) ->
+    Hdrs = cowboy_req:headers(Req),
+    lists:any(
+        fun(K) when is_binary(K) ->
+            case K of
+                <<"grpc-metadata-", _/binary>> -> true;
+                <<"grpc-timeout">> -> true;
+                <<"x-grpc-web">> -> true;
+                _ -> false
+            end;
+           (_) ->
+            false
+        end,
+        maps:keys(Hdrs)
+    ).
 
 gun_protocols_for_request(grpc) ->
     %% gRPC requires HTTP/2 transport semantics.

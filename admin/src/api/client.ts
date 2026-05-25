@@ -464,6 +464,8 @@ function realtimeTransportMode(): RealtimeTransportMode {
 
 const API_REQUEST_TIMEOUT_MS = 90_000;
 
+const RETRYABLE_PATHS = new Set(['/config']);
+
 type ApiRequestOptions = RequestInit & {
   suppressAuthRedirect?: boolean;
 };
@@ -481,23 +483,45 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     headers['X-Eproxy-Bearer'] = token;
   }
 
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+  const method = String(fetchOptions.method ?? 'GET').toUpperCase();
+  const shouldRetryNetworkError =
+    method === 'GET' || (method === 'PUT' && RETRYABLE_PATHS.has(path));
+
+  const fetchOnce = async (): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(`${API}${path}`, {
+        ...fetchOptions,
+        headers,
+        credentials: 'include',
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
   let res: Response;
   try {
-    res = await fetch(`${API}${path}`, {
-      ...fetchOptions,
-      headers,
-      credentials: 'include',
-      signal: controller.signal,
-    });
+    res = await fetchOnce();
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error('Request timed out — the server may still be processing; refresh the page.');
     }
-    throw err instanceof Error ? err : new Error('Failed to fetch');
-  } finally {
-    window.clearTimeout(timeoutId);
+
+    if (shouldRetryNetworkError) {
+      try {
+        res = await fetchOnce();
+      } catch (retryErr) {
+        if (retryErr instanceof Error && retryErr.name === 'AbortError') {
+          throw new Error('Request timed out — the server may still be processing; refresh the page.');
+        }
+        throw retryErr instanceof Error ? retryErr : new Error('Failed to fetch');
+      }
+    } else {
+      throw err instanceof Error ? err : new Error('Failed to fetch');
+    }
   }
 
   if (res.status === 401) {

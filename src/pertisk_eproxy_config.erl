@@ -51,7 +51,7 @@ start_link() ->
 %% Return the top-level config map.
 -spec get_config() -> map().
 get_config() ->
-    case ets:lookup(?TAB, config) of
+    case safe_lookup(config) of
         [{config, C}] -> C;
         []            -> #{}
     end.
@@ -101,7 +101,7 @@ backend_is_management_only(_) ->
 %% Return list of site maps.
 -spec get_sites() -> [map()].
 get_sites() ->
-    case ets:lookup(?TAB, sites) of
+    case safe_lookup(sites) of
         [{sites, S}] -> S;
         []           -> []
     end.
@@ -109,7 +109,7 @@ get_sites() ->
 %% Return list of backend maps.
 -spec get_backends() -> [map()].
 get_backends() ->
-    case ets:lookup(?TAB, backends) of
+    case safe_lookup(backends) of
         [{backends, B}] -> B;
         []              -> []
     end.
@@ -117,7 +117,7 @@ get_backends() ->
 %% Return list of certificate record names.
 -spec get_certificates() -> [binary() | list()].
 get_certificates() ->
-    case ets:lookup(?TAB, certificates) of
+    case safe_lookup(certificates) of
         [{certificates, C}] -> C;
         []                  -> []
     end.
@@ -125,7 +125,7 @@ get_certificates() ->
 %% Return list of DNS provider display names (for validation / UI).
 -spec get_dns_providers() -> [list()].
 get_dns_providers() ->
-    case ets:lookup(?TAB, dns_providers) of
+    case safe_lookup(dns_providers) of
         [{dns_providers, D}] when is_list(D) ->
             [dns_provider_entry_name(P) || P <- D];
         [] ->
@@ -135,7 +135,7 @@ get_dns_providers() ->
 %% Return a single backend map by name, or error.
 -spec get_backend(binary()) -> {ok, map()} | error.
 get_backend(Name) ->
-    case ets:lookup(?TAB, {backend, Name}) of
+    case safe_lookup({backend, Name}) of
         [{_, B}] -> {ok, B};
         []       -> error
     end.
@@ -143,9 +143,17 @@ get_backend(Name) ->
 %% Return the compiled router (pertisk_eproxy_router).
 -spec get_router() -> pertisk_eproxy_router:router().
 get_router() ->
-    case ets:lookup(?TAB, router) of
+    case safe_lookup(router) of
         [{router, R}] -> R;
         []            -> pertisk_eproxy_router:empty()
+    end.
+
+safe_lookup(Key) ->
+    try ets:lookup(?TAB, Key) of
+        Rows -> Rows
+    catch
+        error:badarg ->
+            []
     end.
 
 %% Trigger a hot-reload from the config file.

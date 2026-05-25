@@ -181,8 +181,27 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     LogHost = host_for_route(Auth),
     {PathOnly, Qs} = split_path_query(Path),
     try
-        Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
-        case pertisk_eproxy_router:route(LogHost, PathOnly) of
+        case is_grpc_h3_request(Headers) of
+            true ->
+                %% Workaround: keep gRPC on HTTPS/H2 so watch streams do not
+                %% hang behind fixed await_body timeouts on the H3 gateway path.
+                Hdrs = [
+                    {<<"content-type">>, <<"text/plain">>},
+                    {<<"alt-svc">>, <<"clear">>}
+                ],
+                _ = h3_reply_status(
+                    H3Conn,
+                    StreamId,
+                    421,
+                    Hdrs,
+                    <<"gRPC over HTTP/3 is disabled on this listener; retry over HTTPS/HTTP/2">>
+                ),
+                pertisk_eproxy_metrics:inc_request(LogHost, <<"421">>, <<"h3">>),
+                log_h3_access(LogHost, Method, PathOnly, 421, T0, <<>>),
+                ok;
+            false ->
+                Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
+                case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
                 _ = h3_reply_status(
@@ -260,6 +279,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                 log_h3_access(LogHost, Method, PathOnly, 502, T0, UpstreamAddr),
                                 ok
                         end
+                end
                 end
         end
     catch
@@ -352,6 +372,37 @@ authority_host(Headers) ->
         {_, V} when is_binary(V) -> V;
         _ -> <<"-">>
     end.
+
+is_grpc_h3_request(Headers) when is_list(Headers) ->
+    HMap = h3_req_headers_map(Headers),
+    Ct = string:lowercase(maps:get(<<"content-type">>, HMap, <<>>)),
+    case Ct of
+        <<"application/grpc", _/binary>> -> true;
+        <<"application/grpc-web", _/binary>> -> true;
+        <<"application/connect+", _/binary>> -> true;
+        _ ->
+            Te = string:lowercase(maps:get(<<"te">>, HMap, <<>>)),
+            (Te =:= <<"trailers">>) orelse h3_has_grpc_metadata_headers(HMap)
+    end;
+is_grpc_h3_request(_) ->
+    false.
+
+h3_has_grpc_metadata_headers(HMap) when is_map(HMap) ->
+    lists:any(
+        fun(K) when is_binary(K) ->
+            case K of
+                <<"grpc-metadata-", _/binary>> -> true;
+                <<"grpc-timeout">> -> true;
+                <<"x-grpc-web">> -> true;
+                _ -> false
+            end;
+           (_) ->
+            false
+        end,
+        maps:keys(HMap)
+    );
+h3_has_grpc_metadata_headers(_) ->
+    false.
 
 client_ip_h3(H3Conn, Headers) ->
     case lists:keyfind(<<"x-forwarded-for">>, 1, Headers) of
@@ -700,8 +751,13 @@ do_proxy_via_gun(
                         {ok, RespBody} ->
                             {ok, Status, gun_resp_headers_to_h3(RespHeaders),
                                 safe_iolist_to_binary(RespBody)};
+                        {ok, RespBody, _Trailers} ->
+                            {ok, Status, gun_resp_headers_to_h3(RespHeaders),
+                                safe_iolist_to_binary(RespBody)};
                         {error, R} ->
-                            {error, R}
+                            {error, R};
+                        Other ->
+                            {error, {await_body_unexpected, Other}}
                     end;
                 {response, fin, Status, RespHeaders} ->
                     {ok, Status, gun_resp_headers_to_h3(RespHeaders), <<>>};

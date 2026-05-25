@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COWBOY_QUICER="${COWBOY_QUICER:-1}"
 COWBOY_QUIC="${COWBOY_QUIC:-1}"
 ERLANG_BUILD_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:27}"
+RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-0}"
+RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-}"
 
 prepare_and_release() {
   cd "$ROOT_DIR"
@@ -30,25 +32,51 @@ build_docker() {
     exit 1
   fi
 
-  docker run --rm \
-    -v "$ROOT_DIR:/src" \
-    -w /src \
-    -e COWBOY_QUICER="$COWBOY_QUICER" \
-    -e COWBOY_QUIC="$COWBOY_QUIC" \
-    "$ERLANG_BUILD_IMAGE" \
-    bash -lc '
-      set -euo pipefail
-      apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev
-      export COWBOY_QUICER="'"$COWBOY_QUICER"'"
-      export COWBOY_QUIC="'"$COWBOY_QUIC"'"
-      bash scripts/build-release-linux.sh docker-inner
-    '
+  if [ -n "$RELEASE_BUILD_PLATFORM" ]; then
+    echo "Using Docker platform: $RELEASE_BUILD_PLATFORM"
+    docker run --rm \
+      --platform "$RELEASE_BUILD_PLATFORM" \
+      -v "$ROOT_DIR:/src" \
+      -w /src \
+      -e COWBOY_QUICER="$COWBOY_QUICER" \
+      -e COWBOY_QUIC="$COWBOY_QUIC" \
+      "$ERLANG_BUILD_IMAGE" \
+      bash -lc '
+        set -euo pipefail
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev
+        export COWBOY_QUICER="'"$COWBOY_QUICER"'"
+        export COWBOY_QUIC="'"$COWBOY_QUIC"'"
+        bash scripts/build-release-linux.sh docker-inner
+      '
+  else
+    docker run --rm \
+      -v "$ROOT_DIR:/src" \
+      -w /src \
+      -e COWBOY_QUICER="$COWBOY_QUICER" \
+      -e COWBOY_QUIC="$COWBOY_QUIC" \
+      "$ERLANG_BUILD_IMAGE" \
+      bash -lc '
+        set -euo pipefail
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev
+        export COWBOY_QUICER="'"$COWBOY_QUICER"'"
+        export COWBOY_QUIC="'"$COWBOY_QUIC"'"
+        bash scripts/build-release-linux.sh docker-inner
+      '
+  fi
 }
 
 if [ "${1:-}" = "docker-inner" ]; then
   prepare_and_release
+  exit 0
+fi
+
+if [ "$RELEASE_BUILD_FORCE_DOCKER" = "1" ]; then
+  echo "RELEASE_BUILD_FORCE_DOCKER=1 set: building release in Docker"
+  build_docker
   exit 0
 fi
 

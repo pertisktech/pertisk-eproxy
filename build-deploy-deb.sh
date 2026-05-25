@@ -6,8 +6,12 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-10.1.1.8}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.3.1}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.3.9}}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
+# Host Erlang toolchains can crash in beam_asm on some systems; default to
+# Dockerized Linux/amd64 release build for deb packaging.
+RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-1}"
+RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-linux/amd64}"
 
 DEB_FILE="${PACKAGE_NAME}_${PACKAGE_VERSION}_amd64.deb"
 
@@ -25,6 +29,8 @@ echo -e "${GREEN}Starting Debian deployment of ${PACKAGE_NAME} version ${PACKAGE
 
 # Step 1: Build package
 log_info "Building Debian package..."
+RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER}" \
+RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM}" \
 make package-deb-amd64 PACKAGE_VERSION="${PACKAGE_VERSION}"
 
 # Step 2: Copy package to remote server

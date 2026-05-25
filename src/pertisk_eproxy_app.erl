@@ -575,15 +575,61 @@ resolve_site_cert_paths(Site, CertRowsById) ->
             acme_paths_for_name(Name);
         IdRef ->
             case maps:get(IdRef, CertRowsById, undefined) of
-                #{name := Name0} ->
+                #{name := Name0} = Row ->
                     case cert_ref_to_binary(Name0) of
                         <<"acme/", _/binary>> = Name1 -> acme_paths_for_name(Name1);
-                        _ -> undefined
+                        _ -> cert_paths_from_row(IdRef, Row)
                     end;
                 _ ->
                     undefined
             end
     end.
+
+cert_paths_from_row(RefBin, #{cert_pem := CertPem0, key_pem := KeyPem0}) ->
+    CertPem = pem_text_bin(CertPem0),
+    KeyPem = pem_text_bin(KeyPem0),
+    case {CertPem, KeyPem} of
+        {undefined, _} ->
+            undefined;
+        {_, undefined} ->
+            undefined;
+        {CertPemBin, KeyPemBin} ->
+            write_site_cert_files(RefBin, CertPemBin, KeyPemBin)
+    end;
+cert_paths_from_row(_RefBin, _Row) ->
+    undefined.
+
+write_site_cert_files(RefBin, CertPem, KeyPem) ->
+    try
+        Slug = site_cert_slug(RefBin),
+        Dir = filename:join([pertisk_eproxy_config:data_dir(), "tls", "site_certs", Slug]),
+        CertPath = filename:join(Dir, "fullchain.pem"),
+        KeyPath = filename:join(Dir, "privkey.pem"),
+        ok = filelib:ensure_dir(CertPath),
+        ok = file:write_file(CertPath, CertPem),
+        ok = file:write_file(KeyPath, KeyPem),
+        _ = try file:change_mode(KeyPath, 8#600) catch _:_ -> ok end,
+        {CertPath, KeyPath}
+    catch
+        _:_ ->
+            undefined
+    end.
+
+site_cert_slug(undefined) ->
+    "site";
+site_cert_slug(RefBin) when is_binary(RefBin) ->
+    Raw = binary_to_list(RefBin),
+    re:replace(Raw, "[^A-Za-z0-9._-]", "_", [global, {return, list}]);
+site_cert_slug(Ref) when is_list(Ref) ->
+    site_cert_slug(unicode:characters_to_binary(Ref, utf8));
+site_cert_slug(Ref) ->
+    site_cert_slug(unicode:characters_to_binary(io_lib:format("~p", [Ref]), utf8)).
+
+pem_text_bin(undefined) -> undefined;
+pem_text_bin(null) -> undefined;
+pem_text_bin(V) when is_binary(V) -> V;
+pem_text_bin(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+pem_text_bin(_) -> undefined.
 
 acme_paths_for_name(<<"acme/", Slug/binary>>) ->
     AcmeDir = case application:get_env(pertisk_eproxy, acme_data_dir) of
