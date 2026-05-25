@@ -551,7 +551,7 @@ handle(<<"POST">>, tls_listener, Req) ->
                         json_reply(200, #{
                             <<"status">> => <<"ok">>,
                             <<"tls_cert_file">> => CertPath,
-                            <<"tls_key_file">> => KeyPath,
+                            <<"tls_key_file">> => <<"[redacted]">>,
                             <<"notice">> =>
                                 <<"Restart the proxy process to load the new TLS material on the HTTPS listener.">>
                         }, Req2);
@@ -914,8 +914,54 @@ dns_provider_entry_to_json(P) when is_map(P) ->
         <<"credentials">> => dns_cred_to_json(Cred)
     }.
 
-dns_cred_to_json(M) when is_map(M) -> M;
+dns_cred_to_json(M) when is_map(M) -> redact_sensitive_map(M);
 dns_cred_to_json(_) -> #{}.
+
+redact_sensitive_map(M) when is_map(M) ->
+    maps:from_list([
+        {K, redact_sensitive_value(K, V)} || {K, V} <- maps:to_list(M)
+    ]);
+redact_sensitive_map(V) ->
+    V.
+
+redact_sensitive_value(K, V) ->
+    case is_sensitive_key(K) of
+        true ->
+            <<"[redacted]">>;
+        false when is_map(V) ->
+            redact_sensitive_map(V);
+        false when is_list(V) ->
+            [redact_sensitive_value(K, Item) || Item <- V];
+        false ->
+            V
+    end.
+
+is_sensitive_key(K) ->
+    Key = normalize_key_bin(K),
+    lists:any(
+        fun(Pattern) ->
+            binary:match(Key, Pattern) =/= nomatch
+        end,
+        [
+            <<"token">>,
+            <<"secret">>,
+            <<"password">>,
+            <<"private_key">>,
+            <<"ssl_key">>,
+            <<"api_key">>,
+            <<"key_pem">>,
+            <<"cert_pem">>
+        ]
+    ).
+
+normalize_key_bin(K) when is_binary(K) ->
+    string:lowercase(K);
+normalize_key_bin(K) when is_list(K) ->
+    string:lowercase(unicode:characters_to_binary(K, utf8));
+normalize_key_bin(K) when is_atom(K) ->
+    string:lowercase(atom_to_binary(K, utf8));
+normalize_key_bin(K) ->
+    string:lowercase(iolist_to_binary(io_lib:format("~p", [K]))).
 
 config_to_json(Config) ->
     Base = #{
@@ -953,10 +999,10 @@ config_to_json(Config) ->
         _ -> WithTlsH2
     end,
     case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
-        {Cf, Kf} when Cf =/= undefined, Kf =/= undefined ->
+        {Cf, _Kf} when Cf =/= undefined ->
             WithH3ProbePort#{
                 <<"tls_cert_file">> => json_text(Cf),
-                <<"tls_key_file">> => json_text(Kf)
+                <<"tls_key_file">> => <<"[redacted]">>
             };
         _ ->
             WithH3ProbePort
@@ -1401,7 +1447,7 @@ dns_provider_db_row_to_json(#{id := Id, name := Name, provider_type := Pt, crede
         <<"id">> => integer_to_binary(Id),
         <<"name">> => json_text(Name),
         <<"provider_type">> => json_text(Pt),
-        <<"credentials">> => Cred,
+        <<"credentials">> => dns_cred_to_json(Cred),
         <<"created_at">> => <<>>
     }.
 
