@@ -29,10 +29,25 @@ if [ "$found" -eq 0 ]; then
 fi
 
 QPACK=$(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/dev/null | head -1)
-grep -q '0 -> 16#00' "$QPACK" || {
-  echo "patch-quic: QPACK patch missing in $QPACK" >&2
-  exit 1
-}
+QUIC_APP=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
+QUIC_VSN=""
+if [ -n "$QUIC_APP" ] && [ -f "$QUIC_APP" ]; then
+  QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "$QUIC_APP" | head -1)
+fi
+
+if grep -q '0 -> 16#00' "$QPACK"; then
+  :
+else
+  case "$QUIC_VSN" in
+    1.4.3|1.4.[4-9]*|1.[5-9]*|[2-9].*)
+      echo "patch-quic: QPACK RFC9204 fix already upstream in quic $QUIC_VSN"
+      ;;
+    *)
+      echo "patch-quic: QPACK patch missing in $QPACK" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 echo "patch-quic: ok"
 

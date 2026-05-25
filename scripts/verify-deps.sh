@@ -8,12 +8,21 @@ QUIC_QPACK=$(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/de
 [ -f "$QUIC_APP" ] || { echo "verify-deps: quic not fetched" >&2; exit 1; }
 [ -f "$QUIC_QPACK" ] || { echo "verify-deps: quic_qpack source missing" >&2; exit 1; }
 grep -q fail_if_no_peer_cert "$EKUB_SRC" && { echo "verify-deps: ekub not patched" >&2; exit 1; }
-grep -q '{vsn, "1.4.0"}' "$QUIC_APP" || {
-	echo "verify-deps: expected erlang_quic 1.4.0" >&2
+QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "$QUIC_APP" | head -1)
+grep -Eq '{vsn, "1\.4\.[0-9]+"}' "$QUIC_APP" || {
+	echo "verify-deps: expected erlang_quic 1.4.x" >&2
 	exit 1
 }
-grep -q '0 -> 16#00' "$QUIC_QPACK" || {
-	echo "verify-deps: quic QPACK compatibility patch missing" >&2
-	exit 1
-}
+
+case "$QUIC_VSN" in
+	1.4.3|1.4.[4-9]*|1.[5-9]*|[2-9].*)
+		# QPACK RFC9204 prefix fix is upstream in 1.4.3+.
+		: ;;
+	*)
+		grep -q '0 -> 16#00' "$QUIC_QPACK" || {
+			echo "verify-deps: quic QPACK compatibility patch missing (required for $QUIC_VSN)" >&2
+			exit 1
+		}
+		;;
+esac
 echo "verify-deps: ok"
