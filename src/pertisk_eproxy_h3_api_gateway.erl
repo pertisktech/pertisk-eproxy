@@ -309,6 +309,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
 h3_send_response(H3Conn, StreamId, Status, Headers) ->
     case catch quic_h3:send_response(H3Conn, StreamId, Status, Headers) of
         ok -> ok;
+        {error, {invalid_state, draining}} -> {error, connection_gone};
+        {error, closed} -> {error, connection_gone};
+        {error, timeout} -> {error, connection_gone};
+        {error, _} = Err -> Err;
         {'EXIT', {noproc, _}} -> {error, connection_gone};
         {'EXIT', Reason} -> {error, Reason}
     end.
@@ -316,6 +320,10 @@ h3_send_response(H3Conn, StreamId, Status, Headers) ->
 h3_send_data(H3Conn, StreamId, Data, Fin) ->
     case catch quic_h3:send_data(H3Conn, StreamId, Data, Fin) of
         ok -> ok;
+        {error, {invalid_state, draining}} -> {error, connection_gone};
+        {error, closed} -> {error, connection_gone};
+        {error, timeout} -> {error, connection_gone};
+        {error, _} = Err -> Err;
         {'EXIT', {noproc, _}} -> {error, connection_gone};
         {'EXIT', Reason} -> {error, Reason}
     end.
@@ -335,6 +343,14 @@ h3_reply_status(H3Conn, StreamId, Status, Headers, Body) ->
 h3_send_failed_reason({noproc, {gen_statem, call, _}}) ->
     connection_gone;
 h3_send_failed_reason({noproc, _}) ->
+    connection_gone;
+h3_send_failed_reason({error, {invalid_state, draining}}) ->
+    connection_gone;
+h3_send_failed_reason({invalid_state, draining}) ->
+    connection_gone;
+h3_send_failed_reason({error, closed}) ->
+    connection_gone;
+h3_send_failed_reason(closed) ->
     connection_gone;
 h3_send_failed_reason(_) ->
     other.
