@@ -83,14 +83,14 @@ pending_lego_hosts(DbPath, Sites) ->
     case pertisk_eproxy_db:list_dns_providers(DbPath) of
         {ok, Rows} ->
             NameToKind = maps:from_list([
-                {name_bin(R), dns_provider_kind(provider_type_bin(R))}
+                {name_bin(R), {dns_provider_kind(provider_type_bin(R)), provider_type_bin(R)}}
              || R <- Rows
             ]),
             [
                 site_host_bin(S)
              || S <- Sites,
                 site_needs_issue(S),
-                is_lego_provider(maps:get(dns_provider_name_bin(S), NameToKind, unsupported))
+                is_lego_provider_kind(maps:get(dns_provider_name_bin(S), NameToKind, {unsupported, <<>>}))
             ];
         _ ->
             []
@@ -101,6 +101,15 @@ lego_provider_atoms() ->
 
 is_lego_provider(Kind) ->
     lists:member(Kind, lego_provider_atoms()).
+
+is_lego_provider_kind({Kind, ProviderType}) ->
+    is_lego_provider(Kind) orelse is_dynamic_lego_provider(Kind, ProviderType).
+
+is_dynamic_lego_provider(unsupported, ProviderType) when is_binary(ProviderType) ->
+    Norm = string:lowercase(trim_space_binary(ProviderType)),
+    Norm =/= <<>>;
+is_dynamic_lego_provider(_, _) ->
+    false.
 
 site_needs_issue(S) ->
     case maps:get(challenge_type, S, undefined) of
@@ -311,10 +320,9 @@ issue_site(DbPath, Site) ->
                 customlego ->
                     issue_lego_provider(DbPath, Site, Host, Row, customlego);
                 _ ->
-                    lager:info("ACME: provider ~s not supported yet (site ~s)", [Pt, Host]),
-                    Err = {unsupported_dns, Pt},
-                    ssl_job_err(Host, Err),
-                    {error, Err}
+                    %% Dynamic fallback: if provider_type is not natively mapped,
+                    %% treat it as a direct lego provider name.
+                    issue_lego_provider(DbPath, Site, Host, Row, string:lowercase(trim_space_binary(Pt)))
             end
     end.
 
