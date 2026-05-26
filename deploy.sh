@@ -1,6 +1,6 @@
-make docker-ingress-multi VERSION=0.3.39
+make docker-ingress-multi VERSION=0.3.41
 helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy \
-  --set image.tag=0.3.39\
+  --set image.tag=0.3.41\
   --set auth.username=admin \
   --set auth.password='admin' \
   --set auth0.domain=dev-od6cfzs2tugxm53g.us.auth0.com \

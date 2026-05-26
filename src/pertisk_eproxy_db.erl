@@ -961,14 +961,34 @@ decode_runtime_value(V0) ->
     try
         V = iolist_to_binary(V0),
         TermBin = base64:decode(V),
-        case binary_to_term(TermBin, [safe]) of
-            M when is_map(M) -> {ok, M};
-            _ -> {error, invalid_runtime_config_term}
-        end
+        decode_runtime_term(TermBin)
     catch
         _:_ ->
             {error, invalid_runtime_config_encoding}
     end.
+
+decode_runtime_term(TermBin) when is_binary(TermBin) ->
+    case catch binary_to_term(TermBin, [safe]) of
+        M when is_map(M) ->
+            {ok, normalize_runtime_config_term(M)};
+        _ ->
+            decode_runtime_term_unsafe(TermBin)
+    end.
+
+decode_runtime_term_unsafe(TermBin) when is_binary(TermBin) ->
+    case catch binary_to_term(TermBin) of
+        M when is_map(M) ->
+            {ok, normalize_runtime_config_term(M)};
+        {'EXIT', _} ->
+            {error, invalid_runtime_config_encoding};
+        _ ->
+            {error, invalid_runtime_config_term}
+    end.
+
+normalize_runtime_config_term(#{mode := proxy_admin} = M) ->
+    M#{mode => proxy};
+normalize_runtime_config_term(M) when is_map(M) ->
+    M.
 
 sql_escape(Str) when is_list(Str) ->
     lists:flatmap(

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Proxy + admin image (proxy_admin / proxy modes via config/proxy.json).
+# Proxy + admin image (proxy mode via config/proxy.json).
 # Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
 
 # buildx sets the platform per matrix leg; do not use empty BUILDPLATFORM on FROM

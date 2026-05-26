@@ -46,19 +46,10 @@ init(Req, Resource) ->
     end.
 
 ingress_viewer_blocked(Method, Resource) ->
-    pertisk_eproxy_config:ingress_mode() andalso ingress_mutating(Method, Resource).
+    pertisk_eproxy_config:ingress_mode()
+        andalso (not pertisk_eproxy_env_auth:login_required())
+        andalso ingress_mutating(Method, Resource).
 
-ingress_mutating(<<"GET">>, _) -> false;
-ingress_mutating(<<"HEAD">>, _) -> false;
-ingress_mutating(<<"POST">>, reload) -> false;
-ingress_mutating(<<"POST">>, dns_provider_validate) -> false;
-ingress_mutating(_, ingress_live) -> false;
-ingress_mutating(_, ingress_ready) -> false;
-ingress_mutating(_, ingress_status) -> false;
-ingress_mutating(_, ingress_watchers) -> false;
-ingress_mutating(_, ingress_errors) -> false;
-ingress_mutating(_, ingress_resources) -> false;
-ingress_mutating(_, kubernetes_namespaces) -> false;
 ingress_mutating(_, kubernetes_pods) -> false;
 ingress_mutating(_, kubernetes_services) -> false;
 ingress_mutating(_, kubernetes_tls_secrets) -> false;
@@ -71,7 +62,6 @@ ingress_mutating(<<"PUT">>, kubernetes_ingress) -> false;
 ingress_mutating(<<"DELETE">>, kubernetes_ingress) -> false;
 ingress_mutating(_, _) -> true.
 
-auth_public(<<"GET">>, root) -> true;
 auth_public(<<"GET">>, version) -> true;
 auth_public(<<"HEAD">>, version) -> true;
 auth_public(<<"GET">>, proto) -> true;
@@ -107,22 +97,12 @@ handle(<<"HEAD">>, version, Req) ->
 handle(<<"GET">>, proto, Req) ->
     Snapshot = proto_snapshot(Req),
     json_reply(200, Snapshot, Req, proto_debug_headers(Snapshot));
-handle(<<"HEAD">>, proto, Req) ->
-    Snapshot = proto_snapshot(Req),
-    json_reply(200, #{}, Req, proto_debug_headers(Snapshot));
 
 handle(<<"GET">>, management, Req) ->
     json_reply(200, pertisk_eproxy_admin_management_snapshot:snapshot(), Req);
 
 handle(<<"GET">>, stats, Req) ->
     json_reply(200, pertisk_eproxy_stats:snapshot(), Req);
-
-handle(<<"GET">>, logs, Req) ->
-    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
-    Type = maps:get(<<"type">>, Qs, undefined),
-    Host = maps:get(<<"host">>, Qs, undefined),
-    Entries = pertisk_eproxy_access_log:list(Type, Host),
-    json_reply(200, Entries, Req);
 
 handle(<<"GET">>, auth_config, Req) ->
     json_reply(200, pertisk_eproxy_auth:auth_config_map(), Req);
@@ -579,22 +559,6 @@ handle(<<"POST">>, tls_listener, Req) ->
         end
     end);
 
-handle(<<"GET">>, root, Req) ->
-    case should_serve_admin_spa() of
-        true ->
-            pertisk_eproxy_spa_handler:init(Req, undefined);
-        false ->
-            json_reply(200, api_root_catalog(), Req)
-    end;
-
-handle(<<"HEAD">>, root, Req) ->
-    case should_serve_admin_spa() of
-        true ->
-            json_reply(200, #{}, Req);
-        false ->
-            json_reply(200, #{}, Req)
-    end;
-
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
     Data = config_to_json(Config),
@@ -1016,7 +980,7 @@ normalize_key_bin(K) ->
 
 config_to_json(Config) ->
     Base = #{
-        mode            => atom_to_binary(maps:get(mode, Config, proxy_admin), utf8),
+        mode            => atom_to_binary(maps:get(mode, Config, proxy), utf8),
         http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
         certificates    => [json_text(V) || V <- maps:get(certificates, Config, [])],
@@ -1812,9 +1776,6 @@ with_alt_svc(Req, Headers) ->
         Req, Host, pertisk_eproxy_response_headers:merge(Headers)
     ).
 
-should_serve_admin_spa() ->
-    pertisk_eproxy_config:ingress_mode() andalso admin_index_exists().
-
 ingress_ready_reply(Req, WithBody) ->
     case pertisk_ingress_status:ready_from_runtime() of
         ok when WithBody ->
@@ -1826,30 +1787,3 @@ ingress_ready_reply(Req, WithBody) ->
         {error, _} ->
             json_reply(503, #{}, Req)
     end.
-
-admin_index_exists() ->
-    Index = filename:join([code:priv_dir(pertisk_eproxy), "admin", "index.html"]),
-    filelib:is_regular(Index).
-
-api_root_catalog() ->
-    #{
-        status => <<"ok">>,
-        name => <<"Pertisk eProxy">>,
-        version => <<"1.0.0">>,
-        endpoints => [
-            #{method => <<"GET">>, path => <<"/api/config">>, description => <<"Fetch full proxy config">>},
-            #{method => <<"PUT">>, path => <<"/api/config">>, description => <<"Replace proxy config">>},
-            #{method => <<"GET">>, path => <<"/api/proto">>, description => <<"Current request protocol diagnostics">>},
-            #{method => <<"GET">>, path => <<"/api/sites">>, description => <<"List all sites">>},
-            #{method => <<"POST">>, path => <<"/api/sites">>, description => <<"Add a site">>},
-            #{method => <<"GET">>, path => <<"/api/sites/:host">>, description => <<"Get a site">>},
-            #{method => <<"DELETE">>, path => <<"/api/sites/:host">>, description => <<"Delete a site">>},
-            #{method => <<"GET">>, path => <<"/api/backends">>, description => <<"List all backends">>},
-            #{method => <<"POST">>, path => <<"/api/backends">>, description => <<"Add a backend">>},
-            #{method => <<"GET">>, path => <<"/api/backends/:name">>, description => <<"Get backend status">>},
-            #{method => <<"DELETE">>, path => <<"/api/backends/:name">>, description => <<"Delete a backend">>},
-            #{method => <<"GET">>, path => <<"/api/health">>, description => <<"Overall health">>},
-            #{method => <<"GET">>, path => <<"/api/metrics">>, description => <<"Prometheus metrics">>},
-            #{method => <<"POST">>, path => <<"/api/reload">>, description => <<"Reload config">>}
-        ]
-    }.

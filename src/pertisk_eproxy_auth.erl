@@ -77,9 +77,8 @@ ingress_auth_config_map(Dm) ->
 
 deployment_mode_bin() ->
     C = pertisk_eproxy_config:get_config(),
-    case maps:get(mode, C, proxy_admin) of
+    case maps:get(mode, C, proxy) of
         proxy -> <<"proxy">>;
-        proxy_admin -> <<"proxy_admin">>;
         M -> atom_to_binary(M, utf8)
     end.
 

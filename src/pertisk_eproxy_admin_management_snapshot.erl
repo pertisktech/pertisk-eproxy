@@ -17,10 +17,9 @@ snapshot() ->
     HttpPort = maps:get(http_port, C, 80),
     MgmtPort = maps:get(management_port, C, 9080),
     MgmtAddr = maps:get(management_addr, C, {0, 0, 0, 0}),
-    Mode0 = maps:get(mode, C, proxy_admin),
+    Mode0 = maps:get(mode, C, proxy),
     ModeBin = case Mode0 of
         proxy -> <<"proxy">>;
-        proxy_admin -> <<"proxy_admin">>;
         ingress -> <<"ingress">>;
         M -> atom_to_binary(M, utf8)
     end,

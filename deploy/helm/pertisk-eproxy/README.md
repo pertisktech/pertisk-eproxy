@@ -54,7 +54,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 
 | Mode | Sites / backends | Listener ports / H3 flags | Admin login (local) |
 |------|------------------|---------------------------|---------------------|
-| **proxy** / **proxy_admin** | SQLite `data/proxy.db` | SQLite + `config/proxy.json` seed | SQLite `admin_users` |
+| **proxy** | SQLite `data/proxy.db` | SQLite + `config/proxy.json` seed | SQLite `admin_users` |
 | **ingress** | Kubernetes `Ingress` + TLS `Secret` manifests | `controller.config` / `ingress.json` only | Auth0 SSO or read-only viewer (no SQLite) |
 
 Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*`, `PERTISK_HELM_*` (see `pertisk_ingress_env`).

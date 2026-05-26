@@ -243,7 +243,7 @@ function LayoutShell() {
       .then((cfg) => {
         if (cancelled) return;
         const dm = cfg.deployment_mode;
-        if (dm === 'proxy' || dm === 'proxy_admin' || dm === 'ingress') {
+        if (dm === 'proxy' || dm === 'ingress') {
           setMode(dm);
         }
       })
@@ -456,10 +456,8 @@ function LayoutShell() {
     mode === 'ingress'
       ? 'Ingress mode'
       : mode === 'proxy'
-        ? 'Reverse proxy'
-        : mode === 'proxy_admin'
-          ? 'Proxy + Admin UI'
-          : 'Erlang proxy';
+        ? 'Proxy mode'
+        : 'Erlang proxy';
   const breadcrumbs = useBreadcrumbs(pathname);
   const effectiveAuthMethod = authMethod ?? detectAuthMethodFromToken(getToken());
   const canChangePassword = mode !== 'ingress' && effectiveAuthMethod !== 'sso';

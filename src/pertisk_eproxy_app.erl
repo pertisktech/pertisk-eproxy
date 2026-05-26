@@ -416,7 +416,7 @@ build_proxy_routes() ->
 
 %% Ingress controller pods must serve the SPA on :9080 (and when proxied from :8443).
 admin_listener_mode(Config) ->
-    case maps:get(mode, Config, proxy_admin) of
+    case maps:get(mode, Config, proxy) of
         ingress ->
             ingress;
         M ->
@@ -427,14 +427,10 @@ admin_listener_mode(Config) ->
     end.
 
 build_admin_routes(proxy) ->
-    build_admin_api_routes() ++ [
-        {"/",                       pertisk_eproxy_admin_handler, root}
-    ];
+    build_admin_api_routes() ++ pertisk_eproxy_admin_routes:management_ui_routes();
 build_admin_routes(ingress) ->
-    %% Same SPA as proxy_admin (rproxy ingress: admin Ingress → Service :9080).
-    build_admin_routes(proxy_admin);
-build_admin_routes(proxy_admin) ->
-    build_admin_api_routes() ++ pertisk_eproxy_admin_routes:management_ui_routes().
+    %% Same SPA as proxy mode (rproxy ingress: admin Ingress → Service :9080).
+    build_admin_routes(proxy).
 
 build_admin_api_routes() ->
     pertisk_eproxy_admin_routes:api_routes().

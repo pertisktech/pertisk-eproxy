@@ -1,6 +1,6 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
-%% **Proxy / proxy_admin:** runtime config and sites/backends are stored in SQLite
+%% **Proxy:** runtime config and sites/backends are stored in SQLite
 %% (`data/proxy.db`); JSON file seeds the DB only when that file does not exist yet.
 %%
 %% **Ingress:** listener settings come from `config/ingress.json` (or `PERTISK_CONFIG_FILE`);
@@ -10,7 +10,7 @@
 %% All modes cache the active config in ETS for fast concurrent reads.
 %%
 %% Config is stored as JSON and cached in ETS:
-%%   - mode (proxy | proxy_admin)
+%%   - mode (proxy | ingress)
 %%   - sites (host, backend, certificate, dns_provider, routes)
 %%   - backends (name, algorithm, health_path, health_interval_secs)
 %%   - certificates (legacy string labels in JSON; site TLS picks use GET /api/certificates)
@@ -169,7 +169,7 @@ sync_ingress(Sites, Backends) ->
 -spec ingress_mode() -> boolean().
 ingress_mode() ->
     pertisk_ingress_env:ingress_mode()
-        orelse maps:get(mode, get_config(), proxy_admin) =:= ingress.
+        orelse maps:get(mode, get_config(), proxy) =:= ingress.
 
 -spec proxy_mode() -> boolean().
 proxy_mode() ->
@@ -336,7 +336,7 @@ load_ingress_config() ->
             {error, Reason}
     end.
 
-%% Proxy / proxy_admin: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
+%% Proxy: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
 load_proxy_config() ->
     DbPath = db_file(),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
@@ -496,7 +496,7 @@ json_to_config(Json) ->
     Certificates = parse_string_list(maps:get(<<"certificates">>, Json, undefined)),
     DnsProviders  = parse_dns_providers(maps:get(<<"dns_providers">>, Json, undefined)),
     Config = #{
-        mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy_admin">>)),
+        mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy">>)),
         http_addr       => parse_addr(maps:get(<<"http_addr">>, Json, <<"0.0.0.0">>)),
         http_port       => maps:get(<<"http_port">>, Json, 80),
         http_num_acceptors => parse_opt_int(maps:get(<<"http_num_acceptors">>, Json, null)),
@@ -653,9 +653,9 @@ parse_algorithm(<<"ip_hash">>)          -> ip_hash;
 parse_algorithm(_)                      -> round_robin.
 
 parse_mode(<<"proxy">>) -> proxy;
-parse_mode(<<"proxy_admin">>) -> proxy_admin;
+parse_mode(<<"proxy_admin">>) -> proxy;
 parse_mode(<<"ingress">>) -> ingress;
-parse_mode(_) -> proxy_admin.
+parse_mode(_) -> proxy.
 
 parse_upstreams(In) ->
     [#{addr => maps:get(<<"addr">>, U), weight => maps:get(<<"weight">>, U, 1)}

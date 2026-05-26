@@ -28,11 +28,10 @@ Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME
 
 ## Modes
 
-- **`proxy_admin`** (typical): management port serves the **React admin UI** at `/` and JSON under `/api/…`.
-- **`proxy`**: management port is API-only; **`GET /`** returns a small JSON object with a short `endpoints` list (see `pertisk_eproxy_admin_handler.erl`).
+- **`proxy`**: management port serves the **React admin UI** at `/` and JSON under `/api/…`.
 - **`ingress`**: Kubernetes ingress controller; sites/backends from cluster `Ingress` + TLS Secrets; management API is read-only.
 
-`mode` is part of the proxy JSON configuration (`proxy`, `proxy_admin`, or `ingress`), or set `PERTISK_MODE=ingress` for the ingress image.
+`mode` is part of the proxy JSON configuration (`proxy` or `ingress`), or set `PERTISK_MODE=ingress` for the ingress image. Legacy `proxy_admin` is still accepted as an alias for `proxy` when reading older config.
 
 ## Docker images (Harbor)
 
@@ -57,13 +56,13 @@ Default bind is **`127.0.0.1:9080`** (`management_addr`, `management_port` in co
 
 - **`admin_auth`** in `config/sys.config`: `disabled` (open API) or `local` (Bearer session after `POST /api/auth/login`).
 - When `local` is enabled, most `/api/*` routes require `Authorization: Bearer <token>`.
-- Unauthenticated access is still allowed for a small set of endpoints (see `auth_public/2` in `src/pertisk_eproxy_admin_handler.erl`), including **`GET /`** (in `proxy` mode), **`GET /api/version`**, **`GET /api/auth/config`**, **`POST /api/auth/login`**, **`POST /api/auth/logout`**, **`GET /api/health`**, and **`GET /api/metrics`**.
+- Unauthenticated access is still allowed for a small set of endpoints (see `auth_public/2` in `src/pertisk_eproxy_admin_handler.erl`), including **`GET /api/version`**, **`GET /api/auth/config`**, **`POST /api/auth/login`**, **`POST /api/auth/logout`**, **`GET /api/health`**, and **`GET /api/metrics`**.
 
 ### Hot reload
 
 **`POST /api/reload`** re-reads the proxy JSON from disk (the path in `config/sys.config` key **`config_file`**, default `config/proxy.json`) without restarting the BEAM; existing proxy connections are kept. The same path is exposed at runtime as **`config_file`** on **`GET /api/management`**.
 
-In **`proxy_admin`** mode, the admin **Settings** page runs this reload (**Reload Config**) and shows the **same** route table as below (maintained in `admin/src/managementApiRoutes.ts` — keep it in sync with this section).
+In **`proxy`** mode, the admin **Settings** page runs this reload (**Reload Config**) and shows the **same** route table as below (maintained in `admin/src/managementApiRoutes.ts` — keep it in sync with this section).
 
 ### Management API
 
@@ -71,7 +70,6 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/` | Small JSON `endpoints` catalog (**`mode: proxy`** only; in **`proxy_admin`**, `/` is the web UI) |
 | `GET` | `/api/version` | Application version |
 | `GET` | `/api/management` | Node, listeners, **`config_file`** (on-disk JSON path), `process_info`, CPU/memory fields, runtime capabilities, optional public IP snapshot |
 | `GET` | `/api/stats` | Counters for the admin UI (requests by protocol, bytes, connections, log buffer size, uptime, per-site maps, …) |

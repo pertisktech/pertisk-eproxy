@@ -9,12 +9,6 @@ export interface ManagementApiRouteRow {
 }
 
 export const MANAGEMENT_API_ROUTES: readonly ManagementApiRouteRow[] = [
-  {
-    method: 'GET',
-    path: '/',
-    purpose:
-      'Small JSON endpoints catalog (mode: proxy only; in proxy_admin, / is the web UI)',
-  },
   { method: 'GET', path: '/api/version', purpose: 'Application version' },
   { method: 'HEAD', path: '/api/version', purpose: 'Same as GET (no JSON body); Chrome HTTP/3 probe' },
   {

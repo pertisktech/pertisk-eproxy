@@ -72,7 +72,7 @@ export type DnsProviderJson = string | DnsProviderConfigEntry;
 
 export interface ProxyConfig {
   /** Runtime mode from config (management API echoes the same strings). */
-  mode: 'proxy' | 'proxy_admin' | 'ingress';
+  mode: 'proxy' | 'ingress';
   http_port: number;
   management_port: number;
   certificates: string[];
@@ -283,7 +283,7 @@ export interface AuthCheckResponse {
 
 export interface AuthConfigResponse {
   mode: 'local' | 'sso' | 'both';
-  /** From proxy config (`proxy` vs `proxy_admin`); served on public GET /api/auth/config for shell after refresh. */
+  /** From proxy config (`proxy` vs `ingress`); served on public GET /api/auth/config for shell after refresh. */
   deployment_mode?: string;
   supports_local: boolean;
   supports_sso: boolean;
