@@ -6,7 +6,7 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-10.1.1.8}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.3.20}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.3.21}}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 # Host Erlang toolchains can crash in beam_asm on some systems; default to
 # Dockerized Linux/amd64 release build for deb packaging.

@@ -660,10 +660,8 @@ is_grpc_request(Req) ->
         <<"application/grpc-web", _/binary>> -> true;
         <<"application/connect+", _/binary>> -> true;
         _ ->
-            %% gRPC over HTTP/2 commonly carries TE: trailers. Browser grpc-web
-            %% requests may omit TE but include grpc-metadata-* headers.
-            Te = string:lowercase(cowboy_req:header(<<"te">>, Req, <<>>)),
-            (Te =:= <<"trailers">>) orelse has_grpc_metadata_headers(Req)
+            %% Avoid matching on TE alone; use grpc-specific metadata hints only.
+            has_grpc_metadata_headers(Req)
     end.
 
 has_grpc_metadata_headers(Req) ->

@@ -381,8 +381,8 @@ is_grpc_h3_request(Headers) when is_list(Headers) ->
         <<"application/grpc-web", _/binary>> -> true;
         <<"application/connect+", _/binary>> -> true;
         _ ->
-            Te = string:lowercase(maps:get(<<"te">>, HMap, <<>>)),
-            (Te =:= <<"trailers">>) orelse h3_has_grpc_metadata_headers(HMap)
+            %% Do not classify by `te: trailers` alone; some non-gRPC clients can send it.
+            h3_has_grpc_metadata_headers(HMap)
     end;
 is_grpc_h3_request(_) ->
     false.
@@ -1054,7 +1054,7 @@ management_listener_bind_stack() ->
     BindMode = maps:get(h3_udp_bind, pertisk_eproxy_config:get_config(), dual_stack),
     case {os:type(), BindMode} of
         {{unix, darwin}, _} ->
-            {<<"0.0.0.0:udp">>, <<"ipv4">>};
+            {<<":: + 0.0.0.0">>, <<"split_v4_v6">>};
         {{unix, linux}, dual_stack} ->
             {<<"[::]:udp">>, <<"dual_stack">>};
         {{unix, _}, dual_stack} ->
@@ -1079,7 +1079,9 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     BindMode = maps:get(h3_udp_bind, Config, dual_stack),
     case {os:type(), BindMode} of
         {{unix, darwin}, _} ->
-            start_unix_ipv4_only_udp(ServerName, Port, BaseOpts);
+            %% Prefer split v4/v6 sockets on macOS so HTTP/3 works on both A and AAAA.
+            %% If IPv6 bind fails, start_unix_split_udp/3 keeps a working IPv4 listener.
+            start_unix_split_udp(ServerName, Port, BaseOpts);
         {{unix, linux}, split} ->
             start_linux_split_udp(ServerName, Port, BaseOpts);
         {{unix, linux}, dual_stack} ->
@@ -1090,22 +1092,6 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
         _ ->
             start_single_udp_listener(ServerName, Port, BaseOpts)
     end.
-
-%% macOS local dev: avoid IPv6 QUIC bind path that can fail with einval and
-%% emit noisy supervisor crash reports before falling back to IPv4.
-start_unix_ipv4_only_udp(ServerName, Port, BaseOpts) ->
-    QuicBase = maps:get(quic_opts, BaseOpts, #{}),
-    V4Opts = BaseOpts#{
-        quic_opts =>
-            maps:merge(QuicBase, #{
-                socket_backend => gen_udp,
-                reuseport => false,
-                pool_size => 0,
-                extra_socket_opts => []
-            })
-    },
-    _ = lager:info("HTTP/3 QUIC using IPv4-only listener on macOS (udp/0.0.0.0:~w)", [Port]),
-    start_single_udp_listener(ServerName, Port, V4Opts).
 
 %% Single [::] dual-stack socket on Linux (same model as pertisk-rproxy / Quinn / Node http3).
 %% Must use gen_udp backend: the socket backend ignores extra_socket_opts for server sockets
