@@ -311,7 +311,7 @@ load_proxy_config() ->
     _ = pertisk_eproxy_db:warn_legacy_mnesia_storage(data_dir()),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
-            Cfg = Cfg0,
+            Cfg = sanitize_runtime_tls_paths(Cfg0),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = persist_runtime_config(DbPath, Cfg),
@@ -516,8 +516,8 @@ json_to_config(Json) ->
                 false -> false;
                 _     -> false
             end,
-        tls_cert_file   => parse_opt_str(maps:get(<<"tls_cert_file">>, Json, null)),
-        tls_key_file    => parse_opt_str(maps:get(<<"tls_key_file">>,  Json, null)),
+        tls_cert_file   => parse_opt_tls_path(maps:get(<<"tls_cert_file">>, Json, null)),
+        tls_key_file    => parse_opt_tls_path(maps:get(<<"tls_key_file">>,  Json, null)),
         sites           => Sites,
         backends        => Backends,
         certificates    => Certificates,
@@ -643,6 +643,41 @@ parse_opt_int(_)                -> undefined.
 parse_opt_str(null)              -> undefined;
 parse_opt_str(V) when is_binary(V) -> binary_to_list(V);
 parse_opt_str(_)                 -> undefined.
+
+parse_opt_tls_path(null) -> undefined;
+parse_opt_tls_path(V) when is_binary(V) ->
+    parse_opt_tls_path(binary_to_list(V));
+parse_opt_tls_path(V) when is_list(V) ->
+    case string:trim(V) of
+        [] -> undefined;
+        "[redacted]" -> undefined;
+        Path -> Path
+    end;
+parse_opt_tls_path(_) -> undefined.
+
+sanitize_runtime_tls_paths(Cfg) when is_map(Cfg) ->
+    Cert = sanitize_runtime_tls_value(maps:get(tls_cert_file, Cfg, undefined)),
+    Key = sanitize_runtime_tls_value(maps:get(tls_key_file, Cfg, undefined)),
+    %% TLS listener needs cert+key as a pair. If one side is redacted/invalid,
+    %% clear both so normal default resolution can recover safely.
+    case {Cert, Key} of
+        {C, K} when C =/= undefined, K =/= undefined ->
+            Cfg#{tls_cert_file => C, tls_key_file => K};
+        _ ->
+            maps:without([tls_cert_file, tls_key_file], Cfg)
+    end.
+
+sanitize_runtime_tls_value(undefined) -> undefined;
+sanitize_runtime_tls_value(null) -> undefined;
+sanitize_runtime_tls_value(V) when is_binary(V) ->
+    sanitize_runtime_tls_value(binary_to_list(V));
+sanitize_runtime_tls_value(V) when is_list(V) ->
+    case string:trim(V) of
+        [] -> undefined;
+        "[redacted]" -> undefined;
+        Path -> Path
+    end;
+sanitize_runtime_tls_value(_) -> undefined.
 
 parse_opt_bool(true) -> true;
 parse_opt_bool(false) -> false;

@@ -590,7 +590,9 @@ handle(<<"GET">>, config, Req) ->
 
 handle(<<"PUT">>, config, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
-        Config = pertisk_eproxy_config:json_to_config_pub(Body),
+        Existing = pertisk_eproxy_config:get_config(),
+        Parsed = pertisk_eproxy_config:json_to_config_pub(Body),
+        Config = preserve_redacted_tls_paths(Body, Parsed, Existing),
         case pertisk_eproxy_config:put_config(Config) of
             ok -> json_reply(200, #{status => <<"ok">>}, Req2);
             {error, R} -> error_reply(400, R, Req2)
@@ -622,9 +624,11 @@ handle(<<"GET">>, site, Req) ->
 handle(<<"PUT">>, site, Req) ->
     HostParam = cowboy_req:binding(host, Req),
     with_json_body(Req, fun(Body, Req2) ->
-        NewSite = parse_site(Body),
+        ParsedSite = parse_site(Body),
         Config  = pertisk_eproxy_config:get_config(),
         Sites   = maps:get(sites, Config, []),
+        ExistingSite = find_site_by_host(HostParam, Sites),
+        NewSite = preserve_site_tls_fields(Body, ParsedSite, ExistingSite),
         NewSites = [S || S = #{host := H} <- Sites, H =/= HostParam, H =/= maps:get(host, NewSite)],
         ok = pertisk_eproxy_config:put_config(Config#{sites => NewSites ++ [NewSite]}),
         json_reply(200, site_to_json(NewSite), Req2)
@@ -1163,6 +1167,69 @@ optional_challenge_type(_) -> undefined.
 json_text(V) when is_binary(V) -> V;
 json_text(V) when is_list(V) -> list_to_binary(V);
 json_text(V) -> V.
+
+preserve_redacted_tls_paths(Body, Parsed, Existing) when is_map(Body), is_map(Parsed), is_map(Existing) ->
+    KeyIn = maps:get(<<"tls_key_file">>, Body, undefined),
+    CertIn = maps:get(<<"tls_cert_file">>, Body, undefined),
+    KeepKey = case KeyIn of
+        <<"[redacted]">> -> true;
+        "[redacted]" -> true;
+        _ -> false
+    end,
+    KeepCert = case CertIn of
+        <<"[redacted]">> -> true;
+        "[redacted]" -> true;
+        _ -> false
+    end,
+    Parsed1 = case KeepKey of
+        true ->
+            case maps:get(tls_key_file, Existing, undefined) of
+                undefined -> Parsed;
+                V -> Parsed#{tls_key_file => V}
+            end;
+        false -> Parsed
+    end,
+    case KeepCert of
+        true ->
+            case maps:get(tls_cert_file, Existing, undefined) of
+                undefined -> Parsed1;
+                V2 -> Parsed1#{tls_cert_file => V2}
+            end;
+        false -> Parsed1
+    end.
+
+find_site_by_host(HostParam, Sites) ->
+    case lists:search(fun(#{host := H}) -> H =:= HostParam end, Sites) of
+        {value, Site} -> Site;
+        false -> #{}
+    end.
+
+%% Keep current TLS/ACME site fields when they are omitted in PUT /api/sites/:host.
+%% This avoids triggering ACME re-issue when editing non-TLS properties.
+preserve_site_tls_fields(Body, Parsed, Existing)
+    when is_map(Body), is_map(Parsed), is_map(Existing) ->
+    lists:foldl(
+        fun({JsonKey, SiteKey}, Acc) ->
+            case maps:is_key(JsonKey, Body) of
+                true ->
+                    Acc;
+                false ->
+                    case maps:get(SiteKey, Existing, undefined) of
+                        undefined -> Acc;
+                        V -> Acc#{SiteKey => V}
+                    end
+            end
+        end,
+        Parsed,
+        [
+            {<<"certificate">>, certificate},
+            {<<"dns_provider">>, dns_provider},
+            {<<"challenge_type">>, challenge_type},
+            {<<"wildcard">>, wildcard},
+            {<<"acme_wildcard_base">>, acme_wildcard_base},
+            {<<"acme_contact_email">>, acme_contact_email}
+        ]
+    ).
 
 proto_snapshot(Req) ->
     Version = normalize_http_version(cowboy_req:version(Req)),

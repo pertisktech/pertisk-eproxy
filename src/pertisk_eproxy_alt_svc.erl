@@ -26,7 +26,7 @@ header_value() ->
 -spec merge_response_headers(cowboy_req:req(), binary() | string(), map()) -> map().
 merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
     Base = maps:without([<<"alt-svc">>], Headers),
-    case alt_svc_action(Req, Host) of
+    case alt_svc_action(Req, Host, Headers) of
         true ->
             AltSvc = header_value(),
             lager:debug("Alt-Svc attached host=~s value=~s", [Host, AltSvc]),
@@ -37,18 +37,49 @@ merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
         false -> Base
     end.
 
-alt_svc_action(Req, Host) ->
+alt_svc_action(Req, Host, RespHeaders) ->
     case console_page_request(cowboy_req:path(Req), cowboy_req:qs(Req)) of
         true -> clear;
         false ->
-            case https_front_request(Req) of
+            case is_grpc_req(Req) orelse is_grpc_resp(RespHeaders) of
                 true ->
-                    case pertisk_eproxy_handler:site_advertise_http3(Host) of
-                        true -> true;
-                        false -> clear
-                    end;
-                false -> false
+                    %% gRPC over H3 is disabled; do not advertise Alt-Svc to gRPC clients
+                    %% (checked on both request and response content-type) or they will
+                    %% upgrade to H3 and receive a 421 redirect loop.
+                    false;
+                false ->
+                    case https_front_request(Req) of
+                        true ->
+                            case pertisk_eproxy_handler:site_advertise_http3(Host) of
+                                true -> true;
+                                false -> clear
+                            end;
+                        false -> false
+                    end
             end
+    end.
+
+%% Detect gRPC / Connect-protocol by REQUEST content-type.
+%% Mirror the checks in pertisk_eproxy_handler:is_grpc_request/1.
+is_grpc_req(Req) ->
+    Ct = string:lowercase(cowboy_req:header(<<"content-type">>, Req, <<>>)),
+    is_grpc_content_type(Ct).
+
+%% Detect gRPC / Connect-protocol by RESPONSE content-type.
+%% The Connect protocol always echoes a matching content-type in the response,
+%% so this catches cases where the request content-type is not available
+%% (e.g. H2 pseudo-headers stripped before our check runs).
+is_grpc_resp(RespHeaders) when is_map(RespHeaders) ->
+    Ct = string:lowercase(maps:get(<<"content-type">>, RespHeaders, <<>>)),
+    is_grpc_content_type(Ct);
+is_grpc_resp(_) -> false.
+
+is_grpc_content_type(Ct) ->
+    case Ct of
+        <<"application/grpc", _/binary>>     -> true;
+        <<"application/grpc-web", _/binary>> -> true;
+        <<"application/connect+", _/binary>> -> true;
+        _ -> false
     end.
 
 https_front_request(Req) ->

@@ -239,6 +239,12 @@ maybe_start_h3_api_gateway(Config) ->
                     ok;
                 {error, {already_started, _}} ->
                     ok;
+                {error, {missing_tls_file, Type, Path}} ->
+                    lager:info(
+                        "HTTP/3 API gateway disabled: missing TLS ~p file (~p)",
+                        [Type, Path]
+                    ),
+                    ok;
                 {error, Reason} ->
                     lager:warning("HTTP/3 API gateway failed to start: ~p", [Reason]),
                     ok
@@ -257,6 +263,12 @@ maybe_start_h3_probe(Config) ->
                     lager:info("HTTP/3 probe listener (erlang_quic) listening on udp/:~w", [ProbePort]),
                     ok;
                 {error, {already_started, _}} ->
+                    ok;
+                {error, {missing_tls_file, Type, Path}} ->
+                    lager:info(
+                        "HTTP/3 probe listener disabled: missing TLS ~p file (~p)",
+                        [Type, Path]
+                    ),
                     ok;
                 {error, Reason} ->
                     lager:warning("HTTP/3 probe listener failed to start: ~p", [Reason]),

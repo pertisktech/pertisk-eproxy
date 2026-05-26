@@ -164,8 +164,12 @@ function dnsProvidersForPut(entries: DnsProviderConfigEntry[]): DnsProviderConfi
 function prepareConfigForPut(c: ProxyConfig): ProxyConfig {
   const sites = Array.isArray(c.sites) ? c.sites : [];
   const backends = Array.isArray(c.backends) ? c.backends : [];
+  const tlsCertFile = c.tls_cert_file === '[redacted]' ? null : c.tls_cert_file;
+  const tlsKeyFile = c.tls_key_file === '[redacted]' ? null : c.tls_key_file;
   return {
     ...c,
+    tls_cert_file: tlsCertFile,
+    tls_key_file: tlsKeyFile,
     sites: sites.map((s) => ({
       ...s,
       routes: Array.isArray(s.routes) ? s.routes : [],
