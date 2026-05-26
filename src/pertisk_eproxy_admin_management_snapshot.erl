@@ -184,12 +184,13 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
     end,
     case maps:get(h3_api_gateway_enabled, C, true) of
         true ->
+            %% Keep snapshot in sync with pertisk_eproxy_h3_api_gateway:start/1 port selection.
             GwPort = case maps:get(quic_port, C, undefined) of
-                Qp when is_integer(Qp) -> Qp;
+                Qp when is_integer(Qp), Qp > 0 -> Qp;
                 _ ->
-                    case maps:find(https_port, C) of
-                        {ok, Hp2} -> Hp2;
-                        error -> HttpPort
+                    case maps:get(https_port, C, 443) of
+                        Hp2 when is_integer(Hp2), Hp2 > 0 -> Hp2;
+                        _ -> 443
                     end
             end,
             {GwBind, GwStack} = pertisk_eproxy_h3_api_gateway:management_listener_bind_stack(),

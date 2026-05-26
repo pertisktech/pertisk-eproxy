@@ -64,6 +64,11 @@ function formatTs(ms: number | null | undefined): string {
   }
 }
 
+function formatPercent(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
 function upstreamForSite(config: ProxyConfig | null, host: string, backendName: string): string {
   const site = config?.sites?.find((s) => s.host === host);
   if (!site) return backendName;
@@ -168,6 +173,15 @@ export default function Dashboard() {
     beamCpu != null && Number.isFinite(beamCpu)
       ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
       : null;
+  const processCount = typeof pi?.process_count === 'number' ? pi.process_count : null;
+  const processLimit = typeof pi?.process_limit === 'number' ? pi.process_limit : null;
+  const processUsagePct =
+    processCount != null && processLimit != null && processLimit > 0
+      ? (processCount / processLimit) * 100
+      : null;
+  const runtimePorts = listeners
+    .filter((l) => Number.isFinite(l.port) && l.port > 0)
+    .sort((a, b) => a.port - b.port);
 
   return (
     <section className={styles.page}>
@@ -291,6 +305,29 @@ export default function Dashboard() {
                   <dd className="mono">{pi?.hostname ?? '—'}</dd>
                   <dt>Node</dt>
                   <dd className="mono">{pi?.node ?? '—'}</dd>
+                  <dt>Runtime process</dt>
+                  <dd className="mono">{pi?.os_pid ?? '—'}</dd>
+                  <dt>BEAM processes</dt>
+                  <dd>
+                    {processCount != null && processLimit != null
+                      ? `${processCount} / ${processLimit} (${formatPercent(processUsagePct)})`
+                      : '—'}
+                  </dd>
+                  <dt>Ports</dt>
+                  <dd>
+                    {runtimePorts.length === 0 ? (
+                      '—'
+                    ) : (
+                      <div className={styles.portBadgeWrap}>
+                        {runtimePorts.map((listener) => (
+                          <span key={listener.id} className={styles.portBadge}>
+                            <span className={styles.portProto}>{listener.protocol.toUpperCase()}</span>
+                            <span className="mono">:{listener.port}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </dd>
                   <dt>Lego DNS CLI</dt>
                   <dd className="mono">
                     {health?.acme?.lego_installed

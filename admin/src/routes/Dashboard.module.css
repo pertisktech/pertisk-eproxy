@@ -293,6 +293,31 @@
   word-break: break-word;
 }
 
+.portBadgeWrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.portBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-elevated);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.portProto {
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 .kvInline {
   margin: 1rem 0 0;
   padding-top: 1rem;
