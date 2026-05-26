@@ -246,6 +246,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% ---------------------------------------------------------------------------
 
 put_config_proxy(Config, State) ->
+    PrevConfig = get_config(),
     T0 = erlang:monotonic_time(millisecond),
     case persist_runtime_config(Config) of
         ok ->
@@ -264,11 +265,41 @@ put_config_proxy(Config, State) ->
                 false ->
                     ok
             end,
-            _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
+            maybe_schedule_acme_scan(PrevConfig, Config),
             {reply, ok, State};
         {error, R} ->
             {reply, {error, {persist_runtime_config, R}}, State}
     end.
+
+maybe_schedule_acme_scan(PrevConfig, NextConfig) ->
+    case acme_scan_relevant_changed(PrevConfig, NextConfig) of
+        true ->
+            _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
+            ok;
+        false ->
+            ok
+    end.
+
+acme_scan_relevant_changed(PrevConfig, NextConfig) ->
+    acme_scan_site_fingerprint(PrevConfig) =/= acme_scan_site_fingerprint(NextConfig).
+
+acme_scan_site_fingerprint(Config) when is_map(Config) ->
+    Sites0 = maps:get(sites, Config, []),
+    Sites = [acme_site_fingerprint(S) || S <- Sites0, is_map(S)],
+    lists:sort(Sites);
+acme_scan_site_fingerprint(_) ->
+    [].
+
+acme_site_fingerprint(Site) ->
+    #{
+        host => maps:get(host, Site, undefined),
+        certificate => maps:get(certificate, Site, undefined),
+        dns_provider => maps:get(dns_provider, Site, undefined),
+        challenge_type => maps:get(challenge_type, Site, undefined),
+        wildcard => maps:get(wildcard, Site, undefined),
+        acme_wildcard_base => maps:get(acme_wildcard_base, Site, undefined),
+        acme_contact_email => maps:get(acme_contact_email, Site, undefined)
+    }.
 
 config_file() ->
     case os:getenv("PERTISK_CONFIG_FILE") of

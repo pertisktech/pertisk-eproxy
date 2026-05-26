@@ -234,16 +234,13 @@ client_ip(Req) ->
 
 ws_forward_headers(Req, OrigHost, ClientIp, UpPath) ->
     InHeaders = cowboy_req:headers(Req),
-    Proto = case cowboy_req:scheme(Req) of
-        https -> <<"https">>;
-        <<"https">> -> <<"https">>;
-        _ -> <<"http">>
-    end,
+    Proto = forwarded_proto(Req, InHeaders),
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
     IsConsolePath = skip_forwarded_for(OrigHost, UpPath),
     %% Gun builds WS transport headers; only forward app-relevant headers.
     Base0 = #{
         <<"host">> => OrigHost,
+        <<"x-forwarded-host">> => OrigHost,
         <<"x-forwarded-proto">> => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn
     },
@@ -310,6 +307,20 @@ skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
     IsProxmoxHost andalso IsConsolePath;
 skip_forwarded_for(_, _) ->
     false.
+
+forwarded_proto(Req, InHeaders) ->
+    case maps:get(<<"x-forwarded-proto">>, InHeaders, undefined) of
+        <<"https">> -> <<"https">>;
+        <<"http">> -> <<"http">>;
+        <<"HTTPS">> -> <<"https">>;
+        <<"HTTP">> -> <<"http">>;
+        _ ->
+            case cowboy_req:scheme(Req) of
+                https -> <<"https">>;
+                <<"https">> -> <<"https">>;
+                _ -> <<"http">>
+            end
+    end.
 
 maybe_set_ws_subprotocol(Req0) ->
     case select_ws_subprotocol(cowboy_req:header(<<"sec-websocket-protocol">>, Req0, undefined)) of

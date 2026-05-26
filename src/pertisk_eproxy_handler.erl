@@ -466,20 +466,22 @@ is_connection_fatal_error(_) -> true.
 
 forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
     InHeaders = cowboy_req:headers(Req),
-    Proto     = case cowboy_req:port(Req) of
-        443 -> <<"https">>;
-        _   -> <<"http">>
-    end,
+    Proto     = forwarded_proto(Req, InHeaders),
     ProtoVsn  = version_to_bin(cowboy_req:version(Req)),
+    ReqKind   = detect_request_kind(Req),
 
     %% Start from original headers, drop hop-by-hop
     Filtered = maps:without([<<"connection">>, <<"keep-alive">>, <<"te">>,
                               <<"trailers">>, <<"transfer-encoding">>,
                               <<"upgrade">>], InHeaders),
 
+    %% gRPC over HTTP/2 expects `te: trailers`; preserve it when present.
+    Filtered1 = maybe_restore_grpc_te_header(ReqKind, InHeaders, Filtered),
+
     %% Preserve original Host
-    Base0 = Filtered#{
+    Base0 = Filtered1#{
         <<"host">>                     => OrigHost,
+        <<"x-forwarded-host">>         => OrigHost,
         <<"x-forwarded-proto">>        => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn,
         <<"x-request-id">> => TrackingId
@@ -514,10 +516,33 @@ version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;
 version_to_bin('HTTP/2')   -> <<"HTTP/2">>;
 version_to_bin(_)          -> <<"HTTP/1.1">>.
 
+forwarded_proto(Req, InHeaders) ->
+    case maps:get(<<"x-forwarded-proto">>, InHeaders, undefined) of
+        <<"https">> -> <<"https">>;
+        <<"http">> -> <<"http">>;
+        <<"HTTPS">> -> <<"https">>;
+        <<"HTTP">> -> <<"http">>;
+        _ ->
+            case cowboy_req:scheme(Req) of
+                https -> <<"https">>;
+                <<"https">> -> <<"https">>;
+                _ -> <<"http">>
+            end
+    end.
+
+maybe_restore_grpc_te_header(grpc, InHeaders, Filtered) ->
+    case maps:get(<<"te">>, InHeaders, undefined) of
+        <<"trailers">> -> Filtered#{<<"te">> => <<"trailers">>};
+        <<"Trailers">> -> Filtered#{<<"te">> => <<"trailers">>};
+        _ -> Filtered
+    end;
+maybe_restore_grpc_te_header(_, _InHeaders, Filtered) ->
+    Filtered.
+
 response_headers_to_req(Req, List) when is_list(List) ->
     {Req1, Filtered} = lists:foldl(
         fun({K, V}, {ReqAcc, HeadersAcc}) ->
-            case string:lowercase(K) of
+            case lower_header_key(K) of
                 <<"set-cookie">> ->
                     case cow_cookie:parse_set_cookie(iolist_to_binary(V)) of
                         {ok, Name, Value, Attrs} ->
@@ -527,13 +552,35 @@ response_headers_to_req(Req, List) when is_list(List) ->
                             {ReqAcc, HeadersAcc}
                     end;
                 LowerK ->
-                    {ReqAcc, [{LowerK, V} | HeadersAcc]}
+                    case is_hop_by_hop_response_header(LowerK) of
+                        true ->
+                            {ReqAcc, HeadersAcc};
+                        false ->
+                            {ReqAcc, [{LowerK, V} | HeadersAcc]}
+                    end
             end
         end,
         {Req, []},
         List
     ),
     {Req1, maps:from_list(Filtered)}.
+
+lower_header_key(K) when is_binary(K) ->
+    string:lowercase(K);
+lower_header_key(K) when is_list(K) ->
+    list_to_binary(string:lowercase(K));
+lower_header_key(K) ->
+    iolist_to_binary(io_lib:format("~p", [K])).
+
+is_hop_by_hop_response_header(<<"connection">>) -> true;
+is_hop_by_hop_response_header(<<"keep-alive">>) -> true;
+is_hop_by_hop_response_header(<<"proxy-authenticate">>) -> true;
+is_hop_by_hop_response_header(<<"proxy-authorization">>) -> true;
+is_hop_by_hop_response_header(<<"te">>) -> true;
+is_hop_by_hop_response_header(<<"trailer">>) -> true;
+is_hop_by_hop_response_header(<<"transfer-encoding">>) -> true;
+is_hop_by_hop_response_header(<<"upgrade">>) -> true;
+is_hop_by_hop_response_header(_) -> false.
 
 %% cow_cookie:parse_set_cookie/1 returns `max_age` as an absolute calendar
 %% datetime, and may include `expires`. cowboy_req:set_resp_cookie/4 expects

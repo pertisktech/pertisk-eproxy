@@ -1210,14 +1210,14 @@ preserve_site_tls_fields(Body, Parsed, Existing)
     when is_map(Body), is_map(Parsed), is_map(Existing) ->
     lists:foldl(
         fun({JsonKey, SiteKey}, Acc) ->
-            case maps:is_key(JsonKey, Body) of
+            case should_preserve_site_tls_key(Body, JsonKey) of
                 true ->
-                    Acc;
-                false ->
                     case maps:get(SiteKey, Existing, undefined) of
                         undefined -> Acc;
                         V -> Acc#{SiteKey => V}
-                    end
+                    end;
+                false ->
+                    Acc
             end
         end,
         Parsed,
@@ -1230,6 +1230,14 @@ preserve_site_tls_fields(Body, Parsed, Existing)
             {<<"acme_contact_email">>, acme_contact_email}
         ]
     ).
+
+should_preserve_site_tls_key(Body, JsonKey) when is_map(Body), is_binary(JsonKey) ->
+    case maps:is_key(JsonKey, Body) of
+        false ->
+            true;
+        true ->
+            maps:get(JsonKey, Body, undefined) =:= null
+    end.
 
 proto_snapshot(Req) ->
     Version = normalize_http_version(cowboy_req:version(Req)),
