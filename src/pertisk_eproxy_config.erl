@@ -339,7 +339,6 @@ load_ingress_config() ->
 %% Proxy / proxy_admin: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
 load_proxy_config() ->
     DbPath = db_file(),
-    _ = pertisk_eproxy_db:warn_legacy_mnesia_storage(data_dir()),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
             Cfg = sanitize_runtime_tls_paths(Cfg0),

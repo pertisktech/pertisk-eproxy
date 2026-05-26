@@ -27,7 +27,6 @@
     update_dns_provider/5,
     delete_dns_provider/2,
     ensure_dns_providers_seeded/2,
-    warn_legacy_mnesia_storage/1,
     get_site/2,
     list_sites/1,
     insert_site/4,
@@ -99,22 +98,6 @@ ensure_db_parent_dir(DbPath) ->
     case filelib:ensure_dir(DbPath) of
         ok -> ok;
         {error, Reason} -> {error, Reason}
-    end.
-
-%% @doc Warn when an old Mnesia-era install left `data/mnesia` on disk (RPM/Docker upgrades).
--spec warn_legacy_mnesia_storage(string()) -> ok.
-warn_legacy_mnesia_storage(DataDir) when is_list(DataDir) ->
-    MnesiaDir = filename:join(DataDir, "mnesia"),
-    case filelib:is_dir(MnesiaDir) of
-        true ->
-            lager:warning(
-                "Legacy Mnesia directory ~s found; this release uses SQLite. "
-                "After backup, archive or remove it (e.g. mv ~s ~s.bak). "
-                "Runtime config is read from ~s or seeded from config/proxy.json.",
-                [MnesiaDir, MnesiaDir, MnesiaDir, "data/proxy.db"]
-            );
-        false ->
-            ok
     end.
 
 %% @doc Idempotent schema migration (`CREATE TABLE IF NOT EXISTS` on every deploy).

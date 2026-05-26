@@ -79,12 +79,6 @@ if [ -f "\$DATA_DIR/proxy.db" ]; then
 else
   echo "First install: data/proxy.db will be created on first service start"
 fi
-if [ -d "\$DATA_DIR/mnesia" ]; then
-  BAK="\$DATA_DIR/mnesia.bak"
-  rm -rf "\$BAK" 2>/dev/null || true
-  mv "\$DATA_DIR/mnesia" "\$BAK" 2>/dev/null || true
-  echo "Archived legacy Mnesia storage to \$BAK (this release uses SQLite at data/proxy.db)."
-fi
 if ! command -v sqlite3 >/dev/null 2>&1; then
   echo "WARNING: sqlite3 not found in PATH. Install sqlite3 (e.g. dnf install sqlite) before starting $PKG_NAME." >&2
 fi
@@ -97,8 +91,8 @@ chown -R $PKG_NAME:$PKG_NAME /opt/$PKG_NAME || true
 cat << MSG
 Pertisk eProxy installed (SQLite storage).
 
-Verify the new binary (journal should say "config storage: SQLite", not Mnesia):
-  journalctl -u $PKG_NAME -n 30 --no-pager | grep -E 'SQLite|Mnesia|pertisk_eproxy'
+Verify the service started:
+  journalctl -u $PKG_NAME -n 30 --no-pager | grep -E 'SQLite|pertisk_eproxy'
 
 Enable and start:
   sudo systemctl enable $PKG_NAME --now
