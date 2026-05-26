@@ -322,7 +322,7 @@ do_proxy(
     case Result of
         {error, ProxyReason} ->
             maybe_invalidate_connection(ConnPid, ProxyReason),
-            case ReqKind =/= grpc andalso RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
+            case RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
                 true ->
                     case pertisk_eproxy_upstream_pool:checkout(
                         UpHost, UpPort, Transport, ReqKind, GunOpts
@@ -360,7 +360,10 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes)
     case gun:await(ConnPid, StreamRef, infinity) of
         {response, nofin, Status, RespHeaders} ->
             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+            %% Avoid advertising H3 for gRPC streams. The H3 gateway intentionally
+            %% rejects gRPC with 421, so advertising Alt-Svc here causes needless
+            %% protocol churn and noisy 421 retries from some clients.
+            CowboyHeaders = pertisk_eproxy_response_headers:merge(RawHeaders),
             StreamReq = cowboy_req:stream_reply(
                 Status,
                 with_tracking_id_header(TrackingId, CowboyHeaders),
@@ -369,7 +372,7 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes)
             proxy_grpc_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status);
         {response, fin, Status, RespHeaders} ->
             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-            CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+            CowboyHeaders = pertisk_eproxy_response_headers:merge(RawHeaders),
             Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
             {ok, Status, Req2};
