@@ -165,8 +165,10 @@ wait_order_ready(Jwk, Kid, Nonce0, OrderUrl, Max, I) when I < Max ->
         <<"valid">> ->
             ok;
         <<"invalid">> ->
-            log_authz_dns01_failures(Jwk, Kid, Nonce1, maps:get(<<"authorizations">>, Ord, [])),
-            throw({acme, {order_invalid, Ord}});
+            AuthUrls = maps:get(<<"authorizations">>, Ord, []),
+            log_authz_dns01_failures(Jwk, Kid, Nonce1, AuthUrls),
+            Failures = collect_authz_dns01_failures(Jwk, Kid, Nonce1, AuthUrls),
+            throw({acme, {order_invalid, Ord, Failures}});
         _ ->
             timer:sleep(2000),
             wait_order_ready(Jwk, Kid, Nonce1, OrderUrl, Max, I + 1)
@@ -224,6 +226,9 @@ post_jws(Url, Jwk, Kid, Nonce, UrlForJws, PayloadMap) when is_map(PayloadMap) ->
     {ok, St, Hdrs, BodyMap, nonce_from_headers(Hdrs, Nonce2)}.
 
 post_jws_raw(Url, Jwk, Kid, Nonce, UrlForJws, Payload) ->
+    post_jws_raw(Url, Jwk, Kid, Nonce, UrlForJws, Payload, 1).
+
+post_jws_raw(Url, Jwk, Kid, Nonce, UrlForJws, Payload, RetriesLeft) ->
     BodyIo = sign_jws_body(Jwk, Kid, Nonce, UrlForJws, Payload),
     Enc = thoas:encode(BodyIo),
     {ok, St, Hdrs, BodyBin} = http_post(Url, Enc),
@@ -239,9 +244,24 @@ post_jws_raw(Url, Jwk, Kid, Nonce, UrlForJws, Payload) ->
                 {ok, Map} -> {ok, St, Hdrs, Map, Nonce2};
                 {error, R} -> throw({acme, {bad_json, R, BodyBin}})
             end;
+        400 when RetriesLeft > 0 ->
+            case is_bad_nonce_response(BodyBin) of
+                true ->
+                    %% Boulder may reject an old replay nonce. Retry once with
+                    %% the fresh replay-nonce returned in response headers.
+                    RetryNonce = nonce_from_headers(Hdrs, Nonce2),
+                    post_jws_raw(Url, Jwk, Kid, RetryNonce, UrlForJws, Payload, RetriesLeft - 1);
+                false ->
+                    throw({acme, {http, St, BodyBin}})
+            end;
         _ ->
             throw({acme, {http, St, BodyBin}})
     end.
+
+is_bad_nonce_response(BodyBin0) ->
+    BodyBin = iolist_to_binary(BodyBin0),
+    Lower = string:lowercase(BodyBin),
+    binary:match(Lower, <<"badnonce">>) =/= nomatch.
 
 sign_jws_body(Jwk, Kid, Nonce, Url, post_as_get) ->
     PayloadBin = <<>>,
@@ -397,3 +417,39 @@ log_authz_dns01_failures(Jwk, Kid, Nonce, AuthUrls) when is_list(AuthUrls) ->
     );
 log_authz_dns01_failures(_, _, _, _) ->
     ok.
+
+collect_authz_dns01_failures(Jwk, Kid, Nonce, AuthUrls) when is_list(AuthUrls) ->
+    {RowsRev, _} = lists:foldl(
+        fun(Url, {Acc, N0}) ->
+            UrlB = bin(Url),
+            case post_as_get_json(Jwk, Kid, N0, UrlB, UrlB) of
+                {ok, Auth, N1} ->
+                    IdVal = maps:get(<<"value">>, maps:get(<<"identifier">>, Auth, #{}), <<"(unknown)">>),
+                    AuthSt = maps:get(<<"status">>, Auth, <<"?">>),
+                    DnsRows = [
+                        begin
+                            Cs = maps:get(<<"status">>, C, <<"?">>),
+                            Base = #{
+                                <<"identifier">> => IdVal,
+                                <<"auth_status">> => AuthSt,
+                                <<"challenge_status">> => Cs
+                            },
+                            case maps:find(<<"error">>, C) of
+                                {ok, Err} -> Base#{<<"error">> => Err};
+                                error -> Base
+                            end
+                        end
+                        || C <- maps:get(<<"challenges">>, Auth, []),
+                           maps:get(<<"type">>, C, undefined) =:= <<"dns-01">>
+                    ],
+                    {DnsRows ++ Acc, N1};
+                _ ->
+                    {Acc, N0}
+            end
+        end,
+        {[], Nonce},
+        AuthUrls
+    ),
+    lists:reverse(RowsRev);
+collect_authz_dns01_failures(_, _, _, _) ->
+    [].

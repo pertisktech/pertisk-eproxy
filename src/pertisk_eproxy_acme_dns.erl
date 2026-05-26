@@ -1,4 +1,4 @@
-%% @doc ACME DNS-01 issuance (Cloudflare) for sites with auto SSL; queues work after config changes.
+%% @doc ACME DNS-01 issuance (Cloudflare / DigitalOcean) for sites with auto SSL; queues work after config changes.
 -module(pertisk_eproxy_acme_dns).
 
 -behaviour(gen_server).
@@ -225,13 +225,16 @@ issue_site(DbPath, Site) ->
             {error, R};
         {ok, Row} ->
             Pt = provider_type_bin(Row),
-            case string:lowercase(binary_to_list(Pt)) of
-                "cloudflare" ->
+            case dns_provider_kind(Pt) of
+                cloudflare ->
                     issue_cloudflare(DbPath, Site, Host, Row);
+                digitalocean ->
+                    issue_digitalocean(DbPath, Site, Host, Row);
                 _ ->
                     lager:info("ACME: provider ~s not supported yet (site ~s)", [Pt, Host]),
-                    ssl_job_err(Host, unsupported_dns),
-                    {error, unsupported_dns}
+                    Err = {unsupported_dns, Pt},
+                    ssl_job_err(Host, Err),
+                    {error, Err}
             end
     end.
 
@@ -264,6 +267,34 @@ name_bin(#{name := N}) when is_list(N) -> unicode:characters_to_binary(N, utf8).
 
 provider_type_bin(#{provider_type := Pt}) when is_binary(Pt) -> Pt;
 provider_type_bin(#{provider_type := Pt}) when is_list(Pt) -> unicode:characters_to_binary(Pt, utf8).
+
+dns_provider_kind(Pt0) when is_binary(Pt0) ->
+    Pt1 = string:lowercase(trim_space_binary(Pt0)),
+    Pt = binary:replace(binary:replace(Pt1, <<"-">>, <<"">>, [global]), <<"_">>, <<"">>, [global]),
+    case Pt of
+        <<"cloudflare">> -> cloudflare;
+        <<"digitalocean">> -> digitalocean;
+        <<"do">> -> digitalocean;
+        _ -> unsupported
+    end.
+
+trim_space_binary(Bin) when is_binary(Bin) ->
+    trim_space_right(trim_space_left(Bin)).
+
+trim_space_left(<<C, Rest/binary>>) when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+    trim_space_left(Rest);
+trim_space_left(Bin) ->
+    Bin.
+
+trim_space_right(Bin) when is_binary(Bin), byte_size(Bin) > 0 ->
+    case binary:last(Bin) of
+        C when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+            trim_space_right(binary:part(Bin, 0, byte_size(Bin) - 1));
+        _ ->
+            Bin
+    end;
+trim_space_right(Bin) ->
+    Bin.
 
 issue_cloudflare(DbPath, Site, Host, Row) ->
     Creds = maps:get(credentials, Row, #{}),
@@ -341,6 +372,101 @@ issue_cloudflare_after_csr(DbPath, Site, Host, _Row, Token, ZoneId, ZoneName, Id
                             ok
                     end
             end.
+
+issue_digitalocean(DbPath, Site, Host, Row) ->
+    Creds = maps:get(credentials, Row, #{}),
+    Token = cred_get(Creds, [<<"api_token">>, <<"apiToken">>]),
+    case Token of
+        undefined ->
+            ssl_job_err(Host, missing_api_token),
+            {error, missing_api_token};
+        _ ->
+            Domain0 = cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]),
+            Lookup = zone_lookup_host(Host),
+            case pertisk_eproxy_dns_digitalocean:resolve_domain(Token, Domain0, Lookup) of
+                {error, _} = E ->
+                    ssl_job_err(Host, E),
+                    E;
+                {ok, Domain} ->
+                    ssl_job(
+                        Host,
+                        <<"zone">>,
+                        iolist_to_binary([<<"DigitalOcean domain: ">>, Domain])
+                    ),
+                    Identifiers = site_identifiers(Site, Host),
+                    case pertisk_eproxy_acme_csr:generate_rsa_csr(Identifiers) of
+                        {error, Reason} ->
+                            ssl_job_err(Host, {csr_failed, Reason}),
+                            {error, {csr_failed, Reason}};
+                        {ok, #{csr_der := CsrDer, key_pem := KeyPem}} ->
+                            ssl_job(Host, <<"csr">>, <<"Generated private key and CSR">>),
+                            issue_digitalocean_after_csr(
+                                DbPath,
+                                Site,
+                                Host,
+                                Token,
+                                Domain,
+                                Identifiers,
+                                CsrDer,
+                                KeyPem
+                            )
+                    end
+            end
+    end.
+
+issue_digitalocean_after_csr(DbPath, Site, Host, Token, Domain, Identifiers, CsrDer, KeyPem) ->
+    AcmeDir = acme_directory(),
+    KidPathPre = filename:join(acme_data_dir(), "kid.txt"),
+    ok = maybe_drop_staging_kid_for_production(AcmeDir, KidPathPre),
+    Terms = application:get_env(pertisk_eproxy, acme_terms_agreed, false),
+    case Terms of
+        false ->
+            lager:warning("ACME disabled: set {acme_terms_agreed, true} in sys.config to issue for ~s", [Host]),
+            ssl_job_err(Host, terms_not_agreed),
+            {error, terms_not_agreed};
+        true ->
+            {Jwk, Kid} = load_account_key(),
+            KidPathFile = filename:join(acme_data_dir(), "kid.txt"),
+            AddFun = fun(TxtFqdn, Digest) ->
+                RecName = pertisk_eproxy_dns_digitalocean:txt_record_name(TxtFqdn, Domain),
+                case pertisk_eproxy_dns_digitalocean:create_txt(Token, Domain, RecName, Digest) of
+                    {ok, Rid} -> {ok, {digo, Token, Domain, Rid}};
+                    Err -> Err
+                end
+            end,
+            DelFun = fun
+                ({digo, Tok, Dom, Rid}) ->
+                    pertisk_eproxy_dns_digitalocean:delete_txt(Tok, Dom, Rid);
+                (_) ->
+                    ok
+            end,
+            Progress = fun(Phase, Msg) -> ssl_job(Host, Phase, Msg) end,
+            Opts = #{
+                directory_url => AcmeDir,
+                account_jwk => Jwk,
+                account_kid => Kid,
+                contact_email => contact_bin(Site),
+                terms_agreed => true,
+                identifiers => Identifiers,
+                csr_der => CsrDer,
+                dns_add => AddFun,
+                dns_del => DelFun,
+                %% DigitalOcean DNS can take longer to become visible from LE validators.
+                %% Keep configurable value, but enforce a safer floor for dns-01 reliability.
+                dns_propagation_delay_ms => erlang:max(60000, acme_dns_propagation_delay_ms()),
+                progress => Progress
+            },
+            case pertisk_eproxy_acme_client:obtain_certificate(Opts) of
+                {error, _} = E ->
+                    ssl_job_err(Host, E),
+                    E;
+                {ok, PemChain, KidOut} ->
+                    maybe_write_kid(KidPathFile, Kid, KidOut),
+                    _ = save_and_register(DbPath, Site, Host, PemChain, KeyPem),
+                    ssl_job_done(Host, <<"TLS certificate issued and saved">>),
+                    ok
+            end
+    end.
 
 zone_name_bin(B) when is_binary(B) -> B;
 zone_name_bin(L) when is_list(L) -> unicode:characters_to_binary(L, utf8);
@@ -535,7 +661,10 @@ patch_site_certificate(HostBin, CertName, CertPath, KeyPath) ->
         ok -> ok;
         {error, R} -> lager:error("ACME: could not attach certificate to site ~s: ~p", [HostBin, R])
     end,
-    _ = catch pertisk_eproxy_app:reload_tls_listeners().
+    %% ACME cert updates should only refresh proxy TLS listeners.
+    %% Restarting the management listener can cause transient or sticky
+    %% admin UI fetch failures while /api reconnects.
+    _ = catch pertisk_eproxy_app:reload_proxy_tls_listeners().
 
 write_kid(Path, Kid) when is_binary(Kid) ->
     ok = file:write_file(Path, [Kid, $\n]).
