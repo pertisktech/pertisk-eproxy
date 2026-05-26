@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([log_proxy/6, log_proxy/7, list/2, count/0]).
+-export([log_proxy/6, log_proxy/7, log_system/3, list/2, count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -26,6 +26,11 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto) ->
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream) ->
     gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}).
+
+%% @doc Store a system/error event in the ring buffer for display in the admin UI.
+-spec log_system(binary(), binary(), binary()) -> ok.
+log_system(Level, Type, Message) ->
+    gen_server:cast(?SERVER, {log_system, Level, Type, Message}).
 
 -spec list(binary() | undefined, binary() | undefined) -> [map()].
 list(Type, HostFilter) ->
@@ -97,6 +102,17 @@ handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}
             _ -> Base
         end,
     _ = catch pertisk_eproxy_couchdb_log:log(Entry),
+    Es2 = trim([Entry | Es], ?MAX),
+    {noreply, #st{entries = Es2}};
+
+handle_cast({log_system, Level, Type, Message}, #st{entries = Es}) ->
+    Ts = iolist_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])),
+    Entry = #{
+        <<"timestamp">> => Ts,
+        <<"level">>     => Level,
+        <<"type">>      => Type,
+        <<"message">>   => Message
+    },
     Es2 = trim([Entry | Es], ?MAX),
     {noreply, #st{entries = Es2}};
 

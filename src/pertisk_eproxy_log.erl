@@ -37,10 +37,14 @@ info(Fmt, Args) ->
 
 -spec warning(term(), [term()]) -> ok.
 warning(Fmt, Args) ->
+    Msg = try iolist_to_binary(io_lib:format(Fmt, Args)) catch _:_ -> <<"(log format error)">> end,
+    _ = catch pertisk_eproxy_access_log:log_system(<<"warn">>, <<"system">>, Msg),
     lager:warning(Fmt, Args).
 
 -spec error(term(), [term()]) -> ok.
 error(Fmt, Args) ->
+    Msg = try iolist_to_binary(io_lib:format(Fmt, Args)) catch _:_ -> <<"(log format error)">> end,
+    _ = catch pertisk_eproxy_access_log:log_system(<<"error">>, <<"error">>, Msg),
     lager:error(Fmt, Args).
 
 emit(<<"error">>, Meta, Msg) ->

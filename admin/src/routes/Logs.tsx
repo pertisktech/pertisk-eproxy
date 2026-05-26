@@ -48,12 +48,31 @@ type LogsProps = {
   initialLogType?: LogFilterType | 'crash_error';
 };
 
+/** Match a status code against a comma-separated filter string.
+ *  Each token may be a number ("404") or a range shorthand ("4xx", "5xx", etc.).
+ */
+function matchesStatusFilter(status: number | undefined, filter: string): boolean {
+  const trimmed = filter.trim();
+  if (!trimmed) return true;
+  if (status == null) return false;
+  const parts = trimmed.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
+  return parts.some(p => {
+    if (/^[1-9]xx$/.test(p)) {
+      const base = parseInt(p[0], 10) * 100;
+      return status >= base && status < base + 100;
+    }
+    const n = parseInt(p, 10);
+    return !isNaN(n) && status === n;
+  });
+}
+
 export default function Logs({ initialLogType = 'all' }: LogsProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [logType, setLogType] = useState<LogFilterType | 'crash_error'>(initialLogType);
   const [hostFilter, setHostFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => {
     let hasFrame = false;
@@ -81,8 +100,9 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
       const hostNeedle = hostFilter.trim().toLowerCase();
       return logs.filter((entry) => {
         if (!acceptType(entry)) return false;
-        if (!hostNeedle) return true;
-        return (entry.host ?? '').toLowerCase().includes(hostNeedle);
+        if (hostNeedle && !(entry.host ?? '').toLowerCase().includes(hostNeedle)) return false;
+        if (!matchesStatusFilter(entry.status, statusFilter)) return false;
+        return true;
       });
     }
 
@@ -102,7 +122,7 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
       window.clearTimeout(firstFrameTimer);
       stop();
     };
-  }, [autoRefresh, logType, hostFilter]);
+  }, [autoRefresh, logType, hostFilter, statusFilter]);
 
   return (
     <section className={styles.section}>
@@ -139,6 +159,20 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
                 onChange={(e) => setHostFilter(e.target.value)}
                 title="Filter by domain/host name"
                 aria-label="Host filter"
+              />
+            </div>
+          )}
+          {(logType === 'proxy' || logType === 'all' || logType === 'crash_error') && (
+            <div className={styles.dropdownWrap}>
+              <label className={styles.dropdownLabel}>Status</label>
+              <input
+                type="text"
+                className={styles.hostInput}
+                placeholder="e.g. 404, 5xx, 200"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                title="Filter by HTTP status: comma-separated codes or patterns like 4xx, 5xx"
+                aria-label="Status filter"
               />
             </div>
           )}
