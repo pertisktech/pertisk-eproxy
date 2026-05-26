@@ -23,6 +23,20 @@ function normalizeViewMode(value: string | null): 'card' | 'list' {
   return value === 'card' ? 'card' : 'list';
 }
 
+function formatValidateDetails(details: Record<string, unknown> | undefined): string[] {
+  if (!details || typeof details !== 'object') return ['Validation passed'];
+  const entries = Object.entries(details);
+  if (entries.length === 0) return ['Validation passed'];
+  return entries
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        return `${k}: ${String(v)}`;
+      }
+      return `${k}: ${JSON.stringify(v)}`;
+    });
+}
+
 export default function DnsProviders() {
   const [list, setList] = useState<DnsProviderRow[]>([]);
   const [supported, setSupported] = useState<SupportedDnsProvider[]>([]);
@@ -36,6 +50,8 @@ export default function DnsProviders() {
   const [fieldVisibility, setFieldVisibility] = useState<Record<string, boolean>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [validateDetails, setValidateDetails] = useState<string[] | null>(null);
   const [dbUnavailable, setDbUnavailable] = useState(false);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
     normalizeViewMode(getCookieValue(VIEW_MODE_COOKIE))
@@ -159,6 +175,7 @@ export default function DnsProviders() {
     setFormCreds({});
     setFieldVisibility({});
     setFormError(null);
+    setValidateDetails(null);
     setShowForm(true);
   }
 
@@ -169,6 +186,7 @@ export default function DnsProviders() {
     setFormCreds(row.credentials && typeof row.credentials === 'object' ? { ...row.credentials } : {});
     setFieldVisibility({});
     setFormError(null);
+    setValidateDetails(null);
     setShowForm(true);
   }
 
@@ -240,6 +258,33 @@ export default function DnsProviders() {
         })
         .catch((e) => setFormError(e instanceof Error ? e.message : 'Failed to create'))
         .finally(() => setSaving(false));
+    }
+  }
+
+  async function handleValidate() {
+    setFormError(null);
+    setValidateDetails(null);
+    const provider_type = formType.trim();
+    if (!provider_type) {
+      setFormError('Provider type is required');
+      return;
+    }
+    const credentials = buildCredentials();
+    if (selectedProvider?.fields.some((f) => f.required && !formCreds[f.key]?.trim())) {
+      setFormError('All required fields must be filled');
+      return;
+    }
+    setValidating(true);
+    try {
+      const result = await api.dnsProviders.validate(provider_type, credentials);
+      setValidateDetails(formatValidateDetails(result.details));
+      toast.success('DNS provider validation passed.');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Validation failed';
+      setFormError(msg);
+      toast.error(msg);
+    } finally {
+      setValidating(false);
     }
   }
 
@@ -508,9 +553,19 @@ export default function DnsProviders() {
               )}
 
               {formError && <p className={styles.formError}>{formError}</p>}
+              {validateDetails && (
+                <div className={styles.helpText}>
+                  {validateDetails.map((line) => (
+                    <p key={line} className={styles.helpLine}>{line}</p>
+                  ))}
+                </div>
+              )}
               <div className={styles.modalActions}>
                 <button type="button" className={styles.btnSecondary} onClick={() => setShowForm(false)}>
                   Cancel
+                </button>
+                <button type="button" className={styles.btnSecondary} disabled={validating || saving} onClick={() => void handleValidate()}>
+                  {validating ? 'Validating…' : 'Validate credentials'}
                 </button>
                 <button type="submit" className={styles.btnPrimary} disabled={saving}>
                   {saving ? 'Saving…' : editingId ? 'Update' : 'Create'}

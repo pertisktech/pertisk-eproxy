@@ -4,7 +4,7 @@
 	docker-ingress docker-ingress-push docker-ingress-multi \
 	docker-eproxy-multi docker-harbor-multi \
 	tls-smoke package-deb-amd64 package-rpm-amd64 \
-	run run-ingress reload config health metrics
+	run run-ingress reload config health metrics test-dns-provider-validate
 
 REBAR = rebar3
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
@@ -141,6 +141,9 @@ health:
 
 metrics:
 	curl -sf http://127.0.0.1:9080/api/metrics
+
+test-dns-provider-validate:
+	bash scripts/test-dns-provider-validate.sh
 
 tls-smoke: compile
 	@erlc -o scripts scripts/tls_pem_smoke.erl

@@ -208,6 +208,16 @@ export interface HealthReport {
     total: number;
     healthy: number;
   }>;
+  acme?: {
+    lego_installed?: boolean;
+    lego_path?: string | null;
+  };
+}
+
+export interface DnsProviderValidateResponse {
+  ok: boolean;
+  error?: string;
+  details?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +917,14 @@ export const api = {
     delete: async (id: string) => {
       await del<{ status: string }>(`/dns-providers/${encodeURIComponent(id)}`);
       return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+    },
+    validate: (provider_type: string, credentials?: Record<string, string> | null) => {
+      const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;
+      const creds = credentials && typeof credentials === 'object' ? { ...credentials } : {};
+      return post<DnsProviderValidateResponse>('/dns-providers/validate', {
+        provider_type: pt,
+        credentials: creds,
+      });
     },
   },
 

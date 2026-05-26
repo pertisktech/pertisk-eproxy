@@ -1,7 +1,23 @@
 %% @doc Generic Lego-based ACME DNS issuance fallback for providers not yet natively implemented.
 -module(pertisk_eproxy_acme_lego).
 
--export([obtain_certificate/8, provider_to_binary/1]).
+-export([obtain_certificate/8, validate_provider/3, provider_to_binary/1]).
+
+-spec validate_provider(atom() | binary(), map(), string()) -> {ok, map()} | {error, term()}.
+validate_provider(Provider, Creds, WorkRoot) when is_map(Creds), is_list(WorkRoot) ->
+    case os:find_executable("lego") of
+        false ->
+            {error, lego_not_found};
+        LegoBin ->
+            ProbePath = filename:join([WorkRoot, "lego", "validate"]),
+            ok = filelib:ensure_dir(filename:join(ProbePath, "x")),
+            case provider_env(Provider, Creds, ProbePath) of
+                {ok, EnvPairs} ->
+                    {ok, #{lego_path => iolist_to_binary(LegoBin), env_var_count => length(EnvPairs)}};
+                {error, _} = E ->
+                    E
+            end
+    end.
 
 -spec obtain_certificate(
     atom() | binary(),

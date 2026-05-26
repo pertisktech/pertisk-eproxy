@@ -3,7 +3,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, schedule_scan/0]).
+-export([start_link/0, schedule_scan/0, validate_dns_provider/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -38,6 +38,54 @@ terminate(_Reason, _State) ->
 
 code_change(_Old, State, _Extra) ->
     {ok, State}.
+
+-spec validate_dns_provider(binary() | list() | atom(), map()) -> {ok, map()} | {error, term()}.
+validate_dns_provider(ProviderType0, Creds0) when is_map(Creds0) ->
+    ProviderType = provider_type_to_binary(ProviderType0),
+    Kind = dns_provider_kind(ProviderType),
+    Creds = normalize_credentials(Creds0),
+    case Kind of
+        cloudflare -> validate_cloudflare(Creds);
+        digitalocean -> validate_digitalocean(Creds);
+        vultr -> validate_vultr(Creds);
+        porkbun -> validate_porkbun(Creds);
+        linode -> validate_linode(Creds);
+        hetzner -> validate_hetzner(Creds);
+        desec -> validate_desec(Creds);
+        gandi -> validate_gandi(Creds);
+        powerdns -> validate_powerdns(Creds);
+        duckdns -> validate_duckdns(Creds);
+        route53 -> validate_lego(route53, Creds);
+        godaddy -> validate_lego(godaddy, Creds);
+        namecheap -> validate_lego(namecheap, Creds);
+        ovh -> validate_lego(ovh, Creds);
+        googleclouddns -> validate_lego(googleclouddns, Creds);
+        azure -> validate_lego(azure, Creds);
+        rfc2136 -> validate_lego(rfc2136, Creds);
+        cloudns -> validate_lego(cloudns, Creds);
+        easydns -> validate_lego(easydns, Creds);
+        dnsmadeeasy -> validate_lego(dnsmadeeasy, Creds);
+        dynu -> validate_lego(dynu, Creds);
+        customlego ->
+            case lego_runtime_provider(customlego, Creds) of
+                {ok, Provider} -> validate_lego(Provider, Creds);
+                {error, _} = E -> E
+            end;
+        unsupported ->
+            %% Dynamic fallback: treat unknown provider_type as lego provider name.
+            validate_lego(string:lowercase(trim_space_binary(ProviderType)), Creds)
+    end.
+
+provider_type_to_binary(V) when is_binary(V) -> V;
+provider_type_to_binary(V) when is_list(V) -> unicode:characters_to_binary(V, utf8);
+provider_type_to_binary(V) when is_atom(V) -> atom_to_binary(V, utf8);
+provider_type_to_binary(V) -> unicode:characters_to_binary(io_lib:format("~p", [V]), utf8).
+
+normalize_credentials(M) when is_map(M) ->
+    maps:from_list([
+        {provider_type_to_binary(K), provider_type_to_binary(V)}
+     || {K, V} <- maps:to_list(M)
+    ]).
 
 %% ---------------------------------------------------------------------------
 scan_and_issue() ->
@@ -405,6 +453,167 @@ trim_space_right(Bin) when is_binary(Bin), byte_size(Bin) > 0 ->
     end;
 trim_space_right(Bin) ->
     Bin.
+
+validate_cloudflare(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"zone_id">>, <<"zoneId">>]) of
+                undefined ->
+                    {ok, #{provider => <<"cloudflare">>, message => <<"API token present">>}};
+                ZoneId ->
+                    case resolve_zone(Token, ZoneId, <<"example.com">>) of
+                        {_Zi, Zn} -> {ok, #{provider => <<"cloudflare">>, zone_name => zone_name_bin(Zn)}};
+                        _ -> {error, invalid_zone_id}
+                    end
+            end
+    end.
+
+validate_digitalocean(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"digitalocean">>, message => <<"API token present">>}};
+                Domain ->
+                    case pertisk_eproxy_dns_digitalocean:resolve_domain(Token, Domain, <<"example.com">>) of
+                        {ok, Dom} -> {ok, #{provider => <<"digitalocean">>, domain => Dom}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_vultr(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>, <<"api_key">>, <<"apiKey">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"zone">>, <<"zone_name">>, <<"zoneName">>, <<"domain">>]) of
+                undefined -> {ok, #{provider => <<"vultr">>, message => <<"API token present">>}};
+                Zone ->
+                    case pertisk_eproxy_dns_vultr:resolve_zone(Token, Zone, <<"example.com">>) of
+                        {ok, Zn} -> {ok, #{provider => <<"vultr">>, zone => Zn}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_porkbun(Creds) ->
+    case {
+        require_cred(Creds, [<<"api_key">>, <<"apiKey">>], missing_api_key),
+        require_cred(Creds, [<<"secret_api_key">>, <<"secretApiKey">>], missing_secret_api_key)
+    } of
+        {{error, _} = E, _} -> E;
+        {_, {error, _} = E} -> E;
+        {{ok, ApiKey}, {ok, SecretApiKey}} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"porkbun">>, message => <<"API keys present">>}};
+                Domain ->
+                    case pertisk_eproxy_dns_porkbun:resolve_domain(ApiKey, SecretApiKey, Domain, <<"example.com">>) of
+                        {ok, Dom} -> {ok, #{provider => <<"porkbun">>, domain => Dom}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_linode(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"linode">>, message => <<"API token present">>}};
+                Domain ->
+                    case pertisk_eproxy_dns_linode:resolve_domain(Token, Domain, <<"example.com">>) of
+                        {ok, #{domain := Dom}} -> {ok, #{provider => <<"linode">>, domain => Dom}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_hetzner(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"hetzner">>, message => <<"API token present">>}};
+                Zone ->
+                    case pertisk_eproxy_dns_hetzner:resolve_zone(Token, Zone, <<"example.com">>) of
+                        {ok, #{zone_name := Zn}} -> {ok, #{provider => <<"hetzner">>, zone => Zn}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_desec(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"desec">>, message => <<"API token present">>}};
+                Domain ->
+                    case pertisk_eproxy_dns_desec:resolve_domain(Token, Domain, <<"example.com">>) of
+                        {ok, Dom} -> {ok, #{provider => <<"desec">>, domain => Dom}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_gandi(Creds) ->
+    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+        {error, _} = E -> E;
+        {ok, Token} ->
+            case cred_get(Creds, [<<"domain">>, <<"zone_name">>, <<"zoneName">>]) of
+                undefined -> {ok, #{provider => <<"gandi">>, message => <<"API token present">>}};
+                Domain ->
+                    case pertisk_eproxy_dns_gandi:resolve_domain(Token, Domain, <<"example.com">>) of
+                        {ok, Dom} -> {ok, #{provider => <<"gandi">>, domain => Dom}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_powerdns(Creds) ->
+    case {
+        require_cred(Creds, [<<"api_url">>, <<"apiUrl">>], missing_api_url),
+        require_cred(Creds, [<<"api_key">>, <<"apiKey">>], missing_api_key)
+    } of
+        {{error, _} = E, _} -> E;
+        {_, {error, _} = E} -> E;
+        {{ok, ApiUrl}, {ok, ApiKey}} ->
+            Sid = cred_get(Creds, [<<"server_id">>, <<"serverId">>]),
+            case cred_get(Creds, [<<"zone_name">>, <<"zoneName">>, <<"domain">>]) of
+                undefined -> {ok, #{provider => <<"powerdns">>, message => <<"API URL and key present">>}};
+                Zone ->
+                    case pertisk_eproxy_dns_powerdns:resolve_zone(ApiUrl, ApiKey, Sid, Zone, <<"example.com">>) of
+                        {ok, #{zone_name := Zn}} -> {ok, #{provider => <<"powerdns">>, zone => Zn}};
+                        {error, _} = E2 -> E2
+                    end
+            end
+    end.
+
+validate_duckdns(Creds) ->
+    case {
+        require_cred(Creds, [<<"domain">>], missing_domain),
+        require_cred(Creds, [<<"token">>], missing_token)
+    } of
+        {{error, _} = E, _} -> E;
+        {_, {error, _} = E} -> E;
+        {{ok, _}, {ok, _}} ->
+            {ok, #{provider => <<"duckdns">>, message => <<"Domain and token present (non-destructive only)">>}}
+    end.
+
+validate_lego(Provider, Creds) ->
+    case pertisk_eproxy_acme_lego:validate_provider(Provider, Creds, acme_data_dir()) of
+        {ok, Info} ->
+            {ok, Info#{provider => pertisk_eproxy_acme_lego:provider_to_binary(Provider), mode => <<"lego">>}};
+        {error, _} = E ->
+            E
+    end.
+
+require_cred(Creds, Keys, Err) ->
+    case cred_get(Creds, Keys) of
+        undefined -> {error, Err};
+        V -> {ok, V}
+    end.
 
 issue_cloudflare(DbPath, Site, Host, Row) ->
     Creds = maps:get(credentials, Row, #{}),
@@ -1341,7 +1550,7 @@ ssl_job(Host, Phase, Msg) when is_binary(Host), is_binary(Phase), is_binary(Msg)
     }).
 
 ssl_job_err(Host, Err) when is_binary(Host) ->
-    Msg = iolist_to_binary(io_lib:format("~p", [Err])),
+    Msg = humanize_acme_error(Err),
     pertisk_eproxy_admin_realtime:ssl_job(#{
         host => Host,
         phase => <<"error">>,
@@ -1351,6 +1560,98 @@ ssl_job_err(Host, Err) when is_binary(Host) ->
         timer:sleep(60000),
         pertisk_eproxy_admin_realtime:clear_ssl_job(Host)
     end).
+
+humanize_acme_error({lego_not_found, Hint}) when is_binary(Hint) ->
+    Hint;
+humanize_acme_error(lego_not_found) ->
+    <<"Lego binary is not installed on this node.">>;
+humanize_acme_error({missing_credential, Key}) ->
+    iolist_to_binary([<<"Missing required credential: ">>, provider_type_to_binary(Key)]);
+humanize_acme_error(missing_api_token) -> <<"Missing API token.">>;
+humanize_acme_error(missing_api_key) -> <<"Missing API key.">>;
+humanize_acme_error(missing_secret_api_key) -> <<"Missing secret API key.">>;
+humanize_acme_error(missing_api_url) -> <<"Missing API URL.">>;
+humanize_acme_error(missing_domain) -> <<"Missing domain.">>;
+humanize_acme_error(missing_token) -> <<"Missing token.">>;
+humanize_acme_error(missing_lego_provider) ->
+    <<"Missing lego provider name in credentials (lego_provider).">>;
+humanize_acme_error(missing_env_vars_json) ->
+    <<"Missing env vars for custom lego provider (env_vars_json or UPPERCASE env keys).">>;
+humanize_acme_error(invalid_env_vars_json) ->
+    <<"Invalid env_vars_json. It must be a JSON object with env var names and values.">>;
+humanize_acme_error(missing_project_id) ->
+    <<"Missing Google Cloud project_id credential.">>;
+humanize_acme_error(missing_service_account_json) ->
+    <<"Missing Google Cloud service_account_json credential.">>;
+humanize_acme_error(terms_not_agreed) ->
+    <<"ACME terms are not agreed. Enable acme_terms_agreed in configuration first.">>;
+humanize_acme_error({order_invalid, _Ord, Failures}) when is_list(Failures) ->
+    case Failures of
+        [] -> <<"ACME order became invalid. Check DNS TXT propagation and provider credentials.">>;
+        _ ->
+            First = hd(Failures),
+            iolist_to_binary([
+                <<"ACME order invalid. First challenge failure: ">>,
+                iolist_to_binary(io_lib:format("~p", [First]))
+            ])
+    end;
+humanize_acme_error({dns_add, Reason}) ->
+    iolist_to_binary([<<"Failed to create DNS TXT record: ">>, humanize_acme_error(Reason)]);
+humanize_acme_error({dns_del, Reason}) ->
+    iolist_to_binary([<<"Failed to remove DNS TXT record: ">>, humanize_acme_error(Reason)]);
+humanize_acme_error({lego_failed, Out0}) ->
+    Out = iolist_to_binary(Out0),
+    FirstLine = first_non_empty_line(Out),
+    case FirstLine of
+        <<>> -> <<"Lego command failed.">>;
+        _ -> iolist_to_binary([<<"Lego command failed: ">>, humanize_lego_failure_line(FirstLine)])
+    end;
+humanize_acme_error({http, Status, _Body}) when is_integer(Status) ->
+    iolist_to_binary([<<"HTTP request failed with status ">>, integer_to_binary(Status), <<".">>]);
+humanize_acme_error({error, Inner}) ->
+    humanize_acme_error(Inner);
+humanize_acme_error(Err) ->
+    iolist_to_binary(io_lib:format("~p", [Err])).
+
+first_non_empty_line(Bin) when is_binary(Bin) ->
+    Lines = binary:split(Bin, <<"\n">>, [global]),
+    case lists:dropwhile(fun(L) -> trim_space_binary(L) =:= <<>> end, Lines) of
+        [H | _] -> trim_space_binary(H);
+        [] -> <<>>
+    end.
+
+humanize_lego_failure_line(Line0) when is_binary(Line0) ->
+    Line = trim_space_binary(Line0),
+    AuthFail = contains_ci(Line, <<"unauthorized">>) orelse contains_ci(Line, <<"forbidden">>) orelse
+        contains_ci(Line, <<"authentication failed">>) orelse contains_ci(Line, <<"invalid api">>),
+    TimeoutFail = contains_ci(Line, <<"timeout">>) orelse contains_ci(Line, <<"deadline exceeded">>) orelse
+        contains_ci(Line, <<"i/o timeout">>),
+    ResolveFail = contains_ci(Line, <<"no such host">>) orelse
+        contains_ci(Line, <<"temporary failure in name resolution">>) orelse
+        contains_ci(Line, <<"server misbehaving">>),
+    RateLimitFail = contains_ci(Line, <<"rate limit">>) orelse contains_ci(Line, <<"too many requests">>) orelse
+        contains_ci(Line, <<"status code: 429">>),
+    ZoneLookupFail = contains_ci(Line, <<"nxdomain">>) orelse contains_ci(Line, <<"servfail">>),
+    case true of
+        _ when AuthFail ->
+            <<"provider authentication failed (check API key/token and account permissions)">>;
+        _ when TimeoutFail ->
+            <<"timed out while contacting DNS provider API (retry and verify network/DNS reachability)">>;
+        _ when ResolveFail ->
+            <<"DNS resolution failed while contacting provider API (check resolver/network)">>;
+        _ when RateLimitFail ->
+            <<"provider rate-limited the request; wait and retry">>;
+        _ when ZoneLookupFail ->
+            <<"DNS zone lookup failed (NXDOMAIN/SERVFAIL). Check zone name and authoritative DNS.">>;
+        _ ->
+            Line
+    end.
+
+contains_ci(Haystack, Needle) when is_binary(Haystack), is_binary(Needle) ->
+    case binary:match(string:lowercase(Haystack), string:lowercase(Needle)) of
+        nomatch -> false;
+        _ -> true
+    end.
 
 ssl_job_done(Host, Msg) when is_binary(Host), is_binary(Msg) ->
     pertisk_eproxy_admin_realtime:ssl_job(#{

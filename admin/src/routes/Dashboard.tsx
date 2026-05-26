@@ -291,6 +291,12 @@ export default function Dashboard() {
                   <dd className="mono">{pi?.hostname ?? '—'}</dd>
                   <dt>Node</dt>
                   <dd className="mono">{pi?.node ?? '—'}</dd>
+                  <dt>Lego DNS CLI</dt>
+                  <dd className="mono">
+                    {health?.acme?.lego_installed
+                      ? `Installed${health?.acme?.lego_path ? ` (${health.acme.lego_path})` : ''}`
+                      : 'Not installed'}
+                  </dd>
                 </dl>
               </div>
             </div>

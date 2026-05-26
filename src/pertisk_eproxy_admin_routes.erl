@@ -28,6 +28,7 @@ api_routes() ->
         {"/api/certificates/:id/import", pertisk_eproxy_admin_handler, certificate_import},
         {"/api/certificates/:id", pertisk_eproxy_admin_handler, certificate},
         {"/api/dns-providers", pertisk_eproxy_admin_handler, dns_providers},
+        {"/api/dns-providers/validate", pertisk_eproxy_admin_handler, dns_provider_validate},
         {"/api/dns-providers/:id", pertisk_eproxy_admin_handler, dns_provider},
         {"/api/tls/listener", pertisk_eproxy_admin_handler, tls_listener},
         {"/api/config", pertisk_eproxy_admin_handler, config},

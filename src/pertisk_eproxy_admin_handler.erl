@@ -51,6 +51,7 @@ ingress_viewer_blocked(Method, Resource) ->
 ingress_mutating(<<"GET">>, _) -> false;
 ingress_mutating(<<"HEAD">>, _) -> false;
 ingress_mutating(<<"POST">>, reload) -> false;
+ingress_mutating(<<"POST">>, dns_provider_validate) -> false;
 ingress_mutating(_, ingress_live) -> false;
 ingress_mutating(_, ingress_ready) -> false;
 ingress_mutating(_, ingress_status) -> false;
@@ -536,6 +537,23 @@ handle(<<"DELETE">>, dns_provider, Req) ->
             end
     end;
 
+handle(<<"POST">>, dns_provider_validate, Req) ->
+    with_json_body(Req, fun(Body, Req2) ->
+        Pt = bin_field(maps:get(<<"provider_type">>, Body, <<>>)),
+        Cred = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
+        case Pt of
+            <<>> ->
+                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+            _ ->
+                case pertisk_eproxy_acme_dns:validate_dns_provider(Pt, Cred) of
+                    {ok, Details} ->
+                        json_reply(200, #{<<"ok">> => true, <<"details">> => Details}, Req2);
+                    {error, Reason} ->
+                        json_reply(400, #{<<"ok">> => false, <<"error">> => format_validate_error(Reason)}, Req2)
+                end
+        end
+    end);
+
 handle(<<"POST">>, tls_listener, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
         CertPem = bin_field(maps:get(<<"cert_pem">>, Body, <<>>)),
@@ -683,7 +701,7 @@ handle(<<"GET">>, health, Req) ->
                 #{name => Name, total => 0, healthy => 0}
         end
     end, Backends),
-    json_reply(200, #{backends => Health}, Req);
+    json_reply(200, #{backends => Health, acme => lego_health_snapshot()}, Req);
 
 handle(<<"GET">>, metrics, Req) ->
     Output = prometheus_text_format:format(),
@@ -847,6 +865,19 @@ hex_bin(Bin) when is_binary(Bin) ->
 error_reply(Status, Reason, Req) ->
     Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
     json_reply(Status, #{error => Msg}, Req).
+
+format_validate_error(Reason) when is_binary(Reason) ->
+    Reason;
+format_validate_error(Reason) ->
+    iolist_to_binary(io_lib:format("~p", [Reason])).
+
+lego_health_snapshot() ->
+    case os:find_executable("lego") of
+        false ->
+            #{lego_installed => false, lego_path => null};
+        Path ->
+            #{lego_installed => true, lego_path => iolist_to_binary(Path)}
+    end.
 
 not_found_reply(Req) ->
     json_reply(404, #{error => <<"not found">>}, Req).
