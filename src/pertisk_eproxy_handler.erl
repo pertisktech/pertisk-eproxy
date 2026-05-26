@@ -10,7 +10,7 @@
 %%   - Forwards X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Proto-Version
 %%   - Preserves original Host header to upstream
 %%   - Streaming response body (chunked friendly)
-%%   - Per-request timeout (default 60 s)
+%%   - Per-request timeout (configurable; default 180 s)
 
 -module(pertisk_eproxy_handler).
 -behaviour(cowboy_handler).
@@ -25,7 +25,7 @@
     terminate/3
 ]).
 
--define(REQUEST_TIMEOUT, 60000).
+-define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(CONNECT_TIMEOUT, 10000).
 
 %% @doc Prometheus `proto` label for TCP/TLS Cowboy requests (HTTP/3 uses the QUIC gateway).
@@ -276,6 +276,7 @@ do_proxy(
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
     ReqBodyBytes = byte_size(Body),
+    TimeoutMs = request_timeout_ms(),
 
     Result =
         try
@@ -292,34 +293,18 @@ do_proxy(
                         ReqBodyBytes
                     );
                 _ ->
-                    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                    case gun:await(ConnPid, StreamRef, TimeoutMs) of
                         {response, nofin, Status, RespHeaders} ->
-                            case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
-                                {ok, RespBody} ->
-                                    RespBin = iolist_to_binary(RespBody),
-                                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, byte_size(RespBin)),
-                                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-                                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                                    CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
-                                    {OutHeaders, OutBody} =
-                                        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
-                                    Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
-                                    {ok, Status, Req2};
-                                {ok, RespBody, _Trailers} ->
-                                    RespBin = iolist_to_binary(RespBody),
-                                    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, byte_size(RespBin)),
-                                    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-                                    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                                    CowboyHeaders2 = with_tracking_id_header(TrackingId, CowboyHeaders),
-                                    {OutHeaders, OutBody} =
-                                        pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req1, CowboyHeaders2, RespBin),
-                                    Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req1),
-                                    {ok, Status, Req2};
-                                {error, Reason} ->
-                                    {error, Reason};
-                                Other ->
-                                    {error, {await_body_unexpected, Other}}
-                            end;
+                            do_proxy_http_streaming(
+                                Req,
+                                ConnPid,
+                                StreamRef,
+                                Status,
+                                RespHeaders,
+                                Host,
+                                TrackingId,
+                                ReqBodyBytes
+                            );
                         {response, fin, Status, RespHeaders} ->
                             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
                             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
@@ -394,6 +379,49 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes)
             {error, {await_response_unexpected, Other}}
     end.
 
+%% For long-lived chunked HTTP responses (for example Kubernetes watch APIs),
+%% stream upstream body chunks directly to the client instead of waiting for a
+%% terminal body frame that may arrive after much longer than REQUEST_TIMEOUT.
+do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, TrackingId, ReqBodyBytes) ->
+    {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
+    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+    StreamReq = cowboy_req:stream_reply(
+        Status,
+        with_tracking_id_header(TrackingId, CowboyHeaders),
+        Req1
+    ),
+    proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
+
+proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
+    case gun:await(ConnPid, StreamRef, infinity) of
+        {data, nofin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            ok = cowboy_req:stream_body(ChunkBin, nofin, Req),
+            proxy_http_stream_loop(
+                ConnPid,
+                StreamRef,
+                Req,
+                Host,
+                ReqBodyBytes,
+                RespBytes + byte_size(ChunkBin),
+                Status
+            );
+        {data, fin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            ok = cowboy_req:stream_body(ChunkBin, fin, Req),
+            FinalRespBytes = RespBytes + byte_size(ChunkBin),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, FinalRespBytes),
+            {ok, Status, Req};
+        {trailers, Trailers} ->
+            ok = maybe_stream_trailers(Req, Trailers),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            {ok, Status, Req};
+        {error, Reason} ->
+            {error, Reason};
+        Other ->
+            {error, {await_stream_unexpected, Other}}
+    end.
+
 proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
     case gun:await(ConnPid, StreamRef, infinity) of
         {data, nofin, Chunk} ->
@@ -447,6 +475,8 @@ maybe_stream_trailers(_Req, _Trailers) ->
 retryable_upstream_error({down, normal}) -> true;
 retryable_upstream_error({down, shutdown}) -> true;
 retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
+retryable_upstream_error(timeout) -> true;
+retryable_upstream_error({timeout, _}) -> true;
 retryable_upstream_error(_) -> false.
 
 maybe_invalidate_connection(ConnPid, Reason) ->
@@ -878,3 +908,10 @@ normalize_host(H) when is_binary(H) ->
     end;
 normalize_host(H) when is_list(H) ->
     normalize_host(list_to_binary(H)).
+
+request_timeout_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_REQUEST_TIMEOUT_MS
+    end.

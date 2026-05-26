@@ -18,8 +18,9 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_POOL_SIZE, 16).
-%% 4 minutes — safely below common firewall/NAT idle TCP timeouts (usually 5–30 min).
--define(DEFAULT_IDLE_TIMEOUT_MS, 240000).
+%% 45 seconds — below common 60s LB/NAT idle TCP cutoffs seen with Kubernetes APIs.
+%% This prevents reusing half-open TLS sockets that later fail as 60s upstream timeouts.
+-define(DEFAULT_IDLE_TIMEOUT_MS, 45000).
 %% Sweep interval: evict stale connections proactively every minute.
 -define(SWEEP_INTERVAL_MS, 60000).
 

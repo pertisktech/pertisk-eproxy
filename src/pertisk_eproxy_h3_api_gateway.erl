@@ -17,7 +17,7 @@
 -define(H3_BODY_TIMEOUT_SMALL_POST_MS, 4000).
 -define(H3_BODY_TIMEOUT_LARGE_CAP_MS, 120000).
 -define(H3_BODY_AUTH_CAP_MS, 3000).
--define(REQUEST_TIMEOUT, 60000).
+-define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(CONNECT_TIMEOUT, 10000).
 
 start(Config) ->
@@ -742,12 +742,13 @@ do_proxy_via_gun(
     GunOpts,
     RetryCount
 ) ->
+    TimeoutMs = request_timeout_ms(),
     Result =
         try
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
-            case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+            case gun:await(ConnPid, StreamRef, TimeoutMs) of
                 {response, nofin, Status, RespHeaders} ->
-                    case gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+                    case gun:await_body(ConnPid, StreamRef, TimeoutMs) of
                         {ok, RespBody} ->
                             {ok, Status, gun_resp_headers_to_h3(RespHeaders),
                                 safe_iolist_to_binary(RespBody)};
@@ -802,7 +803,16 @@ do_proxy_via_gun(
 retryable_upstream_error({down, normal}) -> true;
 retryable_upstream_error({down, shutdown}) -> true;
 retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
+retryable_upstream_error(timeout) -> true;
+retryable_upstream_error({timeout, _}) -> true;
 retryable_upstream_error(_) -> false.
+
+request_timeout_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_REQUEST_TIMEOUT_MS
+    end.
 
 maybe_invalidate_connection(ConnPid, Reason) ->
     case is_connection_fatal_error(Reason) of
