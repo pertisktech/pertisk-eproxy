@@ -91,9 +91,6 @@ chown -R $PKG_NAME:$PKG_NAME /opt/$PKG_NAME || true
 cat << MSG
 Pertisk eProxy installed (SQLite storage).
 
-Verify the service started:
-  journalctl -u $PKG_NAME -n 30 --no-pager | grep -E 'SQLite|pertisk_eproxy'
-
 Enable and start:
   sudo systemctl enable $PKG_NAME --now
 
