@@ -297,10 +297,13 @@ export default function DnsProviders() {
     setDeletingId(id);
     api.dnsProviders
       .delete(id)
-      .then(async (optimisticRows) => {
-        setList(optimisticRows);
-        toast.success('DNS provider removed.');
-        await reconcileListAfterSave(optimisticRows);
+      .then(({ ok, rows, reason }) => {
+        setList(rows);
+        if (ok) {
+          toast.success('DNS provider removed.');
+        } else {
+          toast.error(reason ?? 'Failed to delete DNS provider.');
+        }
       })
       .catch((e) => toast.error(e instanceof Error ? e.message : 'Failed to delete'))
       .finally(() => setDeletingId(null));

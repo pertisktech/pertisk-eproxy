@@ -468,7 +468,16 @@ persist_runtime_config(Config) ->
     end.
 
 persist_runtime_config(DbPath, Config) ->
-    pertisk_eproxy_db:put_runtime_config(DbPath, Config).
+    case pertisk_eproxy_db:put_runtime_config(DbPath, Config) of
+        ok ->
+            DnsProviders = maps:get(dns_providers, Config, []),
+            case pertisk_eproxy_db:replace_dns_providers(DbPath, DnsProviders) of
+                ok -> ok;
+                {error, Reason} -> {error, {persist_dns_providers, Reason}}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 db_file() ->
     case application:get_env(pertisk_eproxy, db_file) of

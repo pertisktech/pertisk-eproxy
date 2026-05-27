@@ -191,6 +191,12 @@ export interface DnsProviderRow {
   created_at: string;
 }
 
+export interface DnsProviderDeleteResult {
+  ok: boolean;
+  rows: DnsProviderRow[];
+  reason?: string;
+}
+
 function dnsProviderRowsFromConfig(c: ProxyConfig): DnsProviderRow[] {
   const entries = normalizeDnsProviders(c.dns_providers);
   return entries.map((e, i) => ({
@@ -794,6 +800,32 @@ function ensureDnsProviderRows(value: unknown): DnsProviderRow[] {
   throw new Error('DNS providers API is unavailable. Restart proxy to load latest backend routes.');
 }
 
+function isHttpStatusError(error: unknown, status: number): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.startsWith(`${status}:`);
+}
+
+function normalizeDnsProviderKey(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+async function deleteDnsProviderViaConfigFallback(targetName: string): Promise<boolean> {
+  const nameKey = normalizeDnsProviderKey(targetName);
+  if (!nameKey) return false;
+  const cfg = await get<ProxyConfig>('/config');
+  const currentEntries = normalizeDnsProviders(cfg.dns_providers);
+  const filtered = currentEntries.filter((entry) => normalizeDnsProviderKey(entry.name) !== nameKey);
+  if (filtered.length === currentEntries.length) return false;
+  const nextCfg: ProxyConfig = {
+    ...cfg,
+    dns_providers: dnsProvidersForPut(filtered),
+  };
+  await put<{ status: string }>('/config', prepareConfigForPut(nextCfg));
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // API surface
 // ---------------------------------------------------------------------------
@@ -929,9 +961,83 @@ export const api = {
       });
       return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
     },
-    delete: async (id: string) => {
-      await del<{ status: string }>(`/dns-providers/${encodeURIComponent(id)}`);
-      return ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+    delete: async (id: string): Promise<DnsProviderDeleteResult> => {
+      const trimmedId = String(id).trim();
+      const rowsBefore = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+      const target = rowsBefore.find((r) => String(r.id) === trimmedId) ?? null;
+      const targetNameKey = normalizeDnsProviderKey(target?.name);
+      let lastErrorMessage: string | undefined;
+
+      const stillExistsIn = (rows: DnsProviderRow[]): boolean =>
+        rows.some((r) => {
+          if (String(r.id) === trimmedId) return true;
+          if (!targetNameKey) return false;
+          return normalizeDnsProviderKey(r.name) === targetNameKey;
+        });
+
+      // Prefer config-based deletion to avoid route/version mismatches on DELETE /dns-providers/:id.
+      if (target?.name) {
+        try {
+          const changed = await deleteDnsProviderViaConfigFallback(target.name);
+          if (changed) {
+            const rowsAfterConfig = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+            return {
+              ok: !stillExistsIn(rowsAfterConfig),
+              rows: rowsAfterConfig,
+              reason: !stillExistsIn(rowsAfterConfig) ? undefined : 'Delete did not remove provider',
+            };
+          }
+        } catch (err) {
+          lastErrorMessage = err instanceof Error ? err.message : lastErrorMessage;
+        }
+      }
+
+      try {
+        if (target?.name) {
+          await del<{ status: string }>(`/dns-providers/${encodeURIComponent(target.name)}`);
+        } else {
+          await del<{ status: string }>(`/dns-providers/${encodeURIComponent(trimmedId)}`);
+        }
+      } catch (err) {
+        lastErrorMessage = err instanceof Error ? err.message : 'Delete failed';
+        if (isHttpStatusError(err, 404)) {
+          try {
+            await del<{ status: string }>(`/dns-providers/${encodeURIComponent(trimmedId)}`);
+          } catch (err2) {
+            lastErrorMessage = err2 instanceof Error ? err2.message : lastErrorMessage;
+            const latestRows = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+            const stillExists = stillExistsIn(latestRows);
+            if (stillExists) {
+              if (target?.name) {
+                try {
+                  const changed = await deleteDnsProviderViaConfigFallback(target.name);
+                  if (changed) {
+                    const rowsAfterConfig = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+                    return {
+                      ok: !stillExistsIn(rowsAfterConfig),
+                      rows: rowsAfterConfig,
+                      reason: !stillExistsIn(rowsAfterConfig) ? undefined : lastErrorMessage,
+                    };
+                  }
+                } catch {
+                  // keep original delete error below
+                }
+              }
+              return { ok: false, rows: latestRows, reason: lastErrorMessage };
+            }
+            return { ok: true, rows: latestRows };
+          }
+        } else {
+          const latestRows = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+          return { ok: !stillExistsIn(latestRows), rows: latestRows, reason: lastErrorMessage };
+        }
+      }
+      const rowsAfter = ensureDnsProviderRows(await get<unknown>('/dns-providers'));
+      return {
+        ok: !stillExistsIn(rowsAfter),
+        rows: rowsAfter,
+        reason: stillExistsIn(rowsAfter) ? lastErrorMessage ?? 'Delete did not remove provider' : undefined,
+      };
     },
     validate: (provider_type: string, credentials?: Record<string, string> | null) => {
       const pt = (provider_type || DNS_LABEL_PROVIDER_ID).trim() || DNS_LABEL_PROVIDER_ID;

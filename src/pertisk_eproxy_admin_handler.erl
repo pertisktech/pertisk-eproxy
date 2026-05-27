@@ -489,10 +489,8 @@ handle(<<"PUT">>, dns_provider, Req) ->
     end;
 
 handle(<<"DELETE">>, dns_provider, Req) ->
-    IdBin = cowboy_req:binding(id, Req),
-    case parse_int_param(IdBin) of
-        {error, bad_id} ->
-            json_reply(400, #{<<"error">> => <<"invalid dns provider id">>}, Req);
+    IdOrName = cowboy_req:binding(id, Req),
+    case parse_int_param(IdOrName) of
         {ok, Id} ->
             case dns_provider_name_by_id(Id) of
                 {ok, Name} ->
@@ -514,6 +512,22 @@ handle(<<"DELETE">>, dns_provider, Req) ->
                     not_found_reply(Req);
                 {error, Reason} ->
                     error_reply(400, Reason, Req)
+            end;
+        {error, bad_id} ->
+            Name = json_text(IdOrName),
+            case dns_provider_in_use(Name) of
+                true ->
+                    json_reply(400, #{<<"error">> => <<"DNS provider is used by one or more sites">>}, Req);
+                false ->
+                    case pertisk_eproxy_db:delete_dns_provider_by_name(db_file_path(), Name) of
+                        ok ->
+                            sync_dns_providers_into_runtime_config(),
+                            json_reply(200, #{<<"status">> => <<"deleted">>}, Req);
+                        {error, not_found} ->
+                            not_found_reply(Req);
+                        {error, Reason} ->
+                            error_reply(400, Reason, Req)
+                    end
             end
     end;
 
@@ -1594,22 +1608,19 @@ update_sites_cert_name(PrevName, NextName0) ->
 parse_dns_credentials(M) when is_map(M) -> M;
 parse_dns_credentials(_) -> #{}.
 
-dns_provider_db_row_to_json(#{id := Id, name := Name, provider_type := Pt, credentials := Cred}) ->
+dns_provider_db_row_to_json(#{id := Id, name := Name, provider_type := Pt, credentials := Cred} = Row) ->
     #{
         <<"id">> => integer_to_binary(Id),
         <<"name">> => json_text(Name),
         <<"provider_type">> => json_text(Pt),
         <<"credentials">> => dns_cred_to_json(Cred),
-        <<"created_at">> => <<>>
+        <<"created_at">> => json_text(maps:get(created_at, Row, <<>>))
     }.
 
 dns_provider_name_by_id(Id) ->
-    case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
-        {ok, Rows} ->
-            case lists:search(fun(#{id := RowId}) -> RowId =:= Id end, Rows) of
-                {value, #{name := Name}} -> {ok, json_text(Name)};
-                false -> {error, not_found}
-            end;
+    case pertisk_eproxy_db:get_dns_provider_by_id(db_file_path(), Id) of
+        {ok, #{name := Name}} ->
+            {ok, json_text(Name)};
         {error, Reason} ->
             {error, Reason}
     end.

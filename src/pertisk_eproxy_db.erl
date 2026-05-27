@@ -23,9 +23,13 @@
     delete_certificate/2,
     ensure_certificates_seeded/2,
     list_dns_providers/1,
+    get_dns_provider_by_id/2,
+    get_dns_provider_by_name/2,
+    replace_dns_providers/2,
     insert_dns_provider/4,
     update_dns_provider/5,
     delete_dns_provider/2,
+    delete_dns_provider_by_name/2,
     ensure_dns_providers_seeded/2,
     get_site/2,
     list_sites/1,
@@ -130,7 +134,8 @@ migrate_schema(DbPath) ->
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
         provider_type TEXT NOT NULL,
-        credentials_json TEXT NOT NULL DEFAULT '{}'
+        credentials_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS admin_users (
         username TEXT PRIMARY KEY,
@@ -484,8 +489,18 @@ sqlite_exec_ignore_duplicate_column(DbPath, SQL) ->
     end.
 
 ensure_dns_providers_table(DbPath) ->
-    SQL = "CREATE TABLE IF NOT EXISTS dns_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, provider_type TEXT NOT NULL, credentials_json TEXT NOT NULL DEFAULT '{}');",
-    sqlite_exec(DbPath, SQL).
+    SQL = "CREATE TABLE IF NOT EXISTS dns_providers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, provider_type TEXT NOT NULL, credentials_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT '');",
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE dns_providers ADD COLUMN created_at TEXT"),
+            _ = backfill_dns_provider_created_at(DbPath),
+            ok;
+        Err ->
+            Err
+    end.
+
+backfill_dns_provider_created_at(DbPath) ->
+    sqlite_exec(DbPath, "UPDATE dns_providers SET created_at = datetime('now') WHERE created_at IS NULL OR created_at = ''").
 
 %% ---------------------------------------------------------------------------
 %% Local admin users (SQLite; Bearer sessions issued by pertisk_eproxy_auth)
@@ -818,7 +833,7 @@ ensure_certificates_seeded(DbPath, Names) ->
 list_dns_providers(DbPath) ->
     case ensure_dns_providers_table(DbPath) of
         ok ->
-            SQL = "SELECT id, name, provider_type, credentials_json FROM dns_providers ORDER BY id",
+            SQL = "SELECT id, name, provider_type, credentials_json, created_at FROM dns_providers ORDER BY id",
             case sqlite_query(DbPath, SQL) of
                 {ok, Rows} ->
                     {ok, [dns_row_to_map(Row) || Row <- Rows]};
@@ -827,6 +842,93 @@ list_dns_providers(DbPath) ->
             end;
         {error, Reason} ->
             {error, Reason}
+    end.
+
+-spec get_dns_provider_by_id(string(), integer()) -> {ok, map()} | {error, not_found | term()}.
+get_dns_provider_by_id(DbPath, Id) when is_integer(Id) ->
+    case ensure_dns_providers_table(DbPath) of
+        ok ->
+            SQL =
+                "SELECT id, name, provider_type, credentials_json, created_at FROM dns_providers WHERE id = " ++
+                integer_to_list(Id) ++ " LIMIT 1",
+            case sqlite_query(DbPath, SQL) of
+                {ok, [Row | _]} ->
+                    {ok, dns_row_to_map(Row)};
+                {ok, []} ->
+                    {error, not_found};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec get_dns_provider_by_name(string(), binary() | list()) -> {ok, map()} | {error, not_found | term()}.
+get_dns_provider_by_name(DbPath, Name0) ->
+    Name = string:trim(to_list(Name0)),
+    case Name of
+        [] ->
+            {error, not_found};
+        _ ->
+            case ensure_dns_providers_table(DbPath) of
+                ok ->
+                    SQL =
+                        "SELECT id, name, provider_type, credentials_json, created_at FROM dns_providers " ++
+                        "WHERE lower(trim(name)) = lower(trim('" ++ sql_escape(Name) ++ "')) LIMIT 1",
+                    case sqlite_query(DbPath, SQL) of
+                        {ok, [Row | _]} ->
+                            {ok, dns_row_to_map(Row)};
+                        {ok, []} ->
+                            {error, not_found};
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec replace_dns_providers(string(), [map()]) -> ok | {error, term()}.
+replace_dns_providers(DbPath, Providers0) ->
+    Providers = [P || P <- Providers0, is_map(P)],
+    case ensure_dns_providers_table(DbPath) of
+        ok ->
+            case sqlite_exec(DbPath, "DELETE FROM dns_providers") of
+                ok ->
+                    replace_dns_providers_insert(DbPath, Providers);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+replace_dns_providers_insert(_DbPath, []) ->
+    ok;
+replace_dns_providers_insert(DbPath, [P | Rest]) ->
+    Name = string:trim(to_list(maps:get(name, P, ""))),
+    Pt = string:trim(to_list(maps:get(provider_type, P, "label"))),
+    Cred =
+        case maps:get(credentials, P, #{}) of
+            M when is_map(M) -> M;
+            _ -> #{}
+        end,
+    case {Name, Pt} of
+        {[], _} ->
+            replace_dns_providers_insert(DbPath, Rest);
+        {_, []} ->
+            replace_dns_providers_insert(DbPath, Rest);
+        _ ->
+            Cj = sql_escape(binary_to_list(thoas:encode(Cred))),
+            SQL =
+                "INSERT INTO dns_providers(name, provider_type, credentials_json, created_at) VALUES('" ++
+                sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "', datetime('now'))",
+            case sqlite_exec(DbPath, SQL) of
+                ok ->
+                    replace_dns_providers_insert(DbPath, Rest);
+                {error, Reason} ->
+                    {error, Reason}
+            end
     end.
 
 dns_row_to_map(Row) ->
@@ -840,7 +942,8 @@ dns_row_to_map(Row) ->
         id => maps:get(<<"id">>, Row),
         name => maps:get(<<"name">>, Row),
         provider_type => maps:get(<<"provider_type">>, Row),
-        credentials => Creds
+        credentials => Creds,
+        created_at => maps:get(<<"created_at">>, Row, <<>>)
     }.
 
 -spec insert_dns_provider(string(), binary() | list(), binary() | list(), map()) -> {ok, integer()} | {error, term()}.
@@ -854,8 +957,8 @@ insert_dns_provider(DbPath, Name0, ProviderType0, Credentials) ->
         _ ->
             case ensure_dns_providers_table(DbPath) of
                 ok ->
-                    SQL = "INSERT INTO dns_providers(name, provider_type, credentials_json) VALUES('" ++
-                        sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "')",
+                    SQL = "INSERT INTO dns_providers(name, provider_type, credentials_json, created_at) VALUES('" ++
+                        sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "', datetime('now'))",
                     case sqlite_exec(DbPath, SQL) of
                         ok ->
                             case sqlite_query(DbPath, "SELECT last_insert_rowid() AS id") of
@@ -921,6 +1024,36 @@ delete_dns_provider(DbPath, Id) ->
             {error, Reason}
     end.
 
+-spec delete_dns_provider_by_name(string(), binary() | list()) -> ok | {error, term()}.
+delete_dns_provider_by_name(DbPath, Name0) ->
+    Name = string:trim(to_list(Name0)),
+    case Name of
+        [] ->
+            {error, not_found};
+        _ ->
+            case ensure_dns_providers_table(DbPath) of
+                ok ->
+                    SQL =
+                        "DELETE FROM dns_providers WHERE lower(trim(name)) = lower(trim('" ++
+                        sql_escape(Name) ++ "'))",
+                    case sqlite_exec(DbPath, SQL) of
+                        ok ->
+                            case sqlite_query(DbPath, "SELECT changes() AS n") of
+                                {ok, [Row | _]} ->
+                                    case maps:get(<<"n">>, Row, 0) > 0 of
+                                        true -> ok;
+                                        false -> {error, not_found}
+                                    end;
+                                _ -> {error, not_found}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
 -spec ensure_dns_providers_seeded(string(), [map()]) -> ok | {error, term()}.
 ensure_dns_providers_seeded(DbPath, Providers) ->
     case ensure_dns_providers_table(DbPath) of
@@ -942,8 +1075,8 @@ ensure_dns_providers_seeded(DbPath, Providers) ->
                             ok;
                         _ ->
                             Cj = sql_escape(binary_to_list(thoas:encode(Cred))),
-                            SQL = "INSERT OR IGNORE INTO dns_providers(name, provider_type, credentials_json) VALUES('" ++
-                                sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "')",
+                            SQL = "INSERT OR IGNORE INTO dns_providers(name, provider_type, credentials_json, created_at) VALUES('" ++
+                                sql_escape(Name) ++ "','" ++ sql_escape(Pt) ++ "','" ++ Cj ++ "', datetime('now'))",
                             _ = sqlite_exec(DbPath, SQL),
                             ok
                     end
