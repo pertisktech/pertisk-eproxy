@@ -1,0 +1,26 @@
+# Same pattern as pertisk-rproxy 1340p admin Ingress (networking.k8s.io/v1).
+# Apply after Helm install; DNS must point at the controller Service/LB.
+# Service name must match the chart Service (default release name: pertisk-eproxy).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pertisk-eproxy-admin
+  namespace: pertisk-eproxy
+spec:
+  ingressClassName: pertisk-eproxy
+  rules:
+    - host: admin.1340p.thaidevops.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pertisk-eproxy
+                port:
+                  number: 9080
+  tls:
+    - hosts:
+        - admin.1340p.thaidevops.co
+      secretName: admin-1340p-tls

@@ -1,0 +1,25 @@
+# Admin UI via standard Ingress (same pattern as pertisk-rproxy pertisk-ingress-admin).
+# DNS → controller LB; TLS Secret in same namespace (e.g. cert-manager).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pertisk-eproxy-admin
+  namespace: pertisk-eproxy
+spec:
+  ingressClassName: pertisk-eproxy
+  rules:
+    - host: admin.h255.thaidevops.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pertisk-eproxy
+                port:
+                  number: 9080
+  tls:
+    - hosts:
+        - admin.h255.thaidevops.co
+      secretName: admin-h255-tls

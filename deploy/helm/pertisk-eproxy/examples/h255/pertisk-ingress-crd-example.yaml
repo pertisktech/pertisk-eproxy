@@ -1,0 +1,19 @@
+# PertiskIngress CRD (not reconciled by h255 controller yet — documentation only).
+# See pertisk-rproxy deploy/helm/pertisk-ingress for a working CRD controller.
+apiVersion: proxy.pertisk.tech/v1alpha1
+kind: PertiskIngress
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  host: example.com
+  ingressClassName: pertisk-eproxy
+  backendRef:
+    name: my-backend
+  routes:
+    - path: /
+      pathType: Prefix
+  tls:
+    secretName: my-app-tls
+    hosts:
+      - example.com
