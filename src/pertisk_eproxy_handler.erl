@@ -289,20 +289,20 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
 upstream_gun_opts(UpHost, tls, ReqKind) ->
     Base = #{
         transport => tls,
-        protocols => gun_protocols_for_request(ReqKind),
+        protocols => gun_protocols_for_request(ReqKind, tls),
         connect_timeout => ?CONNECT_TIMEOUT,
         tls_opts => upstream_tls_opts(UpHost)
     },
-    add_grpc_upstream_opts(ReqKind, Base);
+    add_request_profile_upstream_opts(ReqKind, Base);
 upstream_gun_opts(_UpHost, Transport, ReqKind) ->
     Base = #{
         transport => Transport,
-        protocols => gun_protocols_for_request(ReqKind),
+        protocols => gun_protocols_for_request(ReqKind, Transport),
         connect_timeout => ?CONNECT_TIMEOUT
     },
-    add_grpc_upstream_opts(ReqKind, Base).
+    add_request_profile_upstream_opts(ReqKind, Base).
 
-add_grpc_upstream_opts(grpc, GunOpts) ->
+add_request_profile_upstream_opts(grpc, GunOpts) ->
     GunOpts#{
         tcp_opts => [{keepalive, true}, {nodelay, true}],
         http2_opts => #{
@@ -310,8 +310,9 @@ add_grpc_upstream_opts(grpc, GunOpts) ->
             keepalive_tolerance => ?GRPC_HTTP2_KEEPALIVE_TOLERANCE
         }
     };
-add_grpc_upstream_opts(_, GunOpts) ->
-    GunOpts.
+add_request_profile_upstream_opts(_, GunOpts) ->
+    %% Keep TCP sockets responsive for regular HTTP requests as well.
+    GunOpts#{tcp_opts => [{keepalive, true}, {nodelay, true}]}. 
 
 upstream_tls_opts(UpHost) ->
     %% Upstreams are often internal services with private/self-signed certs.
@@ -764,9 +765,23 @@ is_grpc_request(Req) ->
         <<"application/grpc-web", _/binary>> -> true;
         <<"application/connect+", _/binary>> -> true;
         _ ->
-            %% Avoid matching on TE alone; use grpc-specific metadata hints only.
-            has_grpc_metadata_headers(Req)
+            %% Connect RPCs frequently use HTTP/1.1 and content-types like
+            %% application/proto or application/json with explicit Connect headers.
+            case has_connect_rpc_headers(Req) of
+                true -> true;
+                false ->
+                    %% Avoid matching on TE alone; use grpc-specific metadata hints only.
+                    has_grpc_metadata_headers(Req)
+            end
     end.
+
+has_connect_rpc_headers(Req) ->
+    Hdrs = cowboy_req:headers(Req),
+    maps:is_key(<<"connect-protocol-version">>, Hdrs)
+        orelse maps:is_key(<<"connect-timeout-ms">>, Hdrs)
+        orelse maps:is_key(<<"grpc-encoding">>, Hdrs)
+        orelse maps:is_key(<<"grpc-accept-encoding">>, Hdrs)
+        orelse maps:is_key(<<"grpc-status-details-bin">>, Hdrs).
 
 has_grpc_metadata_headers(Req) ->
     Hdrs = cowboy_req:headers(Req),
@@ -784,10 +799,13 @@ has_grpc_metadata_headers(Req) ->
         maps:keys(Hdrs)
     ).
 
-gun_protocols_for_request(grpc) ->
+gun_protocols_for_request(grpc, _Transport) ->
     %% gRPC requires HTTP/2 transport semantics.
     [http2];
-gun_protocols_for_request(_) ->
+gun_protocols_for_request(_, tls) ->
+    %% Prefer HTTP/2 when upstream TLS endpoint supports ALPN; keep HTTP/1 fallback.
+    [http2, http];
+gun_protocols_for_request(_, _) ->
     [http].
 
 client_ip(Req) ->

@@ -10,6 +10,8 @@
 ]).
 
 -define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 300000).
+-define(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS, 180000).
+-define(DOWNSTREAM_IDLE_SAFETY_MARGIN_MS, 5000).
 
 start(_StartType, _StartArgs) ->
     Vsn =
@@ -70,7 +72,6 @@ start_listeners() ->
     AdminRoutes = build_admin_routes(admin_listener_mode(Config)),
     HttpAcceptors = maps:get(http_num_acceptors, Config, 100),
     MgmtAcceptors = maps:get(management_num_acceptors, Config, 20),
-    DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
@@ -764,7 +765,24 @@ listener_max_connections(_Name, Config) ->
     maps:get(proxy_max_connections, Config, 16384).
 
 downstream_idle_timeout_ms(Config) ->
-    case maps:get(downstream_idle_timeout_ms, Config, ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS) of
-        N when is_integer(N), N > 0 -> N;
-        _ -> ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS
+    Configured =
+        case maps:get(downstream_idle_timeout_ms, Config, ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS) of
+            ConfiguredN when is_integer(ConfiguredN), ConfiguredN > 0 -> ConfiguredN;
+            _ -> ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS
+        end,
+    UpstreamReqTimeout =
+        case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS) of
+            RequestTimeoutN when is_integer(RequestTimeoutN), RequestTimeoutN > 0 -> RequestTimeoutN;
+            _ -> ?DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS
+        end,
+    MinSafe = UpstreamReqTimeout + ?DOWNSTREAM_IDLE_SAFETY_MARGIN_MS,
+    case Configured >= MinSafe of
+        true ->
+            Configured;
+        false ->
+            lager:warning(
+                "downstream_idle_timeout_ms (~p) is below safe minimum (~p) for upstream_request_timeout_ms=~p; clamping",
+                [Configured, MinSafe, UpstreamReqTimeout]
+            ),
+            MinSafe
     end.
