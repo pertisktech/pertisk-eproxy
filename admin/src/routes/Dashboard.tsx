@@ -195,6 +195,7 @@ export default function Dashboard() {
       <div className={styles.hero}>
         <div>
           <h1 className={styles.heroTitle}>Dashboard</h1>
+          <p className={styles.heroSubtitle}>Operational snapshot of runtime health, traffic, and proxy readiness.</p>
         </div>
         <div className={styles.heroMeta}>
           <button
@@ -226,7 +227,7 @@ export default function Dashboard() {
                 title={pertiskVmCpuTooltip(pi?.logical_processors)}
               >
                 <div className={styles.metricTileVal}>{cpuSummary ?? '—'}</div>
-                <div className={styles.metricTileLabel}>CPU</div>
+                <div className={styles.metricTileLabel}>CPU usage</div>
                 {cpuSummarySub ? <div className={styles.metricTileSub}>{cpuSummarySub}</div> : null}
               </div>
               <div
@@ -236,29 +237,29 @@ export default function Dashboard() {
                 }
               >
                 <div className={styles.metricTileVal}>{memBytes != null ? formatBytes(memBytes) : '—'}</div>
-                <div className={styles.metricTileLabel}>Memory</div>
+                <div className={styles.metricTileLabel}>Memory usage</div>
                 {codeMemBytes != null ? (
                   <div className={styles.metricTileSub}>code {formatBytes(codeMemBytes)}</div>
                 ) : null}
               </div>
               <div className={styles.metricTile}>
                 <div className={styles.metricTileVal}>{config?.sites?.length ?? 0}</div>
-                <div className={styles.metricTileLabel}>Sites</div>
+                <div className={styles.metricTileLabel}>Total sites</div>
               </div>
               <div className={styles.metricTile}>
                 <div className={styles.metricTileVal}>{config?.backends?.length ?? 0}</div>
-                <div className={styles.metricTileLabel}>Backends</div>
+                <div className={styles.metricTileLabel}>Total backends</div>
               </div>
               <div className={styles.metricTile}>
                 <div className={styles.metricTileVal}>{(stats?.http_requests_total ?? 0).toLocaleString()}</div>
-                <div className={styles.metricTileLabel}>Proxy requests (total)</div>
+                <div className={styles.metricTileLabel}>Total visits</div>
               </div>
               <div
                 className={`${styles.metricTile} ${styles.metricTileHint}`}
                 title="In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle."
               >
                 <div className={styles.metricTileVal}>{stats?.active_connections ?? 0}</div>
-                <div className={styles.metricTileLabel}>Upstream in flight</div>
+                <div className={styles.metricTileLabel}>Pageviews</div>
               </div>
             </div>
 

@@ -400,6 +400,25 @@ export default function Metrics() {
       });
   }, [history]);
 
+  const latest = history.length > 0 ? history[history.length - 1] : null;
+
+  const throughputNow = useMemo(() => {
+    if (history.length < 2) return null;
+    const prev = history[history.length - 2];
+    const curr = history[history.length - 1];
+    const seconds = (curr.t - prev.t) / 1000;
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    const sent = deltaRate(curr.bytes_sent_total, prev.bytes_sent_total, seconds);
+    const recv = deltaRate(curr.bytes_received_total, prev.bytes_received_total, seconds);
+    return sent + recv;
+  }, [history]);
+
+  const totalRequests = latest
+    ? latest.http_requests_total + latest.https_requests_total + latest.grpc_requests_total
+    : 0;
+
+  const latestSampleAt = latest ? formatChartAxisTimeMs(latest.t) : '--:--:--';
+
   if (error && history.length === 0) {
     return (
       <div className={styles.page}>
@@ -413,6 +432,40 @@ export default function Metrics() {
 
   return (
     <div className={styles.page}>
+      <header className={styles.header}>
+        <div>
+          <h1 className={styles.title}>Metrics</h1>
+          <p className={styles.subtitle}>Live runtime and traffic telemetry for the proxy node.</p>
+        </div>
+        <div className={styles.headerBadges}>
+          <span className={styles.modeBadge}>{latest?.mode ?? 'proxy'} mode</span>
+          <span className={styles.modeBadge}>Last sample {latestSampleAt}</span>
+        </div>
+      </header>
+
+      <section className={styles.quickGrid} aria-label="Metrics summary">
+        <article className={`${styles.quickCard} ${styles.quickCardPrimary}`}>
+          <h3>Pageviews</h3>
+          <div className={styles.quickValue}>{latest ? localeInt(latest.active_connections) : '0'}</div>
+          <p>Current in-flight upstream sessions</p>
+        </article>
+        <article className={`${styles.quickCard} ${styles.quickCardBlue}`}>
+          <h3>Total visits</h3>
+          <div className={styles.quickValue}>{localeInt(totalRequests)}</div>
+          <p>HTTP, HTTPS, and gRPC cumulative traffic</p>
+        </article>
+        <article className={`${styles.quickCard} ${styles.quickCardGreen}`}>
+          <h3>Throughput now</h3>
+          <div className={styles.quickValue}>{throughputNow != null ? formatBytes(Math.round(throughputNow)) : '0 B'}</div>
+          <p>Combined send + receive per second</p>
+        </article>
+        <article className={`${styles.quickCard} ${styles.quickCardAmber}`}>
+          <h3>VM memory</h3>
+          <div className={styles.quickValue}>{latest?.memory_bytes != null ? formatBytes(latest.memory_bytes) : '—'}</div>
+          <p>BEAM runtime allocated memory</p>
+        </article>
+      </section>
+
       {missingRequestTotals && (
         <div className={styles.errorCard}>
           <span className={styles.errorIcon} aria-hidden>!</span>
