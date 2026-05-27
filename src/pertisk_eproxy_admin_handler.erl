@@ -301,11 +301,11 @@ handle(<<"GET">>, helm_values, Req) ->
 
 handle(<<"GET">>, certificates, Req) ->
     Config = pertisk_eproxy_config:get_config(),
-    Sites = maps:get(sites, Config, []),
+    Sites = safe_sites_list(maps:get(sites, Config, [])),
     IngressRows = ingress_certificate_rows(Sites),
     case pertisk_eproxy_db:list_certificates(db_file_path()) of
         {ok, Certs} ->
-            DbRows = [certificate_row_json(C, Sites) || C <- Certs],
+            DbRows = certificate_rows_json(Certs, Sites),
             json_reply(200, merge_certificate_rows(DbRows, IngressRows), Req);
         {error, Reason} ->
             case pertisk_eproxy_config:ingress_mode() of
@@ -980,13 +980,13 @@ normalize_key_bin(K) ->
 
 config_to_json(Config) ->
     Base = #{
-        mode            => atom_to_binary(maps:get(mode, Config, proxy), utf8),
+        mode            => mode_to_json(maps:get(mode, Config, proxy)),
         http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
-        certificates    => [json_text(V) || V <- maps:get(certificates, Config, [])],
-        dns_providers   => [dns_provider_entry_to_json(P) || P <- maps:get(dns_providers, Config, [])],
-        sites           => [site_to_json(S) || S <- maps:get(sites, Config, [])],
-        backends        => [backend_to_json(B) || B <- maps:get(backends, Config, [])]
+        certificates    => [json_text(V) || V <- safe_list(maps:get(certificates, Config, []))],
+        dns_providers   => safe_dns_providers_json(maps:get(dns_providers, Config, [])),
+        sites           => safe_sites_json(maps:get(sites, Config, [])),
+        backends        => safe_backends_json(maps:get(backends, Config, []))
     },
     WithHttps = case maps:get(https_port, Config, undefined) of
         undefined -> Base;
@@ -1162,6 +1162,48 @@ optional_challenge_type(_) -> undefined.
 json_text(V) when is_binary(V) -> V;
 json_text(V) when is_list(V) -> list_to_binary(V);
 json_text(V) -> V.
+
+safe_list(V) when is_list(V) -> V;
+safe_list(_) -> [].
+
+mode_to_json(V) when is_atom(V) -> atom_to_binary(V, utf8);
+mode_to_json(V) when is_binary(V) -> V;
+mode_to_json(V) when is_list(V) -> list_to_binary(V);
+mode_to_json(_) -> <<"proxy">>.
+
+safe_sites_list(V) ->
+    [S || S <- safe_list(V), is_map(S)].
+
+safe_sites_json(Sites) ->
+    safe_json_rows(fun site_to_json/1, Sites).
+
+safe_backends_json(Backends) ->
+    safe_json_rows(fun backend_to_json/1, Backends).
+
+safe_dns_providers_json(Providers) ->
+    safe_json_rows(fun dns_provider_entry_to_json/1, Providers).
+
+safe_json_rows(Fun, Values) ->
+    lists:reverse(
+        lists:foldl(
+            fun(V, Acc) ->
+                case safe_json_row(Fun, V) of
+                    {ok, Row} -> [Row | Acc];
+                    skip -> Acc
+                end
+            end,
+            [],
+            safe_list(Values)
+        )
+    ).
+
+safe_json_row(Fun, V) ->
+    try
+        {ok, Fun(V)}
+    catch
+        _:_ ->
+            skip
+    end.
 
 preserve_redacted_tls_paths(Body, Parsed, Existing) when is_map(Body), is_map(Parsed), is_map(Existing) ->
     KeyIn = maps:get(<<"tls_key_file">>, Body, undefined),
@@ -1380,6 +1422,30 @@ certificate_row_json(#{id := Id, name := Name} = CertRow, Sites) ->
                 <<"sites">> => sites_for_cert(Sites, IdBin, NameBin)
             }
     end.
+
+certificate_rows_json(Certs, Sites) ->
+    lists:reverse(
+        lists:foldl(
+            fun(C, Acc) ->
+                case certificate_row_json_safe(C, Sites) of
+                    {ok, Row} -> [Row | Acc];
+                    skip -> Acc
+                end
+            end,
+            [],
+            safe_list(Certs)
+        )
+    ).
+
+certificate_row_json_safe(#{id := _, name := _} = CertRow, Sites) ->
+    try
+        {ok, certificate_row_json(CertRow, Sites)}
+    catch
+        _:_ ->
+            skip
+    end;
+certificate_row_json_safe(_, _) ->
+    skip.
 
 %% Challenge column text for ACME rows; includes staging hint when directory URL is LE staging.
 acme_dns_challenge_label() ->
