@@ -217,7 +217,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, Track
     end,
 
     ReqKind = detect_request_kind(Req),
-    UseEphemeralConn = should_use_ephemeral_connection(ReqKind, UpHost, Transport),
+    UseEphemeralConn = should_use_ephemeral_connection(ReqKind, UpHost, UpPort, Transport),
     GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
     {ok, Body} = read_body(Req),
 
@@ -271,10 +271,12 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
             {error, {connect, Reason}}
     end.
 
-should_use_ephemeral_connection(grpc, _UpHost, _Transport) ->
+should_use_ephemeral_connection(grpc, _UpHost, _UpPort, _Transport) ->
     false;
-should_use_ephemeral_connection(_ReqKind, UpHost, _Transport) ->
-    is_loopback_host(UpHost).
+should_use_ephemeral_connection(_ReqKind, UpHost, UpPort, _Transport) ->
+    %% Kube API traffic on loopback:8100 proved sensitive to pooled socket churn
+    %% under bursty load; use fresh connections only for this upstream.
+    is_loopback_host(UpHost) andalso UpPort =:= 8100.
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
@@ -288,7 +290,7 @@ upstream_gun_opts(UpHost, tls, ReqKind) ->
     Base = #{
         transport => tls,
         protocols => gun_protocols_for_request(ReqKind, tls),
-        connect_timeout => ?CONNECT_TIMEOUT,
+        connect_timeout => connect_timeout_ms(UpHost, ReqKind),
         tls_opts => upstream_tls_opts(UpHost)
     },
     add_request_profile_upstream_opts(ReqKind, Base);
@@ -296,9 +298,21 @@ upstream_gun_opts(_UpHost, Transport, ReqKind) ->
     Base = #{
         transport => Transport,
         protocols => gun_protocols_for_request(ReqKind, Transport),
-        connect_timeout => ?CONNECT_TIMEOUT
+        connect_timeout => connect_timeout_ms(_UpHost, ReqKind)
     },
     add_request_profile_upstream_opts(ReqKind, Base).
+
+connect_timeout_ms(UpHost, ReqKind) ->
+    Config = pertisk_eproxy_config:get_config(),
+    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+        true ->
+            case maps:get(upstream_loopback_connect_timeout_ms, Config, 3000) of
+                N when is_integer(N), N > 0 -> N;
+                _ -> 3000
+            end;
+        false ->
+            ?CONNECT_TIMEOUT
+    end.
 
 add_request_profile_upstream_opts(grpc, GunOpts) ->
     GunOpts#{
@@ -418,7 +432,7 @@ do_proxy(
                                 Transport,
                                 ReqKind,
                                 GunOpts,
-                                1,
+                                RetryCount + 1,
                                 UseEphemeralConn
                             );
                         {error, _} = RetryErr ->
@@ -444,10 +458,8 @@ should_retry_proxy_error(RetryCount, ReqKind, ProxyReason, UpHost) ->
         andalso RetryCount < max_proxy_retries(ProxyReason, UpHost).
 
 max_proxy_retries({down, shutdown}, UpHost) ->
-    %% Local single-upstream backends can briefly flap under load; allow one
-    %% additional reconnect attempt before surfacing 502.
     case is_loopback_host(UpHost) of
-        true -> 2;
+        true -> 1;
         false -> 1
     end;
 max_proxy_retries(_ProxyReason, _UpHost) ->
