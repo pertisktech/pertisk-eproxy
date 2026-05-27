@@ -27,6 +27,8 @@
 
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(CONNECT_TIMEOUT, 10000).
+-define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
+-define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
 
 %% @doc Prometheus `proto` label for TCP/TLS Cowboy requests (HTTP/3 uses the QUIC gateway).
 cowboy_req_proto_metric(Req) ->
@@ -206,41 +208,110 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, Track
     GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
     {ok, Body} = read_body(Req),
 
-    case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) of
-        {error, Reason} ->
-            {error, Reason};
-        {ok, ConnPid} ->
-            do_proxy(
-                Req,
-                ConnPid,
-                Method,
-                Host,
-                FullPath,
-                ClientIp,
-                TrackingId,
-                Body,
+    case ReqKind of
+        grpc ->
+            %% gRPC streams may be long-lived and sparse; avoid shared pool reuse
+            %% so stream lifecycle is isolated from sweep/eviction behavior.
+            with_direct_connection(
                 UpHost,
                 UpPort,
-                Transport,
-                ReqKind,
                 GunOpts,
-                0
-            )
+                fun(ConnPid) ->
+                    do_proxy(
+                        Req,
+                        ConnPid,
+                        Method,
+                        Host,
+                        FullPath,
+                        ClientIp,
+                        TrackingId,
+                        Body,
+                        UpHost,
+                        UpPort,
+                        Transport,
+                        ReqKind,
+                        GunOpts,
+                        0
+                    )
+                end
+            );
+        _ ->
+            case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) of
+                {error, Reason} ->
+                    {error, Reason};
+                {ok, ConnPid} ->
+                    do_proxy(
+                        Req,
+                        ConnPid,
+                        Method,
+                        Host,
+                        FullPath,
+                        ClientIp,
+                        TrackingId,
+                        Body,
+                        UpHost,
+                        UpPort,
+                        Transport,
+                        ReqKind,
+                        GunOpts,
+                        0
+                    )
+            end
+    end.
+
+with_direct_connection(UpHost, UpPort, GunOpts, Fun) when is_function(Fun, 1) ->
+    case open_direct_connection(UpHost, UpPort, GunOpts) of
+        {ok, ConnPid} ->
+            try
+                Fun(ConnPid)
+            after
+                catch gun:close(ConnPid)
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+open_direct_connection(UpHost, UpPort, GunOpts) ->
+    case gun:open(UpHost, UpPort, GunOpts) of
+        {ok, ConnPid} ->
+            Timeout = maps:get(connect_timeout, GunOpts, ?CONNECT_TIMEOUT),
+            case gun:await_up(ConnPid, Timeout) of
+                {ok, _Proto} ->
+                    {ok, ConnPid};
+                {error, Reason} ->
+                    catch gun:close(ConnPid),
+                    {error, {await_up, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {connect, Reason}}
     end.
 
 upstream_gun_opts(UpHost, tls, ReqKind) ->
-    #{
+    Base = #{
         transport => tls,
         protocols => gun_protocols_for_request(ReqKind),
         connect_timeout => ?CONNECT_TIMEOUT,
         tls_opts => upstream_tls_opts(UpHost)
-    };
+    },
+    add_grpc_upstream_opts(ReqKind, Base);
 upstream_gun_opts(_UpHost, Transport, ReqKind) ->
-    #{
+    Base = #{
         transport => Transport,
         protocols => gun_protocols_for_request(ReqKind),
         connect_timeout => ?CONNECT_TIMEOUT
-    }.
+    },
+    add_grpc_upstream_opts(ReqKind, Base).
+
+add_grpc_upstream_opts(grpc, GunOpts) ->
+    GunOpts#{
+        tcp_opts => [{keepalive, true}, {nodelay, true}],
+        http2_opts => #{
+            keepalive => ?GRPC_HTTP2_KEEPALIVE_MS,
+            keepalive_tolerance => ?GRPC_HTTP2_KEEPALIVE_TOLERANCE
+        }
+    };
+add_grpc_upstream_opts(_, GunOpts) ->
+    GunOpts.
 
 upstream_tls_opts(UpHost) ->
     %% Upstreams are often internal services with private/self-signed certs.
@@ -322,7 +393,7 @@ do_proxy(
     case Result of
         {error, ProxyReason} ->
             maybe_invalidate_connection(ConnPid, ProxyReason),
-            case RetryCount =:= 0 andalso retryable_upstream_error(ProxyReason) of
+            case RetryCount =:= 0 andalso ReqKind =/= grpc andalso retryable_upstream_error(ProxyReason) of
                 true ->
                     case pertisk_eproxy_upstream_pool:checkout(
                         UpHost, UpPort, Transport, ReqKind, GunOpts

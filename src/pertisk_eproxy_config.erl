@@ -536,6 +536,8 @@ json_to_config(Json) ->
         management_port => maps:get(<<"management_port">>, Json, 9080),
         management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
         management_max_connections => parse_opt_int(maps:get(<<"management_max_connections">>, Json, null)),
+        downstream_idle_timeout_ms => parse_opt_int(maps:get(<<"downstream_idle_timeout_ms">>, Json, null)),
+        management_idle_timeout_ms => parse_opt_int(maps:get(<<"management_idle_timeout_ms">>, Json, null)),
         upstream_request_timeout_ms => parse_opt_int(maps:get(<<"upstream_request_timeout_ms">>, Json, null)),
         upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
         upstream_pool_idle_timeout_secs => parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),

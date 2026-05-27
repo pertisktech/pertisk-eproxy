@@ -9,6 +9,8 @@
     reload_proxy_tls_listeners/0
 ]).
 
+-define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 45000).
+
 start(_StartType, _StartArgs) ->
     Vsn =
         case application:get_key(pertisk_eproxy, vsn) of
@@ -68,6 +70,7 @@ start_listeners() ->
     AdminRoutes = build_admin_routes(admin_listener_mode(Config)),
     HttpAcceptors = maps:get(http_num_acceptors, Config, 100),
     MgmtAcceptors = maps:get(management_num_acceptors, Config, 20),
+    DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
@@ -80,9 +83,14 @@ start_listeners() ->
     %% Management / Admin listener (default all IPv4 interfaces; set management_addr in proxy.json to restrict)
     MgmtAddr = maps:get(management_addr, Config, {0,0,0,0}),
     MgmtPort = maps:get(management_port, Config, 9080),
+    %% Management listener keeps its own long idle timeout so browser admin sessions
+    %% (keep-alive HTTP/1.1) survive across the proxy TLS listener reload that happens
+    %% after ACME cert issuance.  The 45 s proxy idle timeout must NOT apply here.
+    MgmtIdleTimeoutMs = maps:get(management_idle_timeout_ms, Config, 300000),
     MgmtProtoOpts = #{
         env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
         logger => pertisk_eproxy_cowboy_logger,
+        idle_timeout => MgmtIdleTimeoutMs,
         %% Management/admin is intentionally plain HTTP/1.1.
         enable_connect_protocol => false
     },
@@ -143,11 +151,13 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     Config = pertisk_eproxy_config:get_config(),
     HttpsAcceptors = maps:get(https_num_acceptors, Config, 100),
     ProxyMaxConns = listener_max_connections(https4, Config),
+    DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
     TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
     TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
     HttpsProtoOpts = #{
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
         logger => pertisk_eproxy_cowboy_logger,
+        idle_timeout => DownstreamIdleTimeoutMs,
         %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
         enable_connect_protocol => true
     },
@@ -698,9 +708,12 @@ maybe_set_ingress_mode() ->
     end.
 
 start_clear_listener(Name, Port, Ip, Routes, NumAcceptors, ExtraSocketOpts) ->
+    Config = pertisk_eproxy_config:get_config(),
+    DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
     ProtoOpts = #{
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
-        logger => pertisk_eproxy_cowboy_logger
+        logger => pertisk_eproxy_cowboy_logger,
+        idle_timeout => DownstreamIdleTimeoutMs
     },
     start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts).
 
@@ -749,3 +762,9 @@ listener_max_connections(Name, Config) when Name =:= management ->
     maps:get(management_max_connections, Config, 2048);
 listener_max_connections(_Name, Config) ->
     maps:get(proxy_max_connections, Config, 16384).
+
+downstream_idle_timeout_ms(Config) ->
+    case maps:get(downstream_idle_timeout_ms, Config, ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS
+    end.

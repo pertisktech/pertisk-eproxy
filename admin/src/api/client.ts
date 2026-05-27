@@ -478,7 +478,13 @@ function realtimeTransportMode(): RealtimeTransportMode {
 
 const API_REQUEST_TIMEOUT_MS = 90_000;
 
-const RETRYABLE_PATHS = new Set(['/config']);
+const RETRYABLE_PATHS = new Set(['/config', '/certificates']);
+/** Max retries for GET / safe PUT during transient server unavailability (TLS reload window). */
+const MAX_SAFE_RETRIES = 4;
+/** Statuses that indicate the server is temporarily unavailable after a listener restart. */
+function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 502 || status === 503 || status === 504;
+}
 
 type ApiRequestOptions = RequestInit & {
   suppressAuthRedirect?: boolean;
@@ -498,7 +504,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   }
 
   const method = String(fetchOptions.method ?? 'GET').toUpperCase();
-  const shouldRetryNetworkError =
+  const isSafeRetryable =
     method === 'GET' || (method === 'PUT' && RETRYABLE_PATHS.has(path));
 
   const fetchOnce = async (): Promise<Response> => {
@@ -516,26 +522,35 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
     }
   };
 
-  let res: Response;
-  try {
-    res = await fetchOnce();
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Request timed out — the server may still be processing; refresh the page.');
-    }
+  const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
-    if (shouldRetryNetworkError) {
-      try {
-        res = await fetchOnce();
-      } catch (retryErr) {
-        if (retryErr instanceof Error && retryErr.name === 'AbortError') {
-          throw new Error('Request timed out — the server may still be processing; refresh the page.');
-        }
-        throw retryErr instanceof Error ? retryErr : new Error('Failed to fetch');
-      }
-    } else {
-      throw err instanceof Error ? err : new Error('Failed to fetch');
+  let res: Response | undefined;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= (isSafeRetryable ? MAX_SAFE_RETRIES : 0); attempt++) {
+    if (attempt > 0) {
+      // Backoff: 500 ms, 1 s, 2 s, 4 s — covers the proxy TLS listener restart window.
+      await sleep(Math.min(4000, 500 * Math.pow(2, attempt - 1)));
     }
+    try {
+      res = await fetchOnce();
+      // Retry on transient server-side statuses (408 from Cowboy idle, 502/503/504 during restart).
+      if (isSafeRetryable && isTransientStatus(res.status) && attempt < MAX_SAFE_RETRIES) {
+        continue;
+      }
+      break;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error('Request timed out — the server may still be processing; refresh the page.');
+      }
+      lastErr = err;
+      if (!isSafeRetryable) {
+        throw err instanceof Error ? err : new Error('Failed to fetch');
+      }
+      // Network error (ERR_CONNECTION_REFUSED during listener restart): keep retrying.
+    }
+  }
+  if (res == null) {
+    throw lastErr instanceof Error ? lastErr : new Error('Failed to fetch');
   }
 
   if (res.status === 401) {

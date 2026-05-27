@@ -85,7 +85,7 @@ handle_call({try_checkout, UpHost, UpPort, Transport, ReqKind}, _From,
             State = #{pools := Pools0}) ->
     Key = pool_key(UpHost, UpPort, Transport, ReqKind),
     Entry0 = maps:get(Key, Pools0, empty_entry()),
-    Entry1 = refresh_entry(Entry0),
+    Entry1 = refresh_entry(Key, Entry0),
     case maps:get(conns, Entry1) of
         [] ->
             {reply, empty, put_pool(Key, Entry1, State)};
@@ -101,7 +101,7 @@ handle_cast({register, UpHost, UpPort, Transport, ReqKind, GunOpts, ConnPid},
             State = #{pools := Pools0}) ->
     Key = pool_key(UpHost, UpPort, Transport, ReqKind),
     Entry0 = maps:get(Key, Pools0, empty_entry()),
-    Entry1 = refresh_entry(Entry0),
+    Entry1 = refresh_entry(Key, Entry0),
     case is_process_alive(ConnPid) of
         false ->
             {noreply, put_pool(Key, Entry1, State)};
@@ -130,7 +130,7 @@ handle_cast({fill_one, Key, UpHost, UpPort, ReqKind, GunOpts},
         error ->
             {noreply, State};
         {ok, Entry0} ->
-            Entry1 = refresh_entry(Entry0),
+            Entry1 = refresh_entry(Key, Entry0),
             Target = pool_target_size(),
             Conns = maps:get(conns, Entry1),
             case length(Conns) >= Target of
@@ -181,7 +181,7 @@ handle_cast(_Msg, State) ->
 handle_info(sweep_idle, State = #{pools := Pools0}) ->
     erlang:send_after(?SWEEP_INTERVAL_MS, self(), sweep_idle),
     Pools1 = maps:map(
-        fun(_Key, Entry) -> refresh_entry(Entry) end,
+        fun(Key, Entry) -> refresh_entry(Key, Entry) end,
         Pools0
     ),
     {noreply, State#{pools => Pools1}};
@@ -215,15 +215,23 @@ empty_entry() ->
 put_pool(Key, Entry, State = #{pools := Pools}) ->
     State#{pools => Pools#{Key => Entry}}.
 
-%% Remove connections where the Gun process is dead OR the connection has been
-%% idle for longer than idle_timeout_ms (TCP socket likely closed by firewall/NAT).
--spec refresh_entry(map()) -> map().
-refresh_entry(Entry = #{conns := Conns}) ->
-    IdleMs = idle_timeout_ms(),
+%% Remove dead connections and idle HTTP/1.1/HTTP/2 request sockets.
+%% For gRPC profile, do not enforce idle eviction because long-lived streams
+%% may carry no DATA for extended periods and are still healthy.
+-spec refresh_entry(tuple(), map()) -> map().
+refresh_entry(Key, Entry = #{conns := Conns}) ->
+    IdleMs = idle_timeout_ms_for_key(Key),
     NowMs  = now_ms(),
     Alive  = lists:filter(
         fun({Pid, LastUsed}) ->
-            is_process_alive(Pid) andalso (NowMs - LastUsed) < IdleMs
+            case is_process_alive(Pid) of
+                false ->
+                    false;
+                true when IdleMs =:= infinity ->
+                    true;
+                true ->
+                    (NowMs - LastUsed) < IdleMs
+            end
         end,
         Conns
     ),
@@ -231,7 +239,7 @@ refresh_entry(Entry = #{conns := Conns}) ->
     Evicted = [Pid || {Pid, _} <- Conns, not lists:keymember(Pid, 1, Alive)],
     lists:foreach(fun(P) -> catch gun:close(P) end, Evicted),
     Entry#{conns => Alive};
-refresh_entry(Entry) ->
+refresh_entry(_Key, Entry) ->
     Entry.
 
 -spec pick_rr([conn_entry()], map()) -> {pid(), map()}.
@@ -282,8 +290,8 @@ maybe_async_fill(Key, Entry, UpHost, UpPort, ReqKind, GunOpts, State) ->
 
 remove_pid_from_pools(Pid, State = #{pools := Pools0}) ->
     Pools1 = maps:map(
-        fun(_Key, Entry0) ->
-            Entry1 = refresh_entry(Entry0),
+        fun(Key, Entry0) ->
+            Entry1 = refresh_entry(Key, Entry0),
             Conns1 = [{P, T} || {P, T} <- maps:get(conns, Entry1, []), P =/= Pid],
             Entry1#{conns => Conns1}
         end,
@@ -304,6 +312,11 @@ idle_timeout_ms() ->
         N when is_integer(N), N > 0 -> N * 1000;
         _ -> ?DEFAULT_IDLE_TIMEOUT_MS
     end.
+
+idle_timeout_ms_for_key({_Host, _Port, _Transport, grpc}) ->
+    infinity;
+idle_timeout_ms_for_key(_) ->
+    idle_timeout_ms().
 
 now_ms() ->
     erlang:monotonic_time(millisecond).
