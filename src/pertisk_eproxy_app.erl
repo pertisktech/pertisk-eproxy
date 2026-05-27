@@ -9,7 +9,7 @@
     reload_proxy_tls_listeners/0
 ]).
 
--define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 45000).
+-define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 300000).
 
 start(_StartType, _StartArgs) ->
     Vsn =

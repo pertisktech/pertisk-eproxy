@@ -7,7 +7,7 @@
   "alt_svc_port": 443,
   "management_addr": "0.0.0.0",
   "management_port": 9080,
-  "downstream_idle_timeout_ms": 45000,
+  "downstream_idle_timeout_ms": 300000,
   "quic_enabled": false,
   "h3_api_gateway_enabled": true,
   "h3_idle_timeout_secs": 1800,
