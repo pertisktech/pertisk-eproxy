@@ -20,6 +20,8 @@
          terminate/2, code_change/3]).
 
 -define(HEALTH_DEFAULT_SECS, 30).
+-define(TRANSIENT_DOWN_DEFAULT_MS, 5000).
+-define(TRANSIENT_DOWN_MAX_MS, 60000).
 
 %% ---------------------------------------------------------------------------
 %% Public API
@@ -59,7 +61,9 @@ update(Name, Backend) ->
     end.
 
 %% Return a status map with upstream health and connection counts.
--spec status(binary()) -> {ok, map()} | {error, not_found}.
+-spec status(binary() | list()) -> {ok, map()} | {error, not_found}.
+status(Name) when is_list(Name) ->
+    status(iolist_to_binary(Name));
 status(Name) ->
     case ?MODULE:whereis(Name) of
         undefined -> {error, not_found};
@@ -77,14 +81,15 @@ init(Backend = #{name := Name}) ->
     {ok, State2}.
 
 handle_call({pick, ClientIp}, _From, State = #{lb := LbState, algorithm := Algo, name := Name}) ->
-    case pertisk_eproxy_lb:next(LbState, Algo, ClientIp) of
+    LbState1 = maybe_recover_transient_down(LbState),
+    case pertisk_eproxy_lb:next(LbState1, Algo, ClientIp) of
         {ok, #{addr := Addr}, NewLb} ->
             %% Increment active connection count
             NewLb2 = increment_conns(Addr, NewLb),
             ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb2, Addr)),
             {reply, {ok, Addr}, State#{lb => NewLb2}};
         {error, _} = Err ->
-            {reply, Err, State}
+            {reply, Err, State#{lb => LbState1}}
     end;
 
 handle_call(status, _From, State = #{lb := #{upstreams := Ups}, name := Name}) ->
@@ -98,8 +103,14 @@ handle_call(status, _From, State = #{lb := #{upstreams := Ups}, name := Name}) -
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
-handle_cast({done, Addr, _Result}, State = #{lb := LbState, name := Name}) ->
-    NewLb = decrement_conns(Addr, LbState),
+handle_cast({done, Addr, Result}, State = #{lb := LbState, name := Name}) ->
+    NewLb0 = decrement_conns(Addr, LbState),
+    NewLb =
+        case Result of
+            ok -> clear_transient_down(Addr, NewLb0);
+            error -> mark_transient_down(Addr, NewLb0);
+            _ -> NewLb0
+        end,
     ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb, Addr)),
     {noreply, State#{lb => NewLb}};
 
@@ -139,7 +150,9 @@ init_state(Backend = #{name := Name}) ->
     Upstreams = [#{addr    => maps:get(addr, U),
                    weight  => maps:get(weight, U, 1),
                    healthy => true,
-                   conns   => 0}
+                                     conns   => 0,
+                                     transient_down_until_ms => 0,
+                                     transient_fail_streak => 0}
                  || U <- maps:get(upstreams, Backend, [])],
     #{
         name        => Name,
@@ -168,7 +181,9 @@ reschedule_health_check(State) ->
     schedule_health_check(State).
 
 run_health_checks(State = #{health_path := undefined}) ->
-    State;
+    %% Even without active HTTP health probes, allow transiently-down upstreams
+    %% to re-enter rotation after their cooldown expires.
+    State#{lb => maybe_recover_transient_down(maps:get(lb, State))};
 run_health_checks(State = #{lb := LbState = #{upstreams := Upstreams}, health_path := Path}) ->
     NewUpstreams = lists:map(fun(U = #{addr := Addr}) ->
         Healthy = do_health_check(Addr, Path),
@@ -179,9 +194,84 @@ run_health_checks(State = #{lb := LbState = #{upstreams := Upstreams}, health_pa
                            [Addr, OldHealthy, Healthy]);
             false -> ok
         end,
-        U#{healthy => Healthy}
+        U#{healthy => Healthy, transient_down_until_ms => 0}
     end, Upstreams),
     State#{lb => LbState#{upstreams => NewUpstreams}}.
+
+transient_down_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(upstream_transient_down_ms, Config, ?TRANSIENT_DOWN_DEFAULT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?TRANSIENT_DOWN_DEFAULT_MS
+    end.
+
+mark_transient_down(Addr, LbState = #{upstreams := Upstreams}) ->
+    %% Never quarantine the only upstream in a backend. Doing so turns transient
+    %% transport errors into guaranteed "no healthy upstream" responses.
+    case length(Upstreams) =< 1 of
+        true ->
+            lager:warning("Backend upstream ~s error ignored for transient-down because backend has a single upstream",
+                          [Addr]),
+            LbState;
+        false ->
+            mark_transient_down_multi(Addr, LbState)
+    end.
+
+mark_transient_down_multi(Addr, LbState = #{upstreams := Upstreams}) ->
+    Now = erlang:monotonic_time(millisecond),
+    NewUps = lists:map(
+        fun
+            (U = #{addr := A}) when A =:= Addr ->
+                Streak = maps:get(transient_fail_streak, U, 0) + 1,
+                CooldownMs = transient_backoff_ms(Streak),
+                Until = Now + CooldownMs,
+                lager:warning("Backend upstream ~s transient-down streak=~p cooldown_ms=~p",
+                              [Addr, Streak, CooldownMs]),
+                U#{healthy => false,
+                   transient_down_until_ms => Until,
+                   transient_fail_streak => Streak};
+            (U) -> U
+        end,
+        Upstreams
+    ),
+    LbState#{upstreams => NewUps}.
+
+clear_transient_down(Addr, LbState = #{upstreams := Upstreams}) ->
+    NewUps = lists:map(
+        fun
+            (U = #{addr := A}) when A =:= Addr ->
+                U#{healthy => true,
+                   transient_down_until_ms => 0,
+                   transient_fail_streak => 0};
+            (U) -> U
+        end,
+        Upstreams
+    ),
+    LbState#{upstreams => NewUps}.
+
+transient_backoff_ms(Streak) when is_integer(Streak), Streak > 0 ->
+    Base = transient_down_ms(),
+    %% Exponential backoff: 1x,2x,4x,8x,... capped to protect against
+    %% persistent flapping upstreams that repeatedly fail right after recovery.
+    Pow = 1 bsl min(6, Streak - 1),
+    min(?TRANSIENT_DOWN_MAX_MS, Base * Pow);
+transient_backoff_ms(_) ->
+    transient_down_ms().
+
+maybe_recover_transient_down(LbState = #{upstreams := Upstreams}) ->
+    Now = erlang:monotonic_time(millisecond),
+    NewUps = lists:map(
+        fun(U) ->
+            case maps:get(transient_down_until_ms, U, 0) of
+                Until when is_integer(Until), Until > 0, Until =< Now ->
+                    U#{healthy => true, transient_down_until_ms => 0};
+                _ ->
+                    U
+            end
+        end,
+        Upstreams
+    ),
+    LbState#{upstreams => NewUps}.
 
 do_health_check(Addr, Path) ->
     %% Parse host:port
@@ -213,12 +303,57 @@ do_health_check(Addr, Path) ->
 parse_addr(Addr) when is_binary(Addr) ->
     parse_addr(binary_to_list(Addr));
 parse_addr(Addr) ->
+    Addr1 = string:trim(Addr),
+    Addr2 = string:trim(Addr1, trailing, "/"),
+    case string:find(Addr2, "://") of
+        nomatch ->
+            split_host_port(Addr2, 80);
+        _ ->
+            parse_addr_uri(Addr2)
+    end.
+
+parse_addr_uri(Addr) ->
+    try uri_string:parse(Addr) of
+        #{scheme := Scheme0} = Uri ->
+            Scheme = string:lowercase(uri_text_to_list(Scheme0)),
+            DefaultPort = scheme_default_port(Scheme),
+            Host = uri_text_to_list(maps:get(host, Uri, <<"localhost">>)),
+            Port = maps:get(port, Uri, DefaultPort),
+            {Host, Port};
+        _ ->
+            split_host_port(Addr, 80)
+    catch
+        _:_ ->
+            split_host_port(Addr, 80)
+    end.
+
+scheme_default_port("https") -> 443;
+scheme_default_port("wss") -> 443;
+scheme_default_port("grpcs") -> 443;
+scheme_default_port(_) -> 80.
+
+uri_text_to_list(V) when is_binary(V) -> binary_to_list(V);
+uri_text_to_list(V) when is_list(V) -> V;
+uri_text_to_list(V) -> lists:flatten(io_lib:format("~p", [V])).
+
+split_host_port(Addr, DefaultPort) ->
     case string:split(Addr, ":", trailing) of
         [Host, PortStr] ->
-            Port = list_to_integer(PortStr),
-            {Host, Port};
+            case safe_port(PortStr) of
+                {ok, Port} -> {Host, Port};
+                error -> {Addr, DefaultPort}
+            end;
         [Host] ->
-            {Host, 80}
+            {Host, DefaultPort}
+    end.
+
+safe_port(PortStr0) ->
+    PortStr = string:trim(PortStr0, trailing, "/"),
+    try
+        {ok, list_to_integer(PortStr)}
+    catch
+        _:_ ->
+            error
     end.
 
 conn_for_addr(#{upstreams := Upstreams}, Addr) ->
@@ -253,13 +388,21 @@ merge_update(OldState = #{lb := #{upstreams := OldUps}},
     %% Preserve health/conn state for upstreams that still exist.
     OldMap = maps:from_list([{maps:get(addr, U), U} || U <- OldUps]),
     NewUps = [case maps:find(maps:get(addr, U), OldMap) of
-                  {ok, Old} -> U#{healthy => maps:get(healthy, Old, true),
-                                  conns   => maps:get(conns,   Old, 0)};
-                  error     -> U#{healthy => true, conns => 0}
+                                    {ok, Old} -> U#{healthy => maps:get(healthy, Old, true),
+                                                                        conns   => maps:get(conns,   Old, 0),
+                                                                        transient_down_until_ms => maps:get(transient_down_until_ms, Old, 0),
+                                                                        transient_fail_streak => maps:get(transient_fail_streak, Old, 0)};
+                                    error     -> U#{healthy => true,
+                                                                     conns => 0,
+                                                                     transient_down_until_ms => 0,
+                                                                     transient_fail_streak => 0}
               end
               || U <- [#{addr    => maps:get(addr, U),
                          weight  => maps:get(weight, U, 1),
-                         healthy => true, conns => 0}
+                                                 healthy => true,
+                                                 conns => 0,
+                                                 transient_down_until_ms => 0,
+                                                 transient_fail_streak => 0}
                        || U <- NewUpsList]],
     NewAlgo = maps:get(algorithm, NewBackend, maps:get(algorithm, OldState)),
     OldState#{

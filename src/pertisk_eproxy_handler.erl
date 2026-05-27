@@ -26,6 +26,7 @@
 ]).
 
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
+-define(DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
 -define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
@@ -132,6 +133,17 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
                             log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
                             {ok, Req2, State};
+                            {ok_stream_aborted, StatusCode, Req2} ->
+                                %% Response headers were already sent and the stream was
+                                %% finalized locally. Do not penalize backend health here:
+                                %% some upstreams (notably Kubernetes watch-style APIs)
+                                %% periodically close streams, and treating this as a hard
+                                %% backend failure causes false circuit-breaker trips.
+                                StatusBin = integer_to_binary(StatusCode),
+                                pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                                pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
+                                log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
+                                {ok, Req2, State};
                         {error, Reason} ->
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
                             case maybe_proxy_via_local_management(
@@ -205,71 +217,44 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, Track
     end,
 
     ReqKind = detect_request_kind(Req),
+    UseEphemeralConn = should_use_ephemeral_connection(ReqKind, UpHost, Transport),
     GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
     {ok, Body} = read_body(Req),
 
-    case ReqKind of
-        grpc ->
-            %% gRPC streams may be long-lived and sparse; avoid shared pool reuse
-            %% so stream lifecycle is isolated from sweep/eviction behavior.
-            with_direct_connection(
+    case checkout_or_open_connection(
+        UseEphemeralConn,
+        UpHost,
+        UpPort,
+        Transport,
+        ReqKind,
+        GunOpts
+    ) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, ConnPid} ->
+            do_proxy(
+                Req,
+                ConnPid,
+                Method,
+                Host,
+                FullPath,
+                ClientIp,
+                TrackingId,
+                Body,
                 UpHost,
                 UpPort,
+                Transport,
+                ReqKind,
                 GunOpts,
-                fun(ConnPid) ->
-                    do_proxy(
-                        Req,
-                        ConnPid,
-                        Method,
-                        Host,
-                        FullPath,
-                        ClientIp,
-                        TrackingId,
-                        Body,
-                        UpHost,
-                        UpPort,
-                        Transport,
-                        ReqKind,
-                        GunOpts,
-                        0
-                    )
-                end
-            );
-        _ ->
-            case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts) of
-                {error, Reason} ->
-                    {error, Reason};
-                {ok, ConnPid} ->
-                    do_proxy(
-                        Req,
-                        ConnPid,
-                        Method,
-                        Host,
-                        FullPath,
-                        ClientIp,
-                        TrackingId,
-                        Body,
-                        UpHost,
-                        UpPort,
-                        Transport,
-                        ReqKind,
-                        GunOpts,
-                        0
-                    )
-            end
+                0,
+                UseEphemeralConn
+            )
     end.
 
-with_direct_connection(UpHost, UpPort, GunOpts, Fun) when is_function(Fun, 1) ->
-    case open_direct_connection(UpHost, UpPort, GunOpts) of
-        {ok, ConnPid} ->
-            try
-                Fun(ConnPid)
-            after
-                catch gun:close(ConnPid)
-            end;
-        {error, _} = Err ->
-            Err
-    end.
+checkout_or_open_connection(true, UpHost, UpPort, _Transport, _ReqKind, GunOpts) ->
+    open_direct_connection(UpHost, UpPort, GunOpts);
+checkout_or_open_connection(false, UpHost, UpPort, Transport, ReqKind, GunOpts) ->
+    pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts).
 
 open_direct_connection(UpHost, UpPort, GunOpts) ->
     case gun:open(UpHost, UpPort, GunOpts) of
@@ -285,6 +270,19 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
         {error, Reason} ->
             {error, {connect, Reason}}
     end.
+
+should_use_ephemeral_connection(grpc, _UpHost, _Transport) ->
+    false;
+should_use_ephemeral_connection(_ReqKind, UpHost, _Transport) ->
+    is_loopback_host(UpHost).
+
+is_loopback_host(Host) when is_binary(Host) ->
+    is_loopback_host(binary_to_list(Host));
+is_loopback_host(Host) when is_list(Host) ->
+    H = string:lowercase(string:trim(Host)),
+    H =:= "127.0.0.1" orelse H =:= "localhost" orelse H =:= "::1";
+is_loopback_host(_) ->
+    false.
 
 upstream_gun_opts(UpHost, tls, ReqKind) ->
     Base = #{
@@ -343,12 +341,13 @@ do_proxy(
     Transport,
     ReqKind,
     GunOpts,
-    RetryCount
+    RetryCount,
+    UseEphemeralConn
 ) ->
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
     ReqBodyBytes = byte_size(Body),
-    TimeoutMs = request_timeout_ms(),
+    TimeoutMs = request_timeout_ms(ReqKind, UpHost),
 
     Result =
         try
@@ -394,10 +393,15 @@ do_proxy(
     case Result of
         {error, ProxyReason} ->
             maybe_invalidate_connection(ConnPid, ProxyReason),
-            case RetryCount =:= 0 andalso ReqKind =/= grpc andalso retryable_upstream_error(ProxyReason) of
+            case should_retry_proxy_error(RetryCount, ReqKind, ProxyReason, UpHost) of
                 true ->
-                    case pertisk_eproxy_upstream_pool:checkout(
-                        UpHost, UpPort, Transport, ReqKind, GunOpts
+                    case checkout_or_open_connection(
+                        UseEphemeralConn,
+                        UpHost,
+                        UpPort,
+                        Transport,
+                        ReqKind,
+                        GunOpts
                     ) of
                         {ok, ConnPid2} ->
                             do_proxy(
@@ -414,17 +418,40 @@ do_proxy(
                                 Transport,
                                 ReqKind,
                                 GunOpts,
-                                1
+                                1,
+                                UseEphemeralConn
                             );
                         {error, _} = RetryErr ->
                             RetryErr
                     end;
                 false ->
+                    maybe_invalidate_ephemeral_connection(ConnPid, UseEphemeralConn),
                     {error, ProxyReason}
             end;
         _ ->
+            maybe_invalidate_ephemeral_connection(ConnPid, UseEphemeralConn),
             Result
     end.
+
+maybe_invalidate_ephemeral_connection(ConnPid, true) ->
+    pertisk_eproxy_upstream_pool:invalidate(ConnPid);
+maybe_invalidate_ephemeral_connection(_ConnPid, false) ->
+    ok.
+
+should_retry_proxy_error(RetryCount, ReqKind, ProxyReason, UpHost) ->
+    ReqKind =/= grpc
+        andalso retryable_upstream_error(ProxyReason)
+        andalso RetryCount < max_proxy_retries(ProxyReason, UpHost).
+
+max_proxy_retries({down, shutdown}, UpHost) ->
+    %% Local single-upstream backends can briefly flap under load; allow one
+    %% additional reconnect attempt before surfacing 502.
+    case is_loopback_host(UpHost) of
+        true -> 2;
+        false -> 1
+    end;
+max_proxy_retries(_ProxyReason, _UpHost) ->
+    1.
 
 do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes) ->
     %% gRPC watch/stream calls may stay idle before the first message; do not
@@ -492,7 +519,16 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
             {ok, Status, Req};
         {error, Reason} ->
-            {error, Reason};
+            %% Response headers were already streamed to the client via stream_reply/3.
+            %% Do not bubble this error up to the caller (which would attempt a second
+            %% cowboy_req:reply/4 and crash Cowboy with an invalid command sequence).
+            lager:info("Upstream stream ended after response started: ~p", [Reason]),
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid),
+            _ = catch cowboy_req:stream_body(<<>>, fin, Req),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            %% Return ok_stream_aborted so the caller can report error to the
+            %% circuit breaker without attempting a second HTTP reply.
+            {ok_stream_aborted, Status, Req};
         Other ->
             {error, {await_stream_unexpected, Other}}
     end.
@@ -522,7 +558,14 @@ proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
             {ok, Status, Req};
         {error, Reason} ->
-            {error, Reason};
+            %% gRPC headers have already been sent with stream_reply/3; finalize the
+            %% existing stream instead of returning an error that would trigger a
+            %% second HTTP reply attempt in the caller.
+            lager:info("Upstream gRPC stream ended after response started: ~p", [Reason]),
+            pertisk_eproxy_upstream_pool:invalidate(ConnPid),
+            _ = catch cowboy_req:stream_body(<<>>, fin, Req),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            {ok_stream_aborted, Status, Req};
         Other ->
             {error, {await_stream_unexpected, Other}}
     end.
@@ -1001,9 +1044,21 @@ normalize_host(H) when is_binary(H) ->
 normalize_host(H) when is_list(H) ->
     normalize_host(list_to_binary(H)).
 
-request_timeout_ms() ->
+request_timeout_ms(ReqKind, UpHost) ->
     Config = pertisk_eproxy_config:get_config(),
-    case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
-        N when is_integer(N), N > 0 -> N;
+    GlobalTimeout = case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
+        GN when is_integer(GN), GN > 0 -> GN;
         _ -> ?DEFAULT_REQUEST_TIMEOUT_MS
+    end,
+    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+        true ->
+            LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
+                                            Config,
+                                            ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
+                LN when is_integer(LN), LN > 0 -> LN;
+                _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
+            end,
+            min(GlobalTimeout, LoopbackTimeout);
+        false ->
+            GlobalTimeout
     end.
