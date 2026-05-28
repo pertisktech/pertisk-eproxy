@@ -1,7 +1,7 @@
 %% @doc Cloudflare DNS v4 API for ACME DNS-01 TXT records.
 -module(pertisk_eproxy_dns_cloudflare).
 
--export([find_zone/2, get_zone/2, cf_txt_record_name/2, create_txt/5, delete_txt/3]).
+-export([find_zone/2, get_zone/2, cf_txt_record_name/2, create_txt/5, delete_txt/3, auth_diag/1]).
 
 -define(API, <<"https://api.cloudflare.com/client/v4">>).
 
@@ -164,6 +164,10 @@ http_headers({token_or_key, Token0, _Email}) ->
     %% Prefer API token bearer auth when provided.
     http_headers(Token0);
 http_headers(Token) when is_binary(Token) ->
+    case is_redacted_placeholder_token(Token) of
+        true ->
+            {error, redacted_api_token_placeholder};
+        false ->
     NormToken = normalize_api_token(Token),
     case NormToken of
         <<>> ->
@@ -177,6 +181,7 @@ http_headers(Token) when is_binary(Token) ->
                     {"Content-Type", "application/json"},
                     {"Accept", "application/json"}
                 ]}
+            end
     end.
 
 safe_log_token_shape(Token) when is_binary(Token) ->
@@ -412,11 +417,44 @@ maybe_retry_with_global_key(Auth, ReqFun) ->
         Other -> Other
     end.
 
+auth_diag({token_or_key, Token, Email}) ->
+    Base = token_diag(Token),
+    Base#{mode => token_or_key, email_present => (normalize_email(Email) =/= <<>>)};
+auth_diag({global_key, ApiKey, Email}) ->
+    Base = token_diag(ApiKey),
+    Base#{mode => global_key, email_present => (normalize_email(Email) =/= <<>>)};
+auth_diag(Token) when is_binary(Token) ->
+    Base = token_diag(Token),
+    Base#{mode => bearer_token}.
+
+token_diag(Token0) when is_binary(Token0) ->
+    Norm = normalize_api_token(Token0),
+    RawLen = byte_size(Token0),
+    NormLen = byte_size(Norm),
+    Fp = short_fingerprint(Norm),
+    #{raw_len => RawLen, normalized_len => NormLen, fp8 => Fp}.
+
+short_fingerprint(Bin) when is_binary(Bin) ->
+    Hash = crypto:hash(sha256, Bin),
+    Hex = iolist_to_binary([io_lib:format("~2.16.0b", [X]) || <<X:8>> <= Hash]),
+    case byte_size(Hex) >= 8 of
+        true -> binary:part(Hex, 0, 8);
+        false -> Hex
+    end.
+
 has_invalid_auth_header_6111(Body) ->
     Bin = iolist_to_binary(Body),
     case binary:match(Bin, <<"\"code\":6111">>) of
         nomatch -> false;
         _ -> true
+    end.
+
+is_redacted_placeholder_token(Token) when is_binary(Token) ->
+    Lower = ascii_lower(trim_space_binary(Token)),
+    case Lower of
+        <<"[redacted]">> -> true;
+        <<"redacted">> -> true;
+        _ -> false
     end.
 
 http_opts() ->

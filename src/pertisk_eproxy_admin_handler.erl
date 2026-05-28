@@ -443,16 +443,25 @@ handle(<<"POST">>, dns_providers, Req) ->
         Name = bin_field(maps:get(<<"name">>, Body, <<>>)),
         Pt = bin_field(maps:get(<<"provider_type">>, Body, <<"label">>)),
         Cred = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
-        case pertisk_eproxy_db:insert_dns_provider(db_file_path(), Name, Pt, Cred) of
-            {ok, Id} ->
-                sync_dns_providers_into_runtime_config(),
-                json_reply(201, #{<<"status">> => <<"ok">>, <<"id">> => Id}, Req2);
-            {error, empty_name} ->
-                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
-            {error, empty_provider_type} ->
-                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
-            {error, Reason} ->
-                error_reply(400, Reason, Req2)
+        case dns_credentials_has_redacted(Cred) of
+            true ->
+                json_reply(
+                    400,
+                    #{<<"error">> => <<"credentials contain [redacted]; provide real secret values when creating provider">>},
+                    Req2
+                );
+            false ->
+                case pertisk_eproxy_db:insert_dns_provider(db_file_path(), Name, Pt, Cred) of
+                    {ok, Id} ->
+                        sync_dns_providers_into_runtime_config(),
+                        json_reply(201, #{<<"status">> => <<"ok">>, <<"id">> => Id}, Req2);
+                    {error, empty_name} ->
+                        json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+                    {error, empty_provider_type} ->
+                        json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+                    {error, Reason} ->
+                        error_reply(400, Reason, Req2)
+                end
         end
     end);
 
@@ -465,9 +474,14 @@ handle(<<"PUT">>, dns_provider, Req) ->
             with_json_body(Req, fun(Body, Req2) ->
                 Name = bin_field(maps:get(<<"name">>, Body, <<>>)),
                 Pt = bin_field(maps:get(<<"provider_type">>, Body, <<"label">>)),
-                Cred = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
-                case dns_provider_name_by_id(Id) of
-                    {ok, PrevName} ->
+                CredIn = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
+                case pertisk_eproxy_db:get_dns_provider_by_id(db_file_path(), Id) of
+                    {ok, PrevRow} ->
+                        PrevName = json_text(maps:get(name, PrevRow, <<>>)),
+                        PrevCred = maps:get(credentials, PrevRow, #{}) ,
+                        RuntimeCred = find_dns_provider_creds(PrevName, maps:get(dns_providers, pertisk_eproxy_config:get_config(), [])),
+                        ExistingCred = merge_dns_credentials_for_update(PrevCred, RuntimeCred),
+                        Cred = merge_dns_credentials_for_update(CredIn, ExistingCred),
                         case pertisk_eproxy_db:update_dns_provider(db_file_path(), Id, Name, Pt, Cred) of
                             ok ->
                                 update_sites_dns_provider_name(PrevName, Name),
@@ -588,7 +602,8 @@ handle(<<"PUT">>, config, Req) ->
     with_json_body(Req, fun(Body, Req2) ->
         Existing = pertisk_eproxy_config:get_config(),
         Parsed = pertisk_eproxy_config:json_to_config_pub(Body),
-        Config = preserve_redacted_tls_paths(Body, Parsed, Existing),
+        Config0 = preserve_redacted_tls_paths(Body, Parsed, Existing),
+        Config = preserve_redacted_dns_providers_in_config(Config0, Existing),
         case pertisk_eproxy_config:put_config(Config) of
             ok -> json_reply(200, #{status => <<"ok">>}, Req2);
             {error, R} -> error_reply(400, R, Req2)
@@ -1249,6 +1264,103 @@ preserve_redacted_tls_paths(Body, Parsed, Existing) when is_map(Body), is_map(Pa
         false -> Parsed1
     end.
 
+preserve_redacted_dns_providers_in_config(Parsed, Existing) when is_map(Parsed), is_map(Existing) ->
+    ParsedProviders = maps:get(dns_providers, Parsed, []),
+    ExistingProviders = maps:get(dns_providers, Existing, []),
+    NewProviders = [
+        preserve_redacted_dns_provider_entry(P, ExistingProviders)
+     || P <- ParsedProviders
+    ],
+    Parsed#{dns_providers => NewProviders};
+preserve_redacted_dns_providers_in_config(Parsed, _Existing) ->
+    Parsed.
+
+preserve_redacted_dns_provider_entry(P, ExistingProviders) when is_map(P) ->
+    Name = provider_name(P),
+    OldCreds = find_dns_provider_creds(Name, ExistingProviders),
+    CredIn = provider_creds(P),
+    MergedCreds = merge_dns_credentials_for_update(CredIn, OldCreds),
+    set_provider_creds(P, MergedCreds);
+preserve_redacted_dns_provider_entry(P, _ExistingProviders) ->
+    P.
+
+provider_name(P) when is_map(P) ->
+    case maps:get(name, P, maps:get(<<"name">>, P, <<>>)) of
+        V when is_binary(V) -> V;
+        V when is_list(V) -> unicode:characters_to_binary(V, utf8);
+        _ -> <<>>
+    end.
+
+provider_creds(P) when is_map(P) ->
+    case maps:get(credentials, P, maps:get(<<"credentials">>, P, #{})) of
+        M when is_map(M) -> M;
+        _ -> #{}
+    end.
+
+set_provider_creds(P, Creds) when is_map(P), is_map(Creds) ->
+    case maps:is_key(credentials, P) of
+        true -> P#{credentials => Creds};
+        false ->
+            case maps:is_key(<<"credentials">>, P) of
+                true -> P#{<<"credentials">> => Creds};
+                false -> P#{credentials => Creds}
+            end
+    end.
+
+find_dns_provider_creds(_Name, []) ->
+    #{};
+find_dns_provider_creds(Name, [P | Rest]) ->
+    case provider_name(P) =:= Name of
+        true -> provider_creds(P);
+        false -> find_dns_provider_creds(Name, Rest)
+    end.
+
+merge_dns_credentials_for_update(NewCreds, OldCreds) when is_map(NewCreds), is_map(OldCreds) ->
+    maps:fold(
+        fun(K, V, Acc) when is_map(V) ->
+            OldChild =
+                case maps:get(K, OldCreds, undefined) of
+                    M when is_map(M) -> M;
+                    _ -> #{}
+                end,
+            maps:put(K, merge_dns_credentials_for_update(V, OldChild), Acc);
+        (K, V, Acc) ->
+            case is_redacted_dns_value(V) of
+                true ->
+                    case maps:find(K, OldCreds) of
+                        {ok, OldV} -> maps:put(K, OldV, Acc);
+                        error -> maps:remove(K, Acc)
+                    end;
+                false ->
+                    maps:put(K, V, Acc)
+            end
+        end,
+        OldCreds,
+        NewCreds
+    );
+merge_dns_credentials_for_update(NewCreds, _OldCreds) ->
+    NewCreds.
+
+dns_credentials_has_redacted(M) when is_map(M) ->
+    lists:any(
+        fun({_K, V}) ->
+            case V of
+                VM when is_map(VM) -> dns_credentials_has_redacted(VM);
+                _ -> is_redacted_dns_value(V)
+            end
+        end,
+        maps:to_list(M)
+    );
+dns_credentials_has_redacted(_) ->
+    false.
+
+is_redacted_dns_value(V) when is_binary(V) ->
+    string:lowercase(V) =:= <<"[redacted]">>;
+is_redacted_dns_value(V) when is_list(V) ->
+    string:lowercase(unicode:characters_to_binary(V, utf8)) =:= <<"[redacted]">>;
+is_redacted_dns_value(_) ->
+    false.
+
 find_site_by_host(HostParam, Sites) ->
     case lists:search(fun(#{host := H}) -> H =:= HostParam end, Sites) of
         {value, Site} -> Site;
@@ -1605,8 +1717,37 @@ update_sites_cert_name(PrevName, NextName0) ->
     _ = pertisk_eproxy_config:put_config(C0#{sites => Sites}),
     ok.
 
-parse_dns_credentials(M) when is_map(M) -> M;
+parse_dns_credentials(M) when is_map(M) -> normalize_dns_credentials(M);
 parse_dns_credentials(_) -> #{}.
+
+normalize_dns_credentials(M) when is_map(M) ->
+    maps:fold(
+        fun(K, V, Acc) ->
+            NK = normalize_cred_key(K),
+            NV = normalize_dns_cred_value(V),
+            maps:put(NK, NV, Acc)
+        end,
+        #{},
+        M
+    );
+normalize_dns_credentials(_) ->
+    #{}.
+
+normalize_dns_cred_value(V) when is_map(V) ->
+    normalize_dns_credentials(V);
+normalize_dns_cred_value(V) when is_list(V) ->
+    [normalize_dns_cred_value(Item) || Item <- V];
+normalize_dns_cred_value(V) ->
+    V.
+
+normalize_cred_key(K) when is_binary(K) ->
+    K;
+normalize_cred_key(K) when is_list(K) ->
+    unicode:characters_to_binary(K, utf8);
+normalize_cred_key(K) when is_atom(K) ->
+    atom_to_binary(K, utf8);
+normalize_cred_key(K) ->
+    iolist_to_binary(io_lib:format("~p", [K])).
 
 dns_provider_db_row_to_json(#{id := Id, name := Name, provider_type := Pt, credentials := Cred} = Row) ->
     #{
@@ -1646,12 +1787,16 @@ update_sites_dns_provider_name(PrevName, NextName0) ->
 sync_dns_providers_into_runtime_config() ->
     case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
         {ok, Rows} ->
+            ExistingProviders = maps:get(dns_providers, pertisk_eproxy_config:get_config(), []),
             DnsProviders = [
-                #{
-                    name => binary_to_list(json_text(maps:get(name, R))),
-                    provider_type => binary_to_list(json_text(maps:get(provider_type, R))),
-                    credentials => maps:get(credentials, R, #{})
-                }
+                preserve_redacted_dns_provider_entry(
+                    #{
+                        name => binary_to_list(json_text(maps:get(name, R))),
+                        provider_type => binary_to_list(json_text(maps:get(provider_type, R))),
+                        credentials => maps:get(credentials, R, #{})
+                    },
+                    ExistingProviders
+                )
                 || R <- Rows
             ],
             C0 = pertisk_eproxy_config:get_config(),

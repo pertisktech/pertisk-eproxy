@@ -6,7 +6,7 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-10.1.1.8}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.4.17}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.4.25}}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
 SMOKE_ENABLED="${SMOKE_ENABLED:-0}"
@@ -64,7 +64,8 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" <<EOF
 set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${DEB_FILE}"
 
-sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt install -y "\${PKG_PATH}"
+sudo dpkg -i "\${PKG_PATH}"
+sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -f install -y
 sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl restart "${PACKAGE_NAME}"
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"

@@ -201,6 +201,10 @@ export default function DnsProviders() {
     setFormCreds((prev) => ({ ...prev, [key]: value }));
   }
 
+  function isRedactedCredentialValue(value: string): boolean {
+    return value.trim() === '[redacted]';
+  }
+
   function toggleFieldVisibility(key: string) {
     setFieldVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
   }
@@ -210,7 +214,9 @@ export default function DnsProviders() {
     const out: Record<string, string> = {};
     for (const field of selectedProvider.fields) {
       const v = formCreds[field.key]?.trim();
-      if (v) out[field.key] = v;
+      if (!v) continue;
+      if (editingId && isRedactedCredentialValue(v)) continue;
+      out[field.key] = v;
     }
     return Object.keys(out).length ? out : undefined;
   }

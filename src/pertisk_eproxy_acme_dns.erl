@@ -640,6 +640,7 @@ issue_cloudflare(DbPath, Site, Host, Row) ->
             ssl_job_err(Host, E),
             E;
         {ok, Auth} ->
+            lager:warning("Cloudflare auth diag for ~s: ~p", [Host, pertisk_eproxy_dns_cloudflare:auth_diag(Auth)]),
             ZoneId0 = cred_get(Creds, [<<"zone_id">>, <<"zoneId">>]),
             case resolve_zone(Auth, ZoneId0, Host) of
                 {error, _} = E ->
@@ -1592,6 +1593,8 @@ humanize_acme_error({missing_credential, Key}) ->
 humanize_acme_error(missing_api_token) -> <<"Missing API token.">>;
 humanize_acme_error(missing_api_email) ->
     <<"Missing Cloudflare account email for Global API key authentication.">>;
+humanize_acme_error(redacted_api_token_placeholder) ->
+    <<"Cloudflare token is currently a redacted placeholder. Re-enter and save the real api_token in DNS provider credentials.">>;
 humanize_acme_error(invalid_cloudflare_auth_header) ->
     <<"Cloudflare rejected auth header format (6111). Use raw api_token, or provide api_key + email for key-mode auth.">>;
 humanize_acme_error(invalid_api_token_format) ->
