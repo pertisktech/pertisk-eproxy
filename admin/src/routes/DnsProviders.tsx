@@ -453,7 +453,7 @@ export default function DnsProviders() {
                     </div>
                   </td>
                   <td>
-                    <span className={styles.statusPill}>{getProviderDisplayName(row.provider_type)}</span>
+                    <span className={styles.typeText}>{getProviderDisplayName(row.provider_type)}</span>
                   </td>
                   <td>
                     <span className={styles.datePrimary}>{formatDateTime(row.created_at)}</span>

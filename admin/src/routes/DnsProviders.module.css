@@ -230,9 +230,11 @@
 
 .tableWrap {
   overflow-x: auto;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   border-radius: calc(var(--radius-xl) + 2px);
-  background: var(--bg-card);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-surface-elevated) 76%, transparent), transparent 22%),
+    var(--color-surface);
   box-shadow: var(--shadow-sm);
   padding: 0.75rem;
 }
@@ -242,7 +244,7 @@
   min-width: 760px;
   border-collapse: separate;
   border-spacing: 0 0.7rem;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
 }
 
 .table th {
@@ -261,8 +263,8 @@
   text-align: left;
   vertical-align: middle;
   background: color-mix(in srgb, var(--color-surface-elevated) 82%, transparent);
-  border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
 }
 
 .sortBtn {
@@ -287,20 +289,20 @@
 }
 
 .tableRow td:first-child {
-  border-left: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
   border-top-left-radius: calc(var(--radius-xl) + 1px);
   border-bottom-left-radius: calc(var(--radius-xl) + 1px);
 }
 
 .tableRow td:last-child {
-  border-right: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
   border-top-right-radius: calc(var(--radius-xl) + 1px);
   border-bottom-right-radius: calc(var(--radius-xl) + 1px);
 }
 
 .table tbody tr:hover td {
-  background: color-mix(in srgb, var(--bg-hover) 70%, var(--color-surface-elevated));
-  border-color: color-mix(in srgb, var(--color-primary) 20%, var(--border));
+  background: color-mix(in srgb, var(--color-hover) 70%, var(--color-surface-elevated));
+  border-color: color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
 }
 
 .primaryCell {
@@ -353,6 +355,11 @@
   line-height: 1.35;
 }
 
+.typeText {
+  color: var(--text);
+  font-weight: 500;
+}
+
 .statusPill {
   display: inline-flex;
   align-items: center;
@@ -368,7 +375,7 @@
 
 .datePrimary {
   color: var(--text);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .name {
