@@ -43,8 +43,9 @@ init(Req, _State) ->
                         <<>> -> UpPath;
                         _    -> <<UpPath/binary, "?", Qs/binary>>
                     end,
-                    WsHeaders = ws_forward_headers(Req, Host, ClientIp, FullPath),
-                    ReqWs = maybe_set_ws_subprotocol(Req),
+                    SelectedProto = selected_ws_subprotocol(Req, FullPath),
+                    WsHeaders = ws_forward_headers(Req, Host, ClientIp, FullPath, SelectedProto),
+                    ReqWs = maybe_set_ws_subprotocol(Req, SelectedProto),
                     WsState = #{
                         host                => Host,
                         backend             => BackendName,
@@ -118,7 +119,8 @@ websocket_handle(_Frame, State) ->
 
 %% Message from gun (upstream) → forward to client, or handle close/errors.
 
-websocket_info({gun_ws, _ConnPid, _SRef, close}, State) ->
+websocket_info({gun_ws, _ConnPid, _SRef, close}, State = #{host := Host, upstream_path := UpPath}) ->
+    lager:info("WS upstream sent close host=~s path=~s", [Host, UpPath]),
     {[close], State};
 
 websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
@@ -211,12 +213,21 @@ maybe_sni_opt(_) ->
     [{server_name_indication, disable}].
 
 terminate(_Reason, _Req, #{conn_pid := ConnPid, backend := BackendName,
-                             upstream_addr := Addr})
+                             upstream_addr := Addr, host := Host,
+                             upstream_path := UpPath})
     when ConnPid =/= undefined ->
+    lager:info(
+        "WS terminate reason=~p host=~s path=~s backend=~s upstream=~s",
+        [_Reason, Host, UpPath, BackendName, Addr]
+    ),
     gun:close(ConnPid),
     pertisk_eproxy_backend:done_upstream(BackendName, Addr, ok),
     ok;
+terminate(_Reason, _Req, #{host := Host, upstream_path := UpPath}) ->
+    lager:info("WS terminate reason=~p host=~s path=~s", [_Reason, Host, UpPath]),
+    ok;
 terminate(_Reason, _Req, _State) ->
+    lager:info("WS terminate reason=~p", [_Reason]),
     ok.
 
 %% -------------------------------------------------------------------------
@@ -232,14 +243,13 @@ client_ip(Req) ->
             hd(binary:split(XFF, [<<", ">>, <<",">>]))
     end.
 
-ws_forward_headers(Req, OrigHost, ClientIp, UpPath) ->
+ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto) ->
     InHeaders = cowboy_req:headers(Req),
     Proto = forwarded_proto(Req, InHeaders),
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
     IsConsolePath = skip_forwarded_for(OrigHost, UpPath),
     %% Gun builds WS transport headers; only forward app-relevant headers.
     Base0 = #{
-        <<"host">> => OrigHost,
         <<"x-forwarded-host">> => OrigHost,
         <<"x-forwarded-proto">> => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn
@@ -289,22 +299,35 @@ ws_forward_headers(Req, OrigHost, ClientIp, UpPath) ->
         Base,
         Keep
     ),
+    OutWithProto =
+        case SelectedProto of
+            undefined -> maps:remove(<<"sec-websocket-protocol">>, Out);
+            ProtoSel -> Out#{<<"sec-websocket-protocol">> => ProtoSel}
+        end,
     case IsConsolePath of
         true ->
             %% Keep this close to reverse-proxy defaults that are known to work with Proxmox consoles.
-            maps:to_list(maps:without([<<"x-forwarded-proto">>, <<"x-forwarded-proto-version">>], Out));
+            maps:to_list(
+                maps:without(
+                    [
+                        <<"x-forwarded-proto">>,
+                        <<"x-forwarded-proto-version">>,
+                        <<"sec-websocket-protocol">>
+                    ],
+                    OutWithProto
+                )
+            );
         false ->
-            maps:to_list(Out)
+            maps:to_list(OutWithProto)
     end.
 
-skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
-    HostL = string:lowercase(Host),
-    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
         binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
         binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
-        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
-    IsProxmoxHost andalso IsConsolePath;
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch orelse
+        binary:match(Path, <<"/websockify">>) =/= nomatch,
+    IsConsolePath;
 skip_forwarded_for(_, _) ->
     false.
 
@@ -322,8 +345,11 @@ forwarded_proto(Req, InHeaders) ->
             end
     end.
 
-maybe_set_ws_subprotocol(Req0) ->
-    case select_ws_subprotocol(cowboy_req:header(<<"sec-websocket-protocol">>, Req0, undefined)) of
+selected_ws_subprotocol(Req0, Path) ->
+    select_ws_subprotocol(cowboy_req:header(<<"sec-websocket-protocol">>, Req0, undefined), Path).
+
+maybe_set_ws_subprotocol(Req0, SelectedProto) ->
+    case SelectedProto of
         undefined ->
             Req0;
         Proto ->
@@ -331,16 +357,50 @@ maybe_set_ws_subprotocol(Req0) ->
             cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, Proto, Req0)
     end.
 
-select_ws_subprotocol(undefined) ->
+select_ws_subprotocol(undefined, _Path) ->
     undefined;
-select_ws_subprotocol(<<>>) ->
+select_ws_subprotocol(<<>>, _Path) ->
     undefined;
-select_ws_subprotocol(Bin) when is_binary(Bin) ->
-    case [string:trim(P, both) || P <- binary:split(Bin, <<",">>, [global])] of
+select_ws_subprotocol(Bin, Path) when is_binary(Bin) ->
+    Tokens0 = [string:trim(P, both) || P <- binary:split(Bin, <<",">>, [global])],
+    Tokens = [T || T <- Tokens0, T =/= <<>>],
+    case choose_ws_subprotocol(Path, Tokens) of
         [] -> undefined;
-        [<<>> | Rest] -> select_ws_subprotocol(list_to_binary(string:join([binary_to_list(R) || R <- Rest], ",")));
-        [First | _] -> First
+        Proto -> Proto
     end.
+
+choose_ws_subprotocol(_Path, []) ->
+    [];
+choose_ws_subprotocol(Path, Tokens) when is_binary(Path) ->
+    %% Proxmox console sockets are more reliable with base64 when both are offered.
+    case skip_forwarded_for(<<>>, Path) of
+        true ->
+            case lists:member(<<"base64">>, [normalize_proto_token(T) || T <- Tokens]) of
+                true ->
+                    find_original_token(<<"base64">>, Tokens);
+                false ->
+                    hd(Tokens)
+            end;
+        false ->
+            hd(Tokens)
+    end;
+choose_ws_subprotocol(_Path, [First | _]) ->
+    First.
+
+find_original_token(_Wanted, []) ->
+    [];
+find_original_token(Wanted, [T | Rest]) ->
+    case normalize_proto_token(T) of
+        Wanted -> T;
+        _ -> find_original_token(Wanted, Rest)
+    end.
+
+normalize_proto_token(T) when is_binary(T) ->
+    unicode:characters_to_binary(string:lowercase(binary_to_list(T)));
+normalize_proto_token(T) when is_list(T) ->
+    unicode:characters_to_binary(string:lowercase(T));
+normalize_proto_token(T) ->
+    unicode:characters_to_binary(io_lib:format("~p", [T])).
 
 version_to_bin('HTTP/1.0') -> <<"HTTP/1.0">>;
 version_to_bin('HTTP/1.1') -> <<"HTTP/1.1">>;

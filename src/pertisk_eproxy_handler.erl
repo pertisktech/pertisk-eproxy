@@ -218,7 +218,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, Track
 
     ReqKind = detect_request_kind(Req),
     UseEphemeralConn = should_use_ephemeral_connection(ReqKind, UpHost, UpPort, Transport),
-    GunOpts = upstream_gun_opts(UpHost, Transport, ReqKind),
+    GunOpts = upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind),
     {ok, Body} = read_body(Req),
 
     case checkout_or_open_connection(
@@ -276,7 +276,8 @@ should_use_ephemeral_connection(grpc, _UpHost, _UpPort, _Transport) ->
 should_use_ephemeral_connection(_ReqKind, UpHost, UpPort, _Transport) ->
     %% Kube API traffic on loopback:8100 proved sensitive to pooled socket churn
     %% under bursty load; use fresh connections only for this upstream.
-    is_loopback_host(UpHost) andalso UpPort =:= 8100.
+    (is_loopback_host(UpHost) andalso UpPort =:= 8100)
+        orelse UpPort =:= 8006.
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
@@ -301,6 +302,10 @@ upstream_gun_opts(_UpHost, Transport, ReqKind) ->
         connect_timeout => connect_timeout_ms(_UpHost, ReqKind)
     },
     add_request_profile_upstream_opts(ReqKind, Base).
+
+upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind) ->
+    Base = upstream_gun_opts(UpHost, Transport, ReqKind),
+    Base#{protocols => gun_protocols_for_request(ReqKind, Transport, UpPort)}.
 
 connect_timeout_ms(UpHost, ReqKind) ->
     Config = pertisk_eproxy_config:get_config(),
@@ -660,14 +665,13 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
             Base0#{<<"x-forwarded-for">> => XFF}
     end.
 
-skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
-    HostL = string:lowercase(Host),
-    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
         binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
         binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
-        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
-    IsProxmoxHost andalso IsConsolePath;
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch orelse
+        binary:match(Path, <<"/websockify">>) =/= nomatch,
+    IsConsolePath;
 skip_forwarded_for(_, _) ->
     false.
 
@@ -862,6 +866,14 @@ gun_protocols_for_request(_, tls) ->
     [http2, http];
 gun_protocols_for_request(_, _) ->
     [http].
+
+gun_protocols_for_request(grpc, _Transport, _UpPort) ->
+    [http2];
+gun_protocols_for_request(_, _Transport, 8006) ->
+    %% Proxmox API/noVNC traffic is sensitive to upstream stream reuse; force HTTP/1.
+    [http];
+gun_protocols_for_request(ReqKind, Transport, _UpPort) ->
+    gun_protocols_for_request(ReqKind, Transport).
 
 client_ip(Req) ->
     case cowboy_req:header(<<"x-forwarded-for">>, Req) of

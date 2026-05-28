@@ -477,14 +477,13 @@ forward_headers_h3(InMap, OrigHost, ClientIp, UpstreamPath) when is_binary(OrigH
             Base0#{<<"x-forwarded-for">> => XFF}
     end.
 
-skip_forwarded_for(Host, Path) when is_binary(Host), is_binary(Path) ->
-    HostL = string:lowercase(Host),
-    IsProxmoxHost = binary:match(HostL, <<"proxmox">>) =/= nomatch,
+skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
         binary:match(Path, <<"/termproxy">>) =/= nomatch orelse
         binary:match(Path, <<"/vncproxy">>) =/= nomatch orelse
-        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch,
-    IsProxmoxHost andalso IsConsolePath;
+        binary:match(Path, <<"/vncwebsocket">>) =/= nomatch orelse
+        binary:match(Path, <<"/websockify">>) =/= nomatch,
+    IsConsolePath;
 skip_forwarded_for(_, _) ->
     false.
 
