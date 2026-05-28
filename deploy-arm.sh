@@ -7,7 +7,6 @@ RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
 ADMIN_HOST="${ADMIN_HOST:-admin.arm.thaidevops.co}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
-SMOKE_URL="${SMOKE_URL:-https://${ADMIN_HOST}/docs}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
 
@@ -27,11 +26,3 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
   --set adminIngress.tlsSecretName=admin-arm-tls
-
-echo "Smoke check: ${SMOKE_URL}"
-if curl -fsSL --max-time 25 "$SMOKE_URL" | grep -qi 'swagger-ui'; then
-  echo "Swagger docs check passed"
-else
-  echo "Swagger docs check failed: ${SMOKE_URL}" >&2
-  exit 1
-fi

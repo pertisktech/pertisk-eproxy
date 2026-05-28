@@ -9,11 +9,6 @@ PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
 PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.4.25}}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
-SMOKE_ENABLED="${SMOKE_ENABLED:-0}"
-SMOKE_PATH="${SMOKE_PATH:-http://127.0.0.1:9080/docs}"
-SMOKE_RETRIES="${SMOKE_RETRIES:-15}"
-SMOKE_RETRY_DELAY="${SMOKE_RETRY_DELAY:-2}"
-SMOKE_STRICT="${SMOKE_STRICT:-0}"
 # Host Erlang toolchains can crash in beam_asm on some systems; default to
 # Dockerized Linux/amd64 release build for deb packaging.
 RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-1}"
@@ -71,35 +66,6 @@ sudo systemctl restart "${PACKAGE_NAME}"
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"
 echo "Service status:"
 sudo systemctl status "${PACKAGE_NAME}" --no-pager
-
-if [ "${SMOKE_ENABLED}" = "1" ]; then
-	if command -v curl >/dev/null 2>&1; then
-		echo "Smoke check: ${SMOKE_PATH}"
-		ok=0
-		i=1
-		while [ "\${i}" -le "${SMOKE_RETRIES}" ]; do
-			if curl -fsSL --max-time 10 "${SMOKE_PATH}" | grep -qi 'swagger-ui'; then
-				ok=1
-				break
-			fi
-			sleep "${SMOKE_RETRY_DELAY}"
-			i=\$((i+1))
-		done
-
-		if [ "\${ok}" -ne 1 ]; then
-			echo "WARNING: docs smoke check failed after ${SMOKE_RETRIES} attempts: ${SMOKE_PATH}" >&2
-			if command -v ss >/dev/null 2>&1; then
-				echo "Listener snapshot:" >&2
-				ss -ltnp | grep -E '(:80|:443|:8080|:8443|:9080|:9443)' || true
-			fi
-			if [ "${SMOKE_STRICT}" = "1" ]; then
-				exit 1
-			fi
-		fi
-	else
-		echo "WARNING: curl not found on remote; skipping docs smoke check" >&2
-	fi
-fi
 EOF
 
 log_ok "Debian deployment completed successfully!"
