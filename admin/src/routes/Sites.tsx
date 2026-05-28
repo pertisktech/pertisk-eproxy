@@ -1024,7 +1024,7 @@ export default function Sites() {
                             <FaIcon className="fas fa-asterisk" aria-hidden /> wildcard
                           </span>
                         )}
-                        {domainUrl(site.host) && (
+                        {!isWildcardHost(site.host) && domainUrl(site.host) && (
                           <a
                             href={domainUrl(site.host)}
                             target="_blank"
@@ -1212,7 +1212,7 @@ export default function Sites() {
                                 <span className={styles.cellSubtle}>Cert {ssl}</span>
                               </span>
                             </div>
-                            {domainUrl(site.host) && (
+                            {!isWildcardHost(site.host) && domainUrl(site.host) && (
                               <a
                                 href={domainUrl(site.host)}
                                 target="_blank"
