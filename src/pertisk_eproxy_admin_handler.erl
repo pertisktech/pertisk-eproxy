@@ -1205,6 +1205,7 @@ restore_backup_certificate_records_list([]) ->
 restore_backup_certificate_records_list([R | Rest]) when is_map(R) ->
     case restore_backup_certificate_record(R) of
         ok -> restore_backup_certificate_records_list(Rest);
+        {ok, _Id} -> restore_backup_certificate_records_list(Rest);
         {error, _} = Err -> Err
     end;
 restore_backup_certificate_records_list([_ | Rest]) ->

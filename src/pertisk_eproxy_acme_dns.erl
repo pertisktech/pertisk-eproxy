@@ -185,11 +185,18 @@ cert_ref_allows_acme_dns_issue(S) ->
     end.
 
 acme_should_replace_site_certificate(Ref) ->
-    case acme_resolved_cert_pem_path(Ref) of
+    case acme_resolved_cert_material(Ref) of
         undefined ->
             ref_looks_like_acme_store(Ref);
-        Path ->
+        {path, Path} ->
             case pertisk_eproxy_tls_cert_info:describe_listener_pem(Path) of
+                {ok, #{issuer := Iss}} ->
+                    issuer_is_le_staging(Iss);
+                _ ->
+                    ref_looks_like_acme_store(Ref)
+            end;
+        {pem, PemBin} ->
+            case pertisk_eproxy_tls_cert_info:describe_pem_data(PemBin) of
                 {ok, #{issuer := Iss}} ->
                     issuer_is_le_staging(Iss);
                 _ ->
@@ -212,13 +219,16 @@ issuer_is_le_staging(Iss) when is_binary(Iss) ->
     nomatch =/= string:find(L, "staging") orelse nomatch =/= string:find(L, "fake le");
 issuer_is_le_staging(_) -> false.
 
-acme_resolved_cert_pem_path(Ref) ->
+acme_resolved_cert_material(Ref) ->
     Rb = ref_to_binary(Ref),
     case Rb of
         <<"acme/", _/binary>> ->
-            acme_pem_disk_path_for_name(Rb);
+            case acme_pem_disk_path_for_name(Rb) of
+                undefined -> acme_db_row_cert_material_for_name_ref(Rb);
+                Path -> {path, Path}
+            end;
         _ ->
-            acme_db_row_pem_path_for_id_ref(Rb)
+            acme_db_row_cert_material_for_id_ref(Rb)
     end.
 
 acme_pem_disk_path_for_name(<<"acme/", Slug/binary>>) ->
@@ -229,20 +239,37 @@ acme_pem_disk_path_for_name(<<"acme/", Slug/binary>>) ->
         false -> undefined
     end.
 
-acme_db_row_pem_path_for_id_ref(Rb) ->
+acme_db_row_cert_material_for_id_ref(Rb) ->
     case acme_binary_to_int_id(Rb) of
         {ok, Id} ->
             DbPath = pertisk_eproxy_config:db_file(),
             case pertisk_eproxy_db:list_certificates(DbPath) of
                 {ok, Rows} ->
                     case lists:search(fun(#{id := I}) -> I =:= Id end, Rows) of
-                        {value, Row} -> acme_cert_row_effective_pem_path(Row);
+                        {value, Row} -> acme_cert_row_effective_material(Row);
                         false -> undefined
                     end;
                 _ ->
                     undefined
             end;
         error ->
+            undefined
+    end.
+
+acme_db_row_cert_material_for_name_ref(NameRef) ->
+    DbPath = pertisk_eproxy_config:db_file(),
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} ->
+            case lists:search(
+                fun(Row) ->
+                    acme_name_to_binary(maps:get(name, Row, <<>>)) =:= NameRef
+                end,
+                Rows
+            ) of
+                {value, Row} -> acme_cert_row_effective_material(Row);
+                false -> undefined
+            end;
+        _ ->
             undefined
     end.
 
@@ -255,12 +282,33 @@ acme_binary_to_int_id(B) when is_binary(B) ->
 acme_binary_to_int_id(_) ->
     error.
 
-acme_cert_row_effective_pem_path(Row) ->
+acme_cert_row_effective_material(Row) ->
     NameB = acme_name_to_binary(maps:get(name, Row)),
     case NameB of
-        <<"acme/", _/binary>> -> acme_pem_disk_path_for_name(NameB);
-        _ -> undefined
+        <<"acme/", _/binary>> ->
+            case acme_pem_disk_path_for_name(NameB) of
+                undefined ->
+                    case acme_row_cert_pem(maps:get(cert_pem, Row, undefined)) of
+                        undefined -> undefined;
+                        PemBin -> {pem, PemBin}
+                    end;
+                Path ->
+                    {path, Path}
+            end;
+        _ ->
+            case acme_row_cert_pem(maps:get(cert_pem, Row, undefined)) of
+                undefined -> undefined;
+                PemBin -> {pem, PemBin}
+            end
     end.
+
+acme_row_cert_pem(undefined) -> undefined;
+acme_row_cert_pem(null) -> undefined;
+acme_row_cert_pem(<<>>) -> undefined;
+acme_row_cert_pem([]) -> undefined;
+acme_row_cert_pem(Pem) when is_binary(Pem) -> Pem;
+acme_row_cert_pem(Pem) when is_list(Pem) -> unicode:characters_to_binary(Pem, utf8);
+acme_row_cert_pem(_) -> undefined.
 
 acme_name_to_binary(N) when is_binary(N) -> N;
 acme_name_to_binary(N) when is_list(N) -> unicode:characters_to_binary(N, utf8);
