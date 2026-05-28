@@ -455,16 +455,16 @@ trim_space_right(Bin) ->
     Bin.
 
 validate_cloudflare(Creds) ->
-    case require_cred(Creds, [<<"api_token">>, <<"apiToken">>], missing_api_token) of
+    case cloudflare_auth(Creds) of
         {error, _} = E -> E;
-        {ok, Token} ->
+        {ok, Auth} ->
             case cred_get(Creds, [<<"zone_id">>, <<"zoneId">>]) of
                 undefined ->
-                    {ok, #{provider => <<"cloudflare">>, message => <<"API token present">>}};
+                    {ok, #{provider => <<"cloudflare">>, message => <<"Cloudflare credentials present">>}};
                 ZoneId ->
-                    case resolve_zone(Token, ZoneId, <<"example.com">>) of
-                        {_Zi, Zn} -> {ok, #{provider => <<"cloudflare">>, zone_name => zone_name_bin(Zn)}};
-                        _ -> {error, invalid_zone_id}
+                    case resolve_zone(Auth, ZoneId, <<"example.com">>) of
+                        {ok, {_Zi, Zn}} -> {ok, #{provider => <<"cloudflare">>, zone_name => zone_name_bin(Zn)}};
+                        {error, _} -> {error, invalid_zone_id}
                     end
             end
     end.
@@ -615,32 +615,54 @@ require_cred(Creds, Keys, Err) ->
         V -> {ok, V}
     end.
 
+cloudflare_auth(Creds) ->
+    Token = cred_get(Creds, [<<"api_token">>, <<"apiToken">>]),
+    ApiKey = cred_get(Creds, [<<"api_key">>, <<"apiKey">>]),
+    Email = cred_get(Creds, [<<"email">>, <<"auth_email">>, <<"api_email">>, <<"authEmail">>, <<"apiEmail">>]),
+    case {Token, ApiKey, Email} of
+        {undefined, undefined, _} ->
+            {error, missing_api_token};
+        {undefined, _, undefined} ->
+            {error, missing_api_email};
+        {undefined, Key, Em} ->
+            {ok, {global_key, Key, Em}};
+        {Tok, _, Em} when Em =/= undefined ->
+            %% Token-first with fallback to key-style headers using the same value + email.
+            {ok, {token_or_key, Tok, Em}};
+        {Tok, _, _} ->
+            {ok, Tok}
+    end.
+
 issue_cloudflare(DbPath, Site, Host, Row) ->
     Creds = maps:get(credentials, Row, #{}),
-    Token = cred_get(Creds, [<<"api_token">>, <<"apiToken">>]),
-    case Token of
-        undefined ->
-            ssl_job_err(Host, missing_api_token),
-            {error, missing_api_token};
-        _ ->
+    case cloudflare_auth(Creds) of
+        {error, _} = E ->
+            ssl_job_err(Host, E),
+            E;
+        {ok, Auth} ->
             ZoneId0 = cred_get(Creds, [<<"zone_id">>, <<"zoneId">>]),
-            {ZoneId, ZoneName} = resolve_zone(Token, ZoneId0, Host),
-            ZoneLabel = zone_name_bin(ZoneName),
-            ssl_job(Host, <<"zone">>, iolist_to_binary([<<"Cloudflare zone: ">>, ZoneLabel])),
-            Identifiers = site_identifiers(Site, Host),
-            case pertisk_eproxy_acme_csr:generate_rsa_csr(Identifiers) of
-                {error, Reason} ->
-                    ssl_job_err(Host, {csr_failed, Reason}),
-                    {error, {csr_failed, Reason}};
-                {ok, #{csr_der := CsrDer, key_pem := KeyPem}} ->
-                    ssl_job(Host, <<"csr">>, <<"Generated private key and CSR">>),
-                    issue_cloudflare_after_csr(
-                        DbPath, Site, Host, Row, Token, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem
-                    )
+            case resolve_zone(Auth, ZoneId0, Host) of
+                {error, _} = E ->
+                    ssl_job_err(Host, E),
+                    E;
+                {ok, {ZoneId, ZoneName}} ->
+                    ZoneLabel = zone_name_bin(ZoneName),
+                    ssl_job(Host, <<"zone">>, iolist_to_binary([<<"Cloudflare zone: ">>, ZoneLabel])),
+                    Identifiers = site_identifiers(Site, Host),
+                    case pertisk_eproxy_acme_csr:generate_rsa_csr(Identifiers) of
+                        {error, Reason} ->
+                            ssl_job_err(Host, {csr_failed, Reason}),
+                            {error, {csr_failed, Reason}};
+                        {ok, #{csr_der := CsrDer, key_pem := KeyPem}} ->
+                            ssl_job(Host, <<"csr">>, <<"Generated private key and CSR">>),
+                            issue_cloudflare_after_csr(
+                                DbPath, Site, Host, Row, Auth, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem
+                            )
+                    end
             end
     end.
 
-issue_cloudflare_after_csr(DbPath, Site, Host, _Row, Token, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem) ->
+issue_cloudflare_after_csr(DbPath, Site, Host, _Row, Auth, ZoneId, ZoneName, Identifiers, CsrDer, KeyPem) ->
     AcmeDir = acme_directory(),
     KidPathPre = filename:join(acme_data_dir(), "kid.txt"),
     ok = maybe_drop_staging_kid_for_production(AcmeDir, KidPathPre),
@@ -655,14 +677,14 @@ issue_cloudflare_after_csr(DbPath, Site, Host, _Row, Token, ZoneId, ZoneName, Id
                     KidPathFile = filename:join(acme_data_dir(), "kid.txt"),
                     AddFun = fun(TxtFqdn, Digest) ->
                         RecName = pertisk_eproxy_dns_cloudflare:cf_txt_record_name(TxtFqdn, ZoneName),
-                        case pertisk_eproxy_dns_cloudflare:create_txt(Token, ZoneId, RecName, Digest, <<"pertisk-acme">>) of
-                            {ok, Rid} -> {ok, {cf, Token, ZoneId, Rid}};
+                        case pertisk_eproxy_dns_cloudflare:create_txt(Auth, ZoneId, RecName, Digest, <<"pertisk-acme">>) of
+                            {ok, Rid} -> {ok, {cf, Auth, ZoneId, Rid}};
                             Err -> Err
                         end
                     end,
                     DelFun = fun
-                        ({cf, Tok, Zi, Rid}) ->
-                            pertisk_eproxy_dns_cloudflare:delete_txt(Tok, Zi, Rid);
+                        ({cf, CfAuth, Zi, Rid}) ->
+                            pertisk_eproxy_dns_cloudflare:delete_txt(CfAuth, Zi, Rid);
                         (_) ->
                             ok
                     end,
@@ -1568,6 +1590,12 @@ humanize_acme_error(lego_not_found) ->
 humanize_acme_error({missing_credential, Key}) ->
     iolist_to_binary([<<"Missing required credential: ">>, provider_type_to_binary(Key)]);
 humanize_acme_error(missing_api_token) -> <<"Missing API token.">>;
+humanize_acme_error(missing_api_email) ->
+    <<"Missing Cloudflare account email for Global API key authentication.">>;
+humanize_acme_error(invalid_cloudflare_auth_header) ->
+    <<"Cloudflare rejected auth header format (6111). Use raw api_token, or provide api_key + email for key-mode auth.">>;
+humanize_acme_error(invalid_api_token_format) ->
+    <<"Cloudflare API token format is invalid. Use raw token only (no Authorization:/Bearer prefix).">>;
 humanize_acme_error(missing_api_key) -> <<"Missing API key.">>;
 humanize_acme_error(missing_secret_api_key) -> <<"Missing secret API key.">>;
 humanize_acme_error(missing_api_url) -> <<"Missing API URL.">>;
@@ -1575,6 +1603,14 @@ humanize_acme_error(missing_domain) -> <<"Missing domain.">>;
 humanize_acme_error(missing_token) -> <<"Missing token.">>;
 humanize_acme_error(missing_lego_provider) ->
     <<"Missing lego provider name in credentials (lego_provider).">>;
+humanize_acme_error(zone_not_found) ->
+    <<"DNS zone not found for the requested host. Check provider zone/domain settings.">>;
+humanize_acme_error({zone_not_found, Host}) when is_binary(Host) ->
+    iolist_to_binary([
+        <<"DNS zone not found for host ">>,
+        Host,
+        <<". Check Cloudflare zone access and zone/domain settings.">>
+    ]);
 humanize_acme_error(missing_env_vars_json) ->
     <<"Missing env vars for custom lego provider (env_vars_json or UPPERCASE env keys).">>;
 humanize_acme_error(invalid_env_vars_json) ->
@@ -1688,12 +1724,20 @@ contact_bin(Site) ->
 
 resolve_zone(Token, undefined, Host) ->
     Lookup = zone_lookup_host(Host),
-    {ok, #{zone_id := Zi, zone_name := Zn}} = pertisk_eproxy_dns_cloudflare:find_zone(Token, Lookup),
-    {Zi, Zn};
+    case pertisk_eproxy_dns_cloudflare:find_zone(Token, Lookup) of
+        {ok, #{zone_id := Zi, zone_name := Zn}} ->
+            {ok, {Zi, Zn}};
+        {error, _} = E ->
+            E
+    end;
 resolve_zone(Token, ZoneId0, _Host) when ZoneId0 =/= undefined ->
     Zi = iolist_to_binary(ZoneId0),
-    {ok, #{zone_name := Zn}} = pertisk_eproxy_dns_cloudflare:get_zone(Token, Zi),
-    {Zi, Zn}.
+    case pertisk_eproxy_dns_cloudflare:get_zone(Token, Zi) of
+        {ok, #{zone_name := Zn}} ->
+            {ok, {Zi, Zn}};
+        {error, _} = E ->
+            E
+    end.
 
 zone_lookup_host(<<$*, $., Rest/binary>>) ->
     Rest;

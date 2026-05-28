@@ -15,6 +15,13 @@ export const NAV_MAIN_ALL = [
 
 export type NavMainItem = (typeof NAV_MAIN_ALL)[number];
 
+type NavBottomInternalItem = {
+  to: string;
+  end: boolean;
+  label: string;
+  icon: string;
+};
+
 /** In ingress mode show Helm and hide DNS providers; in proxy hide Helm. */
 export function getNavMain(mode: string): readonly NavMainItem[] {
   if (mode === 'ingress') {
@@ -23,16 +30,14 @@ export function getNavMain(mode: string): readonly NavMainItem[] {
   return NAV_MAIN_ALL.filter((item) => item.to !== '/helm');
 }
 
-export const NAV_BOTTOM = [
+export const NAV_BOTTOM: readonly NavBottomInternalItem[] = [
   { to: '/backup', end: false, label: 'Backup', icon: 'fa-download' },
   { to: '/metrics', end: false, label: 'Metrics', icon: 'fa-chart-line' },
   { to: '/logs', end: false, label: 'Logs', icon: 'fa-file-alt' },
   { to: '/settings', end: false, label: 'Settings', icon: 'fa-cog' },
 ];
-
-const DOCS_EXTERNAL = { href: '/api-docs', label: 'Docs', icon: 'fa-book-open' };
-
 export const ALL_NAV = [...NAV_MAIN_ALL, ...NAV_BOTTOM];
+export const ALL_NAV_WITH_DOCS = [...ALL_NAV, { to: '/docs', end: false, label: 'Docs', icon: 'fa-book-open' }];
 
 export type MainSidebarProps = {
   sidebarRef: Ref<HTMLElement>;
@@ -109,16 +114,6 @@ function MainSidebarInner({
               <span className={styles.sidebarLinkText}>{label}</span>
             </NavLink>
           ))}
-          <a
-            href={DOCS_EXTERNAL.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={collapsed ? DOCS_EXTERNAL.label : undefined}
-            className={styles.sidebarLink}
-          >
-            <FaIcon className={`fas ${DOCS_EXTERNAL.icon} ${styles.sidebarIcon}`} size={18} aria-hidden />
-            <span className={styles.sidebarLinkText}>{DOCS_EXTERNAL.label}</span>
-          </a>
         </nav>
       </div>
     </aside>

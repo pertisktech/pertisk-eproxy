@@ -26,7 +26,7 @@ import { useTheme } from '@/context/ThemeContext';
 import { useToast } from '@/context/ToastContext';
 import { SslJobProvider, useSslJobActions } from '@/context/SslJobContext';
 import ChangePasswordDialog from './ChangePasswordDialog';
-import { ALL_NAV, MainSidebar } from './MainSidebar';
+import { ALL_NAV_WITH_DOCS, MainSidebar } from './MainSidebar';
 import styles from './Layout.module.css';
 
 const SIDEBAR_STORAGE_KEY = 'pertisk_sidebar_collapsed';
@@ -79,7 +79,7 @@ function useBreadcrumbs(pathname: string): BreadcrumbItem[] {
       /* fall through */
     }
   }
-  const match = ALL_NAV.find(
+  const match = ALL_NAV_WITH_DOCS.find(
     (item) => 'to' in item && item.to !== '/' && (pathname === item.to || pathname.startsWith(item.to + '/'))
   );
   if (match && 'to' in match) return [{ label: match.label, icon: match.icon, path: match.to }];
@@ -506,6 +506,17 @@ function LayoutShell() {
           </nav>
           <div className={styles.utilityBarRight}>
           {mode && <span className={styles.modeBadge}>{modeLabel}</span>}
+          <a
+            href="/docs"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={styles.headerLink}
+            title="Open Swagger Docs"
+            aria-label="Open Swagger Docs"
+          >
+            <FaIcon className="fas fa-book-open" aria-hidden />
+            <span className={styles.headerLinkText}>Docs</span>
+          </a>
           {theme && (
             <button
               type="button"

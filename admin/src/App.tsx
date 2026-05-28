@@ -19,6 +19,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/docs" element={<Docs />} />
+      <Route path="/api-docs" element={<Docs />} />
+      <Route path="/api-docs/*" element={<Docs />} />
       <Route element={<Layout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/metrics" element={<Metrics />} />
@@ -30,7 +33,6 @@ export default function App() {
         <Route path="/helm" element={<Helm />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/docs" element={<Docs />} />
         <Route path="/backup" element={<Backup />} />
         <Route path="*" element={<NotFound />} />
       </Route>

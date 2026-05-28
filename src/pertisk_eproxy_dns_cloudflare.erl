@@ -17,8 +17,9 @@ get_zone(ApiToken, ZoneId) ->
 
 -spec find_zone(binary(), binary()) -> {ok, #{zone_id := binary(), zone_name := binary()}} | {error, term()}.
 find_zone(ApiToken, Host) when is_binary(Host) ->
-    Labels = binary:split(Host, <<".">>, [global]),
-    try_zones(ApiToken, zone_candidates(Labels)).
+    NormalizedHost = normalize_host_for_zone_lookup(Host),
+    Labels = [L || L <- binary:split(NormalizedHost, <<".">>, [global]), L =/= <<>>],
+    try_zones(ApiToken, zone_candidates(Labels), {zone_not_found, NormalizedHost}).
 
 zone_candidates(Labels) when is_list(Labels), length(Labels) > 0 ->
     [join_labels(L) || L <- tails(Labels)].
@@ -36,9 +37,11 @@ percent_encode_zone_query(Name) when is_binary(Name) ->
     %% Zone names are DNS labels; pass through for query (no spaces).
     binary_to_list(Name).
 
-try_zones(_Token, []) ->
-    {error, zone_not_found};
-try_zones(Token, [Name | Rest]) ->
+try_zones(_Token, [], {zone_not_found, Host}) ->
+    {error, {zone_not_found, Host}};
+try_zones(_Token, [], {error, _} = LastError) ->
+    LastError;
+try_zones(Token, [Name | Rest], LastError) ->
     Q = percent_encode_zone_query(Name),
     Url = lists:flatten(
         io_lib:format("https://api.cloudflare.com/client/v4/zones?name=~s", [Q])
@@ -49,9 +52,32 @@ try_zones(Token, [Name | Rest]) ->
             Id = maps:get(<<"id">>, First),
             Zn = maps:get(<<"name">>, First),
             {ok, #{zone_id => Id, zone_name => Zn}};
-        _ ->
-            try_zones(Token, Rest)
+        {ok, #{<<"success">> := true, <<"result">> := []}} ->
+            try_zones(Token, Rest, LastError);
+        {ok, #{<<"success">> := false, <<"errors">> := Errs}} ->
+            {error, {zone_lookup, {cloudflare, Errs}}};
+        {error, {http, 404, _}} ->
+            try_zones(Token, Rest, LastError);
+        {error, _} = E ->
+            {error, {zone_lookup, E}};
+        Other ->
+            {error, {zone_lookup, Other}}
     end.
+
+normalize_host_for_zone_lookup(Host0) when is_binary(Host0) ->
+    Host1 = trim_trailing_dot(Host0),
+    case Host1 of
+        <<$*, $., Rest/binary>> -> Rest;
+        _ -> Host1
+    end.
+
+trim_trailing_dot(Host) when is_binary(Host), byte_size(Host) > 0 ->
+    case Host of
+        <<Prefix:(byte_size(Host) - 1)/binary, $.>> -> Prefix;
+        _ -> Host
+    end;
+trim_trailing_dot(Host) ->
+    Host.
 
 -spec cf_txt_record_name(binary(), binary()) -> binary().
 %% @doc Cloudflare `name` field (relative to zone), e.g. `_acme-challenge` or `_acme-challenge.www`.
@@ -117,55 +143,280 @@ delete_txt(ApiToken, ZoneId, RecordId) ->
     end.
 
 %% ---------------------------------------------------------------------------
-http_headers(Token) ->
-    T = binary_to_list(Token),
-    [
-        {"authorization", "Bearer " ++ T},
-        {"content-type", "application/json"},
-        {"accept", "application/json"}
-    ].
+http_headers({global_key, ApiKey0, Email0}) ->
+    ApiKey = normalize_api_key(ApiKey0),
+    Email = normalize_email(Email0),
+    case {ApiKey, Email} of
+        {<<>>, _} ->
+            {error, invalid_api_token_format};
+        {_, <<>>} ->
+            {error, missing_api_email};
+        _ ->
+            {ok,
+                [
+                    {"X-Auth-Key", binary_to_list(ApiKey)},
+                    {"X-Auth-Email", binary_to_list(Email)},
+                    {"Content-Type", "application/json"},
+                    {"Accept", "application/json"}
+                ]}
+    end;
+http_headers({token_or_key, Token0, _Email}) ->
+    %% Prefer API token bearer auth when provided.
+    http_headers(Token0);
+http_headers(Token) when is_binary(Token) ->
+    NormToken = normalize_api_token(Token),
+    case NormToken of
+        <<>> ->
+            safe_log_token_shape(Token),
+            {error, invalid_api_token_format};
+        _ ->
+            T = binary_to_list(NormToken),
+            {ok,
+                [
+                    {"Authorization", "Bearer " ++ T},
+                    {"Content-Type", "application/json"},
+                    {"Accept", "application/json"}
+                ]}
+    end.
+
+safe_log_token_shape(Token) when is_binary(Token) ->
+    RawLen = byte_size(Token),
+    Trimmed = trim_space_binary(Token),
+    TrimmedLen = byte_size(Trimmed),
+    Lower = ascii_lower(Trimmed),
+    HasAuthPrefix = has_prefix(Lower, <<"authorization:">>),
+    HasBearerPrefix = has_prefix(Lower, <<"bearer">>),
+    lager:warning(
+        "Cloudflare API token rejected: invalid format (raw_len=~p, trimmed_len=~p, has_authorization_prefix=~p, has_bearer_prefix=~p)",
+        [RawLen, TrimmedLen, HasAuthPrefix, HasBearerPrefix]
+    ).
+
+has_prefix(Bin, Prefix) when is_binary(Bin), is_binary(Prefix) ->
+    PrefixSz = byte_size(Prefix),
+    BinSz = byte_size(Bin),
+    case BinSz >= PrefixSz of
+        true ->
+            case Bin of
+                <<Prefix:PrefixSz/binary, _/binary>> -> true;
+                _ -> false
+            end;
+        false ->
+            false
+    end.
+
+normalize_api_token(Token0) when is_binary(Token0) ->
+    Token1 = trim_space_binary(Token0),
+    Token2 = strip_authorization_prefix(Token1),
+    Token3 = strip_bearer_prefix(Token2),
+    Token4 = strip_wrapping_quotes(trim_space_binary(Token3)),
+    sanitize_token(Token4).
+
+normalize_api_key(Key0) when is_binary(Key0) ->
+    Key1 = trim_space_binary(Key0),
+    Key2 = strip_authorization_prefix(Key1),
+    Key3 = strip_wrapping_quotes(trim_space_binary(Key2)),
+    sanitize_token(Key3).
+
+normalize_email(Email0) when is_binary(Email0) ->
+    Email1 = trim_space_binary(Email0),
+    Email2 = strip_wrapping_quotes(Email1),
+    trim_space_binary(Email2).
+
+trim_space_binary(Bin) when is_binary(Bin) ->
+    trim_space_binary_right(trim_space_binary_left(Bin)).
+
+trim_space_binary_left(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t; C =:= $\r; C =:= $\n ->
+    trim_space_binary_left(Rest);
+trim_space_binary_left(Bin) ->
+    Bin.
+
+trim_space_binary_right(Bin) when is_binary(Bin) ->
+    trim_space_binary_right_rev(reverse_binary(Bin)).
+
+trim_space_binary_right_rev(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t; C =:= $\r; C =:= $\n ->
+    trim_space_binary_right_rev(Rest);
+trim_space_binary_right_rev(RevBin) ->
+    reverse_binary(RevBin).
+
+reverse_binary(Bin) when is_binary(Bin) ->
+    list_to_binary(lists:reverse(binary_to_list(Bin))).
+
+strip_authorization_prefix(Token) when is_binary(Token) ->
+    Lower = ascii_lower(Token),
+    Prefix = <<"authorization:">>,
+    PrefixSz = byte_size(Prefix),
+    case Lower of
+        <<Prefix:PrefixSz/binary, _/binary>> ->
+            <<_Skip:PrefixSz/binary, OrigRest/binary>> = Token,
+            trim_space_binary(OrigRest);
+        _ ->
+            Token
+    end.
+
+strip_bearer_prefix(Token) when is_binary(Token) ->
+    Lower = ascii_lower(Token),
+    Prefix = <<"bearer">>,
+    PrefixSz = byte_size(Prefix),
+    case Lower of
+        <<Prefix:PrefixSz/binary, Rest/binary>> ->
+            Sz = byte_size(Rest),
+            <<_Skip:(byte_size(Token) - Sz)/binary, OrigRest/binary>> = Token,
+            trim_space_binary(strip_leading_token_separators(OrigRest));
+        _ ->
+            Token
+    end.
+
+strip_wrapping_quotes(<<$", Rest/binary>>) ->
+    strip_wrapping_quotes_right(Rest, $");
+strip_wrapping_quotes(<<$', Rest/binary>>) ->
+    strip_wrapping_quotes_right(Rest, $');
+strip_wrapping_quotes(Bin) ->
+    Bin.
+
+strip_wrapping_quotes_right(Bin, Quote) when is_binary(Bin) ->
+    case byte_size(Bin) of
+        0 -> Bin;
+        N ->
+            case Bin of
+                <<Inner:(N - 1)/binary, Quote>> -> Inner;
+                _ -> Bin
+            end
+    end.
+
+sanitize_token(Bin) when is_binary(Bin) ->
+    list_to_binary([
+        C
+     || C <- binary_to_list(Bin),
+        is_bearer_char(C)
+    ]).
+
+is_bearer_char(C) when C >= $a, C =< $z -> true;
+is_bearer_char(C) when C >= $A, C =< $Z -> true;
+is_bearer_char(C) when C >= $0, C =< $9 -> true;
+is_bearer_char($-) -> true;
+is_bearer_char($_) -> true;
+is_bearer_char($.) -> true;
+is_bearer_char($~) -> true;
+is_bearer_char($+) -> true;
+is_bearer_char($/) -> true;
+is_bearer_char($=) -> true;
+is_bearer_char(_) -> false.
+
+strip_leading_token_separators(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t; C =:= $\r; C =:= $\n; C =:= $:; C =:= $= ->
+    strip_leading_token_separators(Rest);
+strip_leading_token_separators(Bin) ->
+    Bin.
+
+ascii_lower(Bin) when is_binary(Bin) ->
+    list_to_binary([
+        case C of
+            X when X >= $A, X =< $Z -> X + 32;
+            _ -> C
+        end
+     || C <- binary_to_list(Bin)
+    ]).
 
 http_get(Token, Url) ->
-    Req = {binary_to_list(Url), http_headers(Token)},
-    case httpc:request(get, Req, http_opts(), []) of
-        {ok, {{_, 200, _}, _RespH, RespB}} ->
-            case thoas:decode(list_to_binary(RespB)) of
-                {ok, Map} -> {ok, Map};
-                {error, R} -> {error, {json, R}}
-            end;
-        {ok, {{_, Status, _}, _, RespB}} ->
-            {error, {http, Status, RespB}};
-        {error, R} ->
-            {error, R}
+    maybe_retry_with_global_key(Token, fun(Auth) -> do_http_get(Auth, Url) end).
+
+do_http_get(Token, Url) ->
+    case http_headers(Token) of
+        {error, _} = E ->
+            E;
+        {ok, Headers} ->
+            Req = {binary_to_list(Url), Headers},
+            case httpc:request(get, Req, http_opts(), []) of
+                {ok, {{_, 200, _}, _RespH, RespB}} ->
+                    case thoas:decode(list_to_binary(RespB)) of
+                        {ok, Map} -> {ok, Map};
+                        {error, R} -> {error, {json, R}}
+                    end;
+                {ok, {{_, Status, _}, _, RespB}} ->
+                    {error, {http, Status, RespB}};
+                {error, R} ->
+                    {error, R}
+            end
     end.
 
 http_post_json(Token, Url, BodyMap) ->
     Enc = thoas:encode(BodyMap),
-    Req = {binary_to_list(Url), http_headers(Token), "application/json", Enc},
-    case httpc:request(post, Req, http_opts(), []) of
-        {ok, {{_, 200, _}, _RespH, RespB}} ->
-            case thoas:decode(list_to_binary(RespB)) of
-                {ok, Map} -> {ok, Map};
-                {error, R} -> {error, {json, R}}
-            end;
-        {ok, {{_, Status, _}, _, RespB}} ->
-            {error, {http, Status, RespB}};
-        {error, R} ->
-            {error, R}
+    maybe_retry_with_global_key(Token, fun(Auth) -> do_http_post_json(Auth, Url, Enc) end).
+
+do_http_post_json(Token, Url, Enc) ->
+    case http_headers(Token) of
+        {error, _} = E ->
+            E;
+        {ok, Headers} ->
+            Req = {binary_to_list(Url), Headers, "application/json", Enc},
+            case httpc:request(post, Req, http_opts(), []) of
+                {ok, {{_, 200, _}, _RespH, RespB}} ->
+                    case thoas:decode(list_to_binary(RespB)) of
+                        {ok, Map} -> {ok, Map};
+                        {error, R} -> {error, {json, R}}
+                    end;
+                {ok, {{_, Status, _}, _, RespB}} ->
+                    {error, {http, Status, RespB}};
+                {error, R} ->
+                    {error, R}
+            end
     end.
 
 http_delete(Token, Url) ->
-    Req = {binary_to_list(Url), http_headers(Token)},
-    case httpc:request(delete, Req, http_opts(), []) of
-        {ok, {{_, 200, _}, _RespH, RespB}} ->
-            case thoas:decode(list_to_binary(RespB)) of
-                {ok, Map} -> {ok, Map};
-                {error, R} -> {error, {json, R}}
+    maybe_retry_with_global_key(Token, fun(Auth) -> do_http_delete(Auth, Url) end).
+
+do_http_delete(Token, Url) ->
+    case http_headers(Token) of
+        {error, _} = E ->
+            E;
+        {ok, Headers} ->
+            Req = {binary_to_list(Url), Headers},
+            case httpc:request(delete, Req, http_opts(), []) of
+                {ok, {{_, 200, _}, _RespH, RespB}} ->
+                    case thoas:decode(list_to_binary(RespB)) of
+                        {ok, Map} -> {ok, Map};
+                        {error, R} -> {error, {json, R}}
+                    end;
+                {ok, {{_, Status, _}, _, RespB}} ->
+                    {error, {http, Status, RespB}};
+                {error, R} ->
+                    {error, R}
+            end
+    end.
+
+maybe_retry_with_global_key({token_or_key, Token, Email} = Auth, ReqFun) ->
+    case ReqFun(Auth) of
+        {error, {http, 400, Body}} = E ->
+            case has_invalid_auth_header_6111(Body) of
+                true ->
+                    lager:warning("Cloudflare bearer auth rejected with 6111; retrying with X-Auth-Key mode"),
+                    case ReqFun({global_key, Token, Email}) of
+                        {error, {http, 400, Body2}} = E2 ->
+                            case has_invalid_auth_header_6111(Body2) of
+                                true -> {error, invalid_cloudflare_auth_header};
+                                false -> E2
+                            end;
+                        Other2 -> Other2
+                    end;
+                false -> E
             end;
-        {ok, {{_, Status, _}, _, RespB}} ->
-            {error, {http, Status, RespB}};
-        {error, R} ->
-            {error, R}
+        Other ->
+            Other
+    end;
+maybe_retry_with_global_key(Auth, ReqFun) ->
+    case ReqFun(Auth) of
+        {error, {http, 400, Body}} = E ->
+            case has_invalid_auth_header_6111(Body) of
+                true -> {error, invalid_cloudflare_auth_header};
+                false -> E
+            end;
+        Other -> Other
+    end.
+
+has_invalid_auth_header_6111(Body) ->
+    Bin = iolist_to_binary(Body),
+    case binary:match(Bin, <<"\"code\":6111">>) of
+        nomatch -> false;
+        _ -> true
     end.
 
 http_opts() ->
