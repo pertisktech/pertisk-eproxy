@@ -600,7 +600,7 @@ function LayoutShell() {
         </div>
         <main
           id="layout-main-scroll"
-          className={`${styles.main} ${pathname === '/settings' ? styles.mainSettings : ''}`}
+          className={`${styles.main} ${pathname === '/settings' || pathname === '/docs' ? styles.mainSettings : ''}`}
         >
           <div className={styles.mainAmbient} aria-hidden />
           <div className={styles.mainContent}>

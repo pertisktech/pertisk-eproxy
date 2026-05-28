@@ -30,6 +30,8 @@ export const NAV_BOTTOM = [
   { to: '/settings', end: false, label: 'Settings', icon: 'fa-cog' },
 ];
 
+const DOCS_EXTERNAL = { href: '/api-docs', label: 'Docs', icon: 'fa-book-open' };
+
 export const ALL_NAV = [...NAV_MAIN_ALL, ...NAV_BOTTOM];
 
 export type MainSidebarProps = {
@@ -107,6 +109,16 @@ function MainSidebarInner({
               <span className={styles.sidebarLinkText}>{label}</span>
             </NavLink>
           ))}
+          <a
+            href={DOCS_EXTERNAL.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={collapsed ? DOCS_EXTERNAL.label : undefined}
+            className={styles.sidebarLink}
+          >
+            <FaIcon className={`fas ${DOCS_EXTERNAL.icon} ${styles.sidebarIcon}`} size={18} aria-hidden />
+            <span className={styles.sidebarLinkText}>{DOCS_EXTERNAL.label}</span>
+          </a>
         </nav>
       </div>
     </aside>

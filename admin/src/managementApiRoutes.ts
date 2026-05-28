@@ -1,6 +1,6 @@
 /**
  * Management REST/WebSocket routes — keep in sync with README.md § “Management API”.
- * (Settings page renders this list.)
+ * (Docs page renders this list.)
  */
 export interface ManagementApiRouteRow {
   method: string;
@@ -11,6 +11,11 @@ export interface ManagementApiRouteRow {
 export const MANAGEMENT_API_ROUTES: readonly ManagementApiRouteRow[] = [
   { method: 'GET', path: '/api/version', purpose: 'Application version' },
   { method: 'HEAD', path: '/api/version', purpose: 'Same as GET (no JSON body); Chrome HTTP/3 probe' },
+  {
+    method: 'GET',
+    path: '/api/proto',
+    purpose: 'Protocol/debug snapshot (request scheme/protocol details and headers)',
+  },
   {
     method: 'GET',
     path: '/api/management',
@@ -58,6 +63,11 @@ export const MANAGEMENT_API_ROUTES: readonly ManagementApiRouteRow[] = [
   { method: 'DELETE', path: '/api/certificates/:id', purpose: 'Delete certificate row' },
   { method: 'GET', path: '/api/dns-providers', purpose: 'List DNS providers (e.g. ACME DNS-01)' },
   { method: 'POST', path: '/api/dns-providers', purpose: 'Create DNS provider' },
+  {
+    method: 'POST',
+    path: '/api/dns-providers/validate',
+    purpose: 'Validate DNS provider credentials/configuration',
+  },
   { method: 'PUT', path: '/api/dns-providers/:id', purpose: 'Update DNS provider' },
   { method: 'DELETE', path: '/api/dns-providers/:id', purpose: 'Delete DNS provider' },
   {
@@ -84,4 +94,46 @@ export const MANAGEMENT_API_ROUTES: readonly ManagementApiRouteRow[] = [
   { method: 'GET', path: '/api/health', purpose: 'Aggregated health' },
   { method: 'GET', path: '/api/metrics', purpose: 'Prometheus metrics (text exposition)' },
   { method: 'POST', path: '/api/reload', purpose: 'Reload configuration from the on-disk config file' },
+  { method: 'GET', path: '/api/ingress/live', purpose: 'Ingress liveness probe' },
+  { method: 'HEAD', path: '/api/ingress/live', purpose: 'Same as GET (no JSON body)' },
+  { method: 'GET', path: '/api/ingress/ready', purpose: 'Ingress readiness probe' },
+  { method: 'HEAD', path: '/api/ingress/ready', purpose: 'Same as GET (no JSON body)' },
+  { method: 'GET', path: '/api/ingress/status', purpose: 'Ingress controller status snapshot' },
+  { method: 'HEAD', path: '/api/ingress/status', purpose: 'Same as GET (no JSON body)' },
+  { method: 'GET', path: '/api/ingress/watchers', purpose: 'Watcher and leader state' },
+  { method: 'GET', path: '/api/ingress/errors', purpose: 'Last ingress reconciliation error' },
+  {
+    method: 'GET',
+    path: '/api/ingress/resources',
+    purpose: 'Effective sites/backends synthesized by ingress reconciliation',
+  },
+  { method: 'GET', path: '/api/kubernetes/namespaces', purpose: 'List Kubernetes namespaces' },
+  { method: 'GET', path: '/api/kubernetes/pods', purpose: 'List Kubernetes pods (optional query: namespace)' },
+  {
+    method: 'GET',
+    path: '/api/kubernetes/services',
+    purpose: 'List Kubernetes services (optional query: namespace)',
+  },
+  {
+    method: 'GET',
+    path: '/api/kubernetes/tls-secrets',
+    purpose: 'List Kubernetes TLS secrets (optional query: namespace)',
+  },
+  { method: 'GET', path: '/api/kubernetes/ingresses', purpose: 'List Kubernetes ingress resources' },
+  { method: 'POST', path: '/api/kubernetes/ingresses', purpose: 'Create Kubernetes ingress resource' },
+  {
+    method: 'GET',
+    path: '/api/kubernetes/ingresses/:namespace/:name',
+    purpose: 'Get one Kubernetes ingress resource',
+  },
+  {
+    method: 'PUT',
+    path: '/api/kubernetes/ingresses/:namespace/:name',
+    purpose: 'Update one Kubernetes ingress resource',
+  },
+  {
+    method: 'DELETE',
+    path: '/api/kubernetes/ingresses/:namespace/:name',
+    purpose: 'Delete one Kubernetes ingress resource',
+  },
 ];

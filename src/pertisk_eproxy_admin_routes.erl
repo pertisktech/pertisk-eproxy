@@ -71,4 +71,4 @@ management_ui_routes() ->
 %% Full management site: REST API + admin UI (used by HTTP/3 in-process dispatch).
 -spec management_dispatch() -> cowboy_router:dispatch_rule().
 management_dispatch() ->
-    cowboy_router:compile([{'_', api_routes() ++ management_ui_routes()}]).
+    pertisk_eproxy_admin_swagger:management_dispatch().

@@ -1,0 +1,108 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.25rem 0 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.page :global(.card) {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  padding: 1rem 1rem 1.1rem;
+}
+
+.page :global(.card h2) {
+  margin-top: 0;
+}
+
+.subtle {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.84rem;
+}
+
+.cardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  margin: 0 -0.25rem;
+  padding: 0 0.25rem;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.table th,
+.table td {
+  padding: 0.5rem 0.55rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--color-muted);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.table tbody tr:hover td {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.pathCell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.descCell {
+  color: var(--color-muted);
+}
+
+.codeWrap {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  overflow: auto;
+  max-height: 24rem;
+  background: color-mix(in srgb, var(--color-surface) 92%, #000 8%);
+}
+
+.code {
+  margin: 0;
+  padding: 0.9rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.swaggerWrap {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.swaggerWrap :global(.swagger-ui) {
+  font-family: inherit;
+}

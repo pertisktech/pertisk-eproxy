@@ -62,7 +62,9 @@ Default bind is **`127.0.0.1:9080`** (`management_addr`, `management_port` in co
 
 **`POST /api/reload`** re-reads the proxy JSON from disk (the path in `config/sys.config` key **`config_file`**, default `config/proxy.json`) without restarting the BEAM; existing proxy connections are kept. The same path is exposed at runtime as **`config_file`** on **`GET /api/management`**.
 
-In **`proxy`** mode, the admin **Settings** page runs this reload (**Reload Config**) and shows the **same** route table as below (maintained in `admin/src/managementApiRoutes.ts` — keep it in sync with this section).
+In **`proxy`** mode, the admin **Settings** page runs this reload (**Reload Config**). The route table and generated Swagger/OpenAPI JSON are in the admin **Docs** menu (source: `admin/src/managementApiRoutes.ts`) with an interactive Swagger UI view.
+
+Native Cowboy Swagger UI is also served at **`/api-docs`** on the management listener (for example `http://127.0.0.1:9080/api-docs`).
 
 ### Management API
 
@@ -71,6 +73,7 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/version` | Application version |
+| `GET` | `/api/proto` | Protocol/debug snapshot (request scheme/protocol details and headers) |
 | `GET` | `/api/management` | Node, listeners, **`config_file`** (on-disk JSON path), `process_info`, CPU/memory fields, runtime capabilities, optional public IP snapshot |
 | `GET` | `/api/stats` | Counters for the admin UI (requests by protocol, bytes, connections, log buffer size, uptime, per-site maps, …) |
 | `GET` | `/api/realtime` | **WebSocket** — live snapshots (stats, management, logs, certificates, SSL jobs) |
@@ -96,6 +99,7 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `DELETE` | `/api/certificates/:id` | Delete certificate row |
 | `GET` | `/api/dns-providers` | List DNS providers (e.g. ACME DNS-01) |
 | `POST` | `/api/dns-providers` | Create DNS provider |
+| `POST` | `/api/dns-providers/validate` | Validate DNS provider credentials/configuration |
 | `PUT` | `/api/dns-providers/:id` | Update DNS provider |
 | `DELETE` | `/api/dns-providers/:id` | Delete DNS provider |
 | `POST` | `/api/tls/listener` | Set `tls_cert_file` / `tls_key_file` on in-memory config (see response notice for HTTPS reload) |
@@ -113,6 +117,24 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `GET` | `/api/health` | Aggregated health |
 | `GET` | `/api/metrics` | **Prometheus** metrics (text exposition) |
 | `POST` | `/api/reload` | Reload configuration from the on-disk config file |
+| `GET` | `/api/ingress/live` | Ingress liveness probe |
+| `HEAD` | `/api/ingress/live` | Same as `GET` (no JSON body) |
+| `GET` | `/api/ingress/ready` | Ingress readiness probe |
+| `HEAD` | `/api/ingress/ready` | Same as `GET` (no JSON body) |
+| `GET` | `/api/ingress/status` | Ingress controller status snapshot |
+| `HEAD` | `/api/ingress/status` | Same as `GET` (no JSON body) |
+| `GET` | `/api/ingress/watchers` | Watcher and leader state |
+| `GET` | `/api/ingress/errors` | Last ingress reconciliation error |
+| `GET` | `/api/ingress/resources` | Effective sites/backends synthesized by ingress reconciliation |
+| `GET` | `/api/kubernetes/namespaces` | List Kubernetes namespaces |
+| `GET` | `/api/kubernetes/pods` | List Kubernetes pods (optional query `namespace`) |
+| `GET` | `/api/kubernetes/services` | List Kubernetes services (optional query `namespace`) |
+| `GET` | `/api/kubernetes/tls-secrets` | List Kubernetes TLS secrets (optional query `namespace`) |
+| `GET` | `/api/kubernetes/ingresses` | List Kubernetes ingress resources |
+| `POST` | `/api/kubernetes/ingresses` | Create Kubernetes ingress resource |
+| `GET` | `/api/kubernetes/ingresses/:namespace/:name` | Get one Kubernetes ingress resource |
+| `PUT` | `/api/kubernetes/ingresses/:namespace/:name` | Update one Kubernetes ingress resource |
+| `DELETE` | `/api/kubernetes/ingresses/:namespace/:name` | Delete one Kubernetes ingress resource |
 
 Handlers live in `src/pertisk_eproxy_app.erl` (`build_admin_api_routes/0`), `src/pertisk_eproxy_admin_handler.erl`, and `src/pertisk_eproxy_admin_ws_handler.erl`. Which routes allow unauthenticated access is defined by `auth_public/2` in `pertisk_eproxy_admin_handler.erl`.
 

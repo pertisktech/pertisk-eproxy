@@ -69,7 +69,6 @@ reload_proxy_tls_listeners() ->
 start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
     Routes = build_proxy_routes(),
-    AdminRoutes = build_admin_routes(admin_listener_mode(Config)),
     HttpAcceptors = maps:get(http_num_acceptors, Config, 100),
     MgmtAcceptors = maps:get(management_num_acceptors, Config, 20),
 
@@ -89,7 +88,7 @@ start_listeners() ->
     %% after ACME cert issuance.  The 45 s proxy idle timeout must NOT apply here.
     MgmtIdleTimeoutMs = maps:get(management_idle_timeout_ms, Config, 300000),
     MgmtProtoOpts = #{
-        env => #{dispatch => cowboy_router:compile([{'_', AdminRoutes}])},
+        env => #{dispatch => pertisk_eproxy_admin_routes:management_dispatch()},
         logger => pertisk_eproxy_cowboy_logger,
         idle_timeout => MgmtIdleTimeoutMs,
         %% Management/admin is intentionally plain HTTP/1.1.
@@ -424,27 +423,6 @@ build_proxy_routes() ->
         {"/api/realtime", pertisk_eproxy_ws_handler, []},
         {"/[...]", pertisk_eproxy_handler, []}
     ].
-
-%% Ingress controller pods must serve the SPA on :9080 (and when proxied from :8443).
-admin_listener_mode(Config) ->
-    case maps:get(mode, Config, proxy) of
-        ingress ->
-            ingress;
-        M ->
-            case pertisk_ingress_env:enabled() of
-                true -> ingress;
-                false -> M
-            end
-    end.
-
-build_admin_routes(proxy) ->
-    build_admin_api_routes() ++ pertisk_eproxy_admin_routes:management_ui_routes();
-build_admin_routes(ingress) ->
-    %% Same SPA as proxy mode (rproxy ingress: admin Ingress → Service :9080).
-    build_admin_routes(proxy).
-
-build_admin_api_routes() ->
-    pertisk_eproxy_admin_routes:api_routes().
 
 tls_opts(Config) ->
     case tls_cert_key_paths(Config) of

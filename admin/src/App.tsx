@@ -10,6 +10,7 @@ import DnsProviders from '@/routes/DnsProviders';
 import Helm from '@/routes/Helm';
 import Profile from '@/routes/Profile';
 import Settings from '@/routes/Settings';
+import Docs from '@/routes/Docs';
 import Backup from '@/routes/Backup';
 import Login from '@/routes/Login';
 import NotFound from '@/routes/NotFound';
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/helm" element={<Helm />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/docs" element={<Docs />} />
         <Route path="/backup" element={<Backup />} />
         <Route path="*" element={<NotFound />} />
       </Route>

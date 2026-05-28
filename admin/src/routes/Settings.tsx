@@ -1,14 +1,6 @@
 import { useState } from 'react';
 import { api } from '@/api/client';
-import { MANAGEMENT_API_ROUTES } from '@/managementApiRoutes';
 import styles from './Settings.module.css';
-
-function methodBadgeClass(method: string): string {
-  if (method === 'GET' || method === 'HEAD') return 'badge-green';
-  if (method === 'DELETE') return 'badge-red';
-  if (method === 'PUT') return 'badge-yellow';
-  return 'badge-purple';
-}
 
 export default function Settings() {
   const [reloading, setReloading] = useState(false);
@@ -49,32 +41,6 @@ export default function Settings() {
             </>
           )}
         </button>
-      </div>
-
-      <div className="card">
-        <h2 style={{ marginBottom: 12 }}>Management API</h2>
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Method</th>
-                <th>Path</th>
-                <th>Purpose</th>
-              </tr>
-            </thead>
-            <tbody>
-              {MANAGEMENT_API_ROUTES.map(({ method, path, purpose }) => (
-                <tr key={`${method}-${path}`}>
-                  <td>
-                    <span className={`badge ${methodBadgeClass(method)}`}>{method}</span>
-                  </td>
-                  <td className={styles.pathCell}>{path}</td>
-                  <td className={styles.descCell}>{purpose}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </div>
     </div>
   );
