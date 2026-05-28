@@ -339,22 +339,27 @@ load_ingress_config() ->
 %% Proxy: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
 load_proxy_config() ->
     DbPath = db_file(),
+    %% Snapshot whether the DB existed BEFORE we touch it. get_runtime_config/1
+    %% runs CREATE TABLE IF NOT EXISTS, which causes SQLite to auto-create the
+    %% file — making a post-hoc db_file_exists/1 check misleading on first deploy.
+    DbExistedBefore = pertisk_eproxy_db:db_file_exists(DbPath),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
             Cfg = sanitize_runtime_tls_paths(Cfg0),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
+            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
             _ = persist_runtime_config(DbPath, Cfg),
             {ok, Cfg};
         not_found ->
-            case pertisk_eproxy_db:db_file_exists(DbPath) of
+            case DbExistedBefore of
                 false ->
                     load_proxy_config_first_deploy(DbPath);
                 true ->
                     rebuild_runtime_config_from_db(DbPath)
             end;
         {error, Reason} ->
-            case pertisk_eproxy_db:db_file_exists(DbPath) of
+            case DbExistedBefore of
                 true ->
                     lager:error(
                         "SQLite at ~s unavailable (~p); not re-seeding from proxy.json on upgrade",
@@ -408,6 +413,7 @@ rebuild_runtime_config_from_db(DbPath) ->
             },
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, Certs),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, Dns),
+            _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
             _ = persist_runtime_config(DbPath, Cfg),
             lager:warning(
                 "Rebuilt runtime_config from SQLite tables (listener defaults from ~s)",
