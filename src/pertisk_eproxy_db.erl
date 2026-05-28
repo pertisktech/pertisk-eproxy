@@ -15,6 +15,7 @@
     put_runtime_config/2,
     list_certificates/1,
     insert_certificate/2,
+    upsert_certificate_record/5,
     insert_certificate_pem/4,
     insert_certificate_pem/5,
     upsert_acme_certificate_pem/4,
@@ -417,7 +418,20 @@ ensure_sites_projection_table(DbPath) ->
         "acme_contact_email TEXT,"
         "routes_json TEXT NOT NULL DEFAULT '[]'"
         ");",
-    sqlite_exec(DbPath, SQL).
+    case sqlite_exec(DbPath, SQL) of
+        ok ->
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN certificate TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN dns_provider TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN challenge_type TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN wildcard INTEGER DEFAULT 0"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN acme_wildcard_base TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN advertise_http3 INTEGER DEFAULT 1"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN acme_contact_email TEXT"),
+            _ = sqlite_exec_ignore_duplicate_column(DbPath, "ALTER TABLE sites ADD COLUMN routes_json TEXT NOT NULL DEFAULT '[]'"),
+            ok;
+        Err ->
+            Err
+    end.
 
 sync_sites_projection(DbPath, Sites) when is_list(Sites) ->
     case ensure_sites_projection_table(DbPath) of
@@ -620,6 +634,50 @@ list_certificates(DbPath) ->
             end;
         {error, Reason} ->
             {error, Reason}
+    end.
+
+-spec upsert_certificate_record(string(), binary() | list(), binary() | list(), binary() | list(), binary() | list()) -> {ok, integer()} | {error, term()}.
+upsert_certificate_record(DbPath, Name0, CertPem0, KeyPem0, SourceType0) ->
+    Name = string:trim(to_list(Name0)),
+    CertPem = to_list(CertPem0),
+    KeyPem = to_list(KeyPem0),
+    SourceType = string:trim(to_list(SourceType0)),
+    case Name of
+        [] ->
+            {error, empty_name};
+        _ ->
+            case ensure_certificates_table(DbPath) of
+                ok ->
+                    SelectSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' LIMIT 1",
+                    case sqlite_query(DbPath, SelectSQL) of
+                        {ok, [Row | _]} ->
+                            Id = maps:get(<<"id">>, Row),
+                            SQL = "UPDATE certificates SET cert_pem='" ++ sql_escape(CertPem) ++
+                                "', key_pem='" ++ sql_escape(KeyPem) ++
+                                "', source_type='" ++ sql_escape(SourceType) ++
+                                "' WHERE id = " ++ integer_to_list(Id),
+                            case sqlite_exec(DbPath, SQL) of
+                                ok -> {ok, Id};
+                                {error, Reason} -> {error, Reason}
+                            end;
+                        {ok, []} ->
+                            SQL = "INSERT INTO certificates(name, cert_pem, key_pem, source_type) VALUES('" ++
+                                sql_escape(Name) ++ "','" ++ sql_escape(CertPem) ++ "','" ++ sql_escape(KeyPem) ++ "','" ++ sql_escape(SourceType) ++ "')",
+                            case sqlite_exec(DbPath, SQL) of
+                                ok ->
+                                    IdSQL = "SELECT id FROM certificates WHERE name = '" ++ sql_escape(Name) ++ "' ORDER BY id DESC LIMIT 1",
+                                    case sqlite_query(DbPath, IdSQL) of
+                                        {ok, [Row2 | _]} -> {ok, maps:get(<<"id">>, Row2)};
+                                        _ -> {error, insert_failed}
+                                    end;
+                                {error, Reason} -> {error, Reason}
+                            end;
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end
     end.
 
 -spec insert_certificate(string(), binary() | list()) -> {ok, integer()} | {error, term()}.
@@ -1170,15 +1228,16 @@ get_routes(DbPath, Host) ->
 
 %% List all sites
 list_sites(DbPath) ->
-    SQL = <<"SELECT host, backend FROM sites ORDER BY host">>,
+    SQL = <<"SELECT host, backend, certificate, dns_provider, challenge_type, wildcard, acme_wildcard_base, advertise_http3, acme_contact_email, routes_json FROM sites ORDER BY host">>,
     case sqlite_query(DbPath, SQL) of
         {ok, Rows} ->
             Sites = [
                 begin
                     HostBin = maps:get(<<"host">>, Row),
-                    {ok, Routes} = get_routes(DbPath, HostBin),
                     Backend = maps:get(<<"backend">>, Row),
-                    #{host => HostBin, backend => Backend, routes => Routes}
+                    Routes = site_routes_from_row(DbPath, HostBin, Row),
+                    Site0 = #{host => HostBin, backend => Backend, routes => Routes},
+                    site_row_to_map(Row, Site0)
                 end
                 || Row <- Rows
             ],
@@ -1186,6 +1245,75 @@ list_sites(DbPath) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+site_routes_from_row(DbPath, HostBin, Row) ->
+    case maps:get(<<"routes_json">>, Row, undefined) of
+        undefined ->
+            fallback_site_routes(DbPath, HostBin);
+        null ->
+            fallback_site_routes(DbPath, HostBin);
+        <<>> ->
+            fallback_site_routes(DbPath, HostBin);
+        Json when is_binary(Json); is_list(Json) ->
+            case decode_routes_json(Json) of
+                {ok, []} -> fallback_site_routes(DbPath, HostBin);
+                {ok, Routes} -> Routes;
+                {error, _} -> fallback_site_routes(DbPath, HostBin)
+            end;
+        _ ->
+            fallback_site_routes(DbPath, HostBin)
+    end.
+
+fallback_site_routes(DbPath, HostBin) ->
+    case get_routes(DbPath, HostBin) of
+        {ok, Routes} -> Routes;
+        _ -> []
+    end.
+
+decode_routes_json(Json) when is_list(Json) ->
+    decode_routes_json(iolist_to_binary(Json));
+decode_routes_json(Json) when is_binary(Json) ->
+    case thoas:decode(Json) of
+        {ok, Rows} when is_list(Rows) ->
+            {ok, [decode_route_row(R) || R <- Rows, is_map(R)]};
+        {ok, _} ->
+            {ok, []};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+decode_route_row(R) ->
+    #{
+        path => maps:get(<<"path">>, R, <<"/">>),
+        path_type => parse_route_path_type(maps:get(<<"path_type">>, R, <<"prefix">>)),
+        rewrite => maps:get(<<"rewrite">>, R, null)
+    }.
+
+parse_route_path_type(<<"exact">>) -> exact;
+parse_route_path_type(<<"prefix">>) -> prefix;
+parse_route_path_type(exact) -> exact;
+parse_route_path_type(prefix) -> prefix;
+parse_route_path_type(_) -> prefix.
+
+site_row_to_map(Row, Site0) ->
+    Site0#{
+        certificate => null_to_undefined(maps:get(<<"certificate">>, Row, undefined)),
+        dns_provider => null_to_undefined(maps:get(<<"dns_provider">>, Row, undefined)),
+        challenge_type => null_to_undefined(maps:get(<<"challenge_type">>, Row, undefined)),
+        wildcard => int_to_bool(maps:get(<<"wildcard">>, Row, 0)),
+        acme_wildcard_base => null_to_undefined(maps:get(<<"acme_wildcard_base">>, Row, undefined)),
+        advertise_http3 => int_to_bool(maps:get(<<"advertise_http3">>, Row, 1)),
+        acme_contact_email => null_to_undefined(maps:get(<<"acme_contact_email">>, Row, undefined))
+    }.
+
+null_to_undefined(undefined) -> undefined;
+null_to_undefined(null) -> undefined;
+null_to_undefined(V) -> V.
+
+int_to_bool(0) -> false;
+int_to_bool(1) -> true;
+int_to_bool(V) when is_integer(V), V =/= 0 -> true;
+int_to_bool(_) -> false.
 
 %% Insert or update a site
 insert_site(_DbPath, _Host, _Backend, _Routes) ->

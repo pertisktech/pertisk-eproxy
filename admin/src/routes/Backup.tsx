@@ -157,8 +157,7 @@ export default function Backup() {
 
         {!isIngressMode && (
           <div className={`${styles.alert} ${styles.alertWarning}`}>
-            <strong>Warning:</strong> DNS provider credentials are not included in backups for security reasons.
-            You will need to re-add DNS providers manually after restoring.
+            <strong>Warning:</strong> Backups include DNS provider credentials, TLS fields, and certificate PEM/key material. Keep backup files secure.
           </div>
         )}
 
@@ -239,8 +238,8 @@ export default function Backup() {
           ) : (
             <>
               <li>Backs up sites configuration, backends, and routing rules</li>
-              <li>Includes TLS certificates with private keys</li>
-              <li>DNS provider names are listed but credentials are NOT included</li>
+              <li>Includes TLS certificate PEM and private key text</li>
+              <li>Includes DNS provider credentials and provider settings</li>
               <li>Exports to JSON format for easy inspection and editing</li>
               <li>Merge mode allows adding sites without replacing existing configuration</li>
             </>

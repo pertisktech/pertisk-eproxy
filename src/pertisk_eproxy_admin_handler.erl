@@ -186,8 +186,8 @@ handle(<<"POST">>, admin_api_token, Req) ->
     json_reply(501, #{<<"error">> => <<"API tokens are not implemented for eProxy">>}, Req);
 
 handle(<<"GET">>, backup_export, Req) ->
-    Config = pertisk_eproxy_config:get_config(),
-    Body = thoas:encode(config_to_json(Config)),
+    Config = backup_export_config(),
+    Body = thoas:encode(backup_config_to_json(Config)),
     Headers = #{
         <<"content-type">> => <<"application/json">>,
         <<"content-disposition">> => <<"attachment; filename=\"eproxy-config.json\"">>
@@ -203,8 +203,13 @@ handle(<<"POST">>, backup_restore, Req) ->
             {ok, Json} ->
                 case pertisk_eproxy_config:json_to_config_pub(Json) of
                     Config when is_map(Config) ->
-                        ok = pertisk_eproxy_config:put_config(Config),
-                        json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                        case restore_backup_certificate_records(Json) of
+                            ok ->
+                                ok = pertisk_eproxy_config:put_config(Config),
+                                json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                            {error, Reason} ->
+                                error_reply(400, Reason, Req2)
+                        end;
                     {error, R} ->
                         error_reply(400, R, Req2)
                 end;
@@ -1051,6 +1056,175 @@ config_to_json(Config) ->
         _ ->
             WithH3ProbePort
     end.
+
+backup_config_to_json(Config) ->
+    Base = # {
+        mode            => mode_to_json(maps:get(mode, Config, proxy)),
+        http_port       => maps:get(http_port, Config, 80),
+        management_port => maps:get(management_port, Config, 9080),
+        certificates    => [json_text(V) || V <- safe_list(maps:get(certificates, Config, []))],
+        certificate_records => safe_list(maps:get(certificate_records, Config, [])),
+        dns_providers   => backup_dns_providers_json(maps:get(dns_providers, Config, [])),
+        sites           => safe_sites_json(maps:get(sites, Config, [])),
+        backends        => safe_backends_json(maps:get(backends, Config, []))
+    },
+    WithHttps = case maps:get(https_port, Config, undefined) of
+        undefined -> Base;
+        P when is_integer(P) -> Base#{<<"https_port">> => P};
+        _ -> Base
+    end,
+    WithQuic = case maps:get(quic_enabled, Config, undefined) of
+        V when is_boolean(V) -> WithHttps#{<<"quic_enabled">> => V};
+        _ -> WithHttps
+    end,
+    WithQuicPort = case maps:get(quic_port, Config, undefined) of
+        Pq when is_integer(Pq) -> WithQuic#{<<"quic_port">> => Pq};
+        _ -> WithQuic
+    end,
+    WithH3Gw = WithQuicPort#{
+        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
+        <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true)
+    },
+    WithTlsH2 = case maps:get(tls_http2_enabled, Config, undefined) of
+        Vh2 when is_boolean(Vh2) -> WithH3Gw#{<<"tls_http2_enabled">> => Vh2};
+        _ -> WithH3Gw
+    end,
+    WithH3ProbePort = case maps:get(h3_probe_port, Config, undefined) of
+        Pp when is_integer(Pp) -> WithTlsH2#{<<"h3_probe_port">> => Pp};
+        _ -> WithTlsH2
+    end,
+    case {maps:get(tls_cert_file, Config, undefined), maps:get(tls_key_file, Config, undefined)} of
+        {undefined, undefined} ->
+            WithH3ProbePort;
+        {Cf, Kf} ->
+            WithH3ProbePort#{
+                <<"tls_cert_file">> => json_text(Cf),
+                <<"tls_key_file">> => json_text(Kf)
+            }
+    end.
+
+backup_dns_providers_json(Providers) ->
+    safe_json_rows(fun backup_dns_provider_entry_to_json/1, Providers).
+
+backup_dns_provider_entry_to_json(P) when is_binary(P) ->
+    #{
+        <<"name">> => P,
+        <<"provider_type">> => <<"label">>,
+        <<"credentials">> => #{}
+    };
+backup_dns_provider_entry_to_json(P) when is_map(P) ->
+    Name = maps:get(name, P),
+    Pt = maps:get(provider_type, P, "label"),
+    Cred = maps:get(credentials, P, #{}),
+    #{
+        <<"name">> => json_text(Name),
+        <<"provider_type">> => json_text(Pt),
+        <<"credentials">> => Cred
+    }.
+
+backup_export_config() ->
+    Base = pertisk_eproxy_config:get_config(),
+    DbPath = db_file_path(),
+    Sites = backup_sites_from_db(DbPath),
+    Backends = backup_backends_from_db(DbPath),
+    DnsProviders = backup_dns_providers_from_db(DbPath),
+    Certificates = backup_certificate_names(Base, Sites, DbPath),
+    CertificateRecords = backup_certificate_records(DbPath),
+    Base#{
+        sites => Sites,
+        backends => Backends,
+        dns_providers => DnsProviders,
+        certificates => Certificates,
+        certificate_records => CertificateRecords
+    }.
+
+backup_sites_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_sites(DbPath) of
+        {ok, Sites} -> Sites;
+        {error, _} -> maps:get(sites, pertisk_eproxy_config:get_config(), [])
+    end.
+
+backup_backends_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_backends(DbPath) of
+        {ok, Backends} -> Backends;
+        {error, _} -> maps:get(backends, pertisk_eproxy_config:get_config(), [])
+    end.
+
+backup_dns_providers_from_db(DbPath) ->
+    case pertisk_eproxy_db:list_dns_providers(DbPath) of
+        {ok, Rows} ->
+            [#{
+                name => maps:get(name, R),
+                provider_type => maps:get(provider_type, R),
+                credentials => maps:get(credentials, R, #{})
+            } || R <- Rows];
+        {error, _} -> maps:get(dns_providers, pertisk_eproxy_config:get_config(), [])
+    end.
+
+backup_certificate_names(Base, Sites, DbPath) ->
+    BaseCerts = maps:get(certificates, Base, []),
+    SiteCerts = [maps:get(certificate, S) || S <- Sites, is_map(S), maps:is_key(certificate, S)],
+    DbCerts = case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} -> [maps:get(name, Row) || Row <- Rows, maps:is_key(name, Row)];
+        {error, _} -> []
+    end,
+    lists:usort([json_text(C) || C <- BaseCerts ++ SiteCerts ++ DbCerts, C =/= undefined, C =/= null]).
+
+backup_certificate_records(DbPath) ->
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} -> safe_json_rows(fun backup_certificate_record_to_json/1, Rows);
+        {error, _} -> []
+    end.
+
+backup_certificate_record_to_json(#{id := Id, name := Name} = Row) ->
+    # {
+        <<"id">> => integer_to_binary(Id),
+        <<"name">> => json_text(Name),
+        <<"cert_pem">> => backup_text_or_null(maps:get(cert_pem, Row, undefined)),
+        <<"key_pem">> => backup_text_or_null(maps:get(key_pem, Row, undefined)),
+        <<"source_type">> => json_text(maps:get(source_type, Row, <<"acme">>))
+    }.
+
+backup_text_or_null(undefined) -> null;
+backup_text_or_null(null) -> null;
+backup_text_or_null(V) -> json_text(V).
+
+restore_backup_certificate_records(Json) when is_map(Json) ->
+    case maps:get(<<"certificate_records">>, Json, undefined) of
+        undefined -> ok;
+        Recs when is_list(Recs) ->
+            restore_backup_certificate_records_list(Recs);
+        _ ->
+            ok
+    end;
+restore_backup_certificate_records(_) ->
+    ok.
+
+restore_backup_certificate_records_list([]) ->
+    ok;
+restore_backup_certificate_records_list([R | Rest]) when is_map(R) ->
+    case restore_backup_certificate_record(R) of
+        ok -> restore_backup_certificate_records_list(Rest);
+        {error, _} = Err -> Err
+    end;
+restore_backup_certificate_records_list([_ | Rest]) ->
+    restore_backup_certificate_records_list(Rest).
+
+restore_backup_certificate_record(#{<<"name">> := Name0} = Row) ->
+    Name = json_text(Name0),
+    CertPem = backup_restore_text(maps:get(<<"cert_pem">>, Row, undefined)),
+    KeyPem = backup_restore_text(maps:get(<<"key_pem">>, Row, undefined)),
+    SourceType = backup_restore_text(maps:get(<<"source_type">>, Row, <<"acme">>)),
+    case Name of
+        <<>> -> {error, empty_certificate_name};
+        _ -> pertisk_eproxy_db:upsert_certificate_record(db_file_path(), Name, CertPem, KeyPem, SourceType)
+    end;
+restore_backup_certificate_record(_) ->
+    ok.
+
+backup_restore_text(undefined) -> <<>>;
+backup_restore_text(null) -> <<>>;
+backup_restore_text(V) -> json_text(V).
 
 site_to_json(Site = #{host := Host, backend := Backend, routes := Routes}) ->
     Base = #{
