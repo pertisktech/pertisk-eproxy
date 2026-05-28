@@ -43,7 +43,15 @@ lookup(Host) ->
         Key ->
             case ets:lookup(?TAB, Key) of
                 [{Key, Entry}] -> {ok, Entry};
-                [] -> error
+                [] ->
+                    case wildcard_key_for_host(Key) of
+                        undefined -> error;
+                        WildKey ->
+                            case ets:lookup(?TAB, WildKey) of
+                                [{WildKey, Entry2}] -> {ok, Entry2};
+                                [] -> error
+                            end
+                    end
             end
     end.
 
@@ -89,17 +97,12 @@ restore_site_from_disk(#{host := Host} = Site) when is_binary(Host) ->
         pertisk_ingress_env:k8s_tls_dir(),
         binary_to_list(NsBin)
     ]),
-    case filelib:wildcard(filename:join([Dir, "*", "tls.crt"])) of
-        [CertPath | _] ->
-            KeyPath = filename:join([filename:dirname(CertPath), "tls.key"]),
-            case {file:read_file(CertPath), file:read_file(KeyPath)} of
-                {{ok, CertPem}, {ok, KeyPem}} ->
-                    _ = set_hosts([Host], CertPem, KeyPem, CertPath, KeyPath),
-                    ok;
-                _ ->
-                    ok
-            end;
-        _ ->
+    CertPaths = filelib:wildcard(filename:join([Dir, "*", "tls.crt"])),
+    case find_matching_cert_for_host(Host, CertPaths) of
+        {ok, CertPath, KeyPath, CertPem, KeyPem} ->
+            _ = set_hosts([Host], CertPem, KeyPem, CertPath, KeyPath),
+            ok;
+        error ->
             ok
     end;
 restore_site_from_disk(_) ->
@@ -191,6 +194,46 @@ host_key(H) when is_list(H) ->
     host_key(list_to_binary(H));
 host_key(_) ->
     undefined.
+
+wildcard_key_for_host(Key) when is_list(Key) ->
+    case string:split(Key, ".", all) of
+        [_Single] -> undefined;
+        [_First | Rest] -> "*." ++ string:join(Rest, ".")
+    end;
+wildcard_key_for_host(_) ->
+    undefined.
+
+find_matching_cert_for_host(_Host, []) ->
+    error;
+find_matching_cert_for_host(Host, [CertPath | Rest]) ->
+    KeyPath = filename:join([filename:dirname(CertPath), "tls.key"]),
+    case {file:read_file(CertPath), file:read_file(KeyPath)} of
+        {{ok, CertPem}, {ok, KeyPem}} ->
+            case cert_matches_host(CertPem, Host) of
+                true -> {ok, CertPath, KeyPath, CertPem, KeyPem};
+                false -> find_matching_cert_for_host(Host, Rest)
+            end;
+        _ ->
+            find_matching_cert_for_host(Host, Rest)
+    end.
+
+cert_matches_host(CertPem, Host) ->
+    try
+        HostKey = host_key(Host),
+        case {HostKey, public_key:pem_decode(CertPem)} of
+            {undefined, _} ->
+                false;
+            {_, []} ->
+                false;
+            {HostName, [{'Certificate', Der, not_encrypted} | _]} ->
+                Cert = public_key:pkix_decode_cert(Der, otp),
+                public_key:pkix_verify_hostname(Cert, [{dns_id, HostName}]);
+            _ ->
+                false
+        end
+    catch
+        _:_ -> false
+    end.
 
 decode_pem_pair(CertPem, KeyPem) ->
     try

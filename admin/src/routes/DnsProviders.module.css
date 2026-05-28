@@ -386,6 +386,13 @@
   vertical-align: middle;
 }
 
+.actionsCell {
+  text-align: right;
+  width: 1%;
+  white-space: nowrap;
+  min-width: 5.5rem;
+}
+
 .actionsTh {
   text-align: right;
   min-width: 5.5rem;
@@ -419,6 +426,33 @@
   align-items: center;
   flex-wrap: nowrap;
   gap: 0.35rem;
+}
+
+.rowActionBtn {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.rowActionBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-hover) 80%, transparent);
+}
+
+.rowActionBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rowActionDanger {
+  color: color-mix(in srgb, var(--error) 85%, var(--text));
+  border-color: color-mix(in srgb, var(--error) 35%, var(--color-border));
 }
 
 .empty {

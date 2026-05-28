@@ -452,17 +452,25 @@ export default function DnsProviders() {
                   <td>
                     <span className={styles.datePrimary}>{formatDateTime(row.created_at)}</span>
                   </td>
-                  <td className={styles.actionsCol}>
+                  <td className={styles.actionsCell}>
                     <div className={styles.rowActions}>
                       <button
                         type="button"
-                        className={styles.btnSecondary}
+                        className={styles.rowActionBtn}
                         onClick={() => loadFullThenEdit(row.id)}
+                        title={`Edit DNS provider ${row.name}`}
+                        aria-label={`Edit DNS provider ${row.name}`}
                       >
-                        View / Edit
+                        <FaIcon className="fas fa-pen-to-square" aria-hidden />
                       </button>
-                      <button type="button" className={styles.btnDanger} onClick={() => openDeleteConfirm(row)}>
-                        Remove
+                      <button
+                        type="button"
+                        className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                        onClick={() => openDeleteConfirm(row)}
+                        title={`Remove DNS provider ${row.name}`}
+                        aria-label={`Remove DNS provider ${row.name}`}
+                      >
+                        <FaIcon className="fas fa-trash" aria-hidden />
                       </button>
                     </div>
                   </td>
