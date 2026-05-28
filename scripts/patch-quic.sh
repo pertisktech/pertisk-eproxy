@@ -158,6 +158,34 @@ if [ -n "$H3_API" ]; then
   echo "patch-quic: h3 sni/tls opts ok"
 fi
 
+# 0-RTT PSK binder hard-fail mitigation:
+# On multi-pod deployments, single-use ticket/binder checks can fail intermittently
+# when clients retry/resume against a different pod. Instead of aborting QUIC with
+# decrypt_error, gracefully fall back to a normal 1-RTT handshake.
+psk_found=0
+for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
+  psk_found=1
+
+  perl -i -0pe '
+    s/false\s*->\s*\n\s*\?LOG_WARNING\(\n\s*#\{what => resumption_psk_binder_failed\},\n\s*\?QUIC_LOG_META\n\s*\),\n\s*send_tls_alert\(\?TLS_ALERT_DECRYPT_ERROR, State\),\n\s*exit\(\{tls_alert, decrypt_error\}\)/false ->\n                                        ?LOG_WARNING(\n                                            #{what => resumption_psk_binder_failed},\n                                            ?QUIC_LOG_META\n                                        ),\n                                        {\n                                            undefined,\n                                            quic_crypto:derive_early_secret(Cipher, ZeroPSK),\n                                            undefined\n                                        }/s
+  ' "$f"
+
+  rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
+done
+
+if [ "$psk_found" -eq 0 ]; then
+  echo "patch-quic: warning: no quic_connection.erl under _build (run rebar3 get-deps first)" >&2
+fi
+
+PSK_CONN=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
+if [ -n "$PSK_CONN" ]; then
+  perl -0777 -ne 'exit((/resumption_psk_binder_failed[\s\S]*?\{\s*undefined,\s*quic_crypto:derive_early_secret\(Cipher, ZeroPSK\),\s*undefined\s*\}/) ? 0 : 1)' "$PSK_CONN" || {
+    echo "patch-quic: 0-RTT binder fallback patch missing in $PSK_CONN" >&2
+    exit 1
+  }
+  echo "patch-quic: 0-RTT binder fallback ok"
+fi
+
 # QUIC SNI certificate selection: apply per-host cert override from sni_certs
 # during ClientHello processing (exact host first, wildcard fallback).
 conn_found=0
