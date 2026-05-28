@@ -514,7 +514,7 @@ function LayoutShell() {
             title="Open Swagger Docs"
             aria-label="Open Swagger Docs"
           >
-            <FaIcon className="fas fa-book-open" aria-hidden />
+            <FaIcon className="fas fa-external-link-alt" aria-hidden />
             <span className={styles.headerLinkText}>Docs</span>
           </a>
           {theme && (
