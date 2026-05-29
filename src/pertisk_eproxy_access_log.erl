@@ -25,7 +25,21 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto) ->
 
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream) ->
-    gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}).
+    case should_skip_hot_path(Path, Status) of
+        true ->
+            ok;
+        false ->
+            gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream})
+    end.
+
+should_skip_hot_path(Path, Status) ->
+    Status =:= 200 andalso is_health_path(Path).
+
+is_health_path(<<"/api/health">>) -> true;
+is_health_path(<<"/health">>) -> true;
+is_health_path(<<"/healthz">>) -> true;
+is_health_path(<<"/readyz">>) -> true;
+is_health_path(_) -> false.
 
 %% @doc Store a system/error event in the ring buffer for display in the admin UI.
 -spec log_system(binary(), binary(), binary()) -> ok.

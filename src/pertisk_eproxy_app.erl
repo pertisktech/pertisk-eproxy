@@ -69,8 +69,8 @@ reload_proxy_tls_listeners() ->
 start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
     Routes = build_proxy_routes(),
-    HttpAcceptors = maps:get(http_num_acceptors, Config, 100),
-    MgmtAcceptors = maps:get(management_num_acceptors, Config, 20),
+    HttpAcceptors = listener_acceptors(http),
+    MgmtAcceptors = listener_acceptors(management),
 
     %% HTTP listeners (proxy): dual-stack (IPv4 + IPv6)
     HttpPort   = maps:get(http_port, Config, 80),
@@ -149,7 +149,7 @@ stop_proxy_tls_listeners() ->
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     Config = pertisk_eproxy_config:get_config(),
-    HttpsAcceptors = maps:get(https_num_acceptors, Config, 100),
+    HttpsAcceptors = listener_acceptors(proxy),
     ProxyMaxConns = listener_max_connections(https4, Config),
     DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
     TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
@@ -186,7 +186,6 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
 
 maybe_start_quic(Config, Routes) ->
     GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
-    QuicAcceptors = maps:get(quic_num_acceptors, Config, 100),
     ProxyMaxConns = listener_max_connections(quic4, Config),
     _ = maybe_start_h3_api_gateway(Config),
     _ = maybe_start_h3_probe(Config),
@@ -215,7 +214,7 @@ maybe_start_quic(Config, Routes) ->
                     R1 = catch erlang:apply(cowboy, StartQuic, [
                         quic4,
                         #{
-                            num_acceptors => QuicAcceptors,
+                            num_acceptors => listener_acceptors(proxy),
                             max_connections => ProxyMaxConns,
                             socket_opts => QuicSocketOpts4
                         },
@@ -236,6 +235,13 @@ maybe_start_quic(Config, Routes) ->
         _ ->
             ok
     end.
+
+listener_acceptors(management) ->
+    Schedulers = erlang:system_info(schedulers_online),
+    max(2, min(16, Schedulers));
+listener_acceptors(_) ->
+    Schedulers = erlang:system_info(schedulers_online),
+    max(4, min(32, Schedulers * 2)).
 
 quic_start_quic_fun() ->
     binary_to_atom(<<"start_quic">>, utf8).

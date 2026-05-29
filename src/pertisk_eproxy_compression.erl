@@ -7,7 +7,7 @@
 
 -export([maybe_compress_cowboy/4, maybe_compress_h3/4]).
 
--define(MIN_COMPRESS_BYTES, 256).
+-define(MIN_COMPRESS_BYTES, 1024).
 
 maybe_compress_cowboy(Status, Req, Headers0, Body0) when is_map(Headers0) ->
     Body = iolist_to_binary(Body0),
