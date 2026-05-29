@@ -12,6 +12,9 @@
 -define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 300000).
 -define(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS, 180000).
 -define(DOWNSTREAM_IDLE_SAFETY_MARGIN_MS, 5000).
+-define(ANSI_RESET, "\e[0m").
+-define(ANSI_CYAN, "\e[1;36m").
+-define(ANSI_GREEN, "\e[1;32m").
 
 start(_StartType, _StartArgs) ->
     Vsn =
@@ -19,6 +22,7 @@ start(_StartType, _StartArgs) ->
             {ok, V} -> V;
             _ -> <<"unknown">>
         end,
+    ok = print_startup_banner(Vsn),
     lager:info(
         "Starting pertisk_eproxy ~s (config storage: SQLite, db=~s)",
         [Vsn, pertisk_eproxy_config:db_file()]
@@ -65,6 +69,51 @@ reload_proxy_tls_listeners() ->
 %% -------------------------------------------------------------------------
 %% Internal
 %% -------------------------------------------------------------------------
+
+print_startup_banner(Vsn) ->
+    Config = pertisk_eproxy_config:get_config(),
+    VsnText = vsn_text(Vsn),
+    ModeText = mode_text(),
+    PortsText = ports_text(Config),
+    io:format("~s~n", [?ANSI_CYAN]),
+    io:format("  ____  _____ ____ _____ ___ ____  _  __~n", []),
+    io:format(" |  _ \\| ____|  _ \\_   _|_ _/ ___|| |/ /~n", []),
+    io:format(" | |_) |  _| | |_) || |  | |\\___ \\| ' / ~n", []),
+    io:format(" |  __/| |___|  _ < | |  | | ___) | . \\ ~n", []),
+    io:format(" |_|   |_____|_| \\_\\|_| |___|____/|_|\\_\\~n", []),
+    io:format("                e p r o x y~n", []),
+    io:format("~n", []),
+    io:format("~s", [?ANSI_GREEN]),
+    io:format("  version: ~s~n", [VsnText]),
+    io:format("  mode: ~s~n", [ModeText]),
+    io:format("  port: ~s~n", [PortsText]),
+    io:format("~s~n", [?ANSI_RESET]),
+    ok.
+
+mode_text() ->
+    case pertisk_ingress_env:ingress_mode() of
+        true -> "ingress";
+        false -> "proxy"
+    end.
+
+ports_text(Config) ->
+    HttpPort = maps:get(http_port, Config, 80),
+    HttpsText =
+        case maps:get(https_port, Config, undefined) of
+            P when is_integer(P), P > 0 -> integer_to_list(P);
+            _ -> "disabled"
+        end,
+    MgmtPort = maps:get(management_port, Config, 9080),
+    lists:flatten(
+        io_lib:format("http=~w, https=~s, management=~w", [HttpPort, HttpsText, MgmtPort])
+    ).
+
+vsn_text(V) when is_binary(V) ->
+    binary_to_list(V);
+vsn_text(V) when is_list(V) ->
+    V;
+vsn_text(V) ->
+    lists:flatten(io_lib:format("~p", [V])).
 
 start_listeners() ->
     Config = pertisk_eproxy_config:get_config(),
