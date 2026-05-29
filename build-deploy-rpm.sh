@@ -6,7 +6,7 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-135.181.197.40}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.4.27}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.4.28}}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
@@ -70,28 +70,38 @@ else
   sudo rpm -Uvh --replacepkgs "\${PKG_PATH}"
 fi
 
-sudo systemctl enable "${PACKAGE_NAME}" --now
-sudo systemctl restart "${PACKAGE_NAME}"
+PACKAGE_ROOT="/opt/${PACKAGE_NAME}"
+START_ERL_FILE="\${PACKAGE_ROOT}/releases/start_erl.data"
+if [ ! -f "\${START_ERL_FILE}" ]; then
+  echo "ERROR: start_erl.data not found at \${START_ERL_FILE}" >&2
+  exit 1
+fi
 
-if sudo systemctl cat "${PACKAGE_NAME}" | grep -Eq '^ExecStart=.*/bin/pertisk_eproxy foreground$'; then
-  echo "Detected wrapper ExecStart. Applying compatibility override with direct erlexec..." >&2
-  PACKAGE_ROOT="/opt/${PACKAGE_NAME}"
-  START_ERL_FILE="\${PACKAGE_ROOT}/releases/start_erl.data"
-  if [ ! -f "\${START_ERL_FILE}" ]; then
-    echo "ERROR: start_erl.data not found at \${START_ERL_FILE}" >&2
-    exit 1
+ERTS_VSN="\$(awk '{print \$1}' "\${START_ERL_FILE}" | head -n1)"
+REL_VSN="\$(awk '{print \$2}' "\${START_ERL_FILE}" | head -n1)"
+
+if [ -z "\${ERTS_VSN}" ] || [ -z "\${REL_VSN}" ]; then
+  echo "ERROR: invalid start_erl.data content in \${START_ERL_FILE}" >&2
+  exit 1
+fi
+
+echo "Refreshing systemd override with release \${REL_VSN} (erts \${ERTS_VSN})..." >&2
+DROPIN_DIR="/etc/systemd/system/${PACKAGE_NAME}.service.d"
+MANAGED_DROPIN="\${DROPIN_DIR}/10-execstart-compat.conf"
+sudo mkdir -p "\${DROPIN_DIR}"
+
+# Remove stale release-pinned drop-ins from previous deploy logic.
+for conf in \$(sudo find "\${DROPIN_DIR}" -maxdepth 1 -type f -name '*.conf' 2>/dev/null || true); do
+  if [ "\${conf}" = "\${MANAGED_DROPIN}" ]; then
+    continue
   fi
-
-  ERTS_VSN="$(awk '{print $1}' "\${START_ERL_FILE}" | head -n1)"
-  REL_VSN="$(awk '{print $2}' "\${START_ERL_FILE}" | head -n1)"
-
-  if [ -z "\${ERTS_VSN}" ] || [ -z "\${REL_VSN}" ]; then
-    echo "ERROR: invalid start_erl.data content in \${START_ERL_FILE}" >&2
-    exit 1
+  if sudo grep -Eq 'ExecStart=.*/pertisk_eproxy.*-args_file .*/releases/.*/vm.args' "\${conf}"; then
+    echo "Removing stale drop-in: \${conf}" >&2
+    sudo rm -f "\${conf}"
   fi
+done
 
-  sudo mkdir -p "/etc/systemd/system/${PACKAGE_NAME}.service.d"
-  sudo tee "/etc/systemd/system/${PACKAGE_NAME}.service.d/10-execstart-compat.conf" >/dev/null <<UNITEOF
+sudo tee "\${MANAGED_DROPIN}" >/dev/null <<UNITEOF
 [Service]
 Environment=ROOTDIR=/opt/${PACKAGE_NAME}
 Environment=BINDIR=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin
@@ -102,15 +112,22 @@ ExecStart=
 ExecStart=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin/erlexec -noinput +Bd -boot \${PACKAGE_ROOT}/releases/\${REL_VSN}/pertisk_eproxy -mode embedded -boot_var SYSTEM_LIB_DIR \${PACKAGE_ROOT}/lib -config \${PACKAGE_ROOT}/releases/\${REL_VSN}/sys.config -args_file \${PACKAGE_ROOT}/releases/\${REL_VSN}/vm.args -- foreground
 UNITEOF
 
-  sudo systemctl daemon-reload
-  sudo systemctl reset-failed "${PACKAGE_NAME}" || true
-  sudo systemctl restart "${PACKAGE_NAME}"
+sudo systemctl daemon-reload
+sudo systemctl enable "${PACKAGE_NAME}" --now
+sudo systemctl reset-failed "${PACKAGE_NAME}" || true
+sudo systemctl restart "${PACKAGE_NAME}"
 
-  if sudo systemctl cat "${PACKAGE_NAME}" | grep -Eq '^ExecStart=.*/bin/pertisk_eproxy foreground$'; then
-    echo "ERROR: wrapper ExecStart is still active after compatibility override." >&2
-    echo "Run: sudo systemctl cat ${PACKAGE_NAME}" >&2
-    exit 1
-  fi
+STALE_EXECSTART_LINES="\$(sudo systemctl cat "${PACKAGE_NAME}" | grep '^ExecStart=' | grep '/releases/' | grep -v "/releases/\${REL_VSN}/" || true)"
+if [ -n "\${STALE_EXECSTART_LINES}" ]; then
+  echo "ERROR: stale release-pinned ExecStart entries still active:" >&2
+  echo "\${STALE_EXECSTART_LINES}" >&2
+  exit 1
+fi
+
+if sudo systemctl cat "${PACKAGE_NAME}" | grep -Eq '^ExecStart=.*/bin/pertisk_eproxy foreground$'; then
+  echo "ERROR: wrapper ExecStart is still active after compatibility override." >&2
+  echo "Run: sudo systemctl cat ${PACKAGE_NAME}" >&2
+  exit 1
 fi
 
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"

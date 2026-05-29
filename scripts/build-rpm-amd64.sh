@@ -172,7 +172,7 @@ FPM_ARGS=(
   -n "$PKG_NAME"
   -v "$VERSION"
   -a x86_64
-  --depends sqlite3
+  --depends sqlite
   --depends openssl
   --depends libstdc++
   --description "Pertisk Erlang reverse proxy (bundled OpenSSL 3 for OTP crypto NIF)"
@@ -215,7 +215,7 @@ elif command -v docker >/dev/null 2>&1; then
       -n "$PKG_NAME" \
       -v "$VERSION" \
       -a x86_64 \
-      --depends sqlite3 \
+      --depends sqlite \
       --depends openssl \
       --depends libstdc++ \
       --description "Pertisk Erlang reverse proxy (bundled OpenSSL 3 for OTP crypto NIF)" \
