@@ -10,12 +10,53 @@ OUT_DIR="$ROOT_DIR/release"
 WORK_DIR="$ROOT_DIR/_build/package-rpm-amd64"
 PKG_ROOT="$WORK_DIR/pkg"
 
+read_start_erl_data() {
+  local START_ERL_FILE="$1"
+  local erts_vsn=""
+  local rel_vsn=""
+
+  if [ ! -f "$START_ERL_FILE" ]; then
+    echo "Missing start_erl.data at $START_ERL_FILE" >&2
+    return 1
+  fi
+
+  # start_erl.data may miss trailing newline; do not rely on bare read under set -e.
+  IFS=' ' read -r erts_vsn rel_vsn < "$START_ERL_FILE" || true
+
+  if [ -z "$erts_vsn" ] || [ -z "$rel_vsn" ]; then
+    echo "Invalid start_erl.data content in $START_ERL_FILE" >&2
+    return 1
+  fi
+
+  printf '%s %s\n' "$erts_vsn" "$rel_vsn"
+}
+
 copy_tree() {
   local SRC="$1"
   local DST="$2"
   if [ -e "$SRC" ]; then
     cp -R "$SRC" "$DST"
   fi
+}
+
+patch_release_wrapper_ld_library_path() {
+  local WRAPPER_PATH="$1"
+  local TMP_PATH
+
+  [ -f "$WRAPPER_PATH" ] || return 0
+
+  TMP_PATH="${WRAPPER_PATH}.tmp"
+  awk '
+    {
+      if ($0 == "export LD_LIBRARY_PATH=\"$ERTS_DIR/lib:$LD_LIBRARY_PATH\"") {
+        print "export LD_LIBRARY_PATH=\"$ROOTDIR/lib/runtime:$ROOTDIR/lib/openssl:$ERTS_DIR/lib:$LD_LIBRARY_PATH\""
+      } else {
+        print $0
+      }
+    }
+  ' "$WRAPPER_PATH" > "$TMP_PATH"
+  mv "$TMP_PATH" "$WRAPPER_PATH"
+  chmod +x "$WRAPPER_PATH"
 }
 
 if [ ! -d "$REL_SRC" ]; then
@@ -28,10 +69,20 @@ mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"
 
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
 bash "$ROOT_DIR/scripts/bundle-openssl-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
+bash "$ROOT_DIR/scripts/bundle-runtime-libs-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
 copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
 # Do not package data/ or log/ — would overwrite production SQLite and ACME state on upgrade.
 mkdir -p "$PKG_ROOT/opt/$PKG_NAME/data/acme" "$PKG_ROOT/opt/$PKG_NAME/data/tls" "$PKG_ROOT/opt/$PKG_NAME/log"
+
+patch_release_wrapper_ld_library_path "$PKG_ROOT/opt/$PKG_NAME/bin/pertisk_eproxy"
+
+read -r ERTS_VSN REL_VSN < <(read_start_erl_data "$PKG_ROOT/opt/$PKG_NAME/releases/start_erl.data")
+
+ERLEXEC_PATH="/opt/$PKG_NAME/erts-${ERTS_VSN}/bin/erlexec"
+BOOT_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/pertisk_eproxy"
+SYS_CONFIG_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/sys.config"
+VM_ARGS_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/vm.args"
 
 cat > "$PKG_ROOT/usr/lib/systemd/system/$PKG_NAME.service" <<EOF
 [Unit]
@@ -43,11 +94,15 @@ Type=simple
 User=$PKG_NAME
 Group=$PKG_NAME
 WorkingDirectory=/opt/$PKG_NAME
-Environment=LD_LIBRARY_PATH=/opt/$PKG_NAME/lib/openssl
+Environment=ROOTDIR=/opt/$PKG_NAME
+Environment=BINDIR=${ERLEXEC_PATH%/erlexec}
+Environment=EMU=beam
+Environment=PROGNAME=erl
+Environment=LD_LIBRARY_PATH=/opt/$PKG_NAME/lib/runtime:/opt/$PKG_NAME/lib/openssl
 # Bind HTTP :80 / HTTPS :443 / QUIC without running as root (see proxy.json ports).
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-ExecStart=/opt/$PKG_NAME/bin/pertisk_eproxy foreground
+ExecStart=${ERLEXEC_PATH} -noinput +Bd -boot ${BOOT_PATH} -mode embedded -boot_var SYSTEM_LIB_DIR /opt/$PKG_NAME/lib -config ${SYS_CONFIG_PATH} -args_file ${VM_ARGS_PATH} -- foreground
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65535

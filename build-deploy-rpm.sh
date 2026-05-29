@@ -55,15 +55,64 @@ set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${RPM_FILE}"
 
 if command -v dnf >/dev/null 2>&1; then
-  sudo dnf install -y "\${PKG_PATH}"
+  if rpm -q "${PACKAGE_NAME}" >/dev/null 2>&1; then
+    sudo dnf reinstall -y "\${PKG_PATH}" || sudo dnf install -y "\${PKG_PATH}"
+  else
+    sudo dnf install -y "\${PKG_PATH}"
+  fi
 elif command -v yum >/dev/null 2>&1; then
-  sudo yum install -y "\${PKG_PATH}"
+  if rpm -q "${PACKAGE_NAME}" >/dev/null 2>&1; then
+    sudo yum reinstall -y "\${PKG_PATH}" || sudo yum install -y "\${PKG_PATH}"
+  else
+    sudo yum install -y "\${PKG_PATH}"
+  fi
 else
   sudo rpm -Uvh --replacepkgs "\${PKG_PATH}"
 fi
 
 sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl restart "${PACKAGE_NAME}"
+
+if sudo systemctl cat "${PACKAGE_NAME}" | grep -Eq '^ExecStart=.*/bin/pertisk_eproxy foreground$'; then
+  echo "Detected wrapper ExecStart. Applying compatibility override with direct erlexec..." >&2
+  PACKAGE_ROOT="/opt/${PACKAGE_NAME}"
+  START_ERL_FILE="\${PACKAGE_ROOT}/releases/start_erl.data"
+  if [ ! -f "\${START_ERL_FILE}" ]; then
+    echo "ERROR: start_erl.data not found at \${START_ERL_FILE}" >&2
+    exit 1
+  fi
+
+  ERTS_VSN="$(awk '{print $1}' "\${START_ERL_FILE}" | head -n1)"
+  REL_VSN="$(awk '{print $2}' "\${START_ERL_FILE}" | head -n1)"
+
+  if [ -z "\${ERTS_VSN}" ] || [ -z "\${REL_VSN}" ]; then
+    echo "ERROR: invalid start_erl.data content in \${START_ERL_FILE}" >&2
+    exit 1
+  fi
+
+  sudo mkdir -p "/etc/systemd/system/${PACKAGE_NAME}.service.d"
+  sudo tee "/etc/systemd/system/${PACKAGE_NAME}.service.d/10-execstart-compat.conf" >/dev/null <<UNITEOF
+[Service]
+Environment=ROOTDIR=/opt/${PACKAGE_NAME}
+Environment=BINDIR=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin
+Environment=EMU=beam
+Environment=PROGNAME=erl
+Environment=LD_LIBRARY_PATH=\${PACKAGE_ROOT}/lib/runtime:\${PACKAGE_ROOT}/lib/openssl
+ExecStart=
+ExecStart=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin/erlexec -noinput +Bd -boot \${PACKAGE_ROOT}/releases/\${REL_VSN}/pertisk_eproxy -mode embedded -boot_var SYSTEM_LIB_DIR \${PACKAGE_ROOT}/lib -config \${PACKAGE_ROOT}/releases/\${REL_VSN}/sys.config -args_file \${PACKAGE_ROOT}/releases/\${REL_VSN}/vm.args -- foreground
+UNITEOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl reset-failed "${PACKAGE_NAME}" || true
+  sudo systemctl restart "${PACKAGE_NAME}"
+
+  if sudo systemctl cat "${PACKAGE_NAME}" | grep -Eq '^ExecStart=.*/bin/pertisk_eproxy foreground$'; then
+    echo "ERROR: wrapper ExecStart is still active after compatibility override." >&2
+    echo "Run: sudo systemctl cat ${PACKAGE_NAME}" >&2
+    exit 1
+  fi
+fi
+
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"
 echo "Service status:"
 sudo systemctl status "${PACKAGE_NAME}" --no-pager
