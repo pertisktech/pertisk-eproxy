@@ -17,7 +17,7 @@ autoscaling:
 image:
   registry: harbor.tools.thaidevops.co
   repository: pertisksoft/pertisk-eproxy/ingress
-  tag: "" # defaults to Chart appVersion
+  tag: "0.4.32" # defaults to Chart appVersion
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

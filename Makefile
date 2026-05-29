@@ -4,6 +4,7 @@
 	docker-ingress docker-ingress-push docker-ingress-multi \
 	docker-eproxy-multi docker-harbor-multi \
 	tls-smoke package-deb-amd64 package-rpm-amd64 \
+	helm-release helm-upload helm-release-upload \
 	run run-ingress reload config health metrics test-dns-provider-validate
 
 REBAR = rebar3
@@ -24,6 +25,9 @@ BUILDX_MULTI_BUILDER ?= pertisk-multiarch
 COWBOY_QUICER ?= 1
 COWBOY_QUIC ?= 1
 PACKAGE_NAME ?= pertisk-eproxy
+HELM_CHART_DIR ?= deploy/helm/pertisk-eproxy
+HELM_PACKAGE_DIR ?= release/helm
+HELM_OCI_REPO ?= oci://$(HARBOR_REGISTRY)/pertisksoft/helm
 
 # Back-compat aliases (default IMAGE = proxy)
 IMAGE ?= $(HARBOR_PROXY_IMAGE)
@@ -159,3 +163,19 @@ package-rpm-amd64: release
 	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-rpm-x86_64: package-rpm-amd64
+
+helm-release:
+	@bash scripts/release-helm.sh \
+		--chart-dir "$(HELM_CHART_DIR)" \
+		--output-dir "$(HELM_PACKAGE_DIR)" \
+		--version "$(PACKAGE_VERSION)"
+
+helm-upload:
+	@bash scripts/release-helm.sh \
+		--chart-dir "$(HELM_CHART_DIR)" \
+		--output-dir "$(HELM_PACKAGE_DIR)" \
+		--version "$(PACKAGE_VERSION)" \
+		--push \
+		--oci-repo "$(HELM_OCI_REPO)"
+
+helm-release-upload: helm-upload
