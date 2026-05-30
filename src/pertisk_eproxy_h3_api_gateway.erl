@@ -437,17 +437,36 @@ client_ip_h3(H3Conn, Headers) ->
     end.
 
 h3_req_headers_map(Headers) ->
-    maps:from_list([
-        begin
-            Kb = string:lowercase(K),
-            {Kb, V}
-        end
-        || {K, V} <- Headers,
-           is_binary(K),
-           is_binary(V),
-           byte_size(K) > 0,
-           binary:at(K, 0) =/= $:
-    ]).
+    lists:foldl(
+        fun({K, V}, Acc) when is_binary(K), is_binary(V), byte_size(K) > 0 ->
+            case binary:at(K, 0) =:= $: of
+                true ->
+                    Acc;
+                false ->
+                    Kb = string:lowercase(K),
+                    merge_h3_header(Kb, V, Acc)
+            end;
+           (_, Acc) ->
+            Acc
+        end,
+        #{},
+        Headers
+    ).
+
+merge_h3_header(<<"cookie">>, V, Acc) ->
+    case maps:find(<<"cookie">>, Acc) of
+        {ok, Existing} when is_binary(Existing), byte_size(Existing) > 0 ->
+            Acc#{<<"cookie">> => <<Existing/binary, "; ", V/binary>>};
+        _ ->
+            Acc#{<<"cookie">> => V}
+    end;
+merge_h3_header(K, V, Acc) ->
+    case maps:find(K, Acc) of
+        {ok, Existing} when is_binary(Existing), byte_size(Existing) > 0 ->
+            Acc#{K => <<Existing/binary, ", ", V/binary>>};
+        _ ->
+            Acc#{K => V}
+    end.
 
 forward_headers_h3(InMap, OrigHost, ClientIp, UpstreamPath) when is_binary(OrigHost) ->
     Filtered = maps:without(
