@@ -103,6 +103,12 @@ kubectl apply -f examples/k8s-ingress.yaml
 
 Ensure `spec.ingressClassName` matches `ingress.className` (default `pertisk-eproxy`).
 
+To route to a Service in a different namespace than the Ingress object:
+- Set annotation `pertisk.tech/backend-namespace` for a single default backend namespace.
+- Or set `pertisk.tech/backend-namespaces` to a JSON map for per-service namespaces (for example `{"api":"team-a","admin":"team-b"}`).
+
+The controller resolves upstreams as `<service>.<backend-namespace>.svc.cluster.local:<port>`.
+
 ### Dashboard `GET /api/kubernetes/pods` returns 403
 
 The ServiceAccount needs `pods` **list** in the release namespace. Helm installs a namespaced **Role** (`*-dashboard`) plus ClusterRole rules.

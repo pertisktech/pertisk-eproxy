@@ -136,6 +136,10 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `PUT` | `/api/kubernetes/ingresses/:namespace/:name` | Update one Kubernetes ingress resource |
 | `DELETE` | `/api/kubernetes/ingresses/:namespace/:name` | Delete one Kubernetes ingress resource |
 
+Ingress admin payloads support `service_namespace` independent of `ingress_namespace`. In ingress mode the controller writes/reads this as annotation `pertisk.tech/backend-namespace` and resolves backend upstreams against that namespace.
+
+For multi-route ingresses that target services in different namespaces, each route may provide its own `service_namespace`; ingress mode stores this as annotation `pertisk.tech/backend-namespaces` (JSON map: service name -> namespace).
+
 Handlers live in `src/pertisk_eproxy_app.erl` (`build_admin_api_routes/0`), `src/pertisk_eproxy_admin_handler.erl`, and `src/pertisk_eproxy_admin_ws_handler.erl`. Which routes allow unauthenticated access is defined by `auth_public/2` in `pertisk_eproxy_admin_handler.erl`.
 
 ### Admin UI (production assets)

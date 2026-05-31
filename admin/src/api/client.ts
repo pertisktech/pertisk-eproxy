@@ -1174,6 +1174,7 @@ export interface CreateIngressResponse {
 export interface IngressFormRouteRow {
   path: string;
   path_type: string;
+  service_namespace?: string;
   service_name: string;
   service_port?: number | null;
   service_port_name?: string | null;
@@ -1183,6 +1184,7 @@ export interface IngressFormRow {
   namespace: string;
   name: string;
   host: string;
+  service_namespace: string;
   routes: IngressFormRouteRow[];
   path: string;
   path_type: string;

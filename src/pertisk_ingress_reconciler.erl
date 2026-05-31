@@ -5,6 +5,10 @@
 
 -define(DEFAULT_BACKEND_PORT, 80).
 -define(INGRESS_CLASS_ANNOTATION, <<"kubernetes.io/ingress.class">>).
+-define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.tech/backend-namespace">>).
+-define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespace">>).
+-define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.tech/backend-namespaces">>).
+-define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespaces">>).
 
 %% @doc Full reconcile from listed Ingress and Secret maps (ekub JSON objects).
 -spec reconcile([map()], [map()]) ->
@@ -40,6 +44,8 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
     Spec = maps:get(<<"spec">>, Ingress, #{}),
     Meta = maps:get(<<"metadata">>, Ingress, #{}),
     Ns = namespace_of(Meta),
+    BackendNsDefault = backend_namespace_of(Meta, Ns),
+    BackendNsByService = backend_namespace_map_of(Meta),
     IngressName = name_of(Meta),
     Rules = maps:get(<<"rules">>, Spec, []),
     RuleHosts = [H || #{<<"host">> := H} <- Rules, is_binary(H)],
@@ -53,7 +59,15 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
                     lists:foldl(
                         fun(Path, {Bs2, Ss2, Ts2}) ->
                             reconcile_path(
-                                Path, Host, Ns, IngressName, Bs2, Ss2, Ts2
+                                Path,
+                                Host,
+                                Ns,
+                                BackendNsDefault,
+                                BackendNsByService,
+                                IngressName,
+                                Bs2,
+                                Ss2,
+                                Ts2
                             )
                         end,
                         {Bs, Ss, Ts},
@@ -68,10 +82,21 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
     CertRef = ingress_site_certificate(Ns, Spec),
     {Backends1, sites_with_certificate(Sites1, CertRef), TlsRefs2}.
 
-reconcile_path(Path, Host, Ns, IngressName, Backends, Sites, TlsRefs) ->
+reconcile_path(
+    Path,
+    Host,
+    Ns,
+    BackendNsDefault,
+    BackendNsByService,
+    IngressName,
+    Backends,
+    Sites,
+    TlsRefs
+) ->
     BackendSpec = maps:get(<<"backend">>, Path, #{}),
-    BackendName = backend_name_for(BackendSpec, IngressName),
-    Upstreams = upstreams_from_backend(BackendSpec, Ns),
+    BackendNs = backend_namespace_for(BackendSpec, BackendNsDefault, BackendNsByService),
+    BackendName = backend_name_for(BackendSpec, IngressName, BackendNs),
+    Upstreams = upstreams_from_backend(BackendSpec, BackendNs),
     Backends1 = case lists:any(fun(#{name := N}) -> N =:= BackendName end, Backends) of
         true -> Backends;
         false ->
@@ -147,13 +172,15 @@ collect_tls_refs(Spec, Ns, RuleHosts, TlsRefs) ->
         TlsList
     ).
 
-backend_name_for(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> := Port}}, IngressName) ->
+backend_name_for(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> := Port}}, IngressName, BackendNs) ->
     PortNum = backend_port_number(Port),
-    iolist_to_binary([SvcName, <<".">>, IngressName, <<":">>, integer_to_binary(PortNum)]);
-backend_name_for(#{<<"resource">> := #{<<"name">> := ResName}}, IngressName) ->
-    iolist_to_binary([<<"resource.">>, ResName, <<".">>, IngressName]);
-backend_name_for(_, IngressName) ->
-    iolist_to_binary([<<"default.">>, IngressName]).
+    iolist_to_binary([
+        SvcName, <<".">>, BackendNs, <<".">>, IngressName, <<":">>, integer_to_binary(PortNum)
+    ]);
+backend_name_for(#{<<"resource">> := #{<<"name">> := ResName}}, IngressName, BackendNs) ->
+    iolist_to_binary([<<"resource.">>, ResName, <<".">>, BackendNs, <<".">>, IngressName]);
+backend_name_for(_, IngressName, BackendNs) ->
+    iolist_to_binary([<<"default.">>, BackendNs, <<".">>, IngressName]).
 
 backend_port_number(#{<<"number">> := N}) when is_integer(N) -> N;
 backend_port_number(_) -> ?DEFAULT_BACKEND_PORT.
@@ -164,6 +191,67 @@ upstreams_from_backend(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> :=
     [#{addr => Addr, weight => 1}];
 upstreams_from_backend(_, _) ->
     [].
+
+backend_namespace_of(Meta, DefaultNs) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case maps:get(?BACKEND_NAMESPACE_ANNOTATION, Annotations, undefined) of
+        Ns when is_binary(Ns), Ns =/= <<>> ->
+            Ns;
+        _ ->
+            case maps:get(?BACKEND_NAMESPACE_ANNOTATION_LEGACY, Annotations, undefined) of
+                Legacy when is_binary(Legacy), Legacy =/= <<>> -> Legacy;
+                _ -> DefaultNs
+            end
+    end.
+
+backend_namespace_for(
+    #{<<"service">> := #{<<"name">> := SvcName}},
+    BackendNsDefault,
+    BackendNsByService
+) when is_binary(SvcName) ->
+    maps:get(SvcName, BackendNsByService, BackendNsDefault);
+backend_namespace_for(_, BackendNsDefault, _BackendNsByService) ->
+    BackendNsDefault.
+
+backend_namespace_map_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    Encoded = case maps:get(?BACKEND_NAMESPACES_ANNOTATION, Annotations, undefined) of
+        Json when is_binary(Json), Json =/= <<>> -> Json;
+        _ -> maps:get(?BACKEND_NAMESPACES_ANNOTATION_LEGACY, Annotations, <<>>)
+    end,
+    decode_backend_namespace_map(Encoded).
+
+decode_backend_namespace_map(Json) when is_binary(Json), Json =/= <<>> ->
+    case thoas:decode(Json) of
+        {ok, Map} when is_map(Map) ->
+            maps:fold(
+                fun(K, V, Acc) ->
+                    case {coerce_bin(K), coerce_nonempty_bin(V)} of
+                        {<<>>, _} -> Acc;
+                        {_, <<>>} -> Acc;
+                        {Key, Ns} -> maps:put(Key, Ns, Acc)
+                    end
+                end,
+                #{},
+                Map
+            );
+        _ ->
+            #{}
+    end;
+decode_backend_namespace_map(_) ->
+    #{}.
+
+coerce_bin(B) when is_binary(B) -> B;
+coerce_bin(L) when is_list(L) -> list_to_binary(L);
+coerce_bin(A) when is_atom(A) -> atom_to_binary(A, utf8);
+coerce_bin(N) when is_integer(N) -> integer_to_binary(N);
+coerce_bin(_) -> <<>>.
+
+coerce_nonempty_bin(V) ->
+    case coerce_bin(V) of
+        <<>> -> <<>>;
+        Bin -> list_to_binary(string:trim(binary_to_list(Bin)))
+    end.
 
 %% Ingress admin UI often targets Service :9080 (management). Use loopback, not *.svc.cluster.local.
 upstream_service_addr(_SvcName, _Ns, PortNum) ->

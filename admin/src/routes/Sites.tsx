@@ -131,6 +131,7 @@ function emptyIngressRoute(): IngressFormRouteRow {
   return {
     path: '/',
     path_type: 'Prefix',
+    service_namespace: '',
     service_name: '',
     service_port: null,
     service_port_name: '',
@@ -255,6 +256,14 @@ export default function Sites() {
     return Array.from(new Set(item.sites.map((site) => upstreamForSite(site)).filter(Boolean)));
   }
 
+  function hostsForItem(item: DisplaySiteItem): string[] {
+    return Array.from(new Set(item.sites.map((site) => site.host).filter(Boolean)));
+  }
+
+  function backendsForItem(item: DisplaySiteItem): string[] {
+    return Array.from(new Set(item.sites.map((site) => site.backend).filter(Boolean)));
+  }
+
   function routesForItem(item: DisplaySiteItem): PathRewrite[] {
     const deduped = new Map<string, PathRewrite>();
     item.sites.forEach((site) => {
@@ -360,10 +369,14 @@ export default function Sites() {
 
   async function refreshSitesAfterIngressWrite(host: string) {
     const want = host.trim().toLowerCase();
+    let seen = 0;
     for (let attempt = 0; attempt < 12; attempt++) {
       const cfg = await load({ silent: true });
       const found = (cfg?.sites ?? []).some((s) => s.host.trim().toLowerCase() === want);
-      if (found) return;
+      if (found) {
+        seen += 1;
+        if (seen >= 2) return;
+      }
       await new Promise((r) => window.setTimeout(r, 500));
     }
   }
@@ -411,9 +424,52 @@ export default function Sites() {
 
   useEffect(() => {
     if (mode !== 'ingress' || !showIngressForm) return;
-    api.kubernetes.namespaces().then(setK8sNamespaces).catch(() => setK8sNamespaces([]));
-    api.kubernetes.tlsSecrets().then(setK8sTlsSecrets).catch(() => setK8sTlsSecrets([]));
+    api.kubernetes
+      .namespaces()
+      .then((rows) => {
+        setK8sNamespaces(rows);
+        const firstNs = rows[0]?.name?.trim() ?? '';
+        if (!firstNs) return;
+        setIngressServiceNamespace((prev) => (prev.trim() ? prev : firstNs));
+        setIngressNamespace((prev) => (prev.trim() ? prev : firstNs));
+        setIngressRoutes((routes) =>
+          routes.map((route) => ({
+            ...route,
+            service_namespace: (route.service_namespace ?? '').trim() || firstNs,
+          })),
+        );
+      })
+      .catch(() => setK8sNamespaces([]));
   }, [mode, showIngressForm]);
+
+  useEffect(() => {
+    if (mode !== 'ingress' || !showIngressForm) return;
+    const effectiveIngressNs = (ingressNamespace.trim() || ingressServiceNamespace.trim()).trim();
+    const req = effectiveIngressNs
+      ? api.kubernetes.tlsSecrets({ namespace: effectiveIngressNs })
+      : api.kubernetes.tlsSecrets();
+    req
+      .then((rows) => {
+        if (rows.length > 0 || !effectiveIngressNs) {
+          setK8sTlsSecrets(rows);
+          return;
+        }
+        api.kubernetes
+          .tlsSecrets()
+          .then(setK8sTlsSecrets)
+          .catch(() => setK8sTlsSecrets([]));
+      })
+      .catch(() => {
+        if (!effectiveIngressNs) {
+          setK8sTlsSecrets([]);
+          return;
+        }
+        api.kubernetes
+          .tlsSecrets()
+          .then(setK8sTlsSecrets)
+          .catch(() => setK8sTlsSecrets([]));
+      });
+  }, [mode, showIngressForm, ingressNamespace, ingressServiceNamespace]);
 
   useEffect(() => {
     if (mode !== 'ingress' || !ingressServiceNamespace.trim()) {
@@ -430,11 +486,16 @@ export default function Sites() {
     setIngressRoutes((routes) => {
       let changed = false;
       const next = routes.map((route) => {
+        const routeNs = (route.service_namespace ?? ingressServiceNamespace).trim();
+        const activeNs = ingressServiceNamespace.trim();
         const serviceName = route.service_name.trim();
         if (!serviceName) {
           if (route.service_port == null && !(route.service_port_name ?? '').trim()) return route;
           changed = true;
           return { ...route, service_port: null, service_port_name: '' };
+        }
+        if (routeNs && activeNs && routeNs !== activeNs) {
+          return route;
         }
         const service = k8sServices.find((item) => item.name === serviceName);
         const ports = service?.ports_detail ?? [];
@@ -459,7 +520,7 @@ export default function Sites() {
       });
       return changed ? next : routes;
     });
-  }, [k8sServices]);
+  }, [k8sServices, ingressServiceNamespace]);
 
   function addRoute() {
     setFormRoutes((r) => [...r, { path: '', path_type: 'Prefix', rewrite: '' }]);
@@ -481,7 +542,10 @@ export default function Sites() {
     });
   }
 
-  function ingressPortsForService(serviceName: string) {
+  function ingressPortsForService(serviceName: string, serviceNamespace?: string) {
+    const ns = (serviceNamespace ?? '').trim();
+    const activeNs = ingressServiceNamespace.trim();
+    if (ns && activeNs && ns !== activeNs) return [];
     return k8sServices.find((service) => service.name === serviceName.trim())?.ports_detail ?? [];
   }
 
@@ -536,12 +600,13 @@ export default function Sites() {
         row.tls_secret_name ? (row.tls_secret_namespace ?? row.namespace) : '',
       );
       setIngressTlsName(row.tls_secret_name ?? '');
-      setIngressServiceNamespace(row.namespace);
+      setIngressServiceNamespace((row.service_namespace ?? row.namespace).trim());
       setIngressRoutes(
         row.routes?.length
           ? row.routes.map((route) => ({
               path: route.path || '/',
               path_type: route.path_type || 'Prefix',
+              service_namespace: (route.service_namespace ?? row.service_namespace ?? row.namespace).trim(),
               service_name: route.service_name || '',
               service_port: route.service_port ?? null,
               service_port_name: route.service_port_name ?? '',
@@ -550,6 +615,7 @@ export default function Sites() {
               {
                 path: row.path || '/',
                 path_type: row.path_type || 'Prefix',
+                service_namespace: (row.service_namespace ?? row.namespace).trim(),
                 service_name: row.service_name || '',
                 service_port: row.service_port ?? null,
                 service_port_name: row.service_port_name ?? '',
@@ -602,8 +668,9 @@ export default function Sites() {
       .map((route) => {
         const path = route.path.trim() || '/';
         const pathType = route.path_type?.trim() || 'Prefix';
+        const routeServiceNamespace = (route.service_namespace ?? serviceNamespace).trim() || serviceNamespace;
         const serviceName = route.service_name.trim();
-        const ports = ingressPortsForService(serviceName);
+        const ports = ingressPortsForService(serviceName, routeServiceNamespace);
         const selectedPort =
           route.service_port != null ? ports.find((port) => port.port === route.service_port) : undefined;
         const namedPort = (route.service_port_name ?? '').trim()
@@ -613,6 +680,7 @@ export default function Sites() {
         return {
           path,
           path_type: pathType,
+          service_namespace: routeServiceNamespace,
           service_name: serviceName,
           service_port: portNum,
           service_port_name: namedPort?.name ?? '',
@@ -1007,7 +1075,10 @@ export default function Sites() {
             <div className={styles.cardGrid}>
               {pagedSiteItems.map((item) => {
                 const { site, index: i } = item;
+                const hosts = hostsForItem(item);
+                const hostPrimary = hosts[0] ?? site.host;
                 const upstreams = upstreamsForItem(item);
+                const backends = backendsForItem(item);
                 const routes = routesForItem(item);
                 const ssl = sslLabelForSite(site);
                 return (
@@ -1015,8 +1086,8 @@ export default function Sites() {
                     <div className={styles.siteCardHeader}>
                       <h3 className={styles.siteCardDomain}>
                         <FaIcon className="fas fa-globe" aria-hidden />
-                        <span className={styles.hostText}>{site.host}</span>
-                        {isWildcardHost(site.host) && (
+                        <span className={styles.hostText}>{hostPrimary}</span>
+                        {isWildcardHost(hostPrimary) && (
                           <span
                             title="Wildcard host: matches any subdomain"
                             style={{ marginLeft: '0.4rem', padding: '0.05rem 0.4rem', borderRadius: '0.4rem', background: 'var(--color-primary)', color: '#fff', fontSize: '0.7rem', fontWeight: 600 }}
@@ -1024,14 +1095,14 @@ export default function Sites() {
                             <FaIcon className="fas fa-asterisk" aria-hidden /> wildcard
                           </span>
                         )}
-                        {!isWildcardHost(site.host) && domainUrl(site.host) && (
+                        {!isWildcardHost(hostPrimary) && domainUrl(hostPrimary) && (
                           <a
-                            href={domainUrl(site.host)}
+                            href={domainUrl(hostPrimary)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className={styles.domainLinkIcon}
                             title="Open in new tab"
-                            aria-label={`Open ${site.host} in new tab`}
+                            aria-label={`Open ${hostPrimary} in new tab`}
                           >
                             <FaIcon className="fas fa-external-link-alt" aria-hidden />
                           </a>
@@ -1055,7 +1126,17 @@ export default function Sites() {
                       </div>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Backend</span>
-                        <span className={styles.metaValue}>{site.backend}</span>
+                        {backends.length <= 1 ? (
+                          <span className={styles.metaValue}>{backends[0] ?? '—'}</span>
+                        ) : (
+                          <div className={styles.routes}>
+                            {backends.map((backend) => (
+                              <span key={backend} className={styles.routeChip}>
+                                {backend}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Routes</span>
@@ -1187,10 +1268,13 @@ export default function Sites() {
                 <tbody>
                   {pagedSiteItems.map((item) => {
                     const { site, index: i } = item;
+                    const hosts = hostsForItem(item);
+                    const hostPrimary = hosts[0] ?? site.host;
                     const upstreams = upstreamsForItem(item);
+                    const backends = backendsForItem(item);
                     const routes = routesForItem(item);
                     const ssl = sslLabelForSite(site);
-                    const sslLive = jobsByHost[site.host];
+                    const sslLive = jobsByHost[hostPrimary];
                     return (
                       <tr key={item.key} className={styles.tableRow}>
                         <td className={styles.host}>
@@ -1200,8 +1284,8 @@ export default function Sites() {
                                 <FaIcon className="fas fa-globe" aria-hidden />
                               </span>
                               <span className={styles.hostTextGroup}>
-                                <span className={styles.hostText}>{site.host}</span>
-                                {isWildcardHost(site.host) && (
+                                <span className={styles.hostText}>{hostPrimary}</span>
+                                {isWildcardHost(hostPrimary) && (
                                   <span
                                     title="Wildcard host: matches any subdomain"
                                     style={{ marginLeft: '0.4rem', padding: '0.05rem 0.4rem', borderRadius: '0.4rem', background: 'var(--color-primary)', color: '#fff', fontSize: '0.7rem', fontWeight: 600 }}
@@ -1212,14 +1296,14 @@ export default function Sites() {
                                 <span className={styles.cellSubtle}>Cert {ssl}</span>
                               </span>
                             </div>
-                            {!isWildcardHost(site.host) && domainUrl(site.host) && (
+                            {!isWildcardHost(hostPrimary) && domainUrl(hostPrimary) && (
                               <a
-                                href={domainUrl(site.host)}
+                                href={domainUrl(hostPrimary)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className={styles.domainLinkIcon}
                                 title="Open in new tab"
-                                aria-label={`Open ${site.host} in new tab`}
+                                aria-label={`Open ${hostPrimary} in new tab`}
                               >
                                 <FaIcon className="fas fa-external-link-alt" aria-hidden />
                               </a>
@@ -1231,7 +1315,7 @@ export default function Sites() {
                             <span className={styles.monoPrimary} title={upstreams.join(', ')}>
                               {upstreams[0] ?? '—'}
                             </span>
-                            <span className={styles.cellSubtle}>{site.backend}</span>
+                            <span className={styles.cellSubtle}>{backends.join(', ') || '—'}</span>
                           </div>
                         </td>
                         <td>
@@ -1718,10 +1802,10 @@ export default function Sites() {
                         <option value=""> </option>
                         {(() => {
                           const ingressNs = ingressNamespace.trim() || ingressServiceNamespace.trim();
-                          const secrets = ingressNs
+                          const scoped = ingressNs
                             ? k8sTlsSecrets.filter((s) => s.namespace === ingressNs)
                             : k8sTlsSecrets;
-                          return secrets;
+                          return scoped.length > 0 ? scoped : k8sTlsSecrets;
                         })().map((s) => (
                           <option key={`${s.namespace}/${s.name}`} value={`${s.namespace}/${s.name}`}>
                             {s.namespace}/{s.name}
@@ -1744,6 +1828,7 @@ export default function Sites() {
                           setIngressRoutes((routes) =>
                             routes.map((route) => ({
                               ...route,
+                              service_namespace: ns,
                               service_name: '',
                               service_port: null,
                               service_port_name: '',
@@ -1776,7 +1861,10 @@ export default function Sites() {
                   </div>
                   <div className={styles.ingressRoutesList}>
                     {ingressRoutes.map((route, index) => {
-                      const servicePorts = ingressPortsForService(route.service_name);
+                      const servicePorts = ingressPortsForService(
+                        route.service_name,
+                        route.service_namespace ?? ingressServiceNamespace,
+                      );
                       return (
                         <div key={`${index}-${route.path}-${route.service_name}`} className={styles.ingressRouteCard}>
                           <div className={styles.ingressRouteHeader}>

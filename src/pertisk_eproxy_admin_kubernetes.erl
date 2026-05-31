@@ -15,6 +15,10 @@
 ]).
 
 -define(API_VERSION, <<"networking.k8s.io/v1">>).
+-define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.tech/backend-namespace">>).
+-define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespace">>).
+-define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.tech/backend-namespaces">>).
+-define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespaces">>).
 
 available() ->
     pertisk_eproxy_config:ingress_mode().
@@ -215,7 +219,7 @@ services(Namespace) ->
 
 services_in_namespace(Ns) ->
     with_conn(fun(Conn) ->
-        case ekub:read(service, Ns, list_query(), Conn) of
+        case ekub:read(service, Ns, [], Conn) of
             {ok, List} ->
                 Rows = [service_row(Svc) || Svc <- items_from_list(List)],
                 {ok, Rows};
@@ -229,7 +233,7 @@ tls_secrets(Namespace) ->
         Query = list_query(),
         Read = case Namespace of
             <<>> -> ekub:read(secret, Query, Conn);
-            Ns -> ekub:read(secret, Ns, Query, Conn)
+            Ns -> ekub:read(secret, Ns, [], Conn)
         end,
         case Read of
             {ok, List} ->
@@ -242,11 +246,69 @@ tls_secrets(Namespace) ->
                     }
                     || S <- items_from_list(List), is_tls_secret(S)
                 ],
-                {ok, Rows};
+                case Rows of
+                    [] ->
+                        fallback_tls_secrets_from_ingresses(Conn, Namespace, {ok, Rows});
+                    _ ->
+                        {ok, Rows}
+                end;
             {error, Reason} ->
-                {error, Reason}
+                fallback_tls_secrets_from_ingresses(Conn, Namespace, {error, Reason})
         end
     end).
+
+fallback_tls_secrets_from_ingresses(Conn, Namespace, Fallback) ->
+    IngressRead = case Namespace of
+        <<>> -> ekub:read(ingress, list_query(), Conn);
+        Ns -> ekub:read(ingress, Ns, [], Conn)
+    end,
+    case IngressRead of
+        {ok, IngressList} ->
+            Inferred = infer_tls_rows_from_ingresses(items_from_list(IngressList)),
+            case Inferred of
+                [] -> Fallback;
+                _ -> {ok, Inferred}
+            end;
+        {error, _} ->
+            Fallback
+    end.
+
+infer_tls_rows_from_ingresses(Ingresses) ->
+    Rows0 = lists:flatmap(
+        fun(I) ->
+            Ns = meta_namespace(I),
+            Spec = maps:get(<<"spec">>, I, #{}),
+            Tls = maps:get(<<"tls">>, Spec, []),
+            [
+                # {
+                    namespace => Ns,
+                    name => Secret,
+                    issued_at => null,
+                    expires_at => null
+                }
+                || T <- Tls,
+                   is_map(T),
+                   Secret <- [maps:get(<<"secretName">>, T, undefined)],
+                   is_binary(Secret), Secret =/= <<>>
+            ]
+        end,
+        Ingresses
+    ),
+    dedupe_tls_rows(Rows0).
+
+dedupe_tls_rows(Rows) ->
+    {_Seen, Out} = lists:foldl(
+        fun(Row, {Seen, Acc}) ->
+            Key = {maps:get(namespace, Row, <<>>), maps:get(name, Row, <<>>)},
+            case sets:is_element(Key, Seen) of
+                true -> {Seen, Acc};
+                false -> {sets:add_element(Key, Seen), [Row | Acc]}
+            end
+        end,
+        {sets:new(), []},
+        Rows
+    ),
+    lists:reverse(Out).
 
 list_ingresses() ->
     with_conn(fun(Conn) ->
@@ -538,6 +600,8 @@ ingress_list_row(Ingress) ->
 ingress_form_row(Ingress) ->
     Ns = meta_namespace(Ingress),
     Name = meta_name(Ingress),
+    ServiceNs = backend_namespace_from_meta(Ingress, Ns),
+    ServiceNsByName = backend_namespace_map_from_meta(Ingress),
     Spec = maps:get(<<"spec">>, Ingress, undefined),
     case Spec of
         undefined ->
@@ -547,13 +611,14 @@ ingress_form_row(Ingress) ->
             case Rules of
                 [Rule | _] ->
                     Host = maps:get(<<"host">>, Rule, <<"*">>),
-                    Routes = paths_from_rule(Rule),
+                    Routes = paths_from_rule(Rule, ServiceNs, ServiceNsByName),
                     TlsSecret = tls_secret_from_spec(Spec),
                     First = hd(Routes),
                     {ok, #{
                         namespace => Ns,
                         name => Name,
                         host => Host,
+                        service_namespace => ServiceNs,
                         routes => Routes,
                         path => maps:get(path, First, <<"/">>),
                         path_type => maps:get(path_type, First, <<"Prefix">>),
@@ -569,25 +634,28 @@ ingress_form_row(Ingress) ->
             end
     end.
 
-paths_from_rule(Rule) ->
+paths_from_rule(Rule, DefaultServiceNs, ServiceNsByName) ->
     case maps:get(<<"http">>, Rule, undefined) of
         #{<<"paths">> := Paths} when is_list(Paths), Paths =/= [] ->
-            [path_row(P) || P <- Paths];
+            [path_row(P, DefaultServiceNs, ServiceNsByName) || P <- Paths];
         _ ->
             [#{
                 path => <<"/">>,
                 path_type => <<"Prefix">>,
+                service_namespace => DefaultServiceNs,
                 service_name => <<>>,
                 service_port => null,
                 service_port_name => null
             }]
     end.
 
-path_row(Path) ->
+path_row(Path, DefaultServiceNs, ServiceNsByName) ->
     {SvcName, PortNum, PortName} = backend_from_path(Path),
+    ServiceNs = resolve_backend_service_namespace(SvcName, DefaultServiceNs, ServiceNsByName),
     #{
         path => maps:get(<<"path">>, Path, <<"/">>),
         path_type => maps:get(<<"pathType">>, Path, <<"Prefix">>),
+        service_namespace => ServiceNs,
         service_name => SvcName,
         service_port => PortNum,
         service_port_name => PortName
@@ -637,6 +705,7 @@ build_ingress_resource(Body, Current) ->
                 host_to_ingress_name(Host)
         end,
         Paths = paths_from_body(Body),
+        ServiceNsByName = route_backend_namespaces(Body, ServiceNs),
         Class = ingress_class_from_body(Body),
         Spec0 = #{
             <<"rules">> => [
@@ -657,7 +726,8 @@ build_ingress_resource(Body, Current) ->
             Cur ->
                 maps:get(<<"metadata">>, Cur, #{})
         end,
-        Meta = maps:merge(Meta0, #{<<"name">> => IngressName, <<"namespace">> => IngressNs}),
+        Meta1 = maps:merge(Meta0, #{<<"name">> => IngressName, <<"namespace">> => IngressNs}),
+        Meta = set_backend_namespace_meta(Meta1, ServiceNs, ServiceNsByName),
         Resource = #{
             <<"apiVersion">> => ?API_VERSION,
             <<"kind">> => <<"Ingress">>,
@@ -686,8 +756,7 @@ paths_from_body(Body) ->
             [path_from_legacy_body(Body)]
     end.
 
-path_from_route(Route, Body) ->
-    ServiceNs = trim(maps:get(<<"service_namespace">>, Body, <<>>)),
+path_from_route(Route, _Body) ->
     Path = case maps:get(<<"path">>, Route, <<>>) of
         <<>> -> <<"/">>;
         P -> trim(P)
@@ -698,10 +767,10 @@ path_from_route(Route, Body) ->
     end,
     SvcName = trim_required(maps:get(<<"service_name">>, Route, <<>>), <<"each route requires service_name">>),
     Port = backend_port_from_route(Route),
-    http_path(Path, PathType, SvcName, ServiceNs, Port).
+    http_path(Path, PathType, SvcName, Port).
 
 path_from_legacy_body(Body) ->
-    ServiceNs = trim_required(maps:get(<<"service_namespace">>, Body, <<>>), <<"service_namespace is required">>),
+    _ServiceNs = trim_required(maps:get(<<"service_namespace">>, Body, <<>>), <<"service_namespace is required">>),
     Path = case maps:get(<<"path">>, Body, <<"/">>) of
         <<>> -> <<"/">>;
         P -> trim(P)
@@ -712,9 +781,9 @@ path_from_legacy_body(Body) ->
     end,
     SvcName = trim_required(maps:get(<<"service_name">>, Body, <<>>), <<"service_name is required">>),
     Port = backend_port_from_body(Body),
-    http_path(Path, PathType, SvcName, ServiceNs, Port).
+    http_path(Path, PathType, SvcName, Port).
 
-http_path(Path, PathType, SvcName, _ServiceNs, Port) ->
+http_path(Path, PathType, SvcName, Port) ->
     #{
         <<"path">> => Path,
         <<"pathType">> => PathType,
@@ -879,3 +948,95 @@ coerce_binary(L) when is_list(L) -> list_to_binary(L);
 coerce_binary(N) when is_integer(N) -> integer_to_binary(N);
 coerce_binary(A) when is_atom(A) -> atom_to_binary(A, utf8);
 coerce_binary(_) -> <<>>.
+
+route_backend_namespaces(Body, DefaultNs) ->
+    Routes = maps:get(<<"routes">>, Body, undefined),
+    case Routes of
+        [_ | _] = List ->
+            lists:foldl(
+                fun(Route, Acc) ->
+                    Svc = trim(maps:get(<<"service_name">>, Route, <<>>)),
+                    case Svc of
+                        <<>> ->
+                            Acc;
+                        _ ->
+                            Ns = service_namespace_from_route(Route, DefaultNs),
+                            maps:put(Svc, Ns, Acc)
+                    end
+                end,
+                #{},
+                List
+            );
+        _ ->
+            LegacySvc = trim(maps:get(<<"service_name">>, Body, <<>>)),
+            case LegacySvc of
+                <<>> -> #{};
+                _ -> #{LegacySvc => DefaultNs}
+            end
+    end.
+
+service_namespace_from_route(Route, DefaultNs) ->
+    case trim(maps:get(<<"service_namespace">>, Route, <<>>)) of
+        <<>> -> DefaultNs;
+        Ns -> Ns
+    end.
+
+resolve_backend_service_namespace(<<>>, DefaultNs, _ByService) ->
+    DefaultNs;
+resolve_backend_service_namespace(SvcName, DefaultNs, ByService) ->
+    maps:get(SvcName, ByService, DefaultNs).
+
+backend_namespace_from_meta(Ingress, DefaultNs) ->
+    Meta = maps:get(<<"metadata">>, Ingress, #{}),
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case maps:get(?BACKEND_NAMESPACE_ANNOTATION, Annotations, undefined) of
+        Ns when is_binary(Ns), Ns =/= <<>> ->
+            Ns;
+        _ ->
+            case maps:get(?BACKEND_NAMESPACE_ANNOTATION_LEGACY, Annotations, undefined) of
+                Legacy when is_binary(Legacy), Legacy =/= <<>> -> Legacy;
+                _ -> DefaultNs
+            end
+    end.
+
+backend_namespace_map_from_meta(Ingress) ->
+    Meta = maps:get(<<"metadata">>, Ingress, #{}),
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    Encoded = case maps:get(?BACKEND_NAMESPACES_ANNOTATION, Annotations, undefined) of
+        Json when is_binary(Json), Json =/= <<>> -> Json;
+        _ -> maps:get(?BACKEND_NAMESPACES_ANNOTATION_LEGACY, Annotations, <<>>)
+    end,
+    decode_backend_namespace_map(Encoded).
+
+decode_backend_namespace_map(Json) when is_binary(Json), Json =/= <<>> ->
+    case thoas:decode(Json) of
+        {ok, Map} when is_map(Map) ->
+            maps:fold(
+                fun(K, V, Acc) ->
+                    Key = coerce_binary(K),
+                    Val = trim(V),
+                    case {Key, Val} of
+                        {<<>>, _} -> Acc;
+                        {_, <<>>} -> Acc;
+                        _ -> maps:put(Key, Val, Acc)
+                    end
+                end,
+                #{},
+                Map
+            );
+        _ ->
+            #{}
+    end;
+decode_backend_namespace_map(_) ->
+    #{}.
+
+set_backend_namespace_meta(Meta, ServiceNs, ServiceNsByName) ->
+    EncodedServiceNsByName = thoas:encode(ServiceNsByName),
+    Anns0 = maps:get(<<"annotations">>, Meta, #{}),
+    Anns1 = Anns0#{
+        ?BACKEND_NAMESPACE_ANNOTATION => ServiceNs,
+        ?BACKEND_NAMESPACE_ANNOTATION_LEGACY => ServiceNs,
+        ?BACKEND_NAMESPACES_ANNOTATION => EncodedServiceNsByName,
+        ?BACKEND_NAMESPACES_ANNOTATION_LEGACY => EncodedServiceNsByName
+    },
+    Meta#{<<"annotations">> => Anns1}.
