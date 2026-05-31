@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type Site, type ProxyConfig, type CertificateRow, type PathRewrite, normalizeDnsProviders } from '@/api/client';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 const PATH_TYPES = ['Prefix', 'Exact', 'ImplementationSpecific'] as const;
 
@@ -30,6 +31,8 @@ export default function SiteDetail() {
   const [dnsProvider, setDnsProvider] = useState('');
   const [routesForm, setRoutesForm] = useState<RouteFormRow[]>([{ path: '/', path_type: 'Prefix', rewrite: '/' }]);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -114,9 +117,16 @@ export default function SiteDetail() {
 
   const deleteSite = async () => {
     if (!site) return;
-    if (!confirm(`Delete site "${site.host}"?`)) return;
-    await api.deleteSite(site.host);
-    navigate('/sites');
+    setDeleting(true);
+    try {
+      await api.deleteSite(site.host);
+      navigate('/sites');
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
   };
 
   if (error) {
@@ -131,7 +141,7 @@ export default function SiteDetail() {
     <div>
       <div className="page-actions">
         <Link className="btn btn-ghost" to="/sites">Back</Link>
-        <button className="btn btn-danger" onClick={deleteSite}>Delete</button>
+        <button className="btn btn-danger" onClick={() => setShowDeleteConfirm(true)} disabled={deleting}>Delete</button>
       </div>
 
       <div className="card" style={{ maxWidth: 760, marginBottom: 16 }}>
@@ -244,6 +254,22 @@ export default function SiteDetail() {
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete site permanently?"
+        message={site ? `This will permanently delete "${site.host}" and stop routing traffic for this host.` : ''}
+        primaryLabel="Delete permanently"
+        cancelLabel="Cancel"
+        variant="danger"
+        loading={deleting}
+        onCancel={() => {
+          if (!deleting) setShowDeleteConfirm(false);
+        }}
+        onConfirm={() => {
+          void deleteSite();
+        }}
+      />
     </div>
   );
 }

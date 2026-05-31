@@ -69,13 +69,6 @@ function formatPercent(value: number | null): string {
   return `${value.toFixed(1)}%`;
 }
 
-function upstreamForSite(config: ProxyConfig | null, host: string, backendName: string): string {
-  const site = config?.sites?.find((s) => s.host === host);
-  if (!site) return backendName;
-  const backend = config?.backends?.find((b) => b.name === site.backend);
-  return backend?.upstreams?.[0]?.addr ?? backendName;
-}
-
 export default function Dashboard() {
   const [config, setConfig] = useState<ProxyConfig | null>(() => dashboardCache?.config ?? null);
   const [health, setHealth] = useState<HealthReport | null>(() => dashboardCache?.health ?? null);
@@ -158,7 +151,6 @@ export default function Dashboard() {
     : null;
 
   const pi = management?.process_info;
-  const caps = management?.runtime_capabilities;
   const listeners = Array.isArray(management?.listeners) ? management.listeners : [];
   const memBreakdown = pi?.memory_breakdown_bytes;
   const memBytes =
@@ -471,28 +463,6 @@ export default function Dashboard() {
 
           <div className={`card ${styles.panel}`}>
             <h2 className={styles.panelTitle}>
-              <i className="fas fa-network-wired" aria-hidden /> Public egress (dual-stack)
-            </h2>
-            <div className={styles.ipRow}>
-              <div className={styles.ipBox}>
-                <span className={styles.ipLabel}>IPv4</span>
-                <code className={styles.ipValue}>{management?.public_ipv4 ?? '—'}</code>
-              </div>
-              <div className={styles.ipBox}>
-                <span className={styles.ipLabel}>IPv6</span>
-                <code className={styles.ipValue}>{management?.public_ipv6 ?? '—'}</code>
-              </div>
-            </div>
-            {management?.public_ip_error ? (
-              <p className={styles.ipWarn}>
-                <i className="fas fa-info-circle" aria-hidden /> {management.public_ip_error}
-              </p>
-            ) : null}
-            <p className={styles.panelFoot}>Last fetch: {formatTs(management?.public_ip_fetched_at_ms ?? null)}</p>
-          </div>
-
-          <div className={`card ${styles.panel}`}>
-            <h2 className={styles.panelTitle}>
               <i className="fas fa-plug" aria-hidden /> Listeners & ports
             </h2>
             <div className={styles.tableScroll}>
@@ -532,127 +502,8 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
-            <dl className={styles.kvInline}>
-              <dt>HTTP (display)</dt>
-              <dd className="mono">{management?.http_addr ?? '—'}</dd>
-              <dt>HTTPS</dt>
-              <dd className="mono">{management?.https_addr?.trim() ? management.https_addr : '—'}</dd>
-              <dt>Management</dt>
-              <dd className="mono">{management?.management_addr ?? '—'}</dd>
-              <dt
-                title="ALPN on HTTPS (HTTP/1.1, HTTP/2). HTTP/3 is listed when the H3 API gateway or Cowboy QUIC UDP listener is enabled in config."
-              >
-                HTTP versions
-              </dt>
-              <dd>{(management?.http_versions ?? []).join(', ') || '—'}</dd>
-            </dl>
           </div>
 
-          <div className={`card ${styles.panel}`}>
-            <h2 className={styles.panelTitle}>
-              <i className="fas fa-check-double" aria-hidden /> Runtime capabilities
-            </h2>
-            <div className={styles.capGrid}>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>JIT</span>
-                <span className={caps?.jit ? styles.capOn : styles.capOff}>{caps?.jit ? 'on' : 'off'}</span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>Cowboy QUIC API</span>
-                <span className={caps?.cowboy_quic ? styles.capOn : styles.capOff}>
-                  {caps?.cowboy_quic ? 'available' : 'unavailable'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>quicer app</span>
-                <span className={caps?.quicer_application ? styles.capOn : styles.capOff}>
-                  {caps?.quicer_application ? 'loaded' : 'not loaded'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>H3 API gateway (config)</span>
-                <span className={caps?.h3_api_gateway_config ? styles.capOn : styles.capOff}>
-                  {caps?.h3_api_gateway_config ? 'enabled' : 'disabled'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>HTTPS listener</span>
-                <span className={caps?.tls_listener_configured ? styles.capOn : styles.capOff}>
-                  {caps?.tls_listener_configured ? 'configured' : 'not configured'}
-                </span>
-              </div>
-              <div className={styles.capItem}>
-                <span className={styles.capKey}>UDP HTTP/3 (Cowboy)</span>
-                <span className={caps?.proxy_http3_udp ? styles.capOn : styles.capOff}>
-                  {caps?.proxy_http3_udp ? 'enabled' : 'disabled'}
-                </span>
-              </div>
-              <div className={styles.capItemWide}>
-                <span className={styles.capKey}>BEAM target</span>
-                <code className={styles.capCode}>{caps?.beam ?? '—'}</code>
-              </div>
-            </div>
-          </div>
-
-          {health?.backends && health.backends.length > 0 ? (
-            <div className={`${styles.section} ${styles.healthSection}`}>
-              <div className={styles.sectionTitle}>Backend health</div>
-              <div className={`card ${styles.healthCard}`}>
-                {health.backends.map((b) => (
-                  <div key={b.name} className={styles.backendRow}>
-                    <span className={styles.backendName}>{b.name}</span>
-                    <span className={styles.backendStat}>
-                      {b.healthy}/{b.total} healthy
-                    </span>
-                    <div className={styles.upBar} title={`${b.healthy} healthy of ${b.total}`}>
-                      {Array.from({ length: Math.min(b.total, 24) }).map((_, i) => (
-                        <span
-                          key={i}
-                          className={`${styles.upDot} ${i < b.healthy ? styles.upDotHealthy : styles.upDotUnhealthy}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className={styles.section}>
-            <div className={styles.sectionTitle}>Sites</div>
-            <div className={`card ${styles.sitesCard}`}>
-              {config?.sites?.length === 0 ? (
-                <div className={styles.emptySites}>
-                  No sites configured. <Link to="/sites">Add one →</Link>
-                </div>
-              ) : (
-                <div className={styles.tableScroll}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Host</th>
-                        <th>Upstream</th>
-                        <th>Routes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {config?.sites.map((s) => (
-                        <tr key={s.host}>
-                          <td className="mono" style={{ color: 'var(--color-text)' }}>
-                            {s.host}
-                          </td>
-                          <td>{upstreamForSite(config, s.host, s.backend)}</td>
-                          <td>
-                            <span className="badge badge-purple">{s.routes.length}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
         </>
       )}
     </section>

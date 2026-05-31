@@ -248,28 +248,207 @@ code_change(_OldVsn, State, _Extra) ->
 put_config_proxy(Config, State) ->
     PrevConfig = get_config(),
     T0 = erlang:monotonic_time(millisecond),
-    case persist_runtime_config(Config) of
+    case validate_proxy_tls_site_bindings(Config, PrevConfig) of
         ok ->
-            T1 = erlang:monotonic_time(millisecond),
-            apply_config(Config),
-            T2 = erlang:monotonic_time(millisecond),
-            PersistMs = T1 - T0,
-            ApplyMs = T2 - T1,
-            TotalMs = T2 - T0,
-            case TotalMs > 1000 of
-                true ->
-                    lager:info(
-                        "put_config timing: persist=~wms apply=~wms total=~wms",
-                        [PersistMs, ApplyMs, TotalMs]
-                    );
-                false ->
-                    ok
-            end,
-            maybe_schedule_acme_scan(PrevConfig, Config),
-            {reply, ok, State};
-        {error, R} ->
-            {reply, {error, {persist_runtime_config, R}}, State}
+            case persist_runtime_config(Config) of
+                ok ->
+                    T1 = erlang:monotonic_time(millisecond),
+                    apply_config(Config),
+                    T2 = erlang:monotonic_time(millisecond),
+                    PersistMs = T1 - T0,
+                    ApplyMs = T2 - T1,
+                    TotalMs = T2 - T0,
+                    case TotalMs > 1000 of
+                        true ->
+                            lager:info(
+                                "put_config timing: persist=~wms apply=~wms total=~wms",
+                                [PersistMs, ApplyMs, TotalMs]
+                            );
+                        false ->
+                            ok
+                    end,
+                    maybe_schedule_acme_scan(PrevConfig, Config),
+                    {reply, ok, State};
+                {error, R} ->
+                    {reply, {error, {persist_runtime_config, R}}, State}
+            end;
+        {error, _} = Err ->
+            {reply, Err, State}
     end.
+
+validate_proxy_tls_site_bindings(Config, PrevConfig) when is_map(Config), is_map(PrevConfig) ->
+    Sites = maps:get(sites, Config, []),
+    PrevSites = maps:get(sites, PrevConfig, []),
+    SitesToValidate = sites_requiring_tls_validation(Sites, PrevSites),
+    DbPath = db_file(),
+    case pertisk_eproxy_db:list_certificates(DbPath) of
+        {ok, Rows} ->
+            RowsById = maps:from_list(
+                [{integer_to_binary(maps:get(id, R)), R} || R <- Rows, maps:is_key(id, R)]
+            ),
+            RowsByName = maps:from_list(
+                [
+                    {cert_name_bin(maps:get(name, R, undefined)), R}
+                    || R <- Rows,
+                       cert_name_bin(maps:get(name, R, undefined)) =/= undefined
+                ]
+            ),
+            validate_sites_tls_bindings(SitesToValidate, RowsById, RowsByName);
+        {error, Reason} ->
+            {error, {tls_validation_cert_store_unavailable, Reason}}
+    end;
+validate_proxy_tls_site_bindings(Config, _PrevConfig) when is_map(Config) ->
+    validate_proxy_tls_site_bindings(Config, #{});
+validate_proxy_tls_site_bindings(_, _) ->
+    ok.
+
+sites_requiring_tls_validation(Sites, PrevSites) when is_list(Sites), is_list(PrevSites) ->
+    PrevKeys = maps:from_list(
+        [
+            {Host, Cert}
+            || Site <- PrevSites,
+               is_map(Site),
+               Host <- [site_host_bin(maps:get(host, Site, undefined))],
+               Host =/= undefined,
+               Cert <- [cert_ref_bin(maps:get(certificate, Site, undefined))]
+        ]
+    ),
+    [
+        Site
+        || Site <- Sites,
+           is_map(Site),
+           Host <- [site_host_bin(maps:get(host, Site, undefined))],
+           Host =/= undefined,
+           Cert <- [cert_ref_bin(maps:get(certificate, Site, undefined))],
+           maps:get(Host, PrevKeys, '__missing__') =/= Cert
+    ];
+sites_requiring_tls_validation(_, _) ->
+    [].
+
+validate_sites_tls_bindings([], _RowsById, _RowsByName) ->
+    ok;
+validate_sites_tls_bindings([Site | Rest], RowsById, RowsByName) when is_map(Site) ->
+    HostBin = site_host_bin(maps:get(host, Site, undefined)),
+    CertRef = cert_ref_bin(maps:get(certificate, Site, undefined)),
+    case {HostBin, CertRef} of
+        {undefined, _} ->
+            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+        {_, undefined} ->
+            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+        {_, <<"k8s/", _/binary>>} ->
+            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+        {_, <<"acme/", _/binary>>} ->
+            %% ACME refs are managed asynchronously; do not block config writes/deletes
+            %% on transient host/cert mismatch during issuance or rotation.
+            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+        {Host, Ref} ->
+            case cert_row_for_ref(Ref, RowsById, RowsByName) of
+                {ok, Row} ->
+                    case cert_source_type_bin(maps:get(source_type, Row, undefined)) of
+                        <<"tls_listener">> ->
+                            %% Listener TLS is a global/default certificate and may not match
+                            %% every site host directly; do not block config writes/deletes.
+                            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+                        _ ->
+                            case cert_pem_bin(maps:get(cert_pem, Row, undefined)) of
+                                undefined ->
+                                    case is_acme_ref(Ref) of
+                                        true ->
+                                            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+                                        false ->
+                                            {error, {tls_validation_missing_cert_pem, Host, Ref}}
+                                    end;
+                                CertPem ->
+                                    case cert_matches_host(CertPem, Host) of
+                                        true ->
+                                            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+                                        false ->
+                                            {error, {tls_validation_host_mismatch, Host, Ref}}
+                                    end
+                            end
+                    end;
+                error ->
+                    case is_acme_ref(Ref) of
+                        true ->
+                            validate_sites_tls_bindings(Rest, RowsById, RowsByName);
+                        false ->
+                            {error, {tls_validation_unknown_certificate, Host, Ref}}
+                    end
+            end
+    end;
+validate_sites_tls_bindings([_ | Rest], RowsById, RowsByName) ->
+    validate_sites_tls_bindings(Rest, RowsById, RowsByName).
+
+cert_row_for_ref(Ref, RowsById, RowsByName) ->
+    case maps:get(Ref, RowsById, undefined) of
+        undefined ->
+            case maps:get(Ref, RowsByName, undefined) of
+                undefined -> error;
+                Row2 -> {ok, Row2}
+            end;
+        Row ->
+            {ok, Row}
+    end.
+
+site_host_bin(undefined) -> undefined;
+site_host_bin(null) -> undefined;
+site_host_bin(B) when is_binary(B), B =/= <<>> -> B;
+site_host_bin(L) when is_list(L), L =/= [] -> list_to_binary(L);
+site_host_bin(_) -> undefined.
+
+cert_ref_bin(undefined) -> undefined;
+cert_ref_bin(null) -> undefined;
+cert_ref_bin(B) when is_binary(B), B =/= <<>> -> B;
+cert_ref_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+cert_ref_bin(I) when is_integer(I) -> integer_to_binary(I);
+cert_ref_bin(_) -> undefined.
+
+cert_name_bin(undefined) -> undefined;
+cert_name_bin(null) -> undefined;
+cert_name_bin(B) when is_binary(B), B =/= <<>> -> B;
+cert_name_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+cert_name_bin(_) -> undefined.
+
+cert_pem_bin(undefined) -> undefined;
+cert_pem_bin(null) -> undefined;
+cert_pem_bin(B) when is_binary(B), B =/= <<>> -> B;
+cert_pem_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+cert_pem_bin(_) -> undefined.
+
+cert_source_type_bin(undefined) -> undefined;
+cert_source_type_bin(null) -> undefined;
+cert_source_type_bin(B) when is_binary(B), B =/= <<>> -> B;
+cert_source_type_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+cert_source_type_bin(_) -> undefined.
+
+is_acme_ref(<<"acme/", _/binary>>) -> true;
+is_acme_ref(_) -> false.
+
+cert_matches_host(CertPem, Host) ->
+    try
+        CheckHost = cert_check_host(Host),
+        case {CheckHost, public_key:pem_decode(CertPem)} of
+            {undefined, _} ->
+                false;
+            {_, []} ->
+                false;
+            {HostName, [{'Certificate', Der, not_encrypted} | _]} ->
+                Cert = public_key:pkix_decode_cert(Der, otp),
+                public_key:pkix_verify_hostname(Cert, [{dns_id, HostName}]);
+            _ ->
+                false
+        end
+    catch
+        _:_ -> false
+    end.
+
+%% For wildcard site hosts (*.example.com), verify coverage using one concrete label.
+cert_check_host(<<"*.", Rest/binary>>) when Rest =/= <<>> ->
+    <<"probe.", Rest/binary>>;
+cert_check_host(Host) when is_binary(Host), Host =/= <<>> ->
+    Host;
+cert_check_host(_) ->
+    undefined.
 
 maybe_schedule_acme_scan(PrevConfig, NextConfig) ->
     case acme_scan_relevant_changed(PrevConfig, NextConfig) of
@@ -451,7 +630,13 @@ load_dns_providers_from_db(DbPath) ->
 load_certificate_names_from_db(DbPath) ->
     case pertisk_eproxy_db:list_certificates(DbPath) of
         {ok, Certs} ->
-            [maps:get(name, C) || C <- Certs, maps:is_key(name, C)];
+            [
+                Name
+                || C <- Certs,
+                   maps:is_key(name, C),
+                   Name <- [maps:get(name, C)],
+                   is_valid_certificate_name(Name)
+            ];
         _ ->
             []
     end.
@@ -508,7 +693,7 @@ json_as_list(_) -> [].
 json_to_config(Json) ->
     Sites    = parse_sites(maps:get(<<"sites">>,    Json, undefined)),
     Backends = parse_backends(maps:get(<<"backends">>, Json, undefined)),
-    Certificates = parse_string_list(maps:get(<<"certificates">>, Json, undefined)),
+    Certificates = parse_certificate_name_list(maps:get(<<"certificates">>, Json, undefined)),
     DnsProviders  = parse_dns_providers(maps:get(<<"dns_providers">>, Json, undefined)),
     Config = #{
         mode            => parse_mode(maps:get(<<"mode">>, Json, <<"proxy">>)),
@@ -612,6 +797,34 @@ parse_backends(In) ->
 
 parse_string_list(In) ->
     [Str || V <- json_as_list(In), Str <- [parse_opt_str(V)], Str =/= undefined].
+
+parse_certificate_name_list(In) ->
+    [
+        Str
+        || V <- json_as_list(In),
+           Str <- [parse_opt_str(V)],
+           Str =/= undefined,
+           is_valid_certificate_name(Str)
+    ].
+
+is_valid_certificate_name(undefined) -> false;
+is_valid_certificate_name(<<>>) -> false;
+is_valid_certificate_name(Bin) when is_binary(Bin) ->
+    case trim_bin(Bin) of
+        <<>> -> false;
+        T -> not is_digits_only_bin(T)
+    end;
+is_valid_certificate_name(List) when is_list(List) ->
+    is_valid_certificate_name(unicode:characters_to_binary(List, utf8));
+is_valid_certificate_name(_) -> false.
+
+trim_bin(Bin) when is_binary(Bin) ->
+    unicode:characters_to_binary(string:trim(binary_to_list(Bin)), utf8).
+
+is_digits_only_bin(Bin) when is_binary(Bin), Bin =/= <<>> ->
+    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary:bin_to_list(Bin));
+is_digits_only_bin(_) ->
+    false.
 
 %% DNS providers: JSON array of strings (legacy) or objects
 %% #{<<"name">>, <<"provider_type">>, <<"credentials">>}.

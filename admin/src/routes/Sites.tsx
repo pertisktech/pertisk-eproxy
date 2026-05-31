@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import {
   api,
   type ProxyConfig,
+  type HealthReport,
   type Site,
   type PathRewrite,
   type Backend,
@@ -33,6 +34,7 @@ const EMPTY_BACKENDS: Backend[] = [];
 type SitesCache = {
   config: ProxyConfig | null;
   issuedTlsCerts: CertificateRow[];
+  health: HealthReport | null;
 };
 
 let sitesCache: SitesCache | null = null;
@@ -144,6 +146,7 @@ type ChallengeType = 'http-01' | 'dns-01';
 export default function Sites() {
   const { jobsByHost, lastPush } = useSslJobs();
   const [config, setConfig] = useState<ProxyConfig | null>(() => sitesCache?.config ?? null);
+  const [health, setHealth] = useState<HealthReport | null>(() => sitesCache?.health ?? null);
   const [loading, setLoading] = useState(() => sitesCache == null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -328,6 +331,37 @@ export default function Sites() {
     : displaySiteItems;
 
   const pagedSiteItems = sortedSiteItems.slice(startIndex, endIndexExclusive);
+  const backendHealthByName = useMemo(() => {
+    const map = new Map<string, { healthy: number; total: number }>();
+    for (const row of health?.backends ?? []) {
+      map.set(row.name, { healthy: row.healthy, total: row.total });
+    }
+    return map;
+  }, [health?.backends]);
+
+  function healthRowsForItem(item: DisplaySiteItem): Array<{ backend: string; healthy: number; total: number }>{
+    const names = backendsForItem(item);
+    return names.map((name) => {
+      const row = backendHealthByName.get(name);
+      return {
+        backend: name,
+        healthy: row?.healthy ?? 0,
+        total: row?.total ?? 0,
+      };
+    });
+  }
+
+  function healthToneClass(healthy: number, total: number): string {
+    if (total <= 0) return styles.healthPillUnknown;
+    if (healthy >= total) return styles.healthPillHealthy;
+    if (healthy <= 0) return styles.healthPillUnhealthy;
+    return styles.healthPillPartial;
+  }
+
+  function healthLabel(healthy: number, total: number): string {
+    if (total <= 0) return 'unknown';
+    return `${healthy}/${total} healthy`;
+  }
 
   function updateViewMode(next: 'card' | 'list') {
     setViewMode(next);
@@ -341,16 +375,19 @@ export default function Sites() {
     }
     setError(null);
     try {
-      const [nextConfig, certList] = await Promise.all([
+      const [nextConfig, certList, nextHealth] = await Promise.all([
         api.config(),
         api.certificates.list().catch(() => [] as CertificateRow[]),
+        api.health().catch(() => null as HealthReport | null),
       ]);
       const certs = Array.isArray(certList) ? certList : [];
       setConfig(nextConfig);
       setIssuedTlsCerts(certs);
+      setHealth(nextHealth);
       sitesCache = {
         config: nextConfig,
         issuedTlsCerts: certs,
+        health: nextHealth,
       };
       return nextConfig;
     } catch (e) {
@@ -358,6 +395,7 @@ export default function Sites() {
       if (sitesCache == null) {
         setConfig(null);
         setIssuedTlsCerts([]);
+        setHealth(null);
       }
       return null;
     } finally {
@@ -409,8 +447,14 @@ export default function Sites() {
     async function refreshConfig() {
       if (document.visibilityState !== 'visible') return;
       try {
-        const next = await api.config();
-        if (!cancelled) setConfig(next);
+        const [nextConfig, nextHealth] = await Promise.all([
+          api.config(),
+          api.health().catch(() => null as HealthReport | null),
+        ]);
+        if (!cancelled) {
+          setConfig(nextConfig);
+          setHealth(nextHealth);
+        }
       } catch {
         /* keep existing */
       }
@@ -1079,6 +1123,7 @@ export default function Sites() {
                 const hostPrimary = hosts[0] ?? site.host;
                 const upstreams = upstreamsForItem(item);
                 const backends = backendsForItem(item);
+                const healthRows = healthRowsForItem(item);
                 const routes = routesForItem(item);
                 const ssl = sslLabelForSite(site);
                 return (
@@ -1137,6 +1182,20 @@ export default function Sites() {
                             ))}
                           </div>
                         )}
+                      </div>
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Health</span>
+                        <div className={styles.routes}>
+                          {healthRows.map((row) => (
+                            <span
+                              key={`${item.key}-health-${row.backend}`}
+                              className={`${styles.healthPill} ${healthToneClass(row.healthy, row.total)}`}
+                              title={`${row.backend}: ${healthLabel(row.healthy, row.total)}`}
+                            >
+                              {row.backend}: {healthLabel(row.healthy, row.total)}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                       <div className={styles.siteCardMeta}>
                         <span className={styles.metaLabel}>Routes</span>
@@ -1262,6 +1321,7 @@ export default function Sites() {
                         Certificate {sortIcon('ssl')}
                       </button>
                     </th>
+                    <th>Health</th>
                     <th className={styles.actionsCol}>Actions</th>
                   </tr>
                 </thead>
@@ -1272,6 +1332,7 @@ export default function Sites() {
                     const hostPrimary = hosts[0] ?? site.host;
                     const upstreams = upstreamsForItem(item);
                     const backends = backendsForItem(item);
+                    const healthRows = healthRowsForItem(item);
                     const routes = routesForItem(item);
                     const ssl = sslLabelForSite(site);
                     const sslLive = jobsByHost[hostPrimary];
@@ -1343,6 +1404,19 @@ export default function Sites() {
                                 {formatAcmeSslPhase(sslLive.phase)}
                               </span>
                             ) : null}
+                          </div>
+                        </td>
+                        <td>
+                          <div className={styles.routeListModern}>
+                            {healthRows.map((row) => (
+                              <span
+                                key={`${item.key}-health-cell-${row.backend}`}
+                                className={`${styles.healthPill} ${healthToneClass(row.healthy, row.total)}`}
+                                title={`${row.backend}: ${healthLabel(row.healthy, row.total)}`}
+                              >
+                                {row.healthy}/{row.total}
+                              </span>
+                            ))}
                           </div>
                         </td>
                         <td className={styles.actionsCell}>
@@ -1984,13 +2058,13 @@ export default function Sites() {
 
       <ConfirmDialog
         open={deleteConfirmIngress !== null}
-        title="Delete Ingress?"
+        title="Delete Ingress permanently?"
         message={
           deleteConfirmIngress
-            ? `Delete Ingress "${deleteConfirmIngress.name}" in namespace "${deleteConfirmIngress.namespace}"? This cannot be undone.`
+            ? `This will permanently remove Ingress "${deleteConfirmIngress.name}" in namespace "${deleteConfirmIngress.namespace}". Traffic to this host may stop immediately.`
             : 'Delete this Ingress?'
         }
-        primaryLabel="Delete"
+        primaryLabel="Delete permanently"
         cancelLabel="Cancel"
         variant="danger"
         loading={ingressSaving}
@@ -2000,13 +2074,13 @@ export default function Sites() {
 
       <ConfirmDialog
         open={deleteConfirmIndex !== null}
-        title="Delete site"
+        title="Delete site permanently?"
         message={
           deleteConfirmIndex !== null && sites[deleteConfirmIndex]
-            ? `Remove ${sites[deleteConfirmIndex].host} from configuration?`
+            ? `This will permanently remove "${sites[deleteConfirmIndex].host}" from proxy configuration. Incoming requests for this host will no longer route.`
             : ''
         }
-        primaryLabel="Delete"
+        primaryLabel="Delete permanently"
         variant="danger"
         onCancel={() => setDeleteConfirmIndex(null)}
         onConfirm={() => {

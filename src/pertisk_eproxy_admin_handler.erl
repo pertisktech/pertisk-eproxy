@@ -625,8 +625,12 @@ handle(<<"POST">>, sites, Req) ->
         Sites   = maps:get(sites, Config, []),
         NewSite = parse_site(Body),
         NewConfig = Config#{sites => Sites ++ [NewSite]},
-        ok = pertisk_eproxy_config:put_config(NewConfig),
-        json_reply(201, site_to_json(NewSite), Req2)
+        case pertisk_eproxy_config:put_config(NewConfig) of
+            ok ->
+                json_reply(201, site_to_json(NewSite), Req2);
+            {error, R} ->
+                error_reply(400, R, Req2)
+        end
     end);
 
 handle(<<"GET">>, site, Req) ->
@@ -646,8 +650,12 @@ handle(<<"PUT">>, site, Req) ->
         ExistingSite = find_site_by_host(HostParam, Sites),
         NewSite = preserve_site_tls_fields(Body, ParsedSite, ExistingSite),
         NewSites = [S || S = #{host := H} <- Sites, H =/= HostParam, H =/= maps:get(host, NewSite)],
-        ok = pertisk_eproxy_config:put_config(Config#{sites => NewSites ++ [NewSite]}),
-        json_reply(200, site_to_json(NewSite), Req2)
+        case pertisk_eproxy_config:put_config(Config#{sites => NewSites ++ [NewSite]}) of
+            ok ->
+                json_reply(200, site_to_json(NewSite), Req2);
+            {error, R} ->
+                error_reply(400, R, Req2)
+        end
     end);
 
 handle(<<"DELETE">>, site, Req) ->
@@ -655,8 +663,12 @@ handle(<<"DELETE">>, site, Req) ->
     Config    = pertisk_eproxy_config:get_config(),
     Sites     = maps:get(sites, Config, []),
     NewSites  = [S || S = #{host := H} <- Sites, H =/= HostParam],
-    ok = pertisk_eproxy_config:put_config(Config#{sites => NewSites}),
-    json_reply(200, #{status => <<"deleted">>}, Req);
+    case pertisk_eproxy_config:put_config(Config#{sites => NewSites}) of
+        ok ->
+            json_reply(200, #{status => <<"deleted">>}, Req);
+        {error, R} ->
+            error_reply(400, R, Req)
+    end;
 
 handle(<<"GET">>, backends, Req) ->
     Backends = pertisk_eproxy_config:get_backends(),
@@ -668,8 +680,12 @@ handle(<<"POST">>, backends, Req) ->
         Backends = maps:get(backends, Config, []),
         NewBe    = parse_backend(Body),
         NewConfig = Config#{backends => Backends ++ [NewBe]},
-        ok = pertisk_eproxy_config:put_config(NewConfig),
-        json_reply(201, backend_to_json(NewBe), Req2)
+        case pertisk_eproxy_config:put_config(NewConfig) of
+            ok ->
+                json_reply(201, backend_to_json(NewBe), Req2);
+            {error, R} ->
+                error_reply(400, R, Req2)
+        end
     end);
 
 handle(<<"GET">>, backend, Req) ->
@@ -684,9 +700,13 @@ handle(<<"DELETE">>, backend, Req) ->
     Config   = pertisk_eproxy_config:get_config(),
     Backends = maps:get(backends, Config, []),
     NewBes   = [B || B = #{name := N} <- Backends, N =/= Name],
-    ok = pertisk_eproxy_config:put_config(Config#{backends => NewBes}),
-    pertisk_eproxy_backend_sup:stop_backend(Name),
-    json_reply(200, #{status => <<"deleted">>}, Req);
+    case pertisk_eproxy_config:put_config(Config#{backends => NewBes}) of
+        ok ->
+            pertisk_eproxy_backend_sup:stop_backend(Name),
+            json_reply(200, #{status => <<"deleted">>}, Req);
+        {error, R} ->
+            error_reply(400, R, Req)
+    end;
 
 handle(<<"GET">>, health, Req) ->
     Backends = pertisk_eproxy_config:get_backends(),
@@ -1802,7 +1822,11 @@ sites_for_cert(Sites, IdBin, NameBin) ->
     [json_text(maps:get(host, S)) || S <- Sites, cert_ref_matches(maps:get(certificate, S, undefined), IdBin, NameBin)].
 
 cert_ref_matches(CertRef, IdBin, NameBin) ->
-    cert_field_matches(CertRef, IdBin) orelse cert_field_matches(CertRef, NameBin).
+    cert_field_matches(CertRef, IdBin) orelse
+        case is_numeric_bin(NameBin) of
+            true -> false;
+            false -> cert_field_matches(CertRef, NameBin)
+        end.
 
 cert_field_matches(undefined, _) -> false;
 cert_field_matches(null, _) -> false;
@@ -1812,10 +1836,15 @@ cert_field_matches(C, N) when is_list(C), is_list(N) -> C =:= N;
 cert_field_matches(C, N) when is_binary(C), is_list(N) -> C =:= iolist_to_binary(N);
 cert_field_matches(_, _) -> false.
 
+is_numeric_bin(Bin) when is_binary(Bin), Bin =/= <<>> ->
+    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary:bin_to_list(Bin));
+is_numeric_bin(_) ->
+    false.
+
 certificate_name_by_id(Id) ->
     case pertisk_eproxy_db:list_certificates(db_file_path()) of
         {ok, Certs} ->
-            case lists:search(fun(#{id := RowId}) -> RowId =:= Id end, Certs) of
+            case lists:search(fun(#{id := RowId}) -> cert_id_equals(RowId, Id) end, Certs) of
                 {value, #{name := Name}} -> {ok, json_text(Name)};
                 false -> {error, not_found}
             end;
@@ -1843,12 +1872,26 @@ certificate_id_by_name(NameBin) ->
     case pertisk_eproxy_db:list_certificates(db_file_path()) of
         {ok, Certs} ->
             case lists:search(fun(#{name := N}) -> json_text(N) =:= NameBin end, Certs) of
-                {value, #{id := Id}} -> {ok, Id};
+                {value, #{id := Id}} -> {ok, cert_id_to_int(Id)};
                 false -> {error, not_found}
             end;
         {error, Reason} ->
             {error, Reason}
     end.
+
+cert_id_equals(RowId, Id) when is_integer(Id) ->
+    cert_id_to_int(RowId) =:= Id;
+cert_id_equals(RowId, Id) ->
+    cert_id_to_int(RowId) =:= cert_id_to_int(Id).
+
+cert_id_to_int(I) when is_integer(I) ->
+    I;
+cert_id_to_int(B) when is_binary(B), B =/= <<>> ->
+    try binary_to_integer(B) catch _:_ -> -1 end;
+cert_id_to_int(L) when is_list(L), L =/= [] ->
+    try list_to_integer(L) catch _:_ -> -1 end;
+cert_id_to_int(_) ->
+    -1.
 
 imported_cert_name(CertPath0) ->
     CertPath =

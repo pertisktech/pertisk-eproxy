@@ -47,17 +47,28 @@ export default function ConfirmDialog({
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
       aria-describedby="confirm-dialog-desc"
+      onClick={onCancel}
     >
       <div
         className={styles.panel}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="confirm-dialog-title" className={styles.title}>
-          {title}
-        </h2>
-        <p id="confirm-dialog-desc" className={styles.message}>
-          {message}
-        </p>
+        <div className={styles.header}>
+          <span
+            className={variant === 'danger' ? styles.iconDanger : styles.iconDefault}
+            aria-hidden
+          >
+            <FaIcon className={variant === 'danger' ? 'fas fa-triangle-exclamation' : 'fas fa-circle-info'} />
+          </span>
+          <div className={styles.headerText}>
+            <h2 id="confirm-dialog-title" className={styles.title}>
+              {title}
+            </h2>
+            <p id="confirm-dialog-desc" className={styles.message}>
+              {message}
+            </p>
+          </div>
+        </div>
         <div className={styles.actions}>
           <button
             type="button"
@@ -78,7 +89,10 @@ export default function ConfirmDialog({
                 <FaIcon className="fas fa-spinner fa-spin" aria-hidden /> …
               </>
             ) : (
-              primaryLabel
+              <>
+                {variant === 'danger' ? <FaIcon className="fas fa-trash" aria-hidden /> : null}
+                {primaryLabel}
+              </>
             )}
           </button>
         </div>

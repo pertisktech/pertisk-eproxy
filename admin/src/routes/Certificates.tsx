@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, ChangeEvent, useMemo } from 'react';
 import { api, type CertificateRow } from '@/api/client';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { useToast } from '@/context/ToastContext';
 import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import styles from './Certificates.module.css';
@@ -47,6 +48,8 @@ export default function Certificates() {
   const [labelValue, setLabelValue] = useState('');
   const [labelError, setLabelError] = useState<string | null>(null);
   const [labelSaving, setLabelSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ type: 'cert'; row: CertificateRow } | { type: 'listener' } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback((opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
@@ -150,24 +153,30 @@ export default function Certificates() {
   }
 
   async function deleteLabel(row: CertificateRow) {
-    if (!confirm(`Delete certificate "${row.id}"?`)) return;
+    setDeleting(true);
     try {
       await api.certificates.deleteLabel(row.id);
       toast.success('Certificate deleted.');
+      setDeleteTarget(null);
       await load();
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to delete label');
+    } finally {
+      setDeleting(false);
     }
   }
 
   async function deleteListenerTls() {
-    if (!confirm('Delete listener TLS from config?')) return;
+    setDeleting(true);
     try {
       await api.certificates.deleteListenerTls();
       toast.success('Listener TLS removed from config.');
+      setDeleteTarget(null);
       await load();
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to delete listener TLS');
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -342,7 +351,11 @@ export default function Certificates() {
                         <button
                           type="button"
                           className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
-                          onClick={() => (row.source_type === 'tls_listener' ? void deleteListenerTls() : void deleteLabel(row))}
+                          onClick={() =>
+                            setDeleteTarget(
+                              row.source_type === 'tls_listener' ? { type: 'listener' } : { type: 'cert', row },
+                            )
+                          }
                           title="Delete"
                           aria-label={`Delete certificate ${row.id}`}
                         >
@@ -442,6 +455,32 @@ export default function Certificates() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={deleteTarget?.type === 'listener' ? 'Delete listener TLS permanently?' : 'Delete certificate permanently?'}
+        message={
+          deleteTarget?.type === 'listener'
+            ? 'This will permanently remove listener TLS from config. HTTPS listener traffic may stop until TLS is configured again.'
+            : deleteTarget?.type === 'cert'
+              ? `This will permanently delete certificate "${deleteTarget.row.id}".`
+              : ''
+        }
+        primaryLabel="Delete permanently"
+        cancelLabel="Cancel"
+        variant="danger"
+        loading={deleting}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+        onConfirm={() => {
+          if (deleteTarget?.type === 'listener') {
+            void deleteListenerTls();
+          } else if (deleteTarget?.type === 'cert') {
+            void deleteLabel(deleteTarget.row);
+          }
+        }}
+      />
     </section>
   );
 }

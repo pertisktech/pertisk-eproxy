@@ -869,15 +869,21 @@ delete_certificate(DbPath, Id) ->
 ensure_certificates_seeded(DbPath, Names) ->
     case ensure_certificates_table(DbPath) of
         ok ->
+            _ = cleanup_placeholder_certificate_rows(DbPath),
             lists:foreach(
                 fun(N0) ->
                     N = string:trim(to_list(N0)),
                     case N of
                         [] -> ok;
                         _ ->
-                            SQL = "INSERT OR IGNORE INTO certificates(name) VALUES('" ++ sql_escape(N) ++ "')",
-                            _ = sqlite_exec(DbPath, SQL),
-                            ok
+                            case is_seedable_certificate_name(N) of
+                                true ->
+                                    SQL = "INSERT OR IGNORE INTO certificates(name) VALUES('" ++ sql_escape(N) ++ "')",
+                                    _ = sqlite_exec(DbPath, SQL),
+                                    ok;
+                                false ->
+                                    ok
+                            end
                     end
                 end,
                 Names
@@ -886,6 +892,22 @@ ensure_certificates_seeded(DbPath, Names) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+cleanup_placeholder_certificate_rows(DbPath) ->
+    %% Legacy bug could seed numeric site cert refs (e.g. "1", "2") as ACME rows.
+    %% Remove only rows that are numeric names with no PEM material.
+    Sql =
+        "DELETE FROM certificates " ++
+        "WHERE source_type = 'acme' " ++
+        "AND (cert_pem IS NULL OR trim(cert_pem) = '') " ++
+        "AND trim(name) GLOB '[0-9]*' " ++
+        "AND trim(name) NOT GLOB '*[^0-9]*'",
+    sqlite_exec(DbPath, Sql).
+
+is_seedable_certificate_name(Name) when is_list(Name), Name =/= [] ->
+    not lists:all(fun(C) -> C >= $0 andalso C =< $9 end, Name);
+is_seedable_certificate_name(_) ->
+    false.
 
 -spec list_dns_providers(string()) -> {ok, [map()]} | {error, term()}.
 list_dns_providers(DbPath) ->
