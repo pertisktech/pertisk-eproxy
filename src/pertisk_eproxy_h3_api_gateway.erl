@@ -1162,10 +1162,10 @@ start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
             Ok;
         {error, Reason} ->
             _ = lager:warning(
-                "HTTP/3 dual-stack udp/[::]:~w failed (~p); falling back to IPv4-only UDP",
+                "HTTP/3 dual-stack udp/[::]:~w failed (~p); falling back to split v4/v6 UDP",
                 [Port, Reason]
             ),
-            start_single_udp_listener(ServerName, Port, BaseOpts)
+            start_linux_split_udp(ServerName, Port, BaseOpts)
     end.
 
 %% Non-Linux Unix: 0.0.0.0 + [::] via gen_udp (OTP socket inet6 bind is einval on macOS).
