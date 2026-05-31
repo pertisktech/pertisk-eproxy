@@ -22,11 +22,11 @@ reconcile_now() ->
 
 init([]) ->
     pertisk_ingress_status:init(),
+    erlang:send_after(pertisk_ingress_env:reconcile_interval_ms(), self(), periodic_reconcile),
     case pertisk_ingress_ekub:init() of
         {ok, Conn} ->
             self() ! reconcile_now,
             self() ! start_watch,
-            erlang:send_after(pertisk_ingress_env:reconcile_interval_ms(), self(), periodic_reconcile),
             {ok, #{
                 conn => Conn,
                 ingress_ref => undefined,
@@ -111,7 +111,12 @@ terminate(_Reason, _State) ->
     ok.
 
 maybe_reconcile(State = #{conn := undefined}) ->
-    State;
+    case maybe_connect(State) of
+        {ok, NewState} ->
+            maybe_reconcile(NewState);
+        {error, NewState} ->
+            NewState
+    end;
 maybe_reconcile(State = #{conn := Conn}) ->
     %% Every replica lists Ingress/Secrets and applies config (read-only K8s API).
     %% Leader election only coordinates lease writes, not config fan-out.
@@ -121,6 +126,19 @@ maybe_reconcile(State = #{conn := Conn}) ->
         {error, Err} ->
             lager:warning("Ingress reconcile failed: ~p", [Err]),
             State
+    end.
+
+maybe_connect(State) ->
+    case pertisk_ingress_ekub:init() of
+        {ok, Conn} ->
+            lager:info("Ingress watcher: ekub reconnected"),
+            pertisk_ingress_status:set_watcher_state(disconnected),
+            self() ! start_watch,
+            {ok, State#{conn => Conn, error => undefined}};
+        {error, Reason} ->
+            lager:warning("Ingress watcher: ekub reconnect failed: ~p", [Reason]),
+            pertisk_ingress_status:set_watcher_state(error),
+            {error, State#{error => Reason}}
     end.
 
 full_reconcile(Conn) ->
