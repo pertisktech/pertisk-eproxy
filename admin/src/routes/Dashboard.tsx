@@ -322,14 +322,16 @@ export default function Dashboard() {
                       </div>
                     )}
                   </dd>
-                  <dt>Lego DNS CLI</dt>
-                  <dd className="mono">
-                    {health?.acme?.lego_required === false
-                      ? 'Not required'
-                      : health?.acme?.lego_installed
-                        ? `Installed${health?.acme?.lego_path ? ` (${health.acme.lego_path})` : ''}`
-                        : 'Not installed'}
-                  </dd>
+                  {health?.acme?.lego_required === false ? null : (
+                    <>
+                      <dt>Lego DNS CLI</dt>
+                      <dd className="mono">
+                        {health?.acme?.lego_installed
+                          ? `Installed${health?.acme?.lego_path ? ` (${health.acme.lego_path})` : ''}`
+                          : 'Not installed'}
+                      </dd>
+                    </>
+                  )}
                 </dl>
               </div>
             </div>

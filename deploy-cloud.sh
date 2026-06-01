@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.4.53}"
+VERSION="${VERSION:-0.4.56}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-pertisk/pertisk-eproxy}"
@@ -13,8 +13,6 @@ echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
 # Build and push the ingress image, then deploy/update the Kubernetes release.
 make docker-ingress-multi VERSION="$VERSION"
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
-  --wait \
-  --timeout "$HELM_TIMEOUT" \
   --set image.tag="$VERSION" \
   --set image.pullPolicy=Always \
   --set-string 'service.annotations.pertisk\.tech/floating-ip-enabled=true' \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.4.53}"
+VERSION="${VERSION:-0.4.56}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"

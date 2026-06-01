@@ -399,7 +399,7 @@ do_proxy(
                             ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
                             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
                             CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
-                            Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
+                            Req2 = reply_upstream_fin(Method, Status, with_tracking_id_header(TrackingId, CowboyHeaders), Req1),
                             {ok, Status, Req2};
                         {error, Reason} ->
                             {error, Reason}
@@ -510,6 +510,13 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Trac
         Req1
     ),
     proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
+
+reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
+    cowboy_req:stream_reply(Status, Headers, Req);
+reply_upstream_fin(<<"head">>, Status, Headers, Req) ->
+    cowboy_req:stream_reply(Status, Headers, Req);
+reply_upstream_fin(_Method, Status, Headers, Req) ->
+    cowboy_req:reply(Status, Headers, <<>>, Req).
 
 proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
     case gun:await(ConnPid, StreamRef, infinity) of
