@@ -274,10 +274,11 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
 should_use_ephemeral_connection(grpc, _UpHost, _UpPort, _Transport) ->
     false;
 should_use_ephemeral_connection(_ReqKind, UpHost, UpPort, _Transport) ->
-    %% Kube API traffic on loopback:8100 proved sensitive to pooled socket churn
-    %% under bursty load; use fresh connections only for this upstream.
-    (is_loopback_host(UpHost) andalso UpPort =:= 8100)
-        orelse UpPort =:= 8006.
+    %% Loopback HTTP upstreams are sensitive to stale pooled sockets and can
+    %% fall into the 15s loopback timeout path before Gun retries kick in.
+    %% Use a fresh connection for any non-gRPC loopback request, while keeping
+    %% gRPC on the shared pool for stream reuse.
+    is_loopback_host(UpHost).
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
