@@ -217,6 +217,7 @@ export interface HealthReport {
   acme?: {
     lego_installed?: boolean;
     lego_path?: string | null;
+    lego_required?: boolean;
   };
   tls_sites?: Array<{
     host: string;

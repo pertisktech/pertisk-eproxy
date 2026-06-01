@@ -934,12 +934,49 @@ format_validate_error(Reason) ->
     iolist_to_binary(io_lib:format("~p", [Reason])).
 
 lego_health_snapshot() ->
-    case os:find_executable("lego") of
+    LegoRequired = lego_required_for_configured_providers(),
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
         false ->
-            #{lego_installed => false, lego_path => null};
+            #{lego_installed => false, lego_path => null, lego_required => LegoRequired};
         Path ->
-            #{lego_installed => true, lego_path => iolist_to_binary(Path)}
+            #{lego_installed => true, lego_path => iolist_to_binary(Path), lego_required => LegoRequired}
     end.
+
+lego_required_for_configured_providers() ->
+    case pertisk_eproxy_db:list_dns_providers(db_file_path()) of
+        {ok, Rows} ->
+            lists:any(fun provider_row_requires_lego/1, Rows);
+        {error, _} ->
+            true
+    end.
+
+provider_row_requires_lego(Row) when is_map(Row) ->
+    case provider_type_to_bin(maps:get(provider_type, Row, <<>>)) of
+        <<"route53">> -> true;
+        <<"godaddy">> -> true;
+        <<"namecheap">> -> true;
+        <<"ovh">> -> true;
+        <<"googleclouddns">> -> true;
+        <<"azure">> -> true;
+        <<"rfc2136">> -> true;
+        <<"cloudns">> -> true;
+        <<"easydns">> -> true;
+        <<"dnsmadeeasy">> -> true;
+        <<"dynu">> -> true;
+        <<"customlego">> -> true;
+        _ -> false
+    end;
+provider_row_requires_lego(_) ->
+    false.
+
+provider_type_to_bin(V) when is_binary(V) ->
+    unicode:characters_to_binary(string:lowercase(unicode:characters_to_list(V)), utf8);
+provider_type_to_bin(V) when is_list(V) ->
+    unicode:characters_to_binary(string:lowercase(V), utf8);
+provider_type_to_bin(V) when is_atom(V) ->
+    unicode:characters_to_binary(string:lowercase(atom_to_list(V)), utf8);
+provider_type_to_bin(_) ->
+    <<>>.
 
 not_found_reply(Req) ->
     json_reply(404, #{error => <<"not found">>}, Req).

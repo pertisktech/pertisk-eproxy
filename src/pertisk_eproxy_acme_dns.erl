@@ -135,7 +135,7 @@ site_dns_provider_bin(Site) when is_map(Site) ->
     end.
 
 maybe_warn_lego_missing(DbPath, Sites) ->
-    case os:find_executable("lego") of
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
         false ->
             case pending_lego_hosts(DbPath, Sites) of
                 [] ->

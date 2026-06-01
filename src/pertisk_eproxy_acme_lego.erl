@@ -1,11 +1,11 @@
 %% @doc Generic Lego-based ACME DNS issuance fallback for providers not yet natively implemented.
 -module(pertisk_eproxy_acme_lego).
 
--export([obtain_certificate/8, validate_provider/3, provider_to_binary/1]).
+-export([obtain_certificate/8, validate_provider/3, provider_to_binary/1, find_lego_executable/0]).
 
 -spec validate_provider(atom() | binary(), map(), string()) -> {ok, map()} | {error, term()}.
 validate_provider(Provider, Creds, WorkRoot) when is_map(Creds), is_list(WorkRoot) ->
-    case os:find_executable("lego") of
+    case find_lego_executable() of
         false ->
             {error, lego_not_found};
         LegoBin ->
@@ -31,7 +31,7 @@ validate_provider(Provider, Creds, WorkRoot) when is_map(Creds), is_list(WorkRoo
 ) -> {ok, binary(), binary()} | {error, term()}.
 obtain_certificate(Provider, Creds, Identifiers, ContactEmail, DirectoryUrl, AcmeDataDir, HostSlug, Progress)
 when is_map(Creds), is_list(Identifiers), is_binary(ContactEmail), is_binary(DirectoryUrl), is_list(AcmeDataDir), is_binary(HostSlug) ->
-    case os:find_executable("lego") of
+    case find_lego_executable() of
         false ->
             {error, lego_not_found};
         LegoBin ->
@@ -74,6 +74,44 @@ provider_to_binary(Provider) when is_atom(Provider) -> atom_to_binary(Provider, 
 provider_to_binary(Provider) when is_binary(Provider) -> Provider;
 provider_to_binary(Provider) when is_list(Provider) -> unicode:characters_to_binary(Provider, utf8);
 provider_to_binary(Provider) -> unicode:characters_to_binary(io_lib:format("~p", [Provider]), utf8).
+
+find_lego_executable() ->
+    case os:getenv("PERTISK_LEGO_BIN") of
+        false ->
+            find_lego_from_path_or_defaults();
+        "" ->
+            find_lego_from_path_or_defaults();
+        Path when is_list(Path) ->
+            Trimmed = string:trim(Path),
+            case Trimmed of
+                "" -> find_lego_from_path_or_defaults();
+                _ ->
+                    case filelib:is_file(Trimmed) of
+                        true -> Trimmed;
+                        false -> find_lego_from_path_or_defaults()
+                    end
+            end
+    end.
+
+find_lego_from_path_or_defaults() ->
+    case os:find_executable("lego") of
+        false ->
+            first_existing([
+                "/opt/pertisk-eproxy/bin/lego",
+                "/usr/local/bin/lego",
+                "/usr/bin/lego"
+            ]);
+        Path ->
+            Path
+    end.
+
+first_existing([Path | Rest]) ->
+    case filelib:is_file(Path) of
+        true -> Path;
+        false -> first_existing(Rest)
+    end;
+first_existing([]) ->
+    false.
 
 lego_provider_name(route53) -> "route53";
 lego_provider_name(godaddy) -> "godaddy";
