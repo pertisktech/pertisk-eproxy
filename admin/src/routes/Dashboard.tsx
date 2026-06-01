@@ -462,7 +462,7 @@ export default function Dashboard() {
             </div>
           ) : null}
 
-          <div className={`card ${styles.panel}`}>
+          <div className={`card ${styles.panel} ${styles.listenersPortsCard}`}>
             <h2 className={styles.panelTitle}>
               <i className="fas fa-plug" aria-hidden /> Listeners & ports
             </h2>
@@ -505,7 +505,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className={`card ${styles.panel}`}>
+          <div className={`card ${styles.panel} ${styles.tlsValidationCard}`}>
             <h2 className={styles.panelTitle}>
               <i className="fas fa-shield-halved" aria-hidden /> Site TLS validation
             </h2>
@@ -515,7 +515,6 @@ export default function Dashboard() {
                 <thead>
                   <tr>
                     <th>Host</th>
-                    <th>Certificate</th>
                     <th>Result</th>
                     <th>Detail</th>
                   </tr>
@@ -523,7 +522,7 @@ export default function Dashboard() {
                 <tbody>
                   {tlsSiteRows.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className={styles.emptyCell}>
+                      <td colSpan={3} className={styles.emptyCell}>
                         No site TLS validation data
                       </td>
                     </tr>
@@ -536,11 +535,20 @@ export default function Dashboard() {
                         : row.status === 'mismatch'
                           ? 'mismatch'
                           : row.status;
+                      const resultClass =
+                        result === 'match'
+                          ? styles.statusOk
+                          : result === 'mismatch'
+                            ? styles.statusMismatch
+                            : result === 'pending'
+                              ? styles.statusPending
+                              : styles.statusUnknown;
                       return (
                         <tr key={row.host}>
                           <td className="mono">{row.host}</td>
-                          <td className="mono">{row.certificate || '—'}</td>
-                          <td>{result}</td>
+                          <td>
+                            <span className={`${styles.statusPill} ${resultClass}`}>{result}</span>
+                          </td>
                           <td className="mono">{detail}</td>
                         </tr>
                       );

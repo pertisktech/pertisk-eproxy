@@ -1899,7 +1899,8 @@ site_tls_health_row(Site, CertRows) ->
     Base = #
     {
         <<"host">> => json_text(Host),
-        <<"certificate">> => cert_ref_json(CertRef)
+        <<"certificate">> => cert_ref_json(CertRef),
+        <<"certificate_id">> => null
     },
     case CertRef of
         undefined ->
@@ -1913,20 +1914,32 @@ site_tls_health_row(Site, CertRows) ->
         _ ->
             case find_certificate_row_for_ref(CertRef, CertRows) of
                 {ok, Row} ->
+                    BaseWithId = Base#{<<"certificate_id">> => cert_row_id_json(Row)},
                     Hosts = cert_hosts_from_row(Row),
                     case Hosts of
                         [] ->
-                            maps:merge(Base, #
-                            {
-                                <<"valid">> => false,
-                                <<"status">> => <<"unknown">>,
-                                <<"reason">> => <<"certificate_hosts_unavailable">>,
-                                <<"presented_hosts">> => []
-                            });
+                            case is_acme_cert_ref(CertRef) of
+                                true ->
+                                    maps:merge(BaseWithId, #
+                                    {
+                                        <<"valid">> => false,
+                                        <<"status">> => <<"mismatch">>,
+                                        <<"reason">> => <<"certificate_not_found">>,
+                                        <<"presented_hosts">> => []
+                                    });
+                                false ->
+                                    maps:merge(BaseWithId, #
+                                    {
+                                        <<"valid">> => false,
+                                        <<"status">> => <<"unknown">>,
+                                        <<"reason">> => <<"certificate_hosts_unavailable">>,
+                                        <<"presented_hosts">> => []
+                                    })
+                            end;
                         _ ->
                             case cert_hosts_cover_site_host(Host, Hosts) of
                                 true ->
-                                    maps:merge(Base, #
+                                    maps:merge(BaseWithId, #
                                     {
                                         <<"valid">> => true,
                                         <<"status">> => <<"ok">>,
@@ -1934,7 +1947,7 @@ site_tls_health_row(Site, CertRows) ->
                                         <<"presented_hosts">> => Hosts
                                     });
                                 false ->
-                                    maps:merge(Base, #
+                                    maps:merge(BaseWithId, #
                                     {
                                         <<"valid">> => false,
                                         <<"status">> => <<"mismatch">>,
@@ -1944,18 +1957,60 @@ site_tls_health_row(Site, CertRows) ->
                             end
                     end;
                 error ->
-                    maps:merge(Base, #
-                    {
-                        <<"valid">> => false,
-                        <<"status">> => <<"unknown">>,
-                        <<"reason">> => <<"certificate_not_found">>,
-                        <<"presented_hosts">> => []
-                    })
+                    case is_acme_cert_ref(CertRef) of
+                        true ->
+                            AcmeHosts = acme_cert_hosts_for_ref(CertRef),
+                            case AcmeHosts of
+                                [] ->
+                                    maps:merge(Base, #
+                                    {
+                                        <<"valid">> => false,
+                                        <<"status">> => <<"mismatch">>,
+                                        <<"reason">> => <<"certificate_not_found">>,
+                                        <<"presented_hosts">> => []
+                                    });
+                                _ ->
+                                    case cert_hosts_cover_site_host(Host, AcmeHosts) of
+                                        true ->
+                                            maps:merge(Base, #
+                                            {
+                                                <<"valid">> => true,
+                                                <<"status">> => <<"ok">>,
+                                                <<"reason">> => <<"host_covered">>,
+                                                <<"presented_hosts">> => AcmeHosts
+                                            });
+                                        false ->
+                                            maps:merge(Base, #
+                                            {
+                                                <<"valid">> => false,
+                                                <<"status">> => <<"mismatch">>,
+                                                <<"reason">> => <<"certificate_host_mismatch">>,
+                                                <<"presented_hosts">> => AcmeHosts
+                                            })
+                                    end
+                            end;
+                        false ->
+                            maps:merge(Base, #
+                            {
+                                <<"valid">> => false,
+                                <<"status">> => <<"unknown">>,
+                                <<"reason">> => <<"certificate_not_found">>,
+                                <<"presented_hosts">> => []
+                            })
+                    end
             end
     end.
 
 cert_ref_json(undefined) -> null;
 cert_ref_json(V) -> json_text(V).
+
+cert_row_id_json(Row) when is_map(Row) ->
+    case maps:get(<<"id">>, Row, null) of
+        <<>> -> null;
+        V -> V
+    end;
+cert_row_id_json(_) ->
+    null.
 
 site_health_host_bin(undefined) -> undefined;
 site_health_host_bin(null) -> undefined;
@@ -1969,6 +2024,74 @@ site_health_cert_ref_bin(B) when is_binary(B), B =/= <<>> -> B;
 site_health_cert_ref_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
 site_health_cert_ref_bin(I) when is_integer(I) -> integer_to_binary(I);
 site_health_cert_ref_bin(_) -> undefined.
+
+is_acme_cert_ref(<<"acme/", _/binary>>) -> true;
+is_acme_cert_ref(_) -> false.
+
+acme_cert_hosts_for_ref(<<"acme/", Slug/binary>>) ->
+    Path = filename:join([acme_health_data_dir(), "certs", binary_to_list(Slug), "fullchain.pem"]),
+    case pertisk_eproxy_tls_cert_info:describe_listener_pem(Path) of
+        {ok, #{hosts := Hosts}} when is_list(Hosts) ->
+            [
+                json_text(H)
+                || H <- Hosts,
+                   is_binary(json_text(H)),
+                   json_text(H) =/= <<>>
+            ];
+        _ ->
+            acme_db_cert_hosts_for_ref(<<"acme/", Slug/binary>>)
+    end;
+acme_cert_hosts_for_ref(_) ->
+    [].
+
+acme_db_cert_hosts_for_ref(NameRef) when is_binary(NameRef) ->
+    case pertisk_eproxy_db:list_certificates(db_file_path()) of
+        {ok, Rows} ->
+            case lists:search(
+                fun(Row) ->
+                    Ref = site_health_cert_ref_bin(maps:get(name, Row, undefined)),
+                    Ref =:= NameRef
+                end,
+                Rows
+            ) of
+                {value, Row} ->
+                    acme_db_hosts_from_row(Row);
+                false ->
+                    []
+            end;
+        _ ->
+            []
+    end;
+acme_db_cert_hosts_for_ref(_) ->
+    [].
+
+acme_db_hosts_from_row(Row) when is_map(Row) ->
+    Pem = site_health_cert_ref_bin(maps:get(cert_pem, Row, undefined)),
+    case Pem of
+        undefined ->
+            [];
+        PemBin ->
+            case pertisk_eproxy_tls_cert_info:describe_pem_data(PemBin) of
+                {ok, #{hosts := Hosts}} when is_list(Hosts) ->
+                    [
+                        json_text(H)
+                        || H <- Hosts,
+                           is_binary(json_text(H)),
+                           json_text(H) =/= <<>>
+                    ];
+                _ ->
+                    []
+            end
+    end;
+acme_db_hosts_from_row(_) ->
+    [].
+
+acme_health_data_dir() ->
+    case application:get_env(pertisk_eproxy, acme_data_dir) of
+        {ok, D} when is_list(D), D =/= [] -> D;
+        {ok, D} when is_binary(D), D =/= <<>> -> binary_to_list(D);
+        _ -> "data/acme"
+    end.
 
 find_certificate_row_for_ref(CertRef, CertRows) ->
     case lists:search(

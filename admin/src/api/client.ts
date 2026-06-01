@@ -221,8 +221,9 @@ export interface HealthReport {
   tls_sites?: Array<{
     host: string;
     certificate?: string | null;
+    certificate_id?: string | null;
     valid: boolean;
-    status: 'ok' | 'mismatch' | 'unknown' | 'none';
+    status: 'ok' | 'mismatch' | 'unknown' | 'none' | 'pending';
     reason: string;
     presented_hosts: string[];
   }>;

@@ -227,6 +227,15 @@
   box-shadow: var(--shadow-sm);
 }
 
+.listenersPortsCard,
+.tlsValidationCard {
+  padding: 0;
+}
+
+.tlsValidationCard {
+  margin-top: 0.9rem;
+}
+
 .panelTitle {
   margin: 0 0 0.8rem;
   padding-bottom: 0.55rem;
@@ -394,6 +403,43 @@
   text-align: center;
   color: var(--color-muted);
   padding: 1.5rem;
+}
+
+.statusPill {
+  display: inline-block;
+  min-width: 5.5rem;
+  text-align: center;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.statusOk {
+  color: #155724;
+  background: #d4edda;
+  border-color: #b9e3c6;
+}
+
+.statusMismatch {
+  color: #842029;
+  background: #f8d7da;
+  border-color: #f1aeb5;
+}
+
+.statusPending {
+  color: #7a4b00;
+  background: #fff3cd;
+  border-color: #ffe69c;
+}
+
+.statusUnknown {
+  color: #495057;
+  background: #e9ecef;
+  border-color: #d3d9df;
 }
 
 .svcId {
