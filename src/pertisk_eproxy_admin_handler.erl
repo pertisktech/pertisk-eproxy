@@ -737,6 +737,7 @@ handle(<<"DELETE">>, backend, Req) ->
 
 handle(<<"GET">>, health, Req) ->
     Backends = pertisk_eproxy_config:get_backends(),
+    Sites = pertisk_eproxy_config:get_sites(),
     Health = lists:map(fun(#{name := Name}) ->
         case pertisk_eproxy_backend:status(Name) of
             {ok, #{upstreams := Ups}} ->
@@ -746,7 +747,8 @@ handle(<<"GET">>, health, Req) ->
                 #{name => Name, total => 0, healthy => 0}
         end
     end, Backends),
-    json_reply(200, #{backends => Health, acme => lego_health_snapshot()}, Req);
+    TlsSites = site_tls_health_rows(Sites),
+    json_reply(200, #{backends => Health, acme => lego_health_snapshot(), tls_sites => TlsSites}, Req);
 
 handle(<<"GET">>, metrics, Req) ->
     Output = prometheus_text_format:format(),
@@ -1872,6 +1874,164 @@ cert_field_matches(C, N) when is_list(C), is_binary(N) -> iolist_to_binary(C) =:
 cert_field_matches(C, N) when is_list(C), is_list(N) -> C =:= N;
 cert_field_matches(C, N) when is_binary(C), is_list(N) -> C =:= iolist_to_binary(N);
 cert_field_matches(_, _) -> false.
+
+site_tls_health_rows(Sites) ->
+    Rows = all_certificate_rows_for_tls_health(Sites),
+    [
+        site_tls_health_row(S, Rows)
+        || S <- safe_list(Sites),
+           is_map(S),
+           site_health_host_bin(maps:get(host, S, undefined)) =/= undefined
+    ].
+
+all_certificate_rows_for_tls_health(Sites) ->
+    IngressRows = ingress_certificate_rows(Sites),
+    DbRows =
+        case pertisk_eproxy_db:list_certificates(db_file_path()) of
+            {ok, Certs} -> certificate_rows_json(Certs, Sites);
+            _ -> []
+        end,
+    merge_certificate_rows(DbRows, IngressRows).
+
+site_tls_health_row(Site, CertRows) ->
+    Host = site_health_host_bin(maps:get(host, Site, undefined)),
+    CertRef = site_health_cert_ref_bin(maps:get(certificate, Site, undefined)),
+    Base = #
+    {
+        <<"host">> => json_text(Host),
+        <<"certificate">> => cert_ref_json(CertRef)
+    },
+    case CertRef of
+        undefined ->
+            maps:merge(Base, #
+            {
+                <<"valid">> => false,
+                <<"status">> => <<"none">>,
+                <<"reason">> => <<"no_certificate_assigned">>,
+                <<"presented_hosts">> => []
+            });
+        _ ->
+            case find_certificate_row_for_ref(CertRef, CertRows) of
+                {ok, Row} ->
+                    Hosts = cert_hosts_from_row(Row),
+                    case Hosts of
+                        [] ->
+                            maps:merge(Base, #
+                            {
+                                <<"valid">> => false,
+                                <<"status">> => <<"unknown">>,
+                                <<"reason">> => <<"certificate_hosts_unavailable">>,
+                                <<"presented_hosts">> => []
+                            });
+                        _ ->
+                            case cert_hosts_cover_site_host(Host, Hosts) of
+                                true ->
+                                    maps:merge(Base, #
+                                    {
+                                        <<"valid">> => true,
+                                        <<"status">> => <<"ok">>,
+                                        <<"reason">> => <<"host_covered">>,
+                                        <<"presented_hosts">> => Hosts
+                                    });
+                                false ->
+                                    maps:merge(Base, #
+                                    {
+                                        <<"valid">> => false,
+                                        <<"status">> => <<"mismatch">>,
+                                        <<"reason">> => <<"certificate_host_mismatch">>,
+                                        <<"presented_hosts">> => Hosts
+                                    })
+                            end
+                    end;
+                error ->
+                    maps:merge(Base, #
+                    {
+                        <<"valid">> => false,
+                        <<"status">> => <<"unknown">>,
+                        <<"reason">> => <<"certificate_not_found">>,
+                        <<"presented_hosts">> => []
+                    })
+            end
+    end.
+
+cert_ref_json(undefined) -> null;
+cert_ref_json(V) -> json_text(V).
+
+site_health_host_bin(undefined) -> undefined;
+site_health_host_bin(null) -> undefined;
+site_health_host_bin(B) when is_binary(B), B =/= <<>> -> B;
+site_health_host_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+site_health_host_bin(_) -> undefined.
+
+site_health_cert_ref_bin(undefined) -> undefined;
+site_health_cert_ref_bin(null) -> undefined;
+site_health_cert_ref_bin(B) when is_binary(B), B =/= <<>> -> B;
+site_health_cert_ref_bin(L) when is_list(L), L =/= [] -> unicode:characters_to_binary(L, utf8);
+site_health_cert_ref_bin(I) when is_integer(I) -> integer_to_binary(I);
+site_health_cert_ref_bin(_) -> undefined.
+
+find_certificate_row_for_ref(CertRef, CertRows) ->
+    case lists:search(
+        fun(Row) ->
+            Id = maps:get(<<"id">>, Row, <<>>),
+            Domain = maps:get(<<"domain">>, Row, <<>>),
+            cert_field_matches(CertRef, Id) orelse cert_field_matches(CertRef, Domain)
+        end,
+        CertRows
+    ) of
+        {value, Row} -> {ok, Row};
+        false -> error
+    end.
+
+cert_hosts_from_row(Row) when is_map(Row) ->
+    [
+        json_text(H)
+        || H <- safe_list(maps:get(<<"hosts">>, Row, [])),
+           is_binary(json_text(H)),
+           json_text(H) =/= <<>>
+    ];
+cert_hosts_from_row(_) ->
+    [].
+
+cert_hosts_cover_site_host(Host, Hosts) when is_binary(Host), is_list(Hosts) ->
+    CheckHost = cert_check_host_for_health(Host),
+    lists:any(fun(Pattern) -> cert_pattern_matches_host(CheckHost, Pattern) end, Hosts);
+cert_hosts_cover_site_host(_, _) ->
+    false.
+
+cert_check_host_for_health(<<"*.", Rest/binary>>) when Rest =/= <<>> ->
+    <<"probe.", Rest/binary>>;
+cert_check_host_for_health(Host) ->
+    Host.
+
+cert_pattern_matches_host(Host0, Pattern0) when is_binary(Host0), is_binary(Pattern0) ->
+    Host = string:lowercase(Host0),
+    Pattern = string:lowercase(Pattern0),
+    case Host =:= Pattern of
+        true ->
+            true;
+        false ->
+            case Pattern of
+                <<"*.", Suffix/binary>> when Suffix =/= <<>> ->
+                    wildcard_suffix_matches_host(Host, Suffix);
+                _ ->
+                    false
+            end
+    end;
+cert_pattern_matches_host(_, _) ->
+    false.
+
+wildcard_suffix_matches_host(Host, Suffix) when is_binary(Host), is_binary(Suffix) ->
+    HostParts = binary:split(Host, <<".">>, [global]),
+    SuffixParts = binary:split(Suffix, <<".">>, [global]),
+    case length(HostParts) =:= (length(SuffixParts) + 1) of
+        false ->
+            false;
+        true ->
+            lists:nthtail(1, HostParts) =:= SuffixParts
+    end;
+wildcard_suffix_matches_host(_, _) ->
+    false.
 
 is_numeric_bin(Bin) when is_binary(Bin), Bin =/= <<>> ->
     lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary:bin_to_list(Bin));

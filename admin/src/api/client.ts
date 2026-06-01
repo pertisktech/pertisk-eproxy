@@ -218,6 +218,14 @@ export interface HealthReport {
     lego_installed?: boolean;
     lego_path?: string | null;
   };
+  tls_sites?: Array<{
+    host: string;
+    certificate?: string | null;
+    valid: boolean;
+    status: 'ok' | 'mismatch' | 'unknown' | 'none';
+    reason: string;
+    presented_hosts: string[];
+  }>;
 }
 
 export interface DnsProviderValidateResponse {

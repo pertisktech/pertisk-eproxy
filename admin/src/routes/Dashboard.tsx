@@ -174,6 +174,7 @@ export default function Dashboard() {
   const runtimePorts = listeners
     .filter((l) => Number.isFinite(l.port) && l.port > 0)
     .sort((a, b) => a.port - b.port);
+  const tlsSiteRows = Array.isArray(health?.tls_sites) ? health.tls_sites : [];
 
   return (
     <section className={styles.page}>
@@ -498,6 +499,52 @@ export default function Dashboard() {
                         <td>{L.stack}</td>
                       </tr>
                     ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className={`card ${styles.panel}`}>
+            <h2 className={styles.panelTitle}>
+              <i className="fas fa-shield-halved" aria-hidden /> Site TLS validation
+            </h2>
+            <p className={styles.panelHint}>Hostname versus assigned certificate SAN/wildcard coverage.</p>
+            <div className={styles.tableScroll}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>Host</th>
+                    <th>Certificate</th>
+                    <th>Result</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tlsSiteRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className={styles.emptyCell}>
+                        No site TLS validation data
+                      </td>
+                    </tr>
+                  ) : (
+                    tlsSiteRows.map((row) => {
+                      const certHosts = Array.isArray(row.presented_hosts) ? row.presented_hosts : [];
+                      const detail = certHosts.length > 0 ? certHosts.join(', ') : row.reason;
+                      const result = row.valid
+                        ? 'match'
+                        : row.status === 'mismatch'
+                          ? 'mismatch'
+                          : row.status;
+                      return (
+                        <tr key={row.host}>
+                          <td className="mono">{row.host}</td>
+                          <td className="mono">{row.certificate || '—'}</td>
+                          <td>{result}</td>
+                          <td className="mono">{detail}</td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
