@@ -881,6 +881,21 @@ hex_bin(Bin) when is_binary(Bin) ->
     iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B:8>> <= Bin]).
 
 error_reply(Status, Reason, Req) ->
+    Method = cowboy_req:method(Req),
+    Path = cowboy_req:path(Req),
+    RequestId = request_tracking_id(Req),
+    case Status >= 500 of
+        true ->
+            lager:error(
+                "admin api error status=~w method=~s path=~s request_id=~s reason=~p",
+                [Status, Method, Path, RequestId, Reason]
+            );
+        false ->
+            lager:warning(
+                "admin api error status=~w method=~s path=~s request_id=~s reason=~p",
+                [Status, Method, Path, RequestId, Reason]
+            )
+    end,
     Msg = iolist_to_binary(io_lib:format("~p", [Reason])),
     json_reply(Status, #{error => Msg}, Req).
 

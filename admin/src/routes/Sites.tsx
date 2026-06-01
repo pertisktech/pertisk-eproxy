@@ -99,6 +99,36 @@ function stripWildcardPrefix(host: string): string {
   return h.startsWith('*.') ? h.slice(2) : h;
 }
 
+function hostForTlsValidation(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.startsWith('*.')) {
+    const base = trimmed.slice(2);
+    return base ? `probe.${base}` : trimmed;
+  }
+  return trimmed;
+}
+
+function certHostMatchesTarget(certHost: string, targetHost: string): boolean {
+  const cert = certHost.trim().toLowerCase();
+  const target = targetHost.trim().toLowerCase();
+  if (!cert || !target) return false;
+  if (cert === target) return true;
+  if (!cert.startsWith('*.')) return false;
+
+  const suffix = cert.slice(2);
+  if (!suffix || !target.endsWith(`.${suffix}`)) return false;
+
+  const left = target.slice(0, -(suffix.length + 1));
+  return left.length > 0 && !left.includes('.');
+}
+
+function certificateCoversHost(cert: CertificateRow, host: string): boolean {
+  const certHosts = Array.isArray(cert.hosts) ? cert.hosts : [];
+  if (certHosts.length === 0) return true;
+  const target = hostForTlsValidation(host);
+  return certHosts.some((h) => certHostMatchesTarget(h, target));
+}
+
 /** Ensure a host starts with `*.` (used when the wildcard toggle is on). */
 function applyWildcardPrefix(host: string): string {
   const h = host.trim().replace(/^\*+\.*/, '');
@@ -913,6 +943,41 @@ export default function Sites() {
       setFormError('Choose a TLS certificate id when using “Certificate label” (see Certificates page).');
       return;
     }
+    if (formSslMode === 'existing_cert') {
+      const certId = formCertName.trim();
+      let certRows = issuedTlsCerts;
+      let selectedCert = certRows.find((row) => row.id === certId);
+
+      if (!selectedCert) {
+        try {
+          const latest = await api.certificates.list();
+          certRows = Array.isArray(latest) ? latest : [];
+          setIssuedTlsCerts(certRows);
+          selectedCert = certRows.find((row) => row.id === certId);
+        } catch {
+          // Keep optimistic path; backend validation remains authoritative.
+        }
+      }
+
+      if (!selectedCert) {
+        setFormError(`Selected certificate ${certId} was not found. Refresh certificates and choose a valid id.`);
+        return;
+      }
+
+      if (selectedCert.source_type !== 'tls_listener') {
+        const certHosts = Array.isArray(selectedCert.hosts) ? selectedCert.hosts : [];
+        if (certHosts.length === 0) {
+          setFormError(
+            `Selected certificate ${certId} has no parsed host names. Re-import certificate PEM or choose another certificate before saving.`,
+          );
+          return;
+        }
+        if (!certificateCoversHost(selectedCert, host)) {
+          setFormError(`Selected certificate ${certId} does not cover ${host}. Choose a certificate whose hosts include this domain.`);
+          return;
+        }
+      }
+    }
     if (formSslMode === 'auto_ssl' && !formDnsProviderName.trim()) {
       setFormError('Choose a DNS provider for Auto Generate SSL.');
       return;
@@ -1010,15 +1075,42 @@ export default function Sites() {
 
     const newSites =
       editingIndex !== null ? sites.map((s, i) => (i === editingIndex ? newSite : s)) : [...sites, newSite];
+    const existingSite = editingIndex !== null ? sites[editingIndex] : undefined;
+    const existingBackend = existingSite
+      ? backends.find((b) => b.name === existingSite.backend)
+      : undefined;
+    const canUpdateSiteOnly =
+      existingSite != null &&
+      backendName === existingSite.backend &&
+      existingBackend?.upstreams?.length === 1 &&
+      existingBackend.upstreams[0]?.addr === addr;
 
     setSaving(true);
     try {
-      await api.putConfig({
-        ...config,
-        backends: newBackends,
-        sites: newSites,
-      });
-      setConfig({ ...config, backends: newBackends, sites: newSites });
+      if (editingIndex === null) {
+        const newBackend = newBackends.find((b) => b.name === backendName);
+        if (!newBackend) {
+          throw new Error(`Failed to prepare backend ${backendName}`);
+        }
+        await api.addBackend(newBackend);
+        try {
+          await api.addSite(newSite);
+        } catch (siteErr) {
+          await api.deleteBackend(newBackend.name).catch(() => undefined);
+          throw siteErr;
+        }
+        await load({ silent: true });
+      } else if (canUpdateSiteOnly) {
+        await api.updateSite(existingSite.host, newSite);
+        await load({ silent: true });
+      } else {
+        await api.putConfig({
+          ...config,
+          backends: newBackends,
+          sites: newSites,
+        });
+        await load({ silent: true });
+      }
       setShowForm(false);
       setEditingIndex(null);
       toast.success(editingIndex !== null ? 'Site updated.' : 'Site added.');

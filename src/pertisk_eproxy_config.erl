@@ -270,9 +270,11 @@ put_config_proxy(Config, State) ->
                     maybe_schedule_acme_scan(PrevConfig, Config),
                     {reply, ok, State};
                 {error, R} ->
+                    lager:error("put_config persist_runtime_config failed: ~p", [R]),
                     {reply, {error, {persist_runtime_config, R}}, State}
             end;
         {error, _} = Err ->
+            lager:warning("put_config tls validation failed: ~p", [Err]),
             {reply, Err, State}
     end.
 
@@ -427,20 +429,38 @@ is_acme_ref(_) -> false.
 cert_matches_host(CertPem, Host) ->
     try
         CheckHost = cert_check_host(Host),
-        case {CheckHost, public_key:pem_decode(CertPem)} of
+        case {CheckHost, pem_certificate_ders(CertPem)} of
             {undefined, _} ->
                 false;
             {_, []} ->
                 false;
-            {HostName, [{'Certificate', Der, not_encrypted} | _]} ->
-                Cert = public_key:pkix_decode_cert(Der, otp),
-                public_key:pkix_verify_hostname(Cert, [{dns_id, HostName}]);
-            _ ->
-                false
+            {HostName, Ders} ->
+                MatchFun = public_key:pkix_verify_hostname_match_fun(https),
+                lists:any(
+                    fun(Der) ->
+                        try
+                            Cert = public_key:pkix_decode_cert(Der, otp),
+                            public_key:pkix_verify_hostname(
+                                Cert,
+                                [{dns_id, HostName}],
+                                [{match_fun, MatchFun}]
+                            )
+                        catch
+                            _:_ -> false
+                        end
+                    end,
+                    Ders
+                )
         end
     catch
         _:_ -> false
     end.
+
+pem_certificate_ders(CertPem) ->
+    [
+        Der
+        || {'Certificate', Der, not_encrypted} <- public_key:pem_decode(CertPem)
+    ].
 
 %% For wildcard site hosts (*.example.com), verify coverage using one concrete label.
 cert_check_host(<<"*.", Rest/binary>>) when Rest =/= <<>> ->
