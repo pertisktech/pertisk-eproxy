@@ -107,7 +107,6 @@ start_probe(Config) ->
         {error, _} = Err ->
             Err
     end.
-
 %% Chromium rejects header blocks from older quic_qpack builds where RIC=0
 %% was encoded with a pre-base sign bit ("Error calculating Base").
 ensure_qpack_chrome_compat() ->
@@ -200,8 +199,25 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 log_h3_access(LogHost, Method, PathOnly, 421, T0, <<>>),
                 ok;
             false ->
-                Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
-                case pertisk_eproxy_router:route(LogHost, PathOnly) of
+                case should_force_h2_fallback(PathOnly, Method) of
+                    true ->
+                        Hdrs = [
+                            {<<"content-type">>, <<"text/plain">>},
+                            {<<"alt-svc">>, <<"clear">>}
+                        ],
+                        _ = h3_reply_status(
+                            H3Conn,
+                            StreamId,
+                            421,
+                            Hdrs,
+                            <<"Long-poll endpoint is served over HTTPS/HTTP/2; retry without HTTP/3">>
+                        ),
+                        pertisk_eproxy_metrics:inc_request(LogHost, <<"421">>, <<"h3">>),
+                        log_h3_access(LogHost, Method, PathOnly, 421, T0, <<>>),
+                        ok;
+                    false ->
+                        Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
+                        case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
                 _ = h3_reply_status(
@@ -282,6 +298,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 end
                 end
         end
+      end
     catch
         Class:Reason:Stack ->
             case h3_send_failed_reason(Reason) of
@@ -746,7 +763,8 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
     GunOpts = upstream_gun_opts(UpHost, Transport),
-    case pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, http, GunOpts) of
+    UseEphemeralConn = should_use_ephemeral_connection_h3(UpHost, FullPath),
+    case checkout_or_open_connection_h3(UseEphemeralConn, UpHost, UpPort, Transport, GunOpts) of
         {error, Reason} ->
             {error, Reason};
         {ok, ConnPid} ->
@@ -760,9 +778,41 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                 UpPort,
                 Transport,
                 GunOpts,
-                0
+                0,
+                UseEphemeralConn
             )
     end.
+
+checkout_or_open_connection_h3(true, UpHost, UpPort, _Transport, GunOpts) ->
+    open_direct_connection_h3(UpHost, UpPort, GunOpts);
+checkout_or_open_connection_h3(false, UpHost, UpPort, Transport, GunOpts) ->
+    pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, http, GunOpts).
+
+open_direct_connection_h3(UpHost, UpPort, GunOpts) ->
+    case gun:open(UpHost, UpPort, GunOpts) of
+        {ok, ConnPid} ->
+            Timeout = maps:get(connect_timeout, GunOpts, ?CONNECT_TIMEOUT),
+            case gun:await_up(ConnPid, Timeout) of
+                {ok, _Proto} ->
+                    {ok, ConnPid};
+                {error, Reason} ->
+                    catch gun:close(ConnPid),
+                    {error, {await_up, Reason}}
+            end;
+        {error, Reason} ->
+            {error, {connect, Reason}}
+    end.
+
+should_use_ephemeral_connection_h3(UpHost, FullPath) ->
+    is_loopback_host_h3(UpHost) orelse is_long_poll_path(FullPath).
+
+is_loopback_host_h3(Host) when is_binary(Host) ->
+    is_loopback_host_h3(binary_to_list(Host));
+is_loopback_host_h3(Host) when is_list(Host) ->
+    H = string:lowercase(string:trim(Host)),
+    H =:= "127.0.0.1" orelse H =:= "localhost" orelse H =:= "::1";
+is_loopback_host_h3(_) ->
+    false.
 
 do_proxy_via_gun(
     ConnPid,
@@ -774,15 +824,17 @@ do_proxy_via_gun(
     UpPort,
     Transport,
     GunOpts,
-    RetryCount
+    RetryCount,
+    UseEphemeralConn
 ) ->
     TimeoutMs = request_timeout_ms(),
+    BodyTimeoutMs = response_body_timeout_ms(FullPath, TimeoutMs),
     Result =
         try
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
             case gun:await(ConnPid, StreamRef, TimeoutMs) of
                 {response, nofin, Status, RespHeaders} ->
-                    case gun:await_body(ConnPid, StreamRef, TimeoutMs) of
+                    case gun:await_body(ConnPid, StreamRef, BodyTimeoutMs) of
                         {ok, RespBody} ->
                             {ok, Status, gun_resp_headers_to_h3(RespHeaders),
                                 safe_iolist_to_binary(RespBody)};
@@ -806,10 +858,14 @@ do_proxy_via_gun(
     case Result of
         {error, Reason} ->
             maybe_invalidate_connection(ConnPid, Reason),
-            case RetryCount =:= 0 andalso retryable_upstream_error(Reason) of
+            case should_retry_proxy_error(FullPath, RetryCount, Reason) of
                 true ->
-                    case pertisk_eproxy_upstream_pool:checkout(
-                        UpHost, UpPort, Transport, http, GunOpts
+                    case checkout_or_open_connection_h3(
+                        UseEphemeralConn,
+                        UpHost,
+                        UpPort,
+                        Transport,
+                        GunOpts
                     ) of
                         {ok, ConnPid2} ->
                             do_proxy_via_gun(
@@ -822,17 +878,26 @@ do_proxy_via_gun(
                                 UpPort,
                                 Transport,
                                 GunOpts,
-                                1
+                                1,
+                                UseEphemeralConn
                             );
                         {error, _} = RetryErr ->
                             RetryErr
                     end;
                 false ->
+                    maybe_close_ephemeral_connection(ConnPid, UseEphemeralConn),
                     {error, Reason}
             end;
         _ ->
+            maybe_close_ephemeral_connection(ConnPid, UseEphemeralConn),
             Result
     end.
+
+maybe_close_ephemeral_connection(ConnPid, true) ->
+    catch gun:close(ConnPid),
+    ok;
+maybe_close_ephemeral_connection(_ConnPid, false) ->
+    ok.
 
 retryable_upstream_error({down, normal}) -> true;
 retryable_upstream_error({down, shutdown}) -> true;
@@ -840,6 +905,31 @@ retryable_upstream_error({stream_error, {closing, owner_down}}) -> true;
 retryable_upstream_error(timeout) -> true;
 retryable_upstream_error({timeout, _}) -> true;
 retryable_upstream_error(_) -> false.
+
+should_retry_proxy_error(FullPath, RetryCount, Reason) ->
+    RetryCount =:= 0
+        andalso retryable_upstream_error(Reason)
+        andalso not (is_long_poll_path(FullPath) andalso is_timeout_reason(Reason)).
+
+is_timeout_reason(timeout) -> true;
+is_timeout_reason({timeout, _}) -> true;
+is_timeout_reason(_) -> false.
+
+response_body_timeout_ms(FullPath, BaseTimeout) ->
+    case is_long_poll_path(FullPath) of
+        true -> max(BaseTimeout, 125000);
+        false -> BaseTimeout
+    end.
+
+is_long_poll_path(Path) when is_binary(Path) ->
+    Prefix = <<"/user/events">>,
+    binary:match(Path, Prefix) =:= {0, byte_size(Prefix)};
+is_long_poll_path(_) ->
+    false.
+
+should_force_h2_fallback(PathOnly, Method) ->
+    normalize_h3_method(Method) =:= <<"GET">>
+        andalso is_long_poll_path(PathOnly).
 
 request_timeout_ms() ->
     Config = pertisk_eproxy_config:get_config(),
