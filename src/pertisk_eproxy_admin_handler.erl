@@ -203,9 +203,12 @@ handle(<<"POST">>, backup_restore, Req) ->
             {ok, Json} ->
                 case pertisk_eproxy_config:json_to_config_pub(Json) of
                     Config when is_map(Config) ->
+                        Existing = pertisk_eproxy_config:get_config(),
+                        Config0 = preserve_redacted_tls_paths(Json, Config, Existing),
+                        Config1 = preserve_redacted_dns_providers_in_config(Config0, Existing),
                         case restore_backup_certificate_records(Json) of
                             ok ->
-                                ok = pertisk_eproxy_config:put_config(Config),
+                                ok = pertisk_eproxy_config:put_config(Config1),
                                 json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
                             {error, Reason} ->
                                 error_reply(400, Reason, Req2)
@@ -480,29 +483,53 @@ handle(<<"PUT">>, dns_provider, Req) ->
                 Name = bin_field(maps:get(<<"name">>, Body, <<>>)),
                 Pt = bin_field(maps:get(<<"provider_type">>, Body, <<"label">>)),
                 CredIn = parse_dns_credentials(maps:get(<<"credentials">>, Body, #{})),
-                case pertisk_eproxy_db:get_dns_provider_by_id(db_file_path(), Id) of
-                    {ok, PrevRow} ->
-                        PrevName = json_text(maps:get(name, PrevRow, <<>>)),
-                        PrevCred = maps:get(credentials, PrevRow, #{}) ,
-                        RuntimeCred = find_dns_provider_creds(PrevName, maps:get(dns_providers, pertisk_eproxy_config:get_config(), [])),
-                        ExistingCred = merge_dns_credentials_for_update(PrevCred, RuntimeCred),
-                        Cred = merge_dns_credentials_for_update(CredIn, ExistingCred),
-                        case pertisk_eproxy_db:update_dns_provider(db_file_path(), Id, Name, Pt, Cred) of
-                            ok ->
-                                update_sites_dns_provider_name(PrevName, Name),
-                                sync_dns_providers_into_runtime_config(),
-                                json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
-                            {error, empty_name} ->
-                                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
-                            {error, empty_provider_type} ->
-                                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+                case dns_credentials_has_redacted(CredIn) of
+                    true ->
+                        json_reply(
+                            400,
+                            #{
+                                <<"error">> =>
+                                    <<"credentials contain [redacted]; provide real secret values when updating provider">>
+                            },
+                            Req2
+                        );
+                    false ->
+                        case pertisk_eproxy_db:get_dns_provider_by_id(db_file_path(), Id) of
+                            {ok, PrevRow} ->
+                                PrevName = json_text(maps:get(name, PrevRow, <<>>)),
+                                PrevCred = maps:get(credentials, PrevRow, #{}) ,
+                                RuntimeCred = find_dns_provider_creds(PrevName, maps:get(dns_providers, pertisk_eproxy_config:get_config(), [])),
+                                ExistingCred = merge_dns_credentials_for_update(PrevCred, RuntimeCred),
+                                Cred = merge_dns_credentials_for_update(CredIn, ExistingCred),
+                                case dns_credentials_has_redacted(Cred) of
+                                    true ->
+                                        json_reply(
+                                            400,
+                                            #{
+                                                <<"error">> =>
+                                                    <<"credentials still contain [redacted]. Re-enter real secret values before saving.">>
+                                            },
+                                            Req2
+                                        );
+                                    false ->
+                                        case pertisk_eproxy_db:update_dns_provider(db_file_path(), Id, Name, Pt, Cred) of
+                                            ok ->
+                                                update_sites_dns_provider_name(PrevName, Name),
+                                                sync_dns_providers_into_runtime_config(),
+                                                json_reply(200, #{<<"status">> => <<"ok">>}, Req2);
+                                            {error, empty_name} ->
+                                                json_reply(400, #{<<"error">> => <<"name is required">>}, Req2);
+                                            {error, empty_provider_type} ->
+                                                json_reply(400, #{<<"error">> => <<"provider_type is required">>}, Req2);
+                                            {error, Reason} ->
+                                                error_reply(400, Reason, Req2)
+                                        end
+                                end;
+                            {error, not_found} ->
+                                not_found_reply(Req2);
                             {error, Reason} ->
                                 error_reply(400, Reason, Req2)
-                        end;
-                    {error, not_found} ->
-                        not_found_reply(Req2);
-                    {error, Reason} ->
-                        error_reply(400, Reason, Req2)
+                        end
                 end
             end)
     end;
@@ -1577,8 +1604,8 @@ find_site_by_host(HostParam, Sites) ->
         false -> #{}
     end.
 
-%% Keep current TLS/ACME site fields when they are omitted in PUT /api/sites/:host.
-%% This avoids triggering ACME re-issue when editing non-TLS properties.
+%% Keep current TLS/ACME site fields only when they are omitted in PUT /api/sites/:host.
+%% Explicit null means caller intentionally clears the value.
 preserve_site_tls_fields(Body, Parsed, Existing)
     when is_map(Body), is_map(Parsed), is_map(Existing) ->
     lists:foldl(
@@ -1605,12 +1632,7 @@ preserve_site_tls_fields(Body, Parsed, Existing)
     ).
 
 should_preserve_site_tls_key(Body, JsonKey) when is_map(Body), is_binary(JsonKey) ->
-    case maps:is_key(JsonKey, Body) of
-        false ->
-            true;
-        true ->
-            maps:get(JsonKey, Body, undefined) =:= null
-    end.
+    maps:is_key(JsonKey, Body) =:= false.
 
 proto_snapshot(Req) ->
     Version = normalize_http_version(cowboy_req:version(Req)),

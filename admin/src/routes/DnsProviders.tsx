@@ -205,6 +205,14 @@ export default function DnsProviders() {
     return value.trim() === '[redacted]';
   }
 
+  function isMissingRequiredCredential(field: SupportedDnsProviderField): boolean {
+    const raw = formCreds[field.key] ?? '';
+    const value = raw.trim();
+    if (!value) return true;
+    if (editingId && isRedactedCredentialValue(value)) return true;
+    return false;
+  }
+
   function toggleFieldVisibility(key: string) {
     setFieldVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
   }
@@ -235,8 +243,12 @@ export default function DnsProviders() {
       return;
     }
     const credentials = buildCredentials();
-    if (selectedProvider?.fields.some((f) => f.required && !formCreds[f.key]?.trim())) {
-      setFormError('All required fields must be filled');
+    if (selectedProvider?.fields.some((f) => f.required && isMissingRequiredCredential(f))) {
+      setFormError(
+        editingId
+          ? 'All required fields must be filled with real values. Replace any [redacted] placeholder before saving.'
+          : 'All required fields must be filled',
+      );
       return;
     }
     setSaving(true);
@@ -276,8 +288,12 @@ export default function DnsProviders() {
       return;
     }
     const credentials = buildCredentials();
-    if (selectedProvider?.fields.some((f) => f.required && !formCreds[f.key]?.trim())) {
-      setFormError('All required fields must be filled');
+    if (selectedProvider?.fields.some((f) => f.required && isMissingRequiredCredential(f))) {
+      setFormError(
+        editingId
+          ? 'All required fields must be filled with real values. Replace any [redacted] placeholder before validating.'
+          : 'All required fields must be filled',
+      );
       return;
     }
     setValidating(true);

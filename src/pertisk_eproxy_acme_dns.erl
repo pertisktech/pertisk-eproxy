@@ -100,9 +100,25 @@ scan_and_issue() ->
                         ok ->
                             ok;
                         {error, R} ->
-                            lager:error("ACME issue failed for ~p: ~p", [maps:get(host, S), R]);
+                            lager:error(
+                                "ACME issue failed for host=~s provider=~s reason=~p human=~s",
+                                [
+                                    maps:get(host, S),
+                                    site_dns_provider_bin(S),
+                                    R,
+                                    humanize_acme_error(R)
+                                ]
+                            );
                         Err ->
-                            lager:error("ACME issue failed for ~p: ~p", [maps:get(host, S), Err])
+                            lager:error(
+                                "ACME issue failed for host=~s provider=~s reason=~p human=~s",
+                                [
+                                    maps:get(host, S),
+                                    site_dns_provider_bin(S),
+                                    Err,
+                                    humanize_acme_error(Err)
+                                ]
+                            )
                     end;
                 false ->
                     ok
@@ -110,6 +126,13 @@ scan_and_issue() ->
         end,
         Sites
     ).
+
+site_dns_provider_bin(Site) when is_map(Site) ->
+    case maps:get(dns_provider, Site, <<>>) of
+        V when is_binary(V) -> V;
+        V when is_list(V) -> unicode:characters_to_binary(V, utf8);
+        _ -> <<>>
+    end.
 
 maybe_warn_lego_missing(DbPath, Sites) ->
     case os:find_executable("lego") of
@@ -1686,6 +1709,17 @@ humanize_acme_error({dns_add, Reason}) ->
     iolist_to_binary([<<"Failed to create DNS TXT record: ">>, humanize_acme_error(Reason)]);
 humanize_acme_error({dns_del, Reason}) ->
     iolist_to_binary([<<"Failed to remove DNS TXT record: ">>, humanize_acme_error(Reason)]);
+humanize_acme_error({zone_lookup, {error, Inner}}) ->
+    humanize_acme_error(Inner);
+humanize_acme_error({zone_lookup_failed, Zone, Inner}) ->
+    iolist_to_binary([
+        <<"DNS zone lookup failed for zone ">>,
+        provider_type_to_binary(Zone),
+        <<": ">>,
+        humanize_acme_error(Inner)
+    ]);
+humanize_acme_error({zone_lookup, Inner}) ->
+    iolist_to_binary([<<"DNS zone lookup failed: ">>, humanize_acme_error(Inner)]);
 humanize_acme_error({lego_failed, Out0}) ->
     Out = iolist_to_binary(Out0),
     FirstLine = first_non_empty_line(Out),
@@ -1756,8 +1790,10 @@ cred_get(C, Keys) ->
     lists:foldl(
         fun(K, undefined) ->
             case maps:find(K, C) of
-                {ok, V} when is_binary(V), byte_size(V) > 0 -> V;
-                {ok, V} when is_list(V), length(V) > 0 -> unicode:characters_to_binary(V, utf8);
+                {ok, V} when is_binary(V), byte_size(V) > 0 ->
+                    normalize_cred_value(V);
+                {ok, V} when is_list(V), length(V) > 0 ->
+                    normalize_cred_value(unicode:characters_to_binary(V, utf8));
                 _ -> undefined
             end;
             (_, Acc) ->
@@ -1766,6 +1802,18 @@ cred_get(C, Keys) ->
         undefined,
         Keys
     ).
+
+normalize_cred_value(V) when is_binary(V) ->
+    Trimmed = trim_space_binary(V),
+    case is_redacted_credential_placeholder(Trimmed) of
+        true -> undefined;
+        false -> Trimmed
+    end.
+
+is_redacted_credential_placeholder(Bin) when is_binary(Bin) ->
+    string:lowercase(Bin) =:= <<"[redacted]">>;
+is_redacted_credential_placeholder(_) ->
+    false.
 
 contact_bin(Site) ->
     case maps:get(acme_contact_email, Site, <<"">>) of

@@ -544,7 +544,8 @@ load_proxy_config() ->
     DbExistedBefore = pertisk_eproxy_db:db_file_exists(DbPath),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
-            Cfg = sanitize_runtime_tls_paths(Cfg0),
+            CfgA = sanitize_runtime_tls_paths(Cfg0),
+            Cfg = cleanup_redacted_dns_providers(DbPath, CfgA),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
@@ -585,7 +586,8 @@ load_proxy_config_first_deploy(DbPath) ->
 load_proxy_config_from_file_and_seed(DbPath) ->
     File = config_file(),
     case read_config_file(File) of
-        {ok, Cfg} ->
+        {ok, Cfg0} ->
+            Cfg = cleanup_redacted_dns_providers(DbPath, Cfg0),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = persist_runtime_config(DbPath, Cfg),
@@ -604,12 +606,13 @@ rebuild_runtime_config_from_db(DbPath) ->
             Backends = load_backends_from_db(DbPath),
             Dns = load_dns_providers_from_db(DbPath),
             Certs = load_certificate_names_from_db(DbPath),
-            Cfg = Base#{
+            Cfg0 = Base#{
                 sites => Sites,
                 backends => Backends,
                 dns_providers => Dns,
                 certificates => Certs
             },
+            Cfg = cleanup_redacted_dns_providers(DbPath, Cfg0),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, Certs),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, Dns),
             _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
@@ -646,6 +649,92 @@ load_dns_providers_from_db(DbPath) ->
         _ ->
             []
     end.
+
+cleanup_redacted_dns_providers(DbPath, Config) when is_map(Config) ->
+    RuntimeProviders = maps:get(dns_providers, Config, []),
+    RuntimeRemoved =
+        [
+            dns_provider_entry_name_bin(P)
+            || P <- RuntimeProviders,
+               is_map(P),
+               dns_provider_entry_has_redacted(P)
+        ],
+    DbRemoved = cleanup_redacted_dns_providers_db(DbPath),
+    Removed0 = RuntimeRemoved ++ DbRemoved,
+    Removed = lists:usort([N || N <- Removed0, N =/= <<>>]),
+    case Removed of
+        [] ->
+            Config;
+        _ ->
+            lists:foreach(
+                fun(NameBin) ->
+                    _ = pertisk_eproxy_db:delete_dns_provider_by_name(DbPath, NameBin)
+                end,
+                Removed
+            ),
+            KeepProviders =
+                [
+                    P
+                    || P <- RuntimeProviders,
+                       is_map(P),
+                       not lists:member(dns_provider_entry_name_bin(P), Removed)
+                ],
+            lager:warning(
+                "startup cleanup: removed dns providers with [redacted] credentials: ~p",
+                [Removed]
+            ),
+            Config#{dns_providers => KeepProviders}
+    end;
+cleanup_redacted_dns_providers(_DbPath, Config) ->
+    Config.
+
+cleanup_redacted_dns_providers_db(DbPath) ->
+    case pertisk_eproxy_db:list_dns_providers(DbPath) of
+        {ok, Rows} ->
+            [
+                dns_provider_entry_name_bin(R)
+                || R <- Rows,
+                   is_map(R),
+                   dns_provider_entry_has_redacted(R)
+            ];
+        _ ->
+            []
+    end.
+
+dns_provider_entry_has_redacted(P) when is_map(P) ->
+    Creds = maps:get(credentials, P, #{}),
+    dns_credentials_has_redacted(Creds);
+dns_provider_entry_has_redacted(_) ->
+    false.
+
+dns_credentials_has_redacted(M) when is_map(M) ->
+    lists:any(
+        fun({_K, V}) ->
+            case V of
+                VM when is_map(VM) -> dns_credentials_has_redacted(VM);
+                _ -> is_redacted_dns_value(V)
+            end
+        end,
+        maps:to_list(M)
+    );
+dns_credentials_has_redacted(_) ->
+    false.
+
+is_redacted_dns_value(V) when is_binary(V) ->
+    string:lowercase(trim_bin(V)) =:= <<"[redacted]">>;
+is_redacted_dns_value(V) when is_list(V) ->
+    is_redacted_dns_value(unicode:characters_to_binary(V, utf8));
+is_redacted_dns_value(_) ->
+    false.
+
+dns_provider_entry_name_bin(P) when is_map(P) ->
+    case maps:get(name, P, <<>>) of
+        N when is_binary(N) -> N;
+        N when is_list(N) -> unicode:characters_to_binary(N, utf8);
+        _ -> <<>>
+    end;
+dns_provider_entry_name_bin(_) ->
+    <<>>.
 
 load_certificate_names_from_db(DbPath) ->
     case pertisk_eproxy_db:list_certificates(DbPath) of

@@ -121,12 +121,65 @@ create_txt(ApiToken, ZoneId, RecordName, TxtContent, Comment) ->
         {ok, #{<<"success">> := true, <<"result">> := #{<<"id">> := Id}}} ->
             {ok, Id};
         {ok, #{<<"success">> := false, <<"errors">> := Errs}} ->
-            {error, {cloudflare, Errs}};
+            case has_identical_record_error(Errs) of
+                true ->
+                    case find_existing_txt_record_id(ApiToken, ZoneId, RecordName, TxtContent) of
+                        {ok, ExistingId} ->
+                            lager:warning(
+                                "Cloudflare TXT already exists (81058), reusing record id=~s for name=~s",
+                                [ExistingId, RecordName]
+                            ),
+                            {ok, ExistingId};
+                        {error, _} ->
+                            {error, {cloudflare, Errs}}
+                    end;
+                false ->
+                    {error, {cloudflare, Errs}}
+            end;
         {error, _} = E ->
             E;
         Other ->
             {error, {unexpected, Other}}
     end.
+
+find_existing_txt_record_id(ApiToken, ZoneId, RecordName, TxtContent) ->
+    EncName = uri_string:quote(RecordName),
+    Url = <<
+        ?API/binary,
+        "/zones/",
+        ZoneId/binary,
+        "/dns_records?type=TXT&name=",
+        EncName/binary
+    >>,
+    case http_get(ApiToken, Url) of
+        {ok, #{<<"success">> := true, <<"result">> := Results}} when is_list(Results) ->
+            case lists:search(
+                fun(R) ->
+                    maps:get(<<"type">>, R, <<>>) =:= <<"TXT">> andalso
+                        maps:get(<<"name">>, R, <<>>) =:= RecordName andalso
+                        maps:get(<<"content">>, R, <<>>) =:= TxtContent andalso
+                        maps:is_key(<<"id">>, R)
+                end,
+                Results
+            ) of
+                {value, Row} -> {ok, maps:get(<<"id">>, Row)};
+                false -> {error, not_found}
+            end;
+        _ ->
+            {error, lookup_failed}
+    end.
+
+has_identical_record_error(Errs) when is_list(Errs) ->
+    lists:any(
+        fun(E) when is_map(E) ->
+            maps:get(<<"code">>, E, undefined) =:= 81058;
+           (_) ->
+            false
+        end,
+        Errs
+    );
+has_identical_record_error(_) ->
+    false.
 
 -spec delete_txt(binary(), binary(), binary()) -> ok | {error, term()}.
 delete_txt(ApiToken, ZoneId, RecordId) ->
