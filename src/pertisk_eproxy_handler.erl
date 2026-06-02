@@ -512,14 +512,13 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Trac
     ),
     proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
 
-reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
-    Req2 = cowboy_req:stream_reply(Status, Headers, Req),
-    ok = cowboy_req:stream_body(<<>>, fin, Req2),
-    Req2;
-reply_upstream_fin(<<"head">>, Status, Headers, Req) ->
-    Req2 = cowboy_req:stream_reply(Status, Headers, Req),
-    ok = cowboy_req:stream_body(<<>>, fin, Req2),
-    Req2;
+%% For all methods (including HEAD), use reply/4 which Cowboy handles atomically:
+%% - For HEAD, Cowboy sends the response headers (including Content-Length from the
+%%   upstream) but suppresses the body, and correctly keeps the connection alive.
+%%   stream_reply + stream_body(<<>>, fin) was previously used for HEAD but caused
+%%   Cowboy to close keep-alive connections when Harbor returned a non-zero
+%%   Content-Length in HEAD 401/404 responses (0 bytes sent ≠ expected N bytes).
+%%   Docker's connection pool would then hold dead connections, causing POST EOF.
 reply_upstream_fin(_Method, Status, Headers, Req) ->
     cowboy_req:reply(Status, Headers, <<>>, Req).
 
