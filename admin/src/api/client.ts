@@ -8,6 +8,23 @@ export type {
 
 const API = '/api';
 
+function isLocalRealtimeLogEnabled(): boolean {
+  if (import.meta.env.DEV) return true;
+  const host = globalThis.window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+const REALTIME_LOG_ENABLED = isLocalRealtimeLogEnabled();
+
+function realtimeLog(level: 'debug' | 'info' | 'warn' | 'error', ...args: unknown[]): void {
+  if (!REALTIME_LOG_ENABLED) return;
+  // Keep realtime transport logs available only for local/dev troubleshooting.
+  if (level === 'debug') console.debug(...args);
+  else if (level === 'info') console.info(...args);
+  else if (level === 'warn') console.warn(...args);
+  else console.error(...args);
+}
+
 // ---------------------------------------------------------------------------
 // Types — eProxy config / sites / backends
 // ---------------------------------------------------------------------------
@@ -627,20 +644,20 @@ function openRealtimeSse(
 
   function connect() {
     if (closedManually) return;
-    console.debug('[realtime-sse] connecting', { url: url.toString() });
+    realtimeLog('debug', '[realtime-sse] connecting', { url: url.toString() });
     source = new EventSource(url.toString());
     source.addEventListener('snapshot', (event) => {
       try {
         const snap = JSON.parse((event as MessageEvent<string>).data) as RealtimeSnapshot;
         const logsLen = Array.isArray(snap.logs) ? snap.logs.length : -1;
-        console.debug('[realtime-sse] snapshot', { logs: logsLen });
+        realtimeLog('debug', '[realtime-sse] snapshot', { logs: logsLen });
         onMessage(snap);
       } catch {
-        console.error('[realtime-sse] snapshot parse failed');
+        realtimeLog('error', '[realtime-sse] snapshot parse failed');
       }
     });
     source.onerror = (event) => {
-      console.warn('[realtime-sse] error', event);
+      realtimeLog('warn', '[realtime-sse] error', event);
       if (onError) onError(event);
       if (!closedManually) {
         source?.close();
@@ -653,7 +670,7 @@ function openRealtimeSse(
   connect();
   return () => {
     closedManually = true;
-    console.info('[realtime-sse] manual close');
+    realtimeLog('info', '[realtime-sse] manual close');
     source?.close();
     source = null;
   };
@@ -689,7 +706,7 @@ function openRealtimeWebSocket(
     if (closedManually) return;
     clearReconnectTimer();
     const delay = reconnectDelayMs(reconnectAttempt);
-    console.debug('[realtime-ws] scheduling reconnect', { attempt: reconnectAttempt + 1, delay_ms: delay });
+    realtimeLog('debug', '[realtime-ws] scheduling reconnect', { attempt: reconnectAttempt + 1, delay_ms: delay });
     reconnectAttempt += 1;
     reconnectTimer = globalThis.window.setTimeout(connect, delay);
   }
@@ -697,17 +714,17 @@ function openRealtimeWebSocket(
   function connect() {
     if (closedManually) return;
     const url = new URL(baseUrl.toString());
-    console.debug('[realtime-ws] connecting', { url: url.toString() });
+    realtimeLog('debug', '[realtime-ws] connecting', { url: url.toString() });
     ws = new WebSocket(url.toString());
     ws.onopen = () => {
-      console.info('[realtime-ws] open');
+      realtimeLog('info', '[realtime-ws] open');
       reconnectAttempt = 0;
       const token = getToken();
       if (token) {
         try {
           ws?.send(JSON.stringify({ type: 'auth', token }));
         } catch {
-          console.error('[realtime-ws] auth send failed');
+          realtimeLog('error', '[realtime-ws] auth send failed');
         }
       }
     };
@@ -723,10 +740,10 @@ function openRealtimeWebSocket(
           }
           const snap = parsed as unknown as RealtimeSnapshot;
           const logsLen = Array.isArray(snap.logs) ? snap.logs.length : -1;
-          console.debug('[realtime-ws] message', { logs: logsLen });
+          realtimeLog('debug', '[realtime-ws] message', { logs: logsLen });
           onMessage(snap);
         } catch {
-          console.error('[realtime-ws] message parse failed');
+          realtimeLog('error', '[realtime-ws] message parse failed');
           // ignore malformed frames
         }
       };
@@ -738,7 +755,7 @@ function openRealtimeWebSocket(
 
       if (event.data instanceof Blob) {
         void event.data.text().then(parseAndDispatch).catch(() => {
-          console.error('[realtime-ws] blob decode failed');
+          realtimeLog('error', '[realtime-ws] blob decode failed');
         });
         return;
       }
@@ -748,19 +765,19 @@ function openRealtimeWebSocket(
           const raw = new TextDecoder().decode(event.data);
           parseAndDispatch(raw);
         } catch {
-          console.error('[realtime-ws] arraybuffer decode failed');
+          realtimeLog('error', '[realtime-ws] arraybuffer decode failed');
         }
         return;
       }
 
-      console.error('[realtime-ws] unsupported message type', typeof event.data);
+      realtimeLog('error', '[realtime-ws] unsupported message type', typeof event.data);
     };
     ws.onerror = (event) => {
-      console.error('[realtime-ws] error event', event);
+      realtimeLog('error', '[realtime-ws] error event', event);
       if (onError) onError(event);
     };
     ws.onclose = (event) => {
-      console.warn('[realtime-ws] close', { code: event.code, reason: event.reason, wasClean: event.wasClean });
+      realtimeLog('warn', '[realtime-ws] close', { code: event.code, reason: event.reason, wasClean: event.wasClean });
       ws = null;
       const unauthorized = event.code === 4401 || event.code === 1008;
       if (unauthorized) {
@@ -779,7 +796,7 @@ function openRealtimeWebSocket(
   return () => {
     closedManually = true;
     clearReconnectTimer();
-    console.info('[realtime-ws] manual close');
+    realtimeLog('info', '[realtime-ws] manual close');
     try {
       ws?.close();
     } catch {
