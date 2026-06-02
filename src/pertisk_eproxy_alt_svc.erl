@@ -42,13 +42,11 @@ alt_svc_action(Req, Host, RespHeaders) ->
     case console_page_request(Path, cowboy_req:qs(Req)) of
         true -> clear;
         false ->
-            case is_registry_path(Path) of
+            case is_registry_traffic(Req, RespHeaders) of
                 true ->
-                    %% Docker registry protocol (OCI Distribution Spec /v2/ paths) must not
-                    %% receive Alt-Svc. Docker BuildKit's registry client (unlike the Docker
-                    %% daemon) honours Alt-Svc and upgrades to HTTP/3; the buildx imagetools
-                    %% client then fails to parse the manifest response ("unexpected end of
-                    %% JSON input") when fetching via H3.
+                    %% Docker/OCI registry traffic must not receive Alt-Svc. BuildKit's
+                    %% Go registry client may honour Alt-Svc and upgrade to HTTP/3, which
+                    %% can break manifest parsing for some paths/clients.
                     false;
                 false ->
                     case is_grpc_req(Req) orelse is_grpc_resp(RespHeaders) of
@@ -70,18 +68,36 @@ alt_svc_action(Req, Host, RespHeaders) ->
             end
     end.
 
-%% Docker OCI Distribution Spec paths all begin with /v2/.
-%% Suppressing Alt-Svc on these prevents BuildKit's Go registry client from
-%% upgrading to HTTP/3 and hitting H3-specific response parsing failures.
-is_registry_path(<<"/v2/", _/binary>>) -> true;
-is_registry_path(<<"/v2">>) -> true;
-is_registry_path(_) -> false.
+%% Automatic OCI registry traffic detection.
+%% Use request/response header heuristics so path rewrites or non-canonical
+%% routes still suppress Alt-Svc for Docker/OCI traffic.
+is_registry_traffic(Req, RespHeaders) ->
+    has_oci_registry_headers(Req, RespHeaders).
+
+has_oci_registry_headers(Req, RespHeaders) ->
+    ReqAccept = string:lowercase(cowboy_req:header(<<"accept">>, Req, <<>>)),
+    ReqCt = string:lowercase(cowboy_req:header(<<"content-type">>, Req, <<>>)),
+    RespCt = string:lowercase(maps:get(<<"content-type">>, RespHeaders, <<>>)),
+    ApiVersion = string:lowercase(maps:get(<<"docker-distribution-api-version">>, RespHeaders, <<>>)),
+    contains_registry_media_type(ReqAccept)
+        orelse contains_registry_media_type(ReqCt)
+        orelse contains_registry_media_type(RespCt)
+        orelse ApiVersion =/= <<>>.
+
+contains_registry_media_type(Bin) when is_binary(Bin) ->
+    %% Match both Docker distribution and OCI media types.
+    binary:match(Bin, <<"application/vnd.docker.distribution.">>) =/= nomatch
+        orelse binary:match(Bin, <<"application/vnd.oci.">>) =/= nomatch;
+contains_registry_media_type(_) ->
+    false.
 
 %% Detect gRPC / Connect-protocol by REQUEST content-type.
 %% Mirror the checks in pertisk_eproxy_handler:is_grpc_request/1.
 is_grpc_req(Req) ->
     Ct = string:lowercase(cowboy_req:header(<<"content-type">>, Req, <<>>)),
-    is_grpc_content_type(Ct).
+    is_grpc_content_type(Ct)
+        orelse has_connect_rpc_headers(Req)
+        orelse has_grpc_metadata_headers(Req).
 
 %% Detect gRPC / Connect-protocol by RESPONSE content-type.
 %% The Connect protocol always echoes a matching content-type in the response,
@@ -99,6 +115,30 @@ is_grpc_content_type(Ct) ->
         <<"application/connect+", _/binary>> -> true;
         _ -> false
     end.
+
+has_connect_rpc_headers(Req) ->
+    Hdrs = cowboy_req:headers(Req),
+    maps:is_key(<<"connect-protocol-version">>, Hdrs)
+        orelse maps:is_key(<<"connect-timeout-ms">>, Hdrs)
+        orelse maps:is_key(<<"grpc-encoding">>, Hdrs)
+        orelse maps:is_key(<<"grpc-accept-encoding">>, Hdrs)
+        orelse maps:is_key(<<"grpc-status-details-bin">>, Hdrs).
+
+has_grpc_metadata_headers(Req) ->
+    Hdrs = cowboy_req:headers(Req),
+    lists:any(
+        fun(K) when is_binary(K) ->
+            case K of
+                <<"grpc-metadata-", _/binary>> -> true;
+                <<"grpc-timeout">> -> true;
+                <<"x-grpc-web">> -> true;
+                _ -> false
+            end;
+           (_) ->
+            false
+        end,
+        maps:keys(Hdrs)
+    ).
 
 https_front_request(Req) ->
     case cowboy_req:scheme(Req) of
