@@ -107,6 +107,7 @@ FPM_ARGS=(
   -n "$PKG_NAME"
   -v "$VERSION"
   -a amd64
+  --depends sqlite3
   --description "Pertisk Erlang reverse proxy"
   --maintainer "Pertisk Team"
   --license "MIT"

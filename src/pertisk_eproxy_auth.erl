@@ -107,7 +107,8 @@ ingress_local_login_allowed() ->
     end.
 
 use_env_login() ->
-    pertisk_ingress_env:enabled() orelse pertisk_eproxy_env_auth:env_credentials_configured().
+    %% Env credentials are ingress-only; proxy mode should authenticate against SQLite admin_users.
+    pertisk_ingress_env:enabled().
 
 sqlite_login(User, Pass) ->
     UBin = as_bin(User),

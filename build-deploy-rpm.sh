@@ -6,7 +6,7 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-135.181.197.40}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.5.8}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.5.9}}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
@@ -68,6 +68,12 @@ elif command -v yum >/dev/null 2>&1; then
   fi
 else
   sudo rpm -Uvh --replacepkgs "\${PKG_PATH}"
+fi
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "WARNING: sqlite3 is not installed on target host." >&2
+  echo "Local admin login (/api/auth/login) will return 401 until sqlite3 is installed." >&2
+  echo "Install with: sudo dnf install -y sqlite" >&2
 fi
 
 PACKAGE_ROOT="/opt/${PACKAGE_NAME}"

@@ -6,7 +6,7 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-10.1.1.8}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.5.8}}"
+PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.5.9}}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
 # Host Erlang toolchains can crash in beam_asm on some systems; default to
@@ -61,6 +61,13 @@ PKG_PATH="${REMOTE_PATH}/${DEB_FILE}"
 
 sudo dpkg -i "\${PKG_PATH}"
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -f install -y
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+	echo "WARNING: sqlite3 is not installed on target host." >&2
+	echo "Local admin login (/api/auth/login) will return 401 until sqlite3 is installed." >&2
+	echo "Install with: sudo apt-get install -y sqlite3" >&2
+fi
+
 sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl restart "${PACKAGE_NAME}"
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"
