@@ -38,26 +38,44 @@ merge_response_headers(Req, Host, Headers) when is_map(Headers) ->
     end.
 
 alt_svc_action(Req, Host, RespHeaders) ->
-    case console_page_request(cowboy_req:path(Req), cowboy_req:qs(Req)) of
+    Path = cowboy_req:path(Req),
+    case console_page_request(Path, cowboy_req:qs(Req)) of
         true -> clear;
         false ->
-            case is_grpc_req(Req) orelse is_grpc_resp(RespHeaders) of
+            case is_registry_path(Path) of
                 true ->
-                    %% gRPC over H3 is disabled; do not advertise Alt-Svc to gRPC clients
-                    %% (checked on both request and response content-type) or they will
-                    %% upgrade to H3 and receive a 421 redirect loop.
+                    %% Docker registry protocol (OCI Distribution Spec /v2/ paths) must not
+                    %% receive Alt-Svc. Docker BuildKit's registry client (unlike the Docker
+                    %% daemon) honours Alt-Svc and upgrades to HTTP/3; the buildx imagetools
+                    %% client then fails to parse the manifest response ("unexpected end of
+                    %% JSON input") when fetching via H3.
                     false;
                 false ->
-                    case https_front_request(Req) of
+                    case is_grpc_req(Req) orelse is_grpc_resp(RespHeaders) of
                         true ->
-                            case pertisk_eproxy_handler:site_advertise_http3(Host) of
-                                true -> true;
-                                false -> clear
-                            end;
-                        false -> false
+                            %% gRPC over H3 is disabled; do not advertise Alt-Svc to gRPC clients
+                            %% (checked on both request and response content-type) or they will
+                            %% upgrade to H3 and receive a 421 redirect loop.
+                            false;
+                        false ->
+                            case https_front_request(Req) of
+                                true ->
+                                    case pertisk_eproxy_handler:site_advertise_http3(Host) of
+                                        true -> true;
+                                        false -> clear
+                                    end;
+                                false -> false
+                            end
                     end
             end
     end.
+
+%% Docker OCI Distribution Spec paths all begin with /v2/.
+%% Suppressing Alt-Svc on these prevents BuildKit's Go registry client from
+%% upgrading to HTTP/3 and hitting H3-specific response parsing failures.
+is_registry_path(<<"/v2/", _/binary>>) -> true;
+is_registry_path(<<"/v2">>) -> true;
+is_registry_path(_) -> false.
 
 %% Detect gRPC / Connect-protocol by REQUEST content-type.
 %% Mirror the checks in pertisk_eproxy_handler:is_grpc_request/1.

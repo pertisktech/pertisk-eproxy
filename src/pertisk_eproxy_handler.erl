@@ -512,13 +512,22 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Trac
     ),
     proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
 
-%% For all methods (including HEAD), use reply/4 which Cowboy handles atomically:
-%% - For HEAD, Cowboy sends the response headers (including Content-Length from the
-%%   upstream) but suppresses the body, and correctly keeps the connection alive.
-%%   stream_reply + stream_body(<<>>, fin) was previously used for HEAD but caused
-%%   Cowboy to close keep-alive connections when Harbor returned a non-zero
-%%   Content-Length in HEAD 401/404 responses (0 bytes sent ≠ expected N bytes).
-%%   Docker's connection pool would then hold dead connections, causing POST EOF.
+%% For HEAD requests: upstream's Content-Length reflects what GET would return.
+%% Cowboy's reply/4 computes CL from byte_size(Body), then do_reply/4 pattern-
+%% matches method=HEAD and suppresses the body entirely (sends HEADERS+END_STREAM
+%% with no DATA frame).  By passing a fake body of UpstreamCL bytes we get:
+%%   - content-length = UpstreamCL (correct, not 0)
+%%   - HEADERS frame with END_STREAM=true (no DATA frame at all)
+%% This fixes both docker-buildx-imagetools (CL=0 → skip GET → empty JSON) and
+%% containerd (stricter HTTP/2: rejects DATA-after-END_STREAM on HEAD streams).
+%%
+%% HTTP/1.1 HEAD benefits identically: Cowboy sends headers with the correct
+%% CL and no body, keeping keep-alive connections healthy.
+reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
+    UpstreamCL = binary_to_integer(
+        maps:get(<<"content-length">>, Headers, <<"0">>)),
+    FakeBody = binary:copy(<<0>>, UpstreamCL),
+    cowboy_req:reply(Status, maps:remove(<<"content-length">>, Headers), FakeBody, Req);
 reply_upstream_fin(_Method, Status, Headers, Req) ->
     cowboy_req:reply(Status, Headers, <<>>, Req).
 
