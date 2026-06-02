@@ -3,8 +3,11 @@
 %% Exposes:
 %%   pertisk_eproxy_requests_total{host, status, proto} — counter
 %%     proto: http1 | tls_h1 | h2 | h3 | grpc
+%%   pertisk_eproxy_site_requests_total{site, status, proto} — counter
 %%   pertisk_eproxy_bytes_received_total{host} — client → proxy request body bytes
 %%   pertisk_eproxy_bytes_sent_total{host}     — proxy → client response body bytes
+%%   pertisk_eproxy_site_bytes_received_total{site} — client → proxy request body bytes
+%%   pertisk_eproxy_site_bytes_sent_total{site}     — proxy → client response body bytes
 %%   pertisk_eproxy_request_duration_ms{host}      — histogram
 %%   pertisk_eproxy_upstream_connections{backend}  — gauge
 %%   pertisk_eproxy_upstream_healthy{backend}      — gauge
@@ -15,8 +18,9 @@
 -behaviour(gen_server).
 
 -export([setup/0, start_link/0]).
--export([inc_request/3, observe_duration/2,
-         record_proxy_bytes/3,
+-export([inc_request/3, inc_site_request/3,
+         observe_duration/2, observe_duration/3,
+         record_proxy_bytes/3, record_site_bytes/3,
          set_upstream_conn/3,
          set_upstream_conns/2, set_upstream_healthy/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -35,6 +39,11 @@ setup() ->
         {labels, [host, status, proto]}
     ]),
     prometheus_counter:declare([
+        {name,   pertisk_eproxy_site_requests_total},
+        {help,   "Total proxy requests grouped by site"},
+        {labels, [site, status, proto]}
+    ]),
+    prometheus_counter:declare([
         {name,   pertisk_eproxy_bytes_received_total},
         {help,   "Bytes read from clients (proxy request bodies)"},
         {labels, [host]}
@@ -43,6 +52,16 @@ setup() ->
         {name,   pertisk_eproxy_bytes_sent_total},
         {help,   "Bytes written to clients (proxy response bodies)"},
         {labels, [host]}
+    ]),
+    prometheus_counter:declare([
+        {name,   pertisk_eproxy_site_bytes_received_total},
+        {help,   "Bytes read from clients grouped by site"},
+        {labels, [site]}
+    ]),
+    prometheus_counter:declare([
+        {name,   pertisk_eproxy_site_bytes_sent_total},
+        {help,   "Bytes written to clients grouped by site"},
+        {labels, [site]}
     ]),
     prometheus_histogram:declare([
         {name,    pertisk_eproxy_request_duration_ms},
@@ -73,6 +92,10 @@ start_link() ->
 inc_request(Host, StatusCode, Proto) when is_binary(Proto) ->
     prometheus_counter:inc(pertisk_eproxy_requests_total, [Host, StatusCode, Proto]).
 
+-spec inc_site_request(binary(), binary(), binary()) -> ok.
+inc_site_request(Site, StatusCode, Proto) when is_binary(Proto) ->
+    prometheus_counter:inc(pertisk_eproxy_site_requests_total, [Site, StatusCode, Proto]).
+
 %% @doc Add proxied byte volumes for admin `/api/stats` throughput (per virtual host).
 -spec record_proxy_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
 record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
@@ -85,8 +108,25 @@ record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Rec
         _ -> prometheus_counter:inc(pertisk_eproxy_bytes_sent_total, [Host], Sent)
     end,
     ok.
+
+-spec record_site_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
+record_site_bytes(Site, Recv, Sent)
+when is_binary(Site), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
+    case Recv of
+        0 -> ok;
+        _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_received_total, [Site], Recv)
+    end,
+    case Sent of
+        0 -> ok;
+        _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_sent_total, [Site], Sent)
+    end,
+    ok.
+
 observe_duration(Host, DurationMs) ->
     prometheus_histogram:observe(pertisk_eproxy_request_duration_ms, [Host], DurationMs).
+
+observe_duration(Host, _Site, DurationMs) ->
+    observe_duration(Host, DurationMs).
 
 %% @doc Push one upstream's in-flight count immediately (pick/done path). Periodic
 %% {@link set_upstream_conns/2} from the metrics gen_server still reconciles drift.

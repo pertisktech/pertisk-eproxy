@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([log_proxy/6, log_proxy/7, log_system/3, list/2, count/0]).
+-export([log_proxy/6, log_proxy/7, log_proxy/8, log_system/3, list/2, list/3, count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -21,15 +21,19 @@ start_link() ->
 
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto) ->
-    log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, <<>>).
+    log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, <<>>, Host).
 
 -spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary()) -> ok.
 log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream) ->
+    log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Host).
+
+-spec log_proxy(binary(), binary(), binary(), integer(), non_neg_integer(), term(), binary(), binary()) -> ok.
+log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site) ->
     case should_skip_hot_path(Path, Status) of
         true ->
             ok;
         false ->
-            gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream})
+            gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site})
     end.
 
 should_skip_hot_path(Path, Status) ->
@@ -48,7 +52,11 @@ log_system(Level, Type, Message) ->
 
 -spec list(binary() | undefined, binary() | undefined) -> [map()].
 list(Type, HostFilter) ->
-    gen_server:call(?SERVER, {list, Type, HostFilter}).
+    list(Type, HostFilter, undefined).
+
+-spec list(binary() | undefined, binary() | undefined, binary() | undefined) -> [map()].
+list(Type, HostFilter, SiteFilter) ->
+    gen_server:call(?SERVER, {list, Type, HostFilter, SiteFilter}).
 
 -spec count() -> non_neg_integer().
 count() ->
@@ -58,11 +66,12 @@ count() ->
 init([]) ->
     {ok, #st{}}.
 
-handle_call({list, Type, HostFilter}, _From, #st{entries = Es} = St) ->
+handle_call({list, Type, HostFilter, SiteFilter}, _From, #st{entries = Es} = St) ->
     Filtered = lists:filter(
         fun(E) ->
             T = maps:get(<<"type">>, E, <<"proxy">>),
             H = maps:get(<<"host">>, E, <<>>),
+            S = maps:get(<<"site">>, E, <<>>),
             TypeOk = case Type of
                 undefined -> true;
                 <<>> -> true;
@@ -76,7 +85,12 @@ handle_call({list, Type, HostFilter}, _From, #st{entries = Es} = St) ->
                 <<>> -> true;
                 HF -> binary:match(H, HF) =/= nomatch orelse H =:= HF
             end,
-            TypeOk andalso HostOk
+            SiteOk = case SiteFilter of
+                undefined -> true;
+                <<>> -> true;
+                SF -> binary:match(S, SF) =/= nomatch orelse S =:= SF
+            end,
+            TypeOk andalso HostOk andalso SiteOk
         end,
         Es
     ),
@@ -88,7 +102,7 @@ handle_call(count, _From, #st{entries = Es} = St) ->
 handle_call(_Req, _From, St) ->
     {reply, {error, unknown}, St}.
 
-handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}, #st{entries = Es}) ->
+handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site0}, #st{entries = Es}) ->
     Ts = iolist_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])),
     Level = case Status of
         S when S >= 500 -> <<"error">>;
@@ -103,6 +117,7 @@ handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream}
         <<"level">> => Level,
         <<"type">> => <<"proxy">>,
         <<"host">> => Host,
+        <<"site">> => normalize_site(Site0, Host),
         <<"path">> => Path,
         <<"method">> => Method,
         <<"status">> => Status,
@@ -148,4 +163,8 @@ protocol_short('HTTP/2') -> <<"2">>;
 protocol_short('HTTP/1.1') -> <<"1.1">>;
 protocol_short('HTTP/1.0') -> <<"1.0">>;
 protocol_short(_) -> <<"1.1">>.
+
+normalize_site(Site, _Host) when is_binary(Site), byte_size(Site) > 0 -> Site;
+normalize_site(_Site, Host) when is_binary(Host), byte_size(Host) > 0 -> Host;
+normalize_site(_, _) -> <<"unknown">>.
 

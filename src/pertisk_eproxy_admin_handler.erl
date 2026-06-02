@@ -104,6 +104,13 @@ handle(<<"GET">>, management, Req) ->
 handle(<<"GET">>, stats, Req) ->
     json_reply(200, pertisk_eproxy_stats:snapshot(), Req);
 
+handle(<<"GET">>, logs, Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    Type = maps:get(<<"type">>, Qs, undefined),
+    Host = maps:get(<<"host">>, Qs, undefined),
+    Site = maps:get(<<"site">>, Qs, undefined),
+    json_reply(200, pertisk_eproxy_access_log:list(Type, Host, Site), Req);
+
 handle(<<"GET">>, auth_config, Req) ->
     json_reply(200, pertisk_eproxy_auth:auth_config_map(), Req);
 handle(<<"HEAD">>, auth_config, Req) ->

@@ -272,6 +272,9 @@ export type Metrics = {
   management_requests_total?: number;
   site_h2_requests_total: Record<string, number>;
   site_h3_requests_total: Record<string, number>;
+  site_requests_total?: Record<string, number>;
+  site_bytes_received_total?: Record<string, number>;
+  site_bytes_sent_total?: Record<string, number>;
   site_h3_vs_h2_ratio: Record<string, number>;
   active_connections: number;
   connections_per_site: Record<string, number>;
@@ -286,6 +289,7 @@ export interface LogEntry {
   timestamp: string;
   level: LogLevel;
   host?: string;
+  site?: string;
   path?: string;
   upstream?: string;
   status?: number;
@@ -862,10 +866,11 @@ export const api = {
   version: () => get<VersionResponse>('/version'),
   metrics: () => get<Metrics>('/stats'),
   management: () => get<ManagementInfo>('/management'),
-  logs: (params?: { type?: 'system' | 'proxy' | 'all'; host?: string }) => {
+  logs: (params?: { type?: 'system' | 'proxy' | 'all'; host?: string; site?: string }) => {
     const search = new URLSearchParams();
     if (params?.type && params.type !== 'all') search.set('type', params.type);
     if (params?.host?.trim()) search.set('host', params.host.trim());
+    if (params?.site?.trim()) search.set('site', params.site.trim());
     const q = search.toString();
     return get<LogEntry[]>(q ? `/logs?${q}` : '/logs');
   },

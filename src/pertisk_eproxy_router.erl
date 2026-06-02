@@ -31,7 +31,8 @@
 
 -type route_match() :: #{
     upstream_path := binary(),
-    backend       := binary()
+    backend       := binary(),
+    site_host     := binary()
 }.
 
 %% ---------------------------------------------------------------------------
@@ -102,7 +103,11 @@ find_host([], _Host, _Path) ->
     {error, no_route};
 find_host([{SiteHost, Rules} | Rest], Host, Path) ->
     case host_matches(Host, SiteHost) of
-        true  -> match_rules(Rules, Path);
+        true  ->
+            case match_rules(Rules, Path) of
+                {ok, Match} -> {ok, Match#{site_host => SiteHost}};
+                {error, no_route} -> {error, no_route}
+            end;
         false -> find_host(Rest, Host, Path)
     end.
 

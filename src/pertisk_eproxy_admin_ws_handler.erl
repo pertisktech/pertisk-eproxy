@@ -160,5 +160,5 @@ log_ws_upgrade(Req) ->
     Host = cowboy_req:host(Req),
     Path = cowboy_req:path(Req),
     Proto = cowboy_req:version(Req),
-    pertisk_eproxy_access_log:log_proxy(Host, <<"GET">>, Path, 101, 0, Proto, <<"management">>),
+    pertisk_eproxy_access_log:log_proxy(Host, <<"GET">>, Path, 101, 0, Proto, <<"management">>, <<"admin">>),
     ok.

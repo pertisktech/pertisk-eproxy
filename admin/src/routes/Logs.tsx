@@ -48,6 +48,8 @@ type LogsProps = {
   initialLogType?: LogFilterType | 'crash_error';
 };
 
+type DomainSource = 'host' | 'site';
+
 /** Match a status code against a comma-separated filter string.
  *  Each token may be a number ("404") or a range shorthand ("4xx", "5xx", etc.).
  */
@@ -68,10 +70,12 @@ function matchesStatusFilter(status: number | undefined, filter: string): boolea
 
 export default function Logs({ initialLogType = 'all' }: LogsProps) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [allEntries, setAllEntries] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [logType, setLogType] = useState<LogFilterType | 'crash_error'>(initialLogType);
-  const [hostFilter, setHostFilter] = useState('');
+  const [domainSource, setDomainSource] = useState<DomainSource>('site');
+  const [domainFilter, setDomainFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => {
@@ -97,10 +101,11 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
     }
 
     function filterLogs(logs: LogEntry[]): LogEntry[] {
-      const hostNeedle = hostFilter.trim().toLowerCase();
+      const selected = domainFilter.trim().toLowerCase();
       return logs.filter((entry) => {
         if (!acceptType(entry)) return false;
-        if (hostNeedle && !(entry.host ?? '').toLowerCase().includes(hostNeedle)) return false;
+        const domainValue = (domainSource === 'site' ? entry.site : entry.host) ?? '';
+        if (selected && domainValue.toLowerCase() !== selected) return false;
         if (!matchesStatusFilter(entry.status, statusFilter)) return false;
         return true;
       });
@@ -110,6 +115,7 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
       hasFrame = true;
       if (!autoRefresh) return;
       const logs = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+      setAllEntries(logs);
       setEntries(filterLogs(logs));
       setLoading(false);
     }
@@ -122,7 +128,16 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
       window.clearTimeout(firstFrameTimer);
       stop();
     };
-  }, [autoRefresh, logType, hostFilter, statusFilter]);
+  }, [autoRefresh, logType, domainSource, domainFilter, statusFilter]);
+
+  const domainOptions = Array.from(
+    new Set(
+      allEntries
+        .map((entry) => (domainSource === 'site' ? entry.site : entry.host) ?? '')
+        .map((v) => v.trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <section className={styles.section}>
@@ -150,16 +165,47 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
           </div>
           {(logType === 'proxy' || logType === 'all' || logType === 'crash_error') && (
             <div className={styles.dropdownWrap}>
-              <label className={styles.dropdownLabel}>Host</label>
-              <input
-                type="text"
-                className={styles.hostInput}
-                placeholder="Filter by host…"
-                value={hostFilter}
-                onChange={(e) => setHostFilter(e.target.value)}
-                title="Filter by domain/host name"
-                aria-label="Host filter"
-              />
+              <label className={styles.dropdownLabel}>Domain Field</label>
+              <div className={styles.dropdownInner}>
+                <select
+                  className={styles.dropdown}
+                  value={domainSource}
+                  onChange={(e) => {
+                    setDomainSource(e.target.value as DomainSource);
+                    setDomainFilter('');
+                  }}
+                  title="Choose domain source"
+                  aria-label="Domain source"
+                >
+                  <option value="site">Site</option>
+                  <option value="host">Host</option>
+                </select>
+                <span className={styles.dropdownChevron} aria-hidden>
+                  <FaIcon className="fas fa-chevron-down" />
+                </span>
+              </div>
+            </div>
+          )}
+          {(logType === 'proxy' || logType === 'all' || logType === 'crash_error') && (
+            <div className={styles.dropdownWrap}>
+              <label className={styles.dropdownLabel}>{domainSource === 'site' ? 'Site' : 'Host'}</label>
+              <div className={styles.dropdownInner}>
+                <select
+                  className={styles.dropdown}
+                  value={domainFilter}
+                  onChange={(e) => setDomainFilter(e.target.value)}
+                  title="Filter logs by selected domain"
+                  aria-label="Domain filter"
+                >
+                  <option value="">All {domainSource === 'site' ? 'sites' : 'hosts'}</option>
+                  {domainOptions.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+                <span className={styles.dropdownChevron} aria-hidden>
+                  <FaIcon className="fas fa-chevron-down" />
+                </span>
+              </div>
             </div>
           )}
           {(logType === 'proxy' || logType === 'all' || logType === 'crash_error') && (
@@ -195,7 +241,7 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
               <th>Level</th>
               <th>Method</th>
               <th className={styles.colProtoEnc}>Protocol</th>
-              <th>Host</th>
+              <th>Domain</th>
               <th>Path</th>
               <th>Upstream</th>
               <th>Status</th>
@@ -225,7 +271,7 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
                   <td className={levelClass(e.level)}>{e.level ?? '—'}</td>
                   <td className={styles.method}>{e.method ?? '—'}</td>
                   <td className={`${styles.protoEnc} ${protoColorClass(e)}`}>{protoEncDisplay(e)}</td>
-                  <td>{e.host ?? '—'}</td>
+                  <td>{(domainSource === 'site' ? e.site : e.host) ?? '—'}</td>
                   <td>{e.path ?? '—'}</td>
                   <td>{e.upstream ?? '—'}</td>
                   <td>{e.status ?? '—'}</td>

@@ -71,7 +71,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
     TrackingId = request_tracking_id(Req),
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
-            pertisk_eproxy_metrics:inc_request(Host, <<"404">>, Proto),
+            inc_request_metrics(Host, Host, <<"404">>, Proto),
             H404 = maybe_add_alt_svc(
                 Req,
                 Host,
@@ -81,9 +81,9 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             {H404Out, Body404Out} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(404, Req, H404, Body404),
             Req2 = cowboy_req:reply(404, H404Out, Body404Out, Req),
-            log_access(Host, Method, Path, 404, T0, Vsn, <<>>),
+            log_access(Host, Host, Method, Path, 404, T0, Vsn, <<>>),
             {ok, Req2, State};
-        {ok, #{upstream_path := UpstreamPath, backend := BackendName}} ->
+        {ok, #{upstream_path := UpstreamPath, backend := BackendName, site_host := SiteHost}} ->
             ClientIp = client_ip(Req),
             case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
@@ -91,6 +91,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                         Req,
                         Method,
                         Host,
+                                SiteHost,
                         UpstreamPath,
                         Qs,
                         ClientIp,
@@ -98,9 +99,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                     ) of
                         {ok, StatusCode, Req2} ->
                             StatusBin = integer_to_binary(StatusCode),
-                            pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                            inc_request_metrics(Host, SiteHost, StatusBin, Proto),
                             log_access(
                                 Host,
+                                SiteHost,
                                 Method,
                                 Path,
                                 StatusCode,
@@ -110,7 +112,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             ),
                             {ok, Req2, State};
                         _ ->
-                            pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
+                            inc_request_metrics(Host, SiteHost, <<"502">>, Proto),
                             H502 = maybe_add_alt_svc(
                                 Req,
                                 Host,
@@ -120,18 +122,18 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             {H502Out, Body502Out} =
                                 pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
                             Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
-                            log_access(Host, Method, Path, 502, T0, Vsn, <<>>),
+                            log_access(Host, SiteHost, Method, Path, 502, T0, Vsn, <<>>),
                             {ok, Req2, State}
                     end;
                 {ok, UpstreamAddr} ->
-                    Result = proxy_request(Req, Method, Host, UpstreamPath, Qs,
+                    Result = proxy_request(Req, Method, Host, SiteHost, UpstreamPath, Qs,
                                            UpstreamAddr, ClientIp, TrackingId),
                     case Result of
                         {ok, StatusCode, Req2} ->
                             StatusBin = integer_to_binary(StatusCode),
-                            pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                            inc_request_metrics(Host, SiteHost, StatusBin, Proto),
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
-                            log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
+                            log_access(Host, SiteHost, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
                             {ok, Req2, State};
                             {ok_stream_aborted, StatusCode, Req2} ->
                                 %% Response headers were already sent and the stream was
@@ -140,9 +142,9 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                 %% periodically close streams, and treating this as a hard
                                 %% backend failure causes false circuit-breaker trips.
                                 StatusBin = integer_to_binary(StatusCode),
-                                pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                                inc_request_metrics(Host, SiteHost, StatusBin, Proto),
                                 pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
-                                log_access(Host, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
+                                log_access(Host, SiteHost, Method, Path, StatusCode, T0, Vsn, UpstreamAddr),
                                 {ok, Req2, State};
                         {error, Reason} ->
                             pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
@@ -150,6 +152,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                 Req,
                                 Method,
                                 Host,
+                                SiteHost,
                                 UpstreamPath,
                                 Qs,
                                 ClientIp,
@@ -157,9 +160,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                             ) of
                                 {ok, StatusCode, Req2} ->
                                     StatusBin = integer_to_binary(StatusCode),
-                                    pertisk_eproxy_metrics:inc_request(Host, StatusBin, Proto),
+                                    inc_request_metrics(Host, SiteHost, StatusBin, Proto),
                                     log_access(
                                         Host,
+                                        SiteHost,
                                         Method,
                                         Path,
                                         StatusCode,
@@ -169,7 +173,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                     ),
                                     {ok, Req2, State};
                                 _ ->
-                                    pertisk_eproxy_metrics:inc_request(Host, <<"502">>, Proto),
+                                    inc_request_metrics(Host, SiteHost, <<"502">>, Proto),
                                     lager:warning("Proxy error ~p for ~s~s -> ~s",
                                                   [Reason, Host, Path, UpstreamAddr]),
                                     H502 = maybe_add_alt_svc(
@@ -181,35 +185,39 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                     {H502Out, Body502Out} =
                                         pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
                                     Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
-                                    log_access(Host, Method, Path, 502, T0, Vsn, UpstreamAddr),
+                                    log_access(Host, SiteHost, Method, Path, 502, T0, Vsn, UpstreamAddr),
                                     {ok, Req2, State}
                             end
                     end
             end
     end.
 
-maybe_proxy_via_local_management(Req, Method, Host, UpstreamPath, Qs, ClientIp, TrackingId) ->
+maybe_proxy_via_local_management(Req, Method, Host, Site, UpstreamPath, Qs, ClientIp, TrackingId) ->
     case should_try_local_management_fallback(Host, UpstreamPath) of
         false ->
             no_fallback;
         true ->
             Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
-            proxy_request(Req, Method, Host, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId)
+            proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId)
     end.
 
 should_try_local_management_fallback(Host, _Path) ->
     LowerHost = string:lowercase(Host),
     binary:match(LowerHost, <<"admin.">>) =:= {0, byte_size(<<"admin.">>)}.
 
-log_access(Host, Method, Path, Status, T0, Vsn, Upstream) ->
+log_access(Host, Site, Method, Path, Status, T0, Vsn, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
-    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, Vsn, Upstream).
+    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, Vsn, Upstream, Site).
+
+inc_request_metrics(Host, Site, StatusCode, Proto) ->
+    ok = pertisk_eproxy_metrics:inc_request(Host, StatusCode, Proto),
+    ok = pertisk_eproxy_metrics:inc_site_request(Site, StatusCode, Proto).
 
 %% -------------------------------------------------------------------------
 %% Core proxy logic using gun
 %% -------------------------------------------------------------------------
 
-proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
+proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
     {UpHost, UpPort, Transport} = parse_upstream(UpstreamAddr),
     FullPath = case Qs of
         <<>> -> UpstreamPath;
@@ -237,6 +245,7 @@ proxy_request(Req, Method, Host, UpstreamPath, Qs, UpstreamAddr, ClientIp, Track
                 ConnPid,
                 Method,
                 Host,
+                Site,
                 FullPath,
                 ClientIp,
                 TrackingId,
@@ -352,6 +361,7 @@ do_proxy(
     ConnPid,
     Method,
     Host,
+    Site,
     FullPath,
     ClientIp,
     TrackingId,
@@ -380,6 +390,7 @@ do_proxy(
                         ConnPid,
                         StreamRef,
                         Host,
+                        Site,
                         TrackingId,
                         ReqBodyBytes
                     );
@@ -393,11 +404,12 @@ do_proxy(
                                 Status,
                                 RespHeaders,
                                 Host,
+                                Site,
                                 TrackingId,
                                 ReqBodyBytes
                             );
                         {response, fin, Status, RespHeaders} ->
-                            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
+                            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, 0),
                             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
                             CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
                             Req2 = reply_upstream_fin(Method, Status, with_tracking_id_header(TrackingId, CowboyHeaders), Req1),
@@ -429,6 +441,7 @@ do_proxy(
                                 ConnPid2,
                                 Method,
                                 Host,
+                                Site,
                                 FullPath,
                                 ClientIp,
                                 TrackingId,
@@ -471,7 +484,7 @@ max_proxy_retries({down, shutdown}, UpHost) ->
 max_proxy_retries(_ProxyReason, _UpHost) ->
     1.
 
-do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes) ->
+do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, Site, TrackingId, ReqBodyBytes) ->
     %% gRPC watch/stream calls may stay idle before the first message; do not
     %% enforce the generic HTTP request timeout on initial response await.
     case gun:await(ConnPid, StreamRef, infinity) of
@@ -486,12 +499,12 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes)
                 with_tracking_id_header(TrackingId, CowboyHeaders),
                 Req1
             ),
-            proxy_grpc_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status);
+            proxy_grpc_stream_loop(ConnPid, StreamRef, StreamReq, Host, Site, ReqBodyBytes, 0, Status);
         {response, fin, Status, RespHeaders} ->
             {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
             CowboyHeaders = pertisk_eproxy_response_headers:merge(RawHeaders),
             Req2 = cowboy_req:reply(Status, with_tracking_id_header(TrackingId, CowboyHeaders), <<>>, Req1),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, 0),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, 0),
             {ok, Status, Req2};
         {error, Reason} ->
             {error, Reason};
@@ -502,7 +515,7 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, TrackingId, ReqBodyBytes)
 %% For long-lived chunked HTTP responses (for example Kubernetes watch APIs),
 %% stream upstream body chunks directly to the client instead of waiting for a
 %% terminal body frame that may arrive after much longer than REQUEST_TIMEOUT.
-do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, TrackingId, ReqBodyBytes) ->
+do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Site, TrackingId, ReqBodyBytes) ->
     {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
     CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
     StreamReq = cowboy_req:stream_reply(
@@ -510,7 +523,7 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Trac
         with_tracking_id_header(TrackingId, CowboyHeaders),
         Req1
     ),
-    proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
+    proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, Site, ReqBodyBytes, 0, Status).
 
 %% For HEAD requests: upstream's Content-Length reflects what GET would return.
 %% Cowboy's reply/4 computes CL from byte_size(Body), then do_reply/4 pattern-
@@ -531,7 +544,7 @@ reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
 reply_upstream_fin(_Method, Status, Headers, Req) ->
     cowboy_req:reply(Status, Headers, <<>>, Req).
 
-proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
+proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBytes, Status) ->
     case gun:await(ConnPid, StreamRef, infinity) of
         {data, nofin, Chunk} ->
             ChunkBin = iolist_to_binary(Chunk),
@@ -541,6 +554,7 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
                 StreamRef,
                 Req,
                 Host,
+                Site,
                 ReqBodyBytes,
                 RespBytes + byte_size(ChunkBin),
                 Status
@@ -549,11 +563,11 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             ChunkBin = iolist_to_binary(Chunk),
             ok = cowboy_req:stream_body(ChunkBin, fin, Req),
             FinalRespBytes = RespBytes + byte_size(ChunkBin),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, FinalRespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, FinalRespBytes),
             {ok, Status, Req};
         {trailers, Trailers} ->
             ok = maybe_stream_trailers(Req, Trailers),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
             {ok, Status, Req};
         {error, Reason} ->
             %% Response headers were already streamed to the client via stream_reply/3.
@@ -562,7 +576,7 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             lager:info("Upstream stream ended after response started: ~p", [Reason]),
             pertisk_eproxy_upstream_pool:invalidate(ConnPid),
             _ = catch cowboy_req:stream_body(<<>>, fin, Req),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
             %% Return ok_stream_aborted so the caller can report error to the
             %% circuit breaker without attempting a second HTTP reply.
             {ok_stream_aborted, Status, Req};
@@ -570,7 +584,7 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             {error, {await_stream_unexpected, Other}}
     end.
 
-proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, Status) ->
+proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBytes, Status) ->
     case gun:await(ConnPid, StreamRef, infinity) of
         {data, nofin, Chunk} ->
             ChunkBin = iolist_to_binary(Chunk),
@@ -580,6 +594,7 @@ proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
                 StreamRef,
                 Req,
                 Host,
+                Site,
                 ReqBodyBytes,
                 RespBytes + byte_size(ChunkBin),
                 Status
@@ -588,11 +603,11 @@ proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             ChunkBin = iolist_to_binary(Chunk),
             ok = cowboy_req:stream_body(ChunkBin, fin, Req),
             FinalRespBytes = RespBytes + byte_size(ChunkBin),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, FinalRespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, FinalRespBytes),
             {ok, Status, Req};
         {trailers, Trailers} ->
             ok = maybe_stream_trailers(Req, Trailers),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
             {ok, Status, Req};
         {error, Reason} ->
             %% gRPC headers have already been sent with stream_reply/3; finalize the
@@ -601,7 +616,7 @@ proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, ReqBodyBytes, RespBytes, S
             lager:info("Upstream gRPC stream ended after response started: ~p", [Reason]),
             pertisk_eproxy_upstream_pool:invalidate(ConnPid),
             _ = catch cowboy_req:stream_body(<<>>, fin, Req),
-            ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, ReqBodyBytes, RespBytes),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
             {ok_stream_aborted, Status, Req};
         Other ->
             {error, {await_stream_unexpected, Other}}
@@ -644,6 +659,10 @@ maybe_invalidate_connection(ConnPid, Reason) ->
 
 is_connection_fatal_error({stream_error, {closing, owner_down}}) -> false;
 is_connection_fatal_error(_) -> true.
+
+record_proxy_bytes_metrics(Host, Site, Recv, Sent) ->
+    ok = pertisk_eproxy_metrics:record_proxy_bytes(Host, Recv, Sent),
+    ok = pertisk_eproxy_metrics:record_site_bytes(Site, Recv, Sent).
 
 %% -------------------------------------------------------------------------
 %% Header helpers

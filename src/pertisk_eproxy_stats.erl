@@ -27,6 +27,9 @@ snapshot() ->
     Grpc = sum_proto(L, <<"grpc">>),
     SiteH2 = host_sums_by_proto(L, <<"h2">>),
     SiteH3 = host_sums_by_proto(L, <<"h3">>),
+    SiteReq = sum_site_requests(),
+    SiteRecv = counter_sums_by_label(pertisk_eproxy_site_bytes_received_total, site),
+    SiteSent = counter_sums_by_label(pertisk_eproxy_site_bytes_sent_total, site),
     RatioGlobal = case H2 of
         0 -> 0.0;
         _ -> H3 / H2
@@ -46,6 +49,9 @@ snapshot() ->
         <<"h3_vs_h2_ratio">> => RatioGlobal,
         <<"site_h2_requests_total">> => SiteH2,
         <<"site_h3_requests_total">> => SiteH3,
+        <<"site_requests_total">> => SiteReq,
+        <<"site_bytes_received_total">> => SiteRecv,
+        <<"site_bytes_sent_total">> => SiteSent,
         <<"site_h3_vs_h2_ratio">> => RatioByHost,
         <<"active_connections">> => ActiveConn,
         <<"connections_per_site">> => ConnPerSite,
@@ -109,6 +115,46 @@ host_sums_by_proto(L, Proto) ->
                         maps:update_with(H, fun(Old) -> Old + V end, V, Acc);
                     _ ->
                         Acc
+                end;
+           (_, Acc) ->
+                Acc
+        end,
+        #{},
+        L
+    ),
+    maps:fold(
+        fun(K, V, Acc) -> Acc#{iolist_to_binary(io_lib:format("~s", [K])) => V} end,
+        #{},
+        M
+    ).
+
+sum_site_requests() ->
+    L = counter_values(pertisk_eproxy_site_requests_total),
+    M = lists:foldl(
+        fun({LP, V}, Acc) when is_list(LP) ->
+                case label_value(LP, site) of
+                    undefined -> Acc;
+                    Site -> maps:update_with(Site, fun(Old) -> Old + V end, V, Acc)
+                end;
+           (_, Acc) ->
+                Acc
+        end,
+        #{},
+        L
+    ),
+    maps:fold(
+        fun(K, V, Acc) -> Acc#{iolist_to_binary(io_lib:format("~s", [K])) => V} end,
+        #{},
+        M
+    ).
+
+counter_sums_by_label(Name, LabelKey) ->
+    L = counter_values(Name),
+    M = lists:foldl(
+        fun({LP, V}, Acc) when is_list(LP) ->
+                case label_value(LP, LabelKey) of
+                    undefined -> Acc;
+                    Label -> maps:update_with(Label, fun(Old) -> Old + V end, V, Acc)
                 end;
            (_, Acc) ->
                 Acc

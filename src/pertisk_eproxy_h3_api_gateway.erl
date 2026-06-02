@@ -195,8 +195,8 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                     Hdrs,
                     <<"gRPC over HTTP/3 is disabled on this listener; retry over HTTPS/HTTP/2">>
                 ),
-                pertisk_eproxy_metrics:inc_request(LogHost, <<"421">>, <<"h3">>),
-                log_h3_access(LogHost, Method, PathOnly, 421, T0, <<>>),
+                inc_h3_metrics(LogHost, LogHost, <<"421">>),
+                log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
                 ok;
             false ->
                 case should_force_h2_fallback(PathOnly, Method) of
@@ -212,14 +212,14 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                             Hdrs,
                             <<"Long-poll endpoint is served over HTTPS/HTTP/2; retry without HTTP/3">>
                         ),
-                        pertisk_eproxy_metrics:inc_request(LogHost, <<"421">>, <<"h3">>),
-                        log_h3_access(LogHost, Method, PathOnly, 421, T0, <<>>),
+                        inc_h3_metrics(LogHost, LogHost, <<"421">>),
+                        log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
                         ok;
                     false ->
                         Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
                         case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
-                pertisk_eproxy_metrics:inc_request(LogHost, <<"404">>, <<"h3">>),
+                inc_h3_metrics(LogHost, LogHost, <<"404">>),
                 _ = h3_reply_status(
                     H3Conn,
                     StreamId,
@@ -227,9 +227,9 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                     [{<<"content-type">>, <<"text/plain">>}],
                     <<"No route found for host: ", LogHost/binary>>
                 ),
-                log_h3_access(LogHost, Method, PathOnly, 404, T0, <<>>),
+                log_h3_access(LogHost, LogHost, Method, PathOnly, 404, T0, <<>>),
                 ok;
-            {ok, #{upstream_path := UpPath, backend := BackendName}} ->
+            {ok, #{upstream_path := UpPath, backend := BackendName, site_host := SiteHost}} ->
                 ClientIp = client_ip_h3(H3Conn, Headers),
                 ProxyCtx = #{
                     method => Method,
@@ -244,20 +244,19 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 },
                 case h3_proxy_for_backend(ProxyCtx) of
                     {error, no_healthy_upstream} ->
-                        pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
+                        inc_h3_metrics(LogHost, SiteHost, <<"502">>),
                         reply_502_plain(H3Conn, StreamId),
-                        log_h3_access(LogHost, Method, PathOnly, 502, T0, <<>>),
+                        log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
                         ok;
                     {ok, UpstreamAddr, ProxyResult} ->
                         case ProxyResult of
                             {ok, Status0, RespHeaders, RespBody} ->
                                 Status = gun_response_status_int(Status0),
                                 StatusBin = integer_to_binary(Status),
-                                pertisk_eproxy_metrics:inc_request(LogHost, StatusBin, <<"h3">>),
+                                inc_h3_metrics(LogHost, SiteHost, StatusBin),
                                 RespBin = safe_iolist_to_binary(RespBody),
-                                ok = pertisk_eproxy_metrics:record_proxy_bytes(
-                                    LogHost, byte_size(Body), byte_size(RespBin)
-                                ),
+                                ok = pertisk_eproxy_metrics:record_proxy_bytes(LogHost, byte_size(Body), byte_size(RespBin)),
+                                ok = pertisk_eproxy_metrics:record_site_bytes(SiteHost, byte_size(Body), byte_size(RespBin)),
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, ok
                                 ),
@@ -280,10 +279,10 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                         true -> <<"management-local">>;
                                         false -> UpstreamAddr
                                     end,
-                                log_h3_access(LogHost, Method, PathOnly, Status, T0, UpstreamLog),
+                                log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, UpstreamLog),
                                 ok;
                             {error, ProxyReason} ->
-                                pertisk_eproxy_metrics:inc_request(LogHost, <<"502">>, <<"h3">>),
+                                inc_h3_metrics(LogHost, SiteHost, <<"502">>),
                                 ok = pertisk_eproxy_backend:done_upstream(
                                     BackendName, UpstreamAddr, error
                                 ),
@@ -292,7 +291,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                                     [ProxyReason, LogHost, PathOnly, UpstreamAddr]
                                 ),
                                 reply_502_plain(H3Conn, StreamId),
-                                log_h3_access(LogHost, Method, PathOnly, 502, T0, UpstreamAddr),
+                                log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, UpstreamAddr),
                                 ok
                         end
                 end
@@ -303,7 +302,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
         Class:Reason:Stack ->
             case h3_send_failed_reason(Reason) of
                 connection_gone ->
-                    log_h3_access(LogHost, Method, PathOnly, 0, T0, <<>>),
+                    log_h3_access(LogHost, LogHost, Method, PathOnly, 0, T0, <<>>),
                     ok;
                 _ ->
                     lager:error(
@@ -317,7 +316,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                         [{<<"content-type">>, <<"text/plain">>}],
                         <<"Internal Server Error">>
                     ),
-                    log_h3_access(LogHost, Method, PathOnly, 500, T0, <<>>),
+                    log_h3_access(LogHost, LogHost, Method, PathOnly, 500, T0, <<>>),
                     ok
             end
     end.
@@ -1039,9 +1038,13 @@ safe_iolist_to_binary(V) ->
             <<>>
     end.
 
-log_h3_access(Host, Method, Path, Status, T0, Upstream) ->
+log_h3_access(Host, Site, Method, Path, Status, T0, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
-    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3', Upstream).
+    catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3', Upstream, Site).
+
+inc_h3_metrics(Host, Site, StatusBin) ->
+    ok = pertisk_eproxy_metrics:inc_request(Host, StatusBin, <<"h3">>),
+    ok = pertisk_eproxy_metrics:inc_site_request(Site, StatusBin, <<"h3">>).
 
 read_request_body(Conn, StreamId, Method0, Headers, PathOnly) ->
     Method = normalize_h3_method(Method0),
