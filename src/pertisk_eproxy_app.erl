@@ -140,6 +140,7 @@ start_listeners() ->
         env => #{dispatch => pertisk_eproxy_admin_routes:management_dispatch()},
         logger => pertisk_eproxy_cowboy_logger,
         idle_timeout => MgmtIdleTimeoutMs,
+        request_timeout => MgmtIdleTimeoutMs,
         %% Management/admin is intentionally plain HTTP/1.1.
         enable_connect_protocol => false
     },
@@ -207,6 +208,11 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
         logger => pertisk_eproxy_cowboy_logger,
         idle_timeout => DownstreamIdleTimeoutMs,
+        %% request_timeout controls how long Cowboy waits for the *next* request
+        %% on a keep-alive connection after completing the previous response.
+        %% The default is 5 s, which is shorter than Docker buildkit's inter-request
+        %% gap (POST → PUT for blob uploads), causing spurious EOF on large pushes.
+        request_timeout => DownstreamIdleTimeoutMs,
         %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
         enable_connect_protocol => true
     },
@@ -747,7 +753,8 @@ start_clear_listener(Name, Port, Ip, Routes, NumAcceptors, ExtraSocketOpts) ->
     ProtoOpts = #{
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
         logger => pertisk_eproxy_cowboy_logger,
-        idle_timeout => DownstreamIdleTimeoutMs
+        idle_timeout => DownstreamIdleTimeoutMs,
+        request_timeout => DownstreamIdleTimeoutMs
     },
     start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts).
 

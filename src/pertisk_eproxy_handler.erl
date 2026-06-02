@@ -739,7 +739,45 @@ response_headers_to_req(Req, List) when is_list(List) ->
         {Req, []},
         List
     ),
-    {Req1, maps:from_list(Filtered)}.
+    Headers0 = maps:from_list(Filtered),
+    Headers1 = rewrite_loopback_location(Req, Headers0),
+    {Req1, Headers1}.
+
+%% If the upstream returns an absolute Location pointing to a loopback address
+%% (e.g. Harbor registry returns http://localhost:8099/v2/.../blobs/uploads/<uuid>
+%% when relativeurls is not configured), rewrite it to the external scheme+host
+%% of the original downstream request.  Without this, Docker follows the internal
+%% URL and immediately gets EOF because localhost on the client is unreachable.
+rewrite_loopback_location(Req, Headers) ->
+    case maps:find(<<"location">>, Headers) of
+        error -> Headers;
+        {ok, Location} ->
+            Headers#{<<"location">> => rewrite_loopback_location_url(Req, Location)}
+    end.
+
+rewrite_loopback_location_url(Req, Location) ->
+    try
+        case uri_string:parse(Location) of
+            #{host := LocHost} = Parsed ->
+                case is_loopback_host(LocHost) of
+                    true ->
+                        ExtHost = cowboy_req:host(Req),
+                        %% The proxy always terminates TLS; use https regardless
+                        %% of what the upstream returned internally.
+                        Rewritten = maps:without([port], Parsed#{
+                            scheme => <<"https">>,
+                            host   => ExtHost
+                        }),
+                        iolist_to_binary(uri_string:recompose(Rewritten));
+                    false ->
+                        Location
+                end;
+            _ ->
+                Location
+        end
+    catch _:_ ->
+        Location
+    end.
 
 lower_header_key(K) when is_binary(K) ->
     string:lowercase(K);
