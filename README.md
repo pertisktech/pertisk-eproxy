@@ -24,6 +24,31 @@ Optional QUIC-related compile flags are documented in the `Makefile` (`COWBOY_QU
 rebar3 shell
 ```
 
+## High-performance worker tuning
+
+For Erlang/Cowboy, the closest equivalent to NGINX `worker_processes` and `worker_connections` is:
+
+- BEAM schedulers (CPU workers): configured via `config/vm.args`
+- Cowboy acceptors (listener workers): `*_num_acceptors` in proxy JSON
+- Listener connection limits: `proxy_max_connections` and `management_max_connections`
+
+Recommended production setup:
+
+- Keep `config/vm.args` without `+S` so BEAM uses all CPUs visible to the container/host.
+- Let acceptors auto-scale by omitting these keys from JSON (or setting them only when you need fixed values):
+	- `http_num_acceptors`
+	- `https_num_acceptors`
+	- `quic_num_acceptors`
+	- `management_num_acceptors`
+- Keep `proxy_max_connections` sized to your `ulimit -n` and kernel socket limits.
+
+Current auto behavior in this app:
+
+- Proxy listeners (`http`/`https`/`quic`): scheduler-based default when `*_num_acceptors` is not set.
+- Management listener: scheduler-based default when `management_num_acceptors` is not set.
+
+This gives an "auto workers" model similar to NGINX tuning, while still allowing explicit per-listener overrides when required.
+
 Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME-related keys). Proxy routing, sites, backends, and listener ports are loaded from the JSON file pointed to by `config_file` (default `config/proxy.json`). See `README_SQLITE.md` for database-backed certificate and DNS provider storage.
 
 ## Modes
