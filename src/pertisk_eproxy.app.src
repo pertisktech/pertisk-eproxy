@@ -30,6 +30,8 @@
         couchbeam,
         prometheus,
         prometheus_cowboy,
+        cowboy_swagger,
+        trails,
         ekub,
         ewsc,
         hackney,

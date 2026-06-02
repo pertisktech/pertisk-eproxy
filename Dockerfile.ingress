@@ -18,7 +18,7 @@ ARG VERSION=0.1.0
 
 WORKDIR /src
 
-RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl-dev ncurses-dev
+RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl openssl-dev ncurses-dev
 
 COPY . .
 COPY --from=admin-builder /app/priv/admin ./priv/admin
@@ -30,6 +30,9 @@ RUN chmod +x /src/scripts/set-app-version.sh /src/scripts/patch-ekub.sh /src/scr
     && /src/scripts/patch-ekub.sh \
     && /src/scripts/patch-quic.sh \
     && /src/scripts/verify-deps.sh /src \
+    && mkdir -p priv/tls \
+    && openssl req -x509 -newkey rsa:2048 -keyout priv/tls/listener.key -out priv/tls/listener.pem \
+         -days 3650 -nodes -subj "/CN=localhost" \
     && rebar3 as prod release \
     && /src/scripts/verify-release-build.sh /src \
     && /src/scripts/verify-release-quic.sh /src \
