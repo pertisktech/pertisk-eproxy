@@ -513,9 +513,13 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Trac
     proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, ReqBodyBytes, 0, Status).
 
 reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
-    cowboy_req:stream_reply(Status, Headers, Req);
+    Req2 = cowboy_req:stream_reply(Status, Headers, Req),
+    ok = cowboy_req:stream_body(<<>>, fin, Req2),
+    Req2;
 reply_upstream_fin(<<"head">>, Status, Headers, Req) ->
-    cowboy_req:stream_reply(Status, Headers, Req);
+    Req2 = cowboy_req:stream_reply(Status, Headers, Req),
+    ok = cowboy_req:stream_body(<<>>, fin, Req2),
+    Req2;
 reply_upstream_fin(_Method, Status, Headers, Req) ->
     cowboy_req:reply(Status, Headers, <<>>, Req).
 
