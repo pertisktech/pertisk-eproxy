@@ -6,6 +6,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(SERVER, ?MODULE).
+-define(K8S_NETWORKING_V1, {<<"networking.k8s.io">>, <<"v1">>}).
+-define(K8S_CORE_V1, {<<>>, <<"v1">>}).
 
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
@@ -143,7 +145,7 @@ maybe_connect(State) ->
 
 full_reconcile(Conn) ->
     Query = list_query(),
-    case ekub:read(ingress, Query, Conn) of
+    case list_ingresses(Conn, Query) of
         {ok, ListObj} ->
             Ingresses = items_from_list(ListObj),
             Secrets = list_tls_secrets(Conn),
@@ -157,15 +159,38 @@ full_reconcile(Conn) ->
             {error, {list_ingress, Reason}}
     end.
 
+list_ingresses(Conn, Query) ->
+    case pertisk_ingress_env:namespace() of
+        all_namespaces ->
+            read_cluster_resource(Conn, ?K8S_NETWORKING_V1, <<"ingresses">>, Query);
+        _ ->
+            ekub:read(ingress, Query, Conn)
+    end.
+
 list_tls_secrets(Conn) ->
     Query = list_query(),
-    case ekub:read(secret, Query, Conn) of
+    Read = case pertisk_ingress_env:namespace() of
+        all_namespaces ->
+            read_cluster_resource(Conn, ?K8S_CORE_V1, <<"secrets">>, Query);
+        _ ->
+            ekub:read(secret, Query, Conn)
+    end,
+    case Read of
         {ok, ListObj} ->
             All = items_from_list(ListObj),
             [S || S <- All, is_tls_secret(S)];
         {error, Reason} ->
             lager:warning("List secrets failed: ~p", [Reason]),
             []
+    end.
+
+read_cluster_resource({_Api, Access}, {Group, Version}, ResourceType, Query) ->
+    Endpoint = ekub_api:endpoint(Group, Version, ResourceType, <<>>, <<>>, <<>>),
+    case Endpoint of
+        <<>> ->
+            {error, {resource_not_found, ResourceType}};
+        _ ->
+            ekub_core:http_request(Endpoint, Query, Access)
     end.
 
 is_tls_secret(#{<<"type">> := <<"kubernetes.io/tls">>}) ->

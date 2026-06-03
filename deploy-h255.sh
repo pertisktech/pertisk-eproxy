@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.5.10}"
+VERSION="${VERSION:-0.5.11}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
-ADMIN_HOST="${ADMIN_HOST:-admin.h255.thaidevops.co}"
+ADMIN_HOST="${ADMIN_HOST:-admin.talos.pertisk.com}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
@@ -25,4 +25,6 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set auth0.audience=https://dev-od6cfzs2tugxm53g.us.auth0.com/api/v2/ \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
+  --set ingress.className=pertisk-eproxy \
+  --set ingress.watchNamespace="" \
   --set adminIngress.tlsSecretName=admin-talos-tls
