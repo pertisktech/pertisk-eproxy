@@ -25,4 +25,4 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set auth0.audience=https://dev-od6cfzs2tugxm53g.us.auth0.com/api/v2/ \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
-  --set adminIngress.tlsSecretName=admin-h255-tls
+  --set adminIngress.tlsSecretName=admin-talos-tls
