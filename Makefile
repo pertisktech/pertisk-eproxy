@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic shell test clean release \
+.PHONY: all compile patch-ekub patch-quic patch-hackney shell test clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -45,7 +45,11 @@ patch-quic:
 	@$(REBAR) get-deps
 	@bash scripts/patch-quic.sh
 
-compile: patch-ekub patch-quic
+patch-hackney:
+	@$(REBAR) get-deps
+	@bash scripts/patch-hackney.sh
+
+compile: patch-ekub patch-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
 
 shell: compile

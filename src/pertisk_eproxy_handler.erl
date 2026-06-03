@@ -28,6 +28,7 @@
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS, 15000).
 -define(DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS, 20000).
+-define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
 -define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
@@ -390,7 +391,7 @@ do_proxy(
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
     ReqBodyBytes = byte_size(Body),
-    TimeoutMs = request_timeout_ms(ReqKind, Host, UpHost),
+    TimeoutMs = request_timeout_ms(Req, ReqKind, Host, UpHost),
 
     Result =
         try
@@ -498,6 +499,15 @@ max_proxy_retries(_ProxyReason, _UpHost) ->
     1.
 
 do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, Site, TrackingId, ReqBodyBytes) ->
+    case is_stream_endpoint_request(Req) of
+        true ->
+            lager:error(
+                "stream_misroute_grpc path=~p tracking_id=~p",
+                [cowboy_req:path(Req), TrackingId]
+            );
+        false ->
+            ok
+    end,
     %% gRPC watch/stream calls may stay idle before the first message; do not
     %% enforce the generic HTTP request timeout on initial response await.
     case gun:await(ConnPid, StreamRef, infinity) of
@@ -530,13 +540,66 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, Site, TrackingId, ReqBody
 %% terminal body frame that may arrive after much longer than REQUEST_TIMEOUT.
 do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Site, TrackingId, ReqBodyBytes) ->
     {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
-    CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
+    ReqPath = cowboy_req:path(Req),
+    IsStreamEndpoint = is_stream_endpoint_request(Req),
+    WantsEventStream = is_event_stream_request(Req),
+    IsEventStream = is_event_stream_response(RespHeaders),
+    StartMs = erlang:monotonic_time(millisecond),
+    maybe_log_stream_lifecycle(
+        IsStreamEndpoint,
+        stream_open,
+        #{
+            tracking_id => TrackingId,
+            path => ReqPath,
+            status => Status,
+            event_stream => IsEventStream
+        }
+    ),
+    StreamHeaders0 =
+        case IsStreamEndpoint of
+            true -> normalize_http_stream_headers(RawHeaders);
+            false -> RawHeaders
+        end,
+    StreamHeaders1 =
+        case IsEventStream of
+            true -> normalize_event_stream_headers(StreamHeaders0);
+            false -> StreamHeaders0
+        end,
+    CowboyHeaders =
+        case IsStreamEndpoint of
+            true -> StreamHeaders1;
+            false -> maybe_add_alt_svc(Req1, Host, StreamHeaders1)
+        end,
     StreamReq = cowboy_req:stream_reply(
         Status,
         with_tracking_id_header(TrackingId, CowboyHeaders),
         Req1
     ),
-    proxy_http_stream_loop(ConnPid, StreamRef, StreamReq, Host, Site, ReqBodyBytes, 0, Status).
+    case IsEventStream of
+        true ->
+            %% Flush an initial SSE comment so clients/proxies consider the
+            %% stream established even when upstream is initially idle.
+            ok = cowboy_req:stream_body(<<": connected\n\n">>, nofin, StreamReq);
+        false when WantsEventStream =:= true ->
+            lager:debug("accept=text/event-stream but upstream content-type is not SSE");
+        false ->
+            ok
+    end,
+    proxy_http_stream_loop(
+        ConnPid,
+        StreamRef,
+        StreamReq,
+        Host,
+        Site,
+        ReqBodyBytes,
+        0,
+        Status,
+        IsEventStream,
+        IsStreamEndpoint,
+        TrackingId,
+        ReqPath,
+        StartMs
+    ).
 
 %% For HEAD requests: upstream's Content-Length reflects what GET would return.
 %% Cowboy's reply/4 computes CL from byte_size(Body), then do_reply/4 pattern-
@@ -557,8 +620,23 @@ reply_upstream_fin(<<"HEAD">>, Status, Headers, Req) ->
 reply_upstream_fin(_Method, Status, Headers, Req) ->
     cowboy_req:reply(Status, Headers, <<>>, Req).
 
-proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBytes, Status) ->
-    case gun:await(ConnPid, StreamRef, infinity) of
+proxy_http_stream_loop(
+    ConnPid,
+    StreamRef,
+    Req,
+    Host,
+    Site,
+    ReqBodyBytes,
+    RespBytes,
+    Status,
+    IsEventStream,
+    IsStreamEndpoint,
+    TrackingId,
+    ReqPath,
+    StartMs
+) ->
+    AwaitTimeout = stream_await_timeout(IsEventStream),
+    case gun:await(ConnPid, StreamRef, AwaitTimeout) of
         {data, nofin, Chunk} ->
             ChunkBin = iolist_to_binary(Chunk),
             ok = cowboy_req:stream_body(ChunkBin, nofin, Req),
@@ -570,18 +648,64 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBy
                 Site,
                 ReqBodyBytes,
                 RespBytes + byte_size(ChunkBin),
-                Status
+                Status,
+                IsEventStream,
+                IsStreamEndpoint,
+                TrackingId,
+                ReqPath,
+                StartMs
             );
         {data, fin, Chunk} ->
             ChunkBin = iolist_to_binary(Chunk),
             ok = cowboy_req:stream_body(ChunkBin, fin, Req),
             FinalRespBytes = RespBytes + byte_size(ChunkBin),
             ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, FinalRespBytes),
+            maybe_log_stream_lifecycle(
+                IsStreamEndpoint,
+                stream_fin,
+                #{
+                    tracking_id => TrackingId,
+                    path => ReqPath,
+                    status => Status,
+                    duration_ms => erlang:monotonic_time(millisecond) - StartMs,
+                    resp_bytes => FinalRespBytes
+                }
+            ),
             {ok, Status, Req};
         {trailers, Trailers} ->
             ok = maybe_stream_trailers(Req, Trailers),
             ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
+            maybe_log_stream_lifecycle(
+                IsStreamEndpoint,
+                stream_trailers,
+                #{
+                    tracking_id => TrackingId,
+                    path => ReqPath,
+                    status => Status,
+                    duration_ms => erlang:monotonic_time(millisecond) - StartMs,
+                    resp_bytes => RespBytes
+                }
+            ),
             {ok, Status, Req};
+        {error, timeout} when IsEventStream =:= true ->
+            %% Keep idle SSE/EventSource streams alive through intermediary
+            %% idle timers by emitting a comment heartbeat frame.
+            ok = cowboy_req:stream_body(<<":\n\n">>, nofin, Req),
+            proxy_http_stream_loop(
+                ConnPid,
+                StreamRef,
+                Req,
+                Host,
+                Site,
+                ReqBodyBytes,
+                RespBytes,
+                Status,
+                IsEventStream,
+                IsStreamEndpoint,
+                TrackingId,
+                ReqPath,
+                StartMs
+            );
         {error, Reason} ->
             %% Response headers were already streamed to the client via stream_reply/3.
             %% Do not bubble this error up to the caller (which would attempt a second
@@ -590,12 +714,70 @@ proxy_http_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBy
             pertisk_eproxy_upstream_pool:invalidate(ConnPid),
             _ = catch cowboy_req:stream_body(<<>>, fin, Req),
             ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
+            maybe_log_stream_lifecycle(
+                IsStreamEndpoint,
+                stream_error,
+                #{
+                    tracking_id => TrackingId,
+                    path => ReqPath,
+                    status => Status,
+                    reason => Reason,
+                    duration_ms => erlang:monotonic_time(millisecond) - StartMs,
+                    resp_bytes => RespBytes
+                }
+            ),
             %% Return ok_stream_aborted so the caller can report error to the
             %% circuit breaker without attempting a second HTTP reply.
             {ok_stream_aborted, Status, Req};
         Other ->
             {error, {await_stream_unexpected, Other}}
     end.
+
+stream_await_timeout(true) ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(event_stream_heartbeat_ms, Config, ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS
+    end;
+stream_await_timeout(false) ->
+    infinity.
+
+is_event_stream_response(RespHeaders) when is_list(RespHeaders) ->
+    HeadersMap = maps:from_list(RespHeaders),
+    case maps:get(<<"content-type">>, HeadersMap, <<>>) of
+        Ct when is_binary(Ct) ->
+            binary:match(string:lowercase(Ct), <<"text/event-stream">>) =/= nomatch;
+        _ ->
+            false
+    end;
+is_event_stream_response(_) ->
+    false.
+
+normalize_event_stream_headers(Headers) when is_map(Headers) ->
+    %% SSE works best when intermediaries do not buffer/transform stream frames.
+    Headers1 = maps:remove(<<"content-length">>, Headers),
+    Headers2 = maps:remove(<<"transfer-encoding">>, Headers1),
+    Headers2#{
+        <<"content-type">> => <<"text/event-stream">>,
+        <<"cache-control">> => <<"no-cache, no-transform">>,
+        <<"x-accel-buffering">> => <<"no">>
+    };
+normalize_event_stream_headers(Headers) ->
+    Headers.
+
+normalize_http_stream_headers(Headers) when is_map(Headers) ->
+    %% Prevent buffering/compression side effects on long-lived watch streams.
+    Headers1 = maps:remove(<<"content-length">>, Headers),
+    Headers2 = maps:remove(<<"transfer-encoding">>, Headers1),
+    Headers2#{
+        <<"cache-control">> => <<"no-cache, no-transform">>,
+        <<"x-accel-buffering">> => <<"no">>
+    };
+normalize_http_stream_headers(Headers) ->
+    Headers.
+
+maybe_log_stream_lifecycle(_Enabled, Event, Data) ->
+    lager:warning("stream_lifecycle ~p ~p", [Event, Data]).
 
 proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBytes, Status) ->
     case gun:await(ConnPid, StreamRef, infinity) of
@@ -688,9 +870,14 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
     ReqKind   = detect_request_kind(Req),
 
     %% Start from original headers, drop hop-by-hop
-    Filtered = maps:without([<<"connection">>, <<"keep-alive">>, <<"te">>,
+    Filtered0 = maps:without([<<"connection">>, <<"keep-alive">>, <<"te">>,
                               <<"trailers">>, <<"transfer-encoding">>,
                               <<"upgrade">>], InHeaders),
+    Filtered =
+        case is_stream_endpoint_path(FullPath) of
+            true -> maps:remove(<<"accept-encoding">>, Filtered0);
+            false -> Filtered0
+        end,
 
     %% gRPC over HTTP/2 expects `te: trailers`; preserve it when present.
     Filtered1 = maybe_restore_grpc_te_header(ReqKind, InHeaders, Filtered),
@@ -897,12 +1084,20 @@ request_proto_metric(Req) ->
     end.
 
 detect_request_kind(Req) ->
-    case is_websocket_upgrade(Req) of
-        true -> websocket;
+    case is_stream_endpoint_request(Req) of
+        true ->
+            %% Argo /api/v1/stream/* endpoints are HTTP watch/EventSource APIs.
+            %% Even when upstream internally uses gRPC, client-facing traffic
+            %% must stay on the HTTP streaming path.
+            http;
         false ->
-            case is_grpc_request(Req) of
-                true -> grpc;
-                false -> http
+            case is_websocket_upgrade(Req) of
+                true -> websocket;
+                false ->
+                    case is_grpc_request(Req) of
+                        true -> grpc;
+                        false -> http
+                    end
             end
     end.
 
@@ -1158,33 +1353,56 @@ normalize_host(H) when is_binary(H) ->
 normalize_host(H) when is_list(H) ->
     normalize_host(list_to_binary(H)).
 
-request_timeout_ms(ReqKind, Host, UpHost) ->
+request_timeout_ms(Req, ReqKind, Host, UpHost) ->
     Config = pertisk_eproxy_config:get_config(),
     GlobalTimeout = case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
         GN when is_integer(GN), GN > 0 -> GN;
         _ -> ?DEFAULT_REQUEST_TIMEOUT_MS
     end,
-    case ReqKind =/= grpc andalso should_force_ephemeral_host(Host) of
+    case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
         true ->
-            EphemeralHostTimeout =
-                case maps:get(upstream_ephemeral_host_request_timeout_ms,
-                              Config,
-                              ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS) of
-                    EN when is_integer(EN), EN > 0 -> EN;
-                    _ -> ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS
-                end,
-            min(GlobalTimeout, EphemeralHostTimeout);
+            %% EventSource/watch requests are long-lived by design.
+            %% Do not apply the short ephemeral-host cap used for regular APIs.
+            GlobalTimeout;
         false ->
-            case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+            case ReqKind =/= grpc andalso should_force_ephemeral_host(Host) of
                 true ->
-                    LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
-                                                    Config,
-                                                    ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
-                        LN when is_integer(LN), LN > 0 -> LN;
-                        _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
-                    end,
-                    min(GlobalTimeout, LoopbackTimeout);
+                    EphemeralHostTimeout =
+                        case maps:get(upstream_ephemeral_host_request_timeout_ms,
+                                      Config,
+                                      ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS) of
+                            EN when is_integer(EN), EN > 0 -> EN;
+                            _ -> ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS
+                        end,
+                    min(GlobalTimeout, EphemeralHostTimeout);
                 false ->
-                    GlobalTimeout
+                    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+                        true ->
+                            LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
+                                                            Config,
+                                                            ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
+                                LN when is_integer(LN), LN > 0 -> LN;
+                                _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
+                            end,
+                            min(GlobalTimeout, LoopbackTimeout);
+                        false ->
+                            GlobalTimeout
+                    end
             end
+    end.
+
+is_event_stream_request(Req) ->
+    Accept = string:lowercase(cowboy_req:header(<<"accept">>, Req, <<>>)),
+    binary:match(Accept, <<"text/event-stream">>) =/= nomatch.
+
+is_stream_endpoint_request(Req) ->
+    ReqPath = cowboy_req:path(Req),
+    is_stream_endpoint_path(ReqPath).
+
+is_stream_endpoint_path(ReqPath) ->
+    case ReqPath of
+        Bin when is_binary(Bin) ->
+            binary:match(Bin, <<"/api/v1/stream/">>) =/= nomatch;
+        _ ->
+            false
     end.

@@ -17,6 +17,7 @@ prepare_and_release() {
   rebar3 get-deps
   bash scripts/patch-ekub.sh
   bash scripts/patch-quic.sh
+  bash scripts/patch-hackney.sh
   bash scripts/verify-deps.sh "$ROOT_DIR"
   COWBOY_QUICER="$COWBOY_QUICER" COWBOY_QUIC="$COWBOY_QUIC" rebar3 as prod release
   bash scripts/verify-release-quic.sh "$ROOT_DIR"

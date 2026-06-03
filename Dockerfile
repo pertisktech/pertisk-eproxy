@@ -14,12 +14,17 @@ RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers 
 COPY . .
 
 # ekub 0.2.0 sets fail_if_no_peer_cert (server-only) on K8s API client SSL — patch before compile.
-RUN chmod +x /src/scripts/set-app-version.sh /src/scripts/patch-ekub.sh /src/scripts/patch-quic.sh \
+RUN chmod +x \
+    /src/scripts/set-app-version.sh \
+    /src/scripts/patch-ekub.sh \
+    /src/scripts/patch-quic.sh \
+    /src/scripts/patch-hackney.sh \
     && /src/scripts/set-app-version.sh "$VERSION" \
     && rm -rf _build deps \
     && rebar3 get-deps \
     && /src/scripts/patch-ekub.sh \
     && /src/scripts/patch-quic.sh \
+    && /src/scripts/patch-hackney.sh \
     && /src/scripts/verify-deps.sh /src \
     && mkdir -p priv/tls \
     && openssl req -x509 -newkey rsa:2048 -keyout priv/tls/listener.key -out priv/tls/listener.pem \
