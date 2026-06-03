@@ -27,6 +27,7 @@
 
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS, 15000).
+-define(DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS, 20000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
 -define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
@@ -389,7 +390,7 @@ do_proxy(
     HeadersMap = forward_headers(Req, Host, ClientIp, FullPath, TrackingId),
     Headers = maps:to_list(HeadersMap),
     ReqBodyBytes = byte_size(Body),
-    TimeoutMs = request_timeout_ms(ReqKind, UpHost),
+    TimeoutMs = request_timeout_ms(ReqKind, Host, UpHost),
 
     Result =
         try
@@ -1157,21 +1158,33 @@ normalize_host(H) when is_binary(H) ->
 normalize_host(H) when is_list(H) ->
     normalize_host(list_to_binary(H)).
 
-request_timeout_ms(ReqKind, UpHost) ->
+request_timeout_ms(ReqKind, Host, UpHost) ->
     Config = pertisk_eproxy_config:get_config(),
     GlobalTimeout = case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
         GN when is_integer(GN), GN > 0 -> GN;
         _ -> ?DEFAULT_REQUEST_TIMEOUT_MS
     end,
-    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+    case ReqKind =/= grpc andalso should_force_ephemeral_host(Host) of
         true ->
-            LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
-                                            Config,
-                                            ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
-                LN when is_integer(LN), LN > 0 -> LN;
-                _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
-            end,
-            min(GlobalTimeout, LoopbackTimeout);
+            EphemeralHostTimeout =
+                case maps:get(upstream_ephemeral_host_request_timeout_ms,
+                              Config,
+                              ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS) of
+                    EN when is_integer(EN), EN > 0 -> EN;
+                    _ -> ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS
+                end,
+            min(GlobalTimeout, EphemeralHostTimeout);
         false ->
-            GlobalTimeout
+            case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+                true ->
+                    LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
+                                                    Config,
+                                                    ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
+                        LN when is_integer(LN), LN > 0 -> LN;
+                        _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
+                    end,
+                    min(GlobalTimeout, LoopbackTimeout);
+                false ->
+                    GlobalTimeout
+            end
     end.
