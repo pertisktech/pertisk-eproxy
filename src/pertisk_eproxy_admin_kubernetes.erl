@@ -15,10 +15,10 @@
 ]).
 
 -define(API_VERSION, <<"networking.k8s.io/v1">>).
--define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.tech/backend-namespace">>).
--define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespace">>).
--define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.tech/backend-namespaces">>).
--define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespaces">>).
+-define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.io/backend-namespace">>).
+-define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.tech/backend-namespace">>).
+-define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.io/backend-namespaces">>).
+-define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.tech/backend-namespaces">>).
 
 available() ->
     pertisk_eproxy_config:ingress_mode().
@@ -1033,10 +1033,12 @@ decode_backend_namespace_map(_) ->
 set_backend_namespace_meta(Meta, ServiceNs, ServiceNsByName) ->
     EncodedServiceNsByName = thoas:encode(ServiceNsByName),
     Anns0 = maps:get(<<"annotations">>, Meta, #{}),
-    Anns1 = Anns0#{
+    AnnsBase = maps:without([
+        ?BACKEND_NAMESPACE_ANNOTATION_LEGACY,
+        ?BACKEND_NAMESPACES_ANNOTATION_LEGACY
+    ], Anns0),
+    Anns1 = AnnsBase#{
         ?BACKEND_NAMESPACE_ANNOTATION => ServiceNs,
-        ?BACKEND_NAMESPACE_ANNOTATION_LEGACY => ServiceNs,
-        ?BACKEND_NAMESPACES_ANNOTATION => EncodedServiceNsByName,
-        ?BACKEND_NAMESPACES_ANNOTATION_LEGACY => EncodedServiceNsByName
+        ?BACKEND_NAMESPACES_ANNOTATION => EncodedServiceNsByName
     },
     Meta#{<<"annotations">> => Anns1}.

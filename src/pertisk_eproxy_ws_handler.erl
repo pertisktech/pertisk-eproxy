@@ -26,7 +26,7 @@ init(Req, _State) ->
 
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
-            lager:warning("WS no route for host=~s path=~s", [Host, Path]),
+            log_ws_no_route(Host, Path),
             Req2 = cowboy_req:reply(404, pertisk_eproxy_response_headers:merge(#{}), <<"No route">>, Req),
             {ok, Req2, #{}};
         {ok, #{upstream_path := UpPath, backend := BackendName}} ->
@@ -229,6 +229,34 @@ terminate(_Reason, _Req, #{host := Host, upstream_path := UpPath}) ->
 terminate(_Reason, _Req, _State) ->
     lager:info("WS terminate reason=~p", [_Reason]),
     ok.
+
+log_ws_no_route(Host, Path) ->
+    case is_ip_host(Host) andalso is_realtime_path(Path) of
+        true ->
+            %% Agents/scanners often probe /api/realtime by node/LB IP, which
+            %% will not match host-based routes. Keep this at debug to avoid
+            %% warning noise while preserving signal for real route misses.
+            lager:debug("WS no route for host=~s path=~s", [Host, Path]);
+        false ->
+            lager:warning("WS no route for host=~s path=~s", [Host, Path])
+    end.
+
+is_realtime_path(<<"/api/realtime", _/binary>>) ->
+    true;
+is_realtime_path(_) ->
+    false.
+
+is_ip_host(Host) when is_binary(Host) ->
+    is_ip_host(binary_to_list(Host));
+is_ip_host(Host) when is_list(Host) ->
+    %% Host header may include :port for IPv4; strip once before parsing.
+    HostOnly = hd(string:split(Host, ":", leading)),
+    case inet:parse_address(HostOnly) of
+        {ok, _Addr} -> true;
+        _ -> false
+    end;
+is_ip_host(_) ->
+    false.
 
 %% -------------------------------------------------------------------------
 %% Helpers

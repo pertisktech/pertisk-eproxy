@@ -5,10 +5,12 @@
 
 -define(DEFAULT_BACKEND_PORT, 80).
 -define(INGRESS_CLASS_ANNOTATION, <<"kubernetes.io/ingress.class">>).
--define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.tech/backend-namespace">>).
--define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespace">>).
--define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.tech/backend-namespaces">>).
--define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.io/backend-namespaces">>).
+-define(BACKEND_NAMESPACE_ANNOTATION, <<"pertisk.io/backend-namespace">>).
+-define(BACKEND_NAMESPACE_ANNOTATION_LEGACY, <<"pertisk.tech/backend-namespace">>).
+-define(BACKEND_NAMESPACES_ANNOTATION, <<"pertisk.io/backend-namespaces">>).
+-define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.tech/backend-namespaces">>).
+-define(ADVERTISE_HTTP3_ANNOTATION, <<"pertisk.io/advertise-http3">>).
+-define(ADVERTISE_HTTP3_ANNOTATION_LEGACY, <<"pertisk.tech/advertise-http3">>).
 
 %% @doc Full reconcile from listed Ingress and Secret maps (ekub JSON objects).
 -spec reconcile([map()], [map()]) ->
@@ -46,6 +48,7 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
     Ns = namespace_of(Meta),
     BackendNsDefault = backend_namespace_of(Meta, Ns),
     BackendNsByService = backend_namespace_map_of(Meta),
+    AdvertiseHttp3 = advertise_http3_of(Meta),
     IngressName = name_of(Meta),
     Rules = maps:get(<<"rules">>, Spec, []),
     RuleHosts = [H || #{<<"host">> := H} <- Rules, is_binary(H)],
@@ -64,6 +67,7 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
                                 Ns,
                                 BackendNsDefault,
                                 BackendNsByService,
+                                AdvertiseHttp3,
                                 IngressName,
                                 Bs2,
                                 Ss2,
@@ -88,6 +92,7 @@ reconcile_path(
     Ns,
     BackendNsDefault,
     BackendNsByService,
+    AdvertiseHttp3,
     IngressName,
     Backends,
     Sites,
@@ -125,7 +130,7 @@ reconcile_path(
         wildcard => undefined,
         acme_wildcard_base => undefined,
         acme_contact_email => undefined,
-        advertise_http3 => true,
+        advertise_http3 => AdvertiseHttp3,
         routes => [Route],
         ingress_namespace => Ns,
         ingress_name => IngressName
@@ -240,6 +245,34 @@ decode_backend_namespace_map(Json) when is_binary(Json), Json =/= <<>> ->
     end;
 decode_backend_namespace_map(_) ->
     #{}.
+
+advertise_http3_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    parse_annotation_bool(
+        maps:get(?ADVERTISE_HTTP3_ANNOTATION, Annotations,
+            maps:get(?ADVERTISE_HTTP3_ANNOTATION_LEGACY, Annotations, undefined)
+        ),
+        true
+    ).
+
+parse_annotation_bool(true, _Default) -> true;
+parse_annotation_bool(false, _Default) -> false;
+parse_annotation_bool(<<"true">>, _Default) -> true;
+parse_annotation_bool(<<"TRUE">>, _Default) -> true;
+parse_annotation_bool(<<"True">>, _Default) -> true;
+parse_annotation_bool(<<"1">>, _Default) -> true;
+parse_annotation_bool(<<"yes">>, _Default) -> true;
+parse_annotation_bool(<<"YES">>, _Default) -> true;
+parse_annotation_bool(<<"false">>, _Default) -> false;
+parse_annotation_bool(<<"FALSE">>, _Default) -> false;
+parse_annotation_bool(<<"False">>, _Default) -> false;
+parse_annotation_bool(<<"0">>, _Default) -> false;
+parse_annotation_bool(<<"no">>, _Default) -> false;
+parse_annotation_bool(<<"NO">>, _Default) -> false;
+parse_annotation_bool(Value, Default) when is_binary(Value) ->
+    parse_annotation_bool(list_to_binary(string:trim(binary_to_list(Value))), Default);
+parse_annotation_bool(_, Default) ->
+    Default.
 
 coerce_bin(B) when is_binary(B) -> B;
 coerce_bin(L) when is_list(L) -> list_to_binary(L);
