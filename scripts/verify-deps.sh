@@ -10,10 +10,10 @@ QUIC_QPACK=$(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/de
 grep -q fail_if_no_peer_cert "$EKUB_SRC" && { echo "verify-deps: ekub not patched" >&2; exit 1; }
 QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "$QUIC_APP" | head -1)
 case "$QUIC_VSN" in
-	1.4.*)
+	1.6.*|1.[7-9]*|[2-9].*)
 		: ;;
 	*)
-		echo "verify-deps: expected erlang_quic 1.4.x" >&2
+		echo "verify-deps: expected erlang_quic 1.6.1+" >&2
 		exit 1
 		;;
 esac

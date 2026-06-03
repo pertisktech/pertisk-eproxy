@@ -52,38 +52,49 @@ fi
 echo "patch-quic: ok"
 
 # ── quic_socket inet6 support ──────────────────────────────────────────────
-# build_genudp_opts hardcodes `inet` in BaseOpts and then appends ExtraFlags.
-# If ExtraFlags contains `inet6`, gen_udp:open gets [inet, ..., inet6] which
-# Erlang rejects with {error, einval}.  Fix: derive the address family from
-# ExtraFlags and strip `inet6` from ExtraFlags (it is already in BaseOpts).
-socket_found=0
-for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_socket.erl' 2>/dev/null | sort -u); do
-  socket_found=1
+# Older quic releases build gen_udp opts by hardcoding `inet` and appending
+# extra_socket_opts. If `inet6` is present, gen_udp:open receives [inet, inet6]
+# and returns {error, einval}. Newer quic releases changed quic_socket internals,
+# so this patch must stay version-aware.
+socket_patch_enabled=1
+case "$QUIC_VSN" in
+  1.6.*|1.[7-9]*|[2-9].*)
+    socket_patch_enabled=0
+    ;;
+esac
 
-  if grep -q 'Family = case lists:member(inet6' "$f"; then
-    continue
-  fi
+if [ "$socket_patch_enabled" -eq 1 ]; then
+  socket_found=0
+  for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_socket.erl' 2>/dev/null | sort -u); do
+    socket_found=1
 
-  perl -i -0pe '
+    if grep -q 'Family = case lists:member(inet6' "$f"; then
+      continue
+    fi
+
+    perl -i -0pe '
 s/(build_genudp_opts\(Opts\) ->\n    ActiveN = maps:get\(active_n, Opts, 100\),\n    ReusePort = maps:get\(reuseport, Opts, false\),\n    ExtraFlags = maps:get\(extra_socket_opts, Opts, \[\]\),\n    RecBuf = maps:get\(recbuf, Opts, \?DEFAULT_UDP_RECBUF\),\n    SndBuf = maps:get\(sndbuf, Opts, \?DEFAULT_UDP_SNDBUF\),\n    BaseOpts = \[\n        binary,\n        inet,\n        \{active, ActiveN\},\n        \{reuseaddr, true\},\n        \{recbuf, RecBuf\},\n        \{sndbuf, SndBuf\}\n    \],\n    ReuseOpts =\n        case ReusePort of\n            true -> \[\{reuseport, true\}, \{reuseport_lb, true\}\];\n            false -> \[\]\n        end,\n    BaseOpts \+\+ ReuseOpts \+\+ ExtraFlags\.)/$1 % inet6-patched/s' "$f"
 
-  perl -i -0pe '
+    perl -i -0pe '
 s/build_genudp_opts\(Opts\) ->\n    ActiveN = maps:get\(active_n, Opts, 100\),\n    ReusePort = maps:get\(reuseport, Opts, false\),\n    ExtraFlags = maps:get\(extra_socket_opts, Opts, \[\]\),\n    RecBuf = maps:get\(recbuf, Opts, \?DEFAULT_UDP_RECBUF\),\n    SndBuf = maps:get\(sndbuf, Opts, \?DEFAULT_UDP_SNDBUF\),\n    BaseOpts = \[\n        binary,\n        inet,\n        \{active, ActiveN\},\n        \{reuseaddr, true\},\n        \{recbuf, RecBuf\},\n        \{sndbuf, SndBuf\}\n    \],\n    ReuseOpts =\n        case ReusePort of\n            true -> \[\{reuseport, true\}, \{reuseport_lb, true\}\];\n            false -> \[\]\n        end,\n    BaseOpts \+\+ ReuseOpts \+\+ ExtraFlags\. % inet6-patched/build_genudp_opts(Opts) ->\n    ActiveN = maps:get(active_n, Opts, 100),\n    ReusePort = maps:get(reuseport, Opts, false),\n    ExtraFlags0 = maps:get(extra_socket_opts, Opts, []),\n    RecBuf = maps:get(recbuf, Opts, ?DEFAULT_UDP_RECBUF),\n    SndBuf = maps:get(sndbuf, Opts, ?DEFAULT_UDP_SNDBUF),\n    Family = case lists:member(inet6, ExtraFlags0) of\n        true -> inet6;\n        false -> inet\n    end,\n    ExtraFlags = lists:delete(inet6, ExtraFlags0),\n    BaseOpts = [\n        binary,\n        Family,\n        {active, ActiveN},\n        {reuseaddr, true},\n        {recbuf, RecBuf},\n        {sndbuf, SndBuf}\n    ],\n    ReuseOpts =\n        case ReusePort of\n            true -> [{reuseport, true}, {reuseport_lb, true}];\n            false -> []\n        end,\n    BaseOpts ++ ReuseOpts ++ ExtraFlags./s' "$f"
 
-  rm -f "$(dirname "$f")/../../ebin/quic_socket.beam" 2>/dev/null || true
-done
+    rm -f "$(dirname "$f")/../../ebin/quic_socket.beam" 2>/dev/null || true
+  done
 
-if [ "$socket_found" -eq 0 ]; then
-  echo "patch-quic: warning: no quic_socket.erl under _build (run rebar3 get-deps first)" >&2
-fi
+  if [ "$socket_found" -eq 0 ]; then
+    echo "patch-quic: warning: no quic_socket.erl under _build (run rebar3 get-deps first)" >&2
+  fi
 
-SOCKET=$(find "${ROOT}/_build" -path '*/quic/src/quic_socket.erl' 2>/dev/null | head -1)
-if [ -n "$SOCKET" ]; then
-  grep -q 'Family = case lists:member(inet6' "$SOCKET" || {
-    echo "patch-quic: quic_socket inet6 patch failed in $SOCKET" >&2
-    exit 1
-  }
-  echo "patch-quic: quic_socket inet6 ok"
+  SOCKET=$(find "${ROOT}/_build" -path '*/quic/src/quic_socket.erl' 2>/dev/null | head -1)
+  if [ -n "$SOCKET" ]; then
+    grep -q 'Family = case lists:member(inet6' "$SOCKET" || {
+      echo "patch-quic: quic_socket inet6 patch failed in $SOCKET" >&2
+      exit 1
+    }
+    echo "patch-quic: quic_socket inet6 ok"
+  fi
+else
+  echo "patch-quic: skipping quic_socket inet6 patch for quic ${QUIC_VSN:-unknown}"
 fi
 
 LISTENER=$(find "${ROOT}/_build" -path '*/quic/src/quic_listener.erl' 2>/dev/null | head -1)
@@ -159,31 +170,42 @@ if [ -n "$H3_API" ]; then
 fi
 
 # 0-RTT PSK binder hard-fail mitigation:
-# On multi-pod deployments, single-use ticket/binder checks can fail intermittently
-# when clients retry/resume against a different pod. Instead of aborting QUIC with
-# decrypt_error, gracefully fall back to a normal 1-RTT handshake.
-psk_found=0
-for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
-  psk_found=1
+# Keep this only for older quic releases. quic >= 1.6.0 reworked 0-RTT
+# acceptance/rejection flow, so rewriting binder failure handling here can
+# conflict with upstream behavior.
+psk_patch_enabled=1
+case "$QUIC_VSN" in
+  1.6.*|1.[7-9]*|[2-9].*)
+    psk_patch_enabled=0
+    ;;
+esac
 
-  perl -i -0pe '
-    s/false\s*->\s*\n\s*\?LOG_WARNING\(\n\s*#\{what => resumption_psk_binder_failed\},\n\s*\?QUIC_LOG_META\n\s*\),\n\s*send_tls_alert\(\?TLS_ALERT_DECRYPT_ERROR, State\),\n\s*exit\(\{tls_alert, decrypt_error\}\)/false ->\n                                        ?LOG_WARNING(\n                                            #{what => resumption_psk_binder_failed},\n                                            ?QUIC_LOG_META\n                                        ),\n                                        {\n                                            undefined,\n                                            quic_crypto:derive_early_secret(Cipher, ZeroPSK),\n                                            undefined\n                                        }/s
-  ' "$f"
+if [ "$psk_patch_enabled" -eq 1 ]; then
+  psk_found=0
+  for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
+    psk_found=1
 
-  rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
-done
+    perl -i -0pe '
+      s/false\s*->\s*\n\s*\?LOG_WARNING\(\n\s*#\{what => resumption_psk_binder_failed\},\n\s*\?QUIC_LOG_META\n\s*\),\n\s*send_tls_alert\(\?TLS_ALERT_DECRYPT_ERROR, State\),\n\s*exit\(\{tls_alert, decrypt_error\}\)/false ->\n                                        ?LOG_WARNING(\n                                            #{what => resumption_psk_binder_failed},\n                                            ?QUIC_LOG_META\n                                        ),\n                                        {\n                                            undefined,\n                                            quic_crypto:derive_early_secret(Cipher, ZeroPSK),\n                                            undefined\n                                        }/s
+    ' "$f"
 
-if [ "$psk_found" -eq 0 ]; then
-  echo "patch-quic: warning: no quic_connection.erl under _build (run rebar3 get-deps first)" >&2
-fi
+    rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
+  done
 
-PSK_CONN=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
-if [ -n "$PSK_CONN" ]; then
-  perl -0777 -ne 'exit((/resumption_psk_binder_failed[\s\S]*?\{\s*undefined,\s*quic_crypto:derive_early_secret\(Cipher, ZeroPSK\),\s*undefined\s*\}/) ? 0 : 1)' "$PSK_CONN" || {
-    echo "patch-quic: 0-RTT binder fallback patch missing in $PSK_CONN" >&2
-    exit 1
-  }
-  echo "patch-quic: 0-RTT binder fallback ok"
+  if [ "$psk_found" -eq 0 ]; then
+    echo "patch-quic: warning: no quic_connection.erl under _build (run rebar3 get-deps first)" >&2
+  fi
+
+  PSK_CONN=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
+  if [ -n "$PSK_CONN" ]; then
+    perl -0777 -ne 'exit((/resumption_psk_binder_failed[\s\S]*?\{\s*undefined,\s*quic_crypto:derive_early_secret\(Cipher, ZeroPSK\),\s*undefined\s*\}/) ? 0 : 1)' "$PSK_CONN" || {
+      echo "patch-quic: 0-RTT binder fallback patch missing in $PSK_CONN" >&2
+      exit 1
+    }
+    echo "patch-quic: 0-RTT binder fallback ok"
+  fi
+else
+  echo "patch-quic: skipping 0-RTT binder fallback for quic ${QUIC_VSN:-unknown}"
 fi
 
 # QUIC SNI certificate selection: apply per-host cert override from sni_certs
