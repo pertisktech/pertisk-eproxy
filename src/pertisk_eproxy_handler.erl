@@ -225,7 +225,7 @@ proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp,
     end,
 
     ReqKind = detect_request_kind(Req),
-    UseEphemeralConn = should_use_ephemeral_connection(ReqKind, UpHost, UpPort, Transport),
+    UseEphemeralConn = should_use_ephemeral_connection(ReqKind, Host, UpHost, UpPort, Transport),
     GunOpts = upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind),
     {ok, Body} = read_body(Req),
 
@@ -280,14 +280,26 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
             {error, {connect, Reason}}
     end.
 
-should_use_ephemeral_connection(grpc, _UpHost, _UpPort, _Transport) ->
+should_use_ephemeral_connection(grpc, _Host, _UpHost, _UpPort, _Transport) ->
     false;
-should_use_ephemeral_connection(_ReqKind, UpHost, UpPort, _Transport) ->
+should_use_ephemeral_connection(_ReqKind, Host, UpHost, _UpPort, _Transport) ->
     %% Loopback HTTP upstreams are sensitive to stale pooled sockets and can
     %% fall into the 15s loopback timeout path before Gun retries kick in.
     %% Use a fresh connection for any non-gRPC loopback request, while keeping
     %% gRPC on the shared pool for stream reuse.
-    is_loopback_host(UpHost).
+    %%
+    %% Argo CD UI occasionally exhibits long hangs on stale pooled upstream
+    %% sockets (for example static assets taking 49s/180s before retry). For
+    %% the Argo public host, prefer ephemeral upstream connections to fail fast.
+    is_loopback_host(UpHost)
+        orelse should_force_ephemeral_host(Host).
+
+should_force_ephemeral_host(Host) when is_binary(Host) ->
+    normalize_host(Host) =:= <<"argocd.talos.pertisk.com">>;
+should_force_ephemeral_host(Host) when is_list(Host) ->
+    should_force_ephemeral_host(list_to_binary(Host));
+should_force_ephemeral_host(_) ->
+    false.
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
