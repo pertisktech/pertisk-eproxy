@@ -901,8 +901,8 @@ reply_compressed(Status, Headers, Body, Req) ->
         pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, HeadersWithTracking, Body),
     cowboy_req:reply(Status, OutHeaders, OutBody, Req).
 
-with_tracking_id_header(Req, Headers) when is_map(Headers) ->
-    Headers#{<<"x-request-id">> => request_tracking_id(Req)}.
+with_tracking_id_header(_Req, Headers) when is_map(Headers) ->
+    Headers.
 
 request_tracking_id(Req) ->
     case cowboy_req:header(<<"x-request-id">>, Req, <<>>) of

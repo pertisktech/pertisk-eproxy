@@ -543,7 +543,8 @@ do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Site
     ReqPath = cowboy_req:path(Req),
     IsStreamEndpoint = is_stream_endpoint_request(Req),
     WantsEventStream = is_event_stream_request(Req),
-    IsEventStream = is_event_stream_response(RespHeaders),
+    ForceEventStream = WantsEventStream orelse IsStreamEndpoint,
+    IsEventStream = is_event_stream_response(RespHeaders) orelse ForceEventStream,
     StartMs = erlang:monotonic_time(millisecond),
     maybe_log_stream_lifecycle(
         IsStreamEndpoint,
@@ -776,7 +777,9 @@ normalize_http_stream_headers(Headers) when is_map(Headers) ->
 normalize_http_stream_headers(Headers) ->
     Headers.
 
-maybe_log_stream_lifecycle(_Enabled, Event, Data) ->
+maybe_log_stream_lifecycle(false, _Event, _Data) ->
+    ok;
+maybe_log_stream_lifecycle(true, Event, Data) ->
     lager:warning("stream_lifecycle ~p ~p", [Event, Data]).
 
 proxy_grpc_stream_loop(ConnPid, StreamRef, Req, Host, Site, ReqBodyBytes, RespBytes, Status) ->
@@ -890,19 +893,132 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
         <<"x-forwarded-proto-version">> => ProtoVsn,
         <<"x-request-id">> => TrackingId
     },
+    Base1 = maybe_add_argocd_auth_header(OrigHost, Base0),
 
     %% Proxmox console ticket endpoints may validate source identity across
     %% termproxy/vncproxy and vncwebsocket calls; avoid XFF drift between H3 and TCP.
     case skip_forwarded_for(OrigHost, FullPath) of
         true ->
-            maps:remove(<<"x-forwarded-for">>, Base0);
+            maps:remove(<<"x-forwarded-for">>, Base1);
         false ->
-            XFF = case maps:find(<<"x-forwarded-for">>, Base0) of
+            XFF = case maps:find(<<"x-forwarded-for">>, Base1) of
                 {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
                 error          -> ClientIp
             end,
-            Base0#{<<"x-forwarded-for">> => XFF}
+            Base1#{<<"x-forwarded-for">> => XFF}
     end.
+
+maybe_add_argocd_auth_header(OrigHost, Headers) when is_map(Headers) ->
+    case should_force_ephemeral_host(OrigHost) of
+        true ->
+            case maps:is_key(<<"authorization">>, Headers) of
+                true ->
+                    Headers;
+                false ->
+                    case maps:get(<<"cookie">>, Headers, undefined) of
+                        Cookie when is_binary(Cookie) ->
+                            case extract_argocd_token_from_cookie(Cookie) of
+                                {ok, Token} when Token =/= <<>> ->
+                                    Headers#{<<"authorization">> => <<"Bearer ", Token/binary>>};
+                                _ ->
+                                    Headers
+                            end;
+                        _ ->
+                            Headers
+                    end
+            end;
+        false ->
+            Headers
+    end;
+maybe_add_argocd_auth_header(_OrigHost, Headers) ->
+    Headers.
+
+extract_argocd_token_from_cookie(CookieHeader) when is_binary(CookieHeader) ->
+    case extract_cookie_value(CookieHeader, <<"argocd.token">>) of
+        {ok, Token} ->
+            {ok, normalize_argocd_cookie_token(Token)};
+        error ->
+            case extract_cookie_value(CookieHeader, <<"argocd.token.v2">>) of
+                {ok, TokenV2} -> {ok, normalize_argocd_cookie_token(TokenV2)};
+                error -> error
+            end
+    end;
+extract_argocd_token_from_cookie(_) ->
+    error.
+
+normalize_argocd_cookie_token(Token) when is_binary(Token) ->
+    Token1 = strip_wrapping_quotes(Token),
+    Token2 = maybe_percent_decode_token(Token1),
+    strip_bearer_prefix(Token2);
+normalize_argocd_cookie_token(Token) ->
+    Token.
+
+maybe_percent_decode_token(Token) when is_binary(Token) ->
+    case binary:match(Token, <<"%">>) of
+        nomatch -> Token;
+        _ ->
+            try
+                iolist_to_binary(uri_string:percent_decode(Token))
+            catch
+                _:_ -> Token
+            end
+    end;
+maybe_percent_decode_token(Token) ->
+    Token.
+
+strip_bearer_prefix(Token) when is_binary(Token) ->
+    Trimmed = string:trim(Token),
+    Lower = string:lowercase(Trimmed),
+    case binary:match(Lower, <<"bearer ">>) of
+        {0, _} ->
+            PrefixLen = byte_size(<<"bearer ">>),
+            binary:part(Trimmed, PrefixLen, byte_size(Trimmed) - PrefixLen);
+        _ ->
+            Trimmed
+    end;
+strip_bearer_prefix(Token) ->
+    Token.
+
+extract_cookie_value(CookieHeader, Name) when is_binary(CookieHeader), is_binary(Name) ->
+    Segments = binary:split(CookieHeader, <<";">>, [global]),
+    extract_cookie_value_segments(Segments, string:lowercase(Name));
+extract_cookie_value(_, _) ->
+    error.
+
+extract_cookie_value_segments([], _NameLower) ->
+    error;
+extract_cookie_value_segments([Seg | Rest], NameLower) ->
+    Trimmed = string:trim(Seg),
+    case binary:match(Trimmed, <<"=">>) of
+        {Pos, 1} ->
+            Key = string:lowercase(binary:part(Trimmed, 0, Pos)),
+            ValPos = Pos + 1,
+            ValLen = byte_size(Trimmed) - ValPos,
+            Value =
+                case ValLen > 0 of
+                    true -> binary:part(Trimmed, ValPos, ValLen);
+                    false -> <<>>
+                end,
+            case Key =:= NameLower of
+                true -> {ok, Value};
+                false -> extract_cookie_value_segments(Rest, NameLower)
+            end;
+        nomatch ->
+            extract_cookie_value_segments(Rest, NameLower)
+    end.
+
+strip_wrapping_quotes(<<$", Rest/binary>>) ->
+    case byte_size(Rest) of
+        N when N > 0 ->
+            case binary:last(Rest) of
+                $" -> binary:part(Rest, 0, N - 1);
+                _ -> <<$", Rest/binary>>
+            end;
+        _ ->
+            <<>>
+    end;
+strip_wrapping_quotes(Token) ->
+    Token.
 
 skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
@@ -1274,8 +1390,8 @@ maybe_add_alt_svc(Req, Host, Headers) ->
         Req, normalize_host(Host), pertisk_eproxy_response_headers:merge(Headers)
     ).
 
-with_tracking_id_header(TrackingId, Headers) when is_map(Headers) ->
-    Headers#{<<"x-request-id">> => TrackingId}.
+with_tracking_id_header(_TrackingId, Headers) when is_map(Headers) ->
+    Headers.
 
 request_tracking_id(Req) ->
     case cowboy_req:header(<<"x-request-id">>, Req, <<>>) of
@@ -1362,8 +1478,8 @@ request_timeout_ms(Req, ReqKind, Host, UpHost) ->
     case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
         true ->
             %% EventSource/watch requests are long-lived by design.
-            %% Do not apply the short ephemeral-host cap used for regular APIs.
-            GlobalTimeout;
+            %% Stream timeout is configurable; defaults to infinity.
+            stream_request_timeout(Config, GlobalTimeout);
         false ->
             case ReqKind =/= grpc andalso should_force_ephemeral_host(Host) of
                 true ->
@@ -1390,6 +1506,16 @@ request_timeout_ms(Req, ReqKind, Host, UpHost) ->
                     end
             end
     end.
+
+stream_request_timeout(Config, GlobalTimeout) when is_map(Config) ->
+    case maps:get(upstream_stream_request_timeout_ms, Config, infinity) of
+        infinity -> infinity;
+        <<"infinity">> -> infinity;
+        N when is_integer(N), N > 0 -> N;
+        _ -> GlobalTimeout
+    end;
+stream_request_timeout(_, GlobalTimeout) ->
+    GlobalTimeout.
 
 is_event_stream_request(Req) ->
     Accept = string:lowercase(cowboy_req:header(<<"accept">>, Req, <<>>)),
