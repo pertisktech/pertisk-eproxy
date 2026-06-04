@@ -18,6 +18,7 @@
 -define(H3_BODY_TIMEOUT_LARGE_CAP_MS, 120000).
 -define(H3_BODY_AUTH_CAP_MS, 3000).
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
+-define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
 
 start(Config) ->
@@ -199,25 +200,8 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
                 ok;
             false ->
-                case should_force_h2_fallback(PathOnly, Method) of
-                    true ->
-                        Hdrs = [
-                            {<<"content-type">>, <<"text/plain">>},
-                            {<<"alt-svc">>, <<"clear">>}
-                        ],
-                        _ = h3_reply_status(
-                            H3Conn,
-                            StreamId,
-                            421,
-                            Hdrs,
-                            <<"Long-poll endpoint is served over HTTPS/HTTP/2; retry without HTTP/3">>
-                        ),
-                        inc_h3_metrics(LogHost, LogHost, <<"421">>),
-                        log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
-                        ok;
-                    false ->
-                        Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
-                        case pertisk_eproxy_router:route(LogHost, PathOnly) of
+                Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
+                case pertisk_eproxy_router:route(LogHost, PathOnly) of
             {error, no_route} ->
                 inc_h3_metrics(LogHost, LogHost, <<"404">>),
                 _ = h3_reply_status(
@@ -231,73 +215,53 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
                 ok;
             {ok, #{upstream_path := UpPath, backend := BackendName, site_host := SiteHost}} ->
                 ClientIp = client_ip_h3(H3Conn, Headers),
-                ProxyCtx = #{
-                    method => Method,
-                    host => LogHost,
-                    path => PathOnly,
-                    up_path => UpPath,
-                    qs => Qs,
-                    headers => Headers,
-                    body => Body,
-                    client_ip => ClientIp,
-                    backend => BackendName
-                },
-                case h3_proxy_for_backend(ProxyCtx) of
-                    {error, no_healthy_upstream} ->
-                        inc_h3_metrics(LogHost, SiteHost, <<"502">>),
-                        reply_502_plain(H3Conn, StreamId),
-                        log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
-                        ok;
-                    {ok, UpstreamAddr, ProxyResult} ->
-                        case ProxyResult of
-                            {ok, Status0, RespHeaders, RespBody} ->
-                                Status = gun_response_status_int(Status0),
-                                StatusBin = integer_to_binary(Status),
-                                inc_h3_metrics(LogHost, SiteHost, StatusBin),
-                                RespBin = safe_iolist_to_binary(RespBody),
-                                ok = pertisk_eproxy_metrics:record_proxy_bytes(LogHost, byte_size(Body), byte_size(RespBin)),
-                                ok = pertisk_eproxy_metrics:record_site_bytes(SiteHost, byte_size(Body), byte_size(RespBin)),
-                                ok = pertisk_eproxy_backend:done_upstream(
-                                    BackendName, UpstreamAddr, ok
-                                ),
-                                H3Headers0 = maybe_add_h3_alt_svc(PathOnly, Qs, LogHost, RespHeaders),
-                                {H3Headers, RespOut} = pertisk_eproxy_compression:maybe_compress_h3(
-                                    Status,
-                                    Headers,
-                                    H3Headers0,
-                                    RespBin
-                                ),
-                                %% RFC 9114 §4.3.2: HEAD responses MUST NOT include a message body.
-                                RespData =
-                                    case normalize_h3_method(Method) of
-                                        <<"HEAD">> -> <<>>;
-                                        _ -> RespOut
-                                    end,
-                                _ = h3_reply_status(H3Conn, StreamId, Status, H3Headers, RespData),
-                                UpstreamLog =
-                                    case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
-                                        true -> <<"management-local">>;
-                                        false -> UpstreamAddr
-                                    end,
-                                log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, UpstreamLog),
-                                ok;
-                            {error, ProxyReason} ->
-                                inc_h3_metrics(LogHost, SiteHost, <<"502">>),
-                                ok = pertisk_eproxy_backend:done_upstream(
-                                    BackendName, UpstreamAddr, error
-                                ),
-                                lager:warning(
-                                    "h3 upstream failed: ~p host=~s path=~s upstream=~s",
-                                    [ProxyReason, LogHost, PathOnly, UpstreamAddr]
-                                ),
-                                reply_502_plain(H3Conn, StreamId),
-                                log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, UpstreamAddr),
-                                ok
-                        end
+                case pertisk_eproxy_handler:is_sse_proxy_request(
+                    PathOnly, h3_req_headers_map(Headers)
+                ) of
+                    true ->
+                        h3_handle_sse_proxy(
+                            H3Conn,
+                            StreamId,
+                            Method,
+                            LogHost,
+                            PathOnly,
+                            Qs,
+                            UpPath,
+                            BackendName,
+                            SiteHost,
+                            Headers,
+                            Body,
+                            ClientIp,
+                            T0
+                        );
+                    false ->
+                        ProxyCtx = #{
+                            method => Method,
+                            host => LogHost,
+                            path => PathOnly,
+                            up_path => UpPath,
+                            qs => Qs,
+                            headers => Headers,
+                            body => Body,
+                            client_ip => ClientIp,
+                            backend => BackendName
+                        },
+                        h3_handle_buffered_proxy(
+                            H3Conn,
+                            StreamId,
+                            Method,
+                            LogHost,
+                            PathOnly,
+                            Qs,
+                            SiteHost,
+                            ProxyCtx,
+                            Body,
+                            Headers,
+                            T0
+                        )
                 end
                 end
         end
-      end
     catch
         Class:Reason:Stack ->
             case h3_send_failed_reason(Reason) of
@@ -485,7 +449,7 @@ merge_h3_header(K, V, Acc) ->
     end.
 
 forward_headers_h3(InMap, OrigHost, ClientIp, UpstreamPath) when is_binary(OrigHost) ->
-    Filtered = maps:without(
+    Filtered0 = maps:without(
         [
             <<"connection">>,
             <<"keep-alive">>,
@@ -496,20 +460,36 @@ forward_headers_h3(InMap, OrigHost, ClientIp, UpstreamPath) when is_binary(OrigH
         ],
         InMap
     ),
+    Filtered =
+        case pertisk_eproxy_handler:is_sse_proxy_request(UpstreamPath, Filtered0) of
+            true -> maps:remove(<<"accept-encoding">>, Filtered0);
+            false -> Filtered0
+        end,
     Base0 = Filtered#{
         <<"host">> => OrigHost,
         <<"x-forwarded-proto">> => <<"https">>,
         <<"x-forwarded-proto-version">> => <<"HTTP/3">>
     },
+    Base1 = maybe_add_argocd_bearer_from_cookie(Base0),
+    Base2 =
+        case pertisk_eproxy_handler:is_sse_proxy_request(UpstreamPath, Filtered0) of
+            true ->
+                Base1#{
+                    <<"accept">> => <<"text/event-stream">>,
+                    <<"cache-control">> => <<"no-cache">>
+                };
+            false ->
+                Base1
+        end,
     case skip_forwarded_for(OrigHost, UpstreamPath) of
         true ->
-            maps:remove(<<"x-forwarded-for">>, Base0);
+            maps:remove(<<"x-forwarded-for">>, Base2);
         false ->
-            XFF = case maps:find(<<"x-forwarded-for">>, Base0) of
+            XFF = case maps:find(<<"x-forwarded-for">>, Base2) of
                 {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
                 error -> ClientIp
             end,
-            Base0#{<<"x-forwarded-for">> => XFF}
+            Base2#{<<"x-forwarded-for">> => XFF}
     end.
 
 skip_forwarded_for(_Host, Path) when is_binary(Path) ->
@@ -521,6 +501,67 @@ skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath;
 skip_forwarded_for(_, _) ->
     false.
+
+maybe_add_argocd_bearer_from_cookie(Headers) when is_map(Headers) ->
+    case maps:is_key(<<"authorization">>, Headers) of
+        true ->
+            Headers;
+        false ->
+            case maps:get(<<"cookie">>, Headers, undefined) of
+                Cookie when is_binary(Cookie) ->
+                    case extract_argocd_token_from_cookie(Cookie) of
+                        {ok, Token} when Token =/= <<>> ->
+                            Headers#{
+                                <<"authorization">> => <<"Bearer ", Token/binary>>,
+                                <<"cookie">> => Cookie
+                            };
+                        _ ->
+                            Headers
+                    end;
+                _ ->
+                    Headers
+            end
+    end;
+maybe_add_argocd_bearer_from_cookie(Headers) ->
+    Headers.
+
+extract_argocd_token_from_cookie(CookieHeader) when is_binary(CookieHeader) ->
+    case extract_cookie_value(CookieHeader, <<"argocd.token">>) of
+        {ok, Token} ->
+            {ok, Token};
+        error ->
+            extract_cookie_value(CookieHeader, <<"argocd.token.v2">>)
+    end;
+extract_argocd_token_from_cookie(_) ->
+    error.
+
+extract_cookie_value(CookieHeader, Name) when is_binary(CookieHeader), is_binary(Name) ->
+    Segments = binary:split(CookieHeader, <<";">>, [global]),
+    extract_cookie_value_segments(Segments, string:lowercase(Name));
+extract_cookie_value(_, _) ->
+    error.
+
+extract_cookie_value_segments([], _NameLower) ->
+    error;
+extract_cookie_value_segments([Seg | Rest], NameLower) ->
+    Trimmed = string:trim(Seg),
+    case binary:match(Trimmed, <<"=">>) of
+        {Pos, 1} ->
+            Key = string:lowercase(binary:part(Trimmed, 0, Pos)),
+            ValPos = Pos + 1,
+            ValLen = byte_size(Trimmed) - ValPos,
+            Value =
+                case ValLen > 0 of
+                    true -> binary:part(Trimmed, ValPos, ValLen);
+                    false -> <<>>
+                end,
+            case Key =:= NameLower of
+                true -> {ok, Value};
+                false -> extract_cookie_value_segments(Rest, NameLower)
+            end;
+        nomatch ->
+            extract_cookie_value_segments(Rest, NameLower)
+    end.
 
 %% Keep H3 sessions stable across browser idle windows and NAT/LB churn.
 -define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 1800).
@@ -686,6 +727,443 @@ maybe_fallback_local_admin(
 maybe_fallback_local_admin(Result, _Method, _Host, _Path, _Qs, _Headers, _Body, _ClientIp) ->
     Result.
 
+h3_handle_buffered_proxy(
+    H3Conn,
+    StreamId,
+    Method,
+    LogHost,
+    PathOnly,
+    Qs,
+    SiteHost,
+    ProxyCtx,
+    Body,
+    Headers,
+    T0
+) ->
+    #{backend := BackendName} = ProxyCtx,
+    case h3_proxy_for_backend(ProxyCtx) of
+        {error, no_healthy_upstream} ->
+            inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+            reply_502_plain(H3Conn, StreamId),
+            log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
+            ok;
+        {ok, UpstreamAddr, ProxyResult} ->
+            case ProxyResult of
+                {ok, Status0, RespHeaders, RespBody} ->
+                    Status = gun_response_status_int(Status0),
+                    StatusBin = integer_to_binary(Status),
+                    inc_h3_metrics(LogHost, SiteHost, StatusBin),
+                    RespBin = safe_iolist_to_binary(RespBody),
+                    ok = pertisk_eproxy_metrics:record_proxy_bytes(
+                        LogHost, byte_size(Body), byte_size(RespBin)
+                    ),
+                    ok = pertisk_eproxy_metrics:record_site_bytes(
+                        SiteHost, byte_size(Body), byte_size(RespBin)
+                    ),
+                    ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
+                    H3Headers0 = maybe_add_h3_alt_svc(PathOnly, Qs, LogHost, RespHeaders),
+                    {H3Headers, RespOut} = pertisk_eproxy_compression:maybe_compress_h3(
+                        Status,
+                        Headers,
+                        H3Headers0,
+                        RespBin
+                    ),
+                    RespData =
+                        case normalize_h3_method(Method) of
+                            <<"HEAD">> -> <<>>;
+                            _ -> RespOut
+                        end,
+                    _ = h3_reply_status(H3Conn, StreamId, Status, H3Headers, RespData),
+                    UpstreamLog = upstream_log_label(UpstreamAddr),
+                    log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, UpstreamLog),
+                    ok;
+                {error, ProxyReason} ->
+                    inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+                    ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
+                    lager:warning(
+                        "h3 upstream failed: ~p host=~s path=~s upstream=~s",
+                        [ProxyReason, LogHost, PathOnly, UpstreamAddr]
+                    ),
+                    reply_502_plain(H3Conn, StreamId),
+                    log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, UpstreamAddr),
+                    ok
+            end
+    end.
+
+h3_handle_sse_proxy(
+    H3Conn,
+    StreamId,
+    Method,
+    LogHost,
+    PathOnly,
+    Qs,
+    UpPath,
+    BackendName,
+    SiteHost,
+    Headers,
+    Body,
+    ClientIp,
+    T0
+) ->
+    case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
+        {error, no_healthy_upstream} ->
+            inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+            reply_502_plain(H3Conn, StreamId),
+            log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
+            ok;
+        {ok, UpstreamAddr} ->
+            case proxy_via_gun_sse(
+                H3Conn,
+                StreamId,
+                Method,
+                LogHost,
+                UpPath,
+                Qs,
+                UpstreamAddr,
+                Headers,
+                Body,
+                ClientIp
+            ) of
+                {ok, Status, ReqBytes, RespBytes} ->
+                    StatusBin = integer_to_binary(Status),
+                    inc_h3_metrics(LogHost, SiteHost, StatusBin),
+                    ok = pertisk_eproxy_metrics:record_proxy_bytes(
+                        LogHost, ReqBytes, RespBytes
+                    ),
+                    ok = pertisk_eproxy_metrics:record_site_bytes(
+                        SiteHost, ReqBytes, RespBytes
+                    ),
+                    ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
+                    log_h3_access(
+                        LogHost,
+                        SiteHost,
+                        Method,
+                        PathOnly,
+                        Status,
+                        T0,
+                        upstream_log_label(UpstreamAddr)
+                    ),
+                    ok;
+                {error, ProxyReason} ->
+                    inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+                    ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, error),
+                    LogReason =
+                        case ProxyReason of
+                            all_eventstream_upstreams_failed ->
+                                "all SSE upstream candidates failed";
+                            _ ->
+                                io_lib:format("~p", [ProxyReason])
+                        end,
+                    lager:warning(
+                        "h3 sse upstream failed: ~s host=~s path=~s upstream=~s",
+                        [LogReason, LogHost, PathOnly, UpstreamAddr]
+                    ),
+                    reply_502_plain(H3Conn, StreamId),
+                    log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, UpstreamAddr),
+                    ok
+            end
+    end.
+
+upstream_log_label(UpstreamAddr) ->
+    case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
+        true -> <<"management-local">>;
+        false -> UpstreamAddr
+    end.
+
+proxy_via_gun_sse(
+    H3Conn,
+    StreamId,
+    MethodBin,
+    OrigHost,
+    UpstreamPath,
+    Qs,
+    UpstreamAddr,
+    H3Headers,
+    Body,
+    ClientIp
+) ->
+    {UpHost0, UpPort0, Transport0} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
+    FullPath =
+        case Qs of
+            <<>> -> UpstreamPath;
+            _ -> <<UpstreamPath/binary, "?", Qs/binary>>
+        end,
+    HMap = h3_req_headers_map(H3Headers),
+    HeadersMap = forward_headers_h3(HMap, OrigHost, ClientIp, FullPath),
+    HeadersList = maps:to_list(HeadersMap),
+    GunMethod = method_to_gun(MethodBin),
+    ReqBodyBytes = byte_size(Body),
+    HeartbeatMs = sse_heartbeat_ms(),
+    pertisk_eproxy_handler:with_eventstream_upstream(
+        fun(ConnPid, Candidate) ->
+            StreamTimeoutMs =
+                pertisk_eproxy_handler:eventstream_initial_await_timeout_ms(Candidate),
+            proxy_via_gun_sse_conn(
+                H3Conn,
+                StreamId,
+                ConnPid,
+                GunMethod,
+                FullPath,
+                HeadersList,
+                Body,
+                ReqBodyBytes,
+                StreamTimeoutMs,
+                HeartbeatMs
+            )
+        end,
+        UpHost0,
+        UpPort0,
+        Transport0,
+        UpstreamPath
+    ).
+
+proxy_via_gun_sse_conn(
+    H3Conn,
+    StreamId,
+    ConnPid,
+    GunMethod,
+    FullPath,
+    HeadersList,
+    Body,
+    ReqBodyBytes,
+    StreamTimeoutMs,
+    HeartbeatMs
+) ->
+    StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
+    case gun:await(ConnPid, StreamRef, StreamTimeoutMs) of
+        {response, nofin, Status, RespHeaders} ->
+            h3_sse_forward_upstream_stream(
+                H3Conn,
+                StreamId,
+                ConnPid,
+                StreamRef,
+                Status,
+                RespHeaders,
+                ReqBodyBytes,
+                HeartbeatMs
+            );
+        {response, fin, Status, RespHeaders} ->
+            RespBody = gun_collect_short_body(ConnPid, StreamRef),
+            StatusCode = gun_response_status_int(Status),
+            H3Headers0 = normalize_sse_h3_headers(gun_resp_headers_to_h3(RespHeaders)),
+            H3Headers = pertisk_eproxy_response_headers:merge_h3(H3Headers0),
+            _ = h3_reply_status(H3Conn, StreamId, StatusCode, H3Headers, RespBody),
+            {ok, StatusCode, ReqBodyBytes, byte_size(RespBody)};
+        {error, timeout} ->
+            case headers_have_sse_auth(HeadersList) of
+                true ->
+                    h3_sse_idle_upstream(
+                        H3Conn,
+                        StreamId,
+                        ConnPid,
+                        StreamRef,
+                        ReqBodyBytes,
+                        HeartbeatMs
+                    );
+                false ->
+                    {error, timeout}
+            end;
+        {error, Reason} ->
+            {error, Reason};
+        Other ->
+            {error, {await_response_unexpected, Other}}
+    end.
+
+h3_sse_forward_upstream_stream(
+    H3Conn,
+    StreamId,
+    ConnPid,
+    StreamRef,
+    Status,
+    RespHeaders,
+    ReqBodyBytes,
+    HeartbeatMs
+) ->
+    H3Headers0 = normalize_sse_h3_headers(gun_resp_headers_to_h3(RespHeaders)),
+    H3Headers = pertisk_eproxy_response_headers:merge_h3(H3Headers0),
+    StatusCode = gun_response_status_int(Status),
+    case h3_send_response(H3Conn, StreamId, StatusCode, H3Headers) of
+        ok ->
+            _ = h3_send_data(H3Conn, StreamId, <<": connected\n\n">>, false),
+            RespBytes =
+                h3_sse_upstream_loop(
+                    H3Conn,
+                    StreamId,
+                    ConnPid,
+                    StreamRef,
+                    HeartbeatMs,
+                    0
+                ),
+            {ok, StatusCode, ReqBodyBytes, RespBytes};
+        {error, _} = Err ->
+            Err
+    end.
+
+h3_sse_idle_upstream(H3Conn, StreamId, ConnPid, StreamRef, ReqBodyBytes, HeartbeatMs) ->
+    EarlyHeaders = pertisk_eproxy_response_headers:merge_h3(normalize_sse_h3_headers([])),
+    case h3_send_response(H3Conn, StreamId, 200, EarlyHeaders) of
+        ok ->
+            _ = h3_send_data(H3Conn, StreamId, <<": connected\n\n">>, false),
+            RespBytes =
+                h3_sse_idle_upstream_await(
+                    H3Conn,
+                    StreamId,
+                    ConnPid,
+                    StreamRef,
+                    HeartbeatMs,
+                    0
+                ),
+            {ok, 200, ReqBodyBytes, RespBytes};
+        {error, _} = Err ->
+            Err
+    end.
+
+h3_sse_idle_upstream_await(H3Conn, StreamId, ConnPid, StreamRef, HeartbeatMs, RespBytes) ->
+    case gun:await(ConnPid, StreamRef, HeartbeatMs) of
+        {response, nofin, _Status, _RespHeaders} ->
+            h3_sse_upstream_loop(
+                H3Conn,
+                StreamId,
+                ConnPid,
+                StreamRef,
+                HeartbeatMs,
+                RespBytes
+            );
+        {response, fin, _Status, _RespHeaders} ->
+            Body = gun_collect_short_body(ConnPid, StreamRef),
+            _ = h3_send_data(H3Conn, StreamId, Body, true),
+            RespBytes + byte_size(Body);
+        {error, timeout} ->
+            case h3_send_data(H3Conn, StreamId, <<":\n\n">>, false) of
+                ok ->
+                    h3_sse_idle_upstream_await(
+                        H3Conn,
+                        StreamId,
+                        ConnPid,
+                        StreamRef,
+                        HeartbeatMs,
+                        RespBytes
+                    );
+                {error, connection_gone} ->
+                    RespBytes;
+                {error, _} ->
+                    _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+                    RespBytes
+            end;
+        {error, _Reason} ->
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            RespBytes;
+        Other ->
+            lager:debug("h3 sse idle await unexpected: ~p", [Other]),
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            RespBytes
+    end.
+
+headers_have_sse_auth(HeadersList) when is_list(HeadersList) ->
+    lists:any(
+        fun
+            ({<<"authorization">>, V}) when is_binary(V), V =/= <<>> ->
+                true;
+            ({<<"cookie">>, V}) when is_binary(V) ->
+                binary:match(V, <<"argocd.token">>) =/= nomatch orelse
+                    binary:match(V, <<"argocd.token.v2">>) =/= nomatch;
+            (_) ->
+                false
+        end,
+        HeadersList
+    );
+headers_have_sse_auth(_) ->
+    false.
+
+h3_sse_upstream_loop(H3Conn, StreamId, ConnPid, StreamRef, HeartbeatMs, RespBytes) ->
+    case gun:await(ConnPid, StreamRef, HeartbeatMs) of
+        {data, nofin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            case h3_send_data(H3Conn, StreamId, ChunkBin, false) of
+                ok ->
+                    h3_sse_upstream_loop(
+                        H3Conn,
+                        StreamId,
+                        ConnPid,
+                        StreamRef,
+                        HeartbeatMs,
+                        RespBytes + byte_size(ChunkBin)
+                    );
+                {error, connection_gone} ->
+                    RespBytes;
+                {error, _} ->
+                    _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+                    RespBytes
+            end;
+        {data, fin, Chunk} ->
+            ChunkBin = iolist_to_binary(Chunk),
+            _ = h3_send_data(H3Conn, StreamId, ChunkBin, true),
+            RespBytes + byte_size(ChunkBin);
+        {trailers, _Trailers} ->
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            RespBytes;
+        {error, timeout} ->
+            case h3_send_data(H3Conn, StreamId, <<":\n\n">>, false) of
+                ok ->
+                    h3_sse_upstream_loop(
+                        H3Conn,
+                        StreamId,
+                        ConnPid,
+                        StreamRef,
+                        HeartbeatMs,
+                        RespBytes
+                    );
+                {error, connection_gone} ->
+                    RespBytes;
+                {error, _} ->
+                    _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+                    RespBytes
+            end;
+        {error, _Reason} ->
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            RespBytes;
+        Other ->
+            lager:debug("h3 sse await unexpected: ~p", [Other]),
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            RespBytes
+    end.
+
+gun_collect_short_body(ConnPid, StreamRef) ->
+    case gun:await_body(ConnPid, StreamRef, 5000) of
+        {ok, Body} ->
+            safe_iolist_to_binary(Body);
+        {ok, Body, _Trailers} ->
+            safe_iolist_to_binary(Body);
+        _ ->
+            <<>>
+    end.
+
+normalize_sse_h3_headers(Headers) when is_list(Headers) ->
+    Drop = ["content-length", "transfer-encoding", "content-type",
+            "cache-control", "x-accel-buffering"],
+    Filtered = lists:filter(
+        fun({K, _}) ->
+            Kl = string:lowercase(header_name_str(K)),
+            not lists:member(Kl, Drop)
+        end,
+        Headers
+    ),
+    [
+        {<<"content-type">>, <<"text/event-stream">>},
+        {<<"cache-control">>, <<"no-cache, no-transform">>},
+        {<<"x-accel-buffering">>, <<"no">>}
+        | Filtered
+    ];
+normalize_sse_h3_headers(Headers) ->
+    Headers.
+
+sse_heartbeat_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(event_stream_heartbeat_ms, Config, ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS
+    end.
+
 should_try_local_admin_fallback(_Host, <<"/api/realtime", _/binary>>) ->
     false;
 should_try_local_admin_fallback(Host, <<"/api/", _/binary>>) ->
@@ -762,7 +1240,7 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
     GunOpts = upstream_gun_opts(UpHost, Transport),
-    UseEphemeralConn = should_use_ephemeral_connection_h3(UpHost, FullPath),
+    UseEphemeralConn = should_use_ephemeral_connection_h3(UpHost, FullPath, H3Headers),
     case checkout_or_open_connection_h3(UseEphemeralConn, UpHost, UpPort, Transport, GunOpts) of
         {error, Reason} ->
             {error, Reason};
@@ -773,6 +1251,7 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                 FullPath,
                 HeadersList,
                 Body,
+                HMap,
                 UpHost,
                 UpPort,
                 Transport,
@@ -802,8 +1281,9 @@ open_direct_connection_h3(UpHost, UpPort, GunOpts) ->
             {error, {connect, Reason}}
     end.
 
-should_use_ephemeral_connection_h3(UpHost, FullPath) ->
-    is_loopback_host_h3(UpHost) orelse is_long_poll_path(FullPath).
+should_use_ephemeral_connection_h3(UpHost, FullPath, Headers) ->
+    is_loopback_host_h3(UpHost)
+        orelse pertisk_eproxy_handler:is_sse_proxy_request(FullPath, h3_req_headers_map(Headers)).
 
 is_loopback_host_h3(Host) when is_binary(Host) ->
     is_loopback_host_h3(binary_to_list(Host));
@@ -819,6 +1299,7 @@ do_proxy_via_gun(
     FullPath,
     HeadersList,
     Body,
+    ReqHeadersMap,
     UpHost,
     UpPort,
     Transport,
@@ -827,7 +1308,7 @@ do_proxy_via_gun(
     UseEphemeralConn
 ) ->
     TimeoutMs = request_timeout_ms(),
-    BodyTimeoutMs = response_body_timeout_ms(FullPath, TimeoutMs),
+    BodyTimeoutMs = response_body_timeout_ms(FullPath, ReqHeadersMap, TimeoutMs),
     Result =
         try
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
@@ -857,7 +1338,7 @@ do_proxy_via_gun(
     case Result of
         {error, Reason} ->
             maybe_invalidate_connection(ConnPid, Reason),
-            case should_retry_proxy_error(FullPath, RetryCount, Reason) of
+            case should_retry_proxy_error(FullPath, RetryCount, Reason, ReqHeadersMap) of
                 true ->
                     case checkout_or_open_connection_h3(
                         UseEphemeralConn,
@@ -873,6 +1354,7 @@ do_proxy_via_gun(
                                 FullPath,
                                 HeadersList,
                                 Body,
+                                ReqHeadersMap,
                                 UpHost,
                                 UpPort,
                                 Transport,
@@ -905,30 +1387,23 @@ retryable_upstream_error(timeout) -> true;
 retryable_upstream_error({timeout, _}) -> true;
 retryable_upstream_error(_) -> false.
 
-should_retry_proxy_error(FullPath, RetryCount, Reason) ->
+should_retry_proxy_error(FullPath, RetryCount, Reason, ReqHeadersMap) ->
     RetryCount =:= 0
         andalso retryable_upstream_error(Reason)
-        andalso not (is_long_poll_path(FullPath) andalso is_timeout_reason(Reason)).
+        andalso not (
+            pertisk_eproxy_handler:is_sse_proxy_request(FullPath, ReqHeadersMap)
+                andalso is_timeout_reason(Reason)
+        ).
 
 is_timeout_reason(timeout) -> true;
 is_timeout_reason({timeout, _}) -> true;
 is_timeout_reason(_) -> false.
 
-response_body_timeout_ms(FullPath, BaseTimeout) ->
-    case is_long_poll_path(FullPath) of
-        true -> max(BaseTimeout, 125000);
+response_body_timeout_ms(FullPath, ReqHeadersMap, BaseTimeout) ->
+    case pertisk_eproxy_handler:is_sse_proxy_request(FullPath, ReqHeadersMap) of
+        true -> infinity;
         false -> BaseTimeout
     end.
-
-is_long_poll_path(Path) when is_binary(Path) ->
-    Prefix = <<"/user/events">>,
-    binary:match(Path, Prefix) =:= {0, byte_size(Prefix)};
-is_long_poll_path(_) ->
-    false.
-
-should_force_h2_fallback(PathOnly, Method) ->
-    normalize_h3_method(Method) =:= <<"GET">>
-        andalso is_long_poll_path(PathOnly).
 
 request_timeout_ms() ->
     Config = pertisk_eproxy_config:get_config(),

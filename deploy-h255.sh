@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.5.37}"
+VERSION="${VERSION:-0.5.43}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
@@ -26,7 +26,8 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
   --set ingress.className=pertisk-eproxy \
-  #--set ingress.watchNamespace="" \
-  #--set controller.config.upstream_pool_size=128 \
-  #--set controller.config.upstream_pool_idle_timeout_secs=240 \
   --set adminIngress.tlsSecretName=admin-talos-tls
+  # Optional:
+  # --set ingress.watchNamespace=""
+  # --set controller.config.upstream_pool_size=128
+  # --set controller.config.upstream_pool_idle_timeout_secs=240

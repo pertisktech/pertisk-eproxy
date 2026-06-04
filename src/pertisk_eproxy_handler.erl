@@ -19,6 +19,14 @@
     init/2,
     parse_upstream/1,
     site_advertise_http3/1,
+    is_sse_proxy_path/1,
+    is_event_stream_accept/1,
+    is_sse_proxy_request/2,
+    gun_protocols_for_eventstream/1,
+    eventstream_upstream_candidates/4,
+    eventstream_initial_await_timeout_ms/1,
+    eventstream_upstream_retryable/1,
+    with_eventstream_upstream/5,
     websocket_init/1,
     websocket_handle/2,
     websocket_info/2,
@@ -28,6 +36,7 @@
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS, 15000).
 -define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
+-define(DEFAULT_SSE_INITIAL_HEADERS_MS, 5000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
 -define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
@@ -219,13 +228,58 @@ inc_request_metrics(Host, Site, StatusCode, Proto) ->
 %% -------------------------------------------------------------------------
 
 proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
+    ReqKind = detect_request_kind(Req),
+    case ReqKind of
+        eventstream ->
+            proxy_eventstream_request(
+                Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId
+            );
+        _ ->
+            proxy_request_impl(
+                Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId, ReqKind
+            )
+    end.
+
+proxy_eventstream_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
+    {UpHost0, UpPort0, Transport0} = parse_upstream(UpstreamAddr),
+    FullPath = case Qs of
+        <<>> -> UpstreamPath;
+        _    -> <<UpstreamPath/binary, "?", Qs/binary>>
+    end,
+    {ok, Body} = read_body(Req),
+    with_eventstream_upstream(
+        fun(ConnPid, #{host := UpHost, port := UpPort, transport := Transport, gun_opts := GunOpts}) ->
+            do_proxy(
+                Req,
+                ConnPid,
+                Method,
+                Host,
+                Site,
+                FullPath,
+                ClientIp,
+                TrackingId,
+                Body,
+                UpHost,
+                UpPort,
+                Transport,
+                eventstream,
+                GunOpts,
+                0,
+                true
+            )
+        end,
+        UpHost0,
+        UpPort0,
+        Transport0,
+        UpstreamPath
+    ).
+
+proxy_request_impl(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId, ReqKind) ->
     {UpHost, UpPort, Transport} = parse_upstream(UpstreamAddr),
     FullPath = case Qs of
         <<>> -> UpstreamPath;
         _    -> <<UpstreamPath/binary, "?", Qs/binary>>
     end,
-
-    ReqKind = detect_request_kind(Req),
     UseEphemeralConn = should_use_ephemeral_connection(ReqKind, Host, UpHost, UpPort, Transport),
     GunOpts = upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind),
     {ok, Body} = read_body(Req),
@@ -281,6 +335,10 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
             {error, {connect, Reason}}
     end.
 
+should_use_ephemeral_connection(eventstream, _Host, _UpHost, _UpPort, _Transport) ->
+    %% Long-lived SSE streams must not reuse pooled upstream sockets that may
+    %% have been half-closed by idle timers or prior responses.
+    true;
 should_use_ephemeral_connection(grpc, _Host, _UpHost, _UpPort, _Transport) ->
     false;
 should_use_ephemeral_connection(_ReqKind, _Host, UpHost, _UpPort, _Transport) ->
@@ -331,6 +389,14 @@ connect_timeout_ms(UpHost, ReqKind) ->
             ?CONNECT_TIMEOUT
     end.
 
+add_request_profile_upstream_opts(eventstream, GunOpts) ->
+    GunOpts#{
+        tcp_opts => [{keepalive, true}, {nodelay, true}],
+        http2_opts => #{
+            keepalive => ?GRPC_HTTP2_KEEPALIVE_MS,
+            keepalive_tolerance => ?GRPC_HTTP2_KEEPALIVE_TOLERANCE
+        }
+    };
 add_request_profile_upstream_opts(grpc, GunOpts) ->
     GunOpts#{
         tcp_opts => [{keepalive, true}, {nodelay, true}],
@@ -397,7 +463,12 @@ do_proxy(
                         ReqBodyBytes
                     );
                 _ ->
-                    case gun:await(ConnPid, StreamRef, TimeoutMs) of
+                    FirstAwaitMs =
+                        case ReqKind of
+                            eventstream -> sse_initial_headers_timeout_ms();
+                            _ -> TimeoutMs
+                        end,
+                    case gun:await(ConnPid, StreamRef, FirstAwaitMs) of
                         {response, nofin, Status, RespHeaders} ->
                             do_proxy_http_streaming(
                                 Req,
@@ -416,6 +487,21 @@ do_proxy(
                             CowboyHeaders = maybe_add_alt_svc(Req1, Host, RawHeaders),
                             Req2 = reply_upstream_fin(Method, Status, with_tracking_id_header(TrackingId, CowboyHeaders), Req1),
                             {ok, Status, Req2};
+                        {error, timeout} when ReqKind =:= eventstream ->
+                            case headers_have_sse_auth(HeadersMap) of
+                                true ->
+                                    do_proxy_sse_idle_upstream(
+                                        Req,
+                                        ConnPid,
+                                        StreamRef,
+                                        Host,
+                                        Site,
+                                        TrackingId,
+                                        ReqBodyBytes
+                                    );
+                                false ->
+                                    {error, timeout}
+                            end;
                         {error, Reason} ->
                             {error, Reason}
                     end
@@ -526,6 +612,108 @@ do_proxy_grpc_streaming(Req, ConnPid, StreamRef, Host, Site, TrackingId, ReqBody
 %% For long-lived chunked HTTP responses (for example Kubernetes watch APIs),
 %% stream upstream body chunks directly to the client instead of waiting for a
 %% terminal body frame that may arrive after much longer than REQUEST_TIMEOUT.
+%% Argo CD (and similar) may hold SSE response headers until the first watch
+%% event. Flush an early 200 + heartbeat so browsers keep the EventSource open.
+do_proxy_sse_idle_upstream(Req, ConnPid, StreamRef, Host, Site, TrackingId, ReqBodyBytes) ->
+    ReqPath = cowboy_req:path(Req),
+    IsStreamEndpoint = is_stream_endpoint_request(Req),
+    StartMs = erlang:monotonic_time(millisecond),
+    maybe_log_stream_lifecycle(
+        IsStreamEndpoint,
+        stream_open,
+        #{
+            tracking_id => TrackingId,
+            path => ReqPath,
+            status => 200,
+            event_stream => true,
+            early_flush => true
+        }
+    ),
+    EarlyHeaders = normalize_event_stream_headers([]),
+    StreamReq = cowboy_req:stream_reply(
+        200,
+        with_tracking_id_header(TrackingId, EarlyHeaders),
+        Req
+    ),
+    ok = cowboy_req:stream_body(<<": connected\n\n">>, nofin, StreamReq),
+    HeartbeatMs = stream_await_timeout(true),
+    proxy_sse_idle_upstream_await(
+        ConnPid,
+        StreamRef,
+        StreamReq,
+        Host,
+        Site,
+        ReqBodyBytes,
+        HeartbeatMs,
+        IsStreamEndpoint,
+        TrackingId,
+        ReqPath,
+        StartMs
+    ).
+
+proxy_sse_idle_upstream_await(
+    ConnPid,
+    StreamRef,
+    StreamReq,
+    Host,
+    Site,
+    ReqBodyBytes,
+    HeartbeatMs,
+    IsStreamEndpoint,
+    TrackingId,
+    ReqPath,
+    StartMs
+) ->
+    case gun:await(ConnPid, StreamRef, HeartbeatMs) of
+        {response, nofin, Status, _RespHeaders} ->
+            proxy_http_stream_loop(
+                ConnPid,
+                StreamRef,
+                StreamReq,
+                Host,
+                Site,
+                ReqBodyBytes,
+                0,
+                Status,
+                true,
+                IsStreamEndpoint,
+                TrackingId,
+                ReqPath,
+                StartMs
+            );
+        {response, fin, Status, _RespHeaders} ->
+            Body =
+                case gun:await_body(ConnPid, StreamRef, 5000) of
+                    {ok, B} -> iolist_to_binary(B);
+                    {ok, B, _} -> iolist_to_binary(B);
+                    _ -> <<>>
+                end,
+            RespBytes = byte_size(Body),
+            ok = cowboy_req:stream_body(Body, fin, StreamReq),
+            ok = record_proxy_bytes_metrics(Host, Site, ReqBodyBytes, RespBytes),
+            {ok, Status, StreamReq};
+        {error, timeout} ->
+            ok = cowboy_req:stream_body(<<":\n\n">>, nofin, StreamReq),
+            proxy_sse_idle_upstream_await(
+                ConnPid,
+                StreamRef,
+                StreamReq,
+                Host,
+                Site,
+                ReqBodyBytes,
+                HeartbeatMs,
+                IsStreamEndpoint,
+                TrackingId,
+                ReqPath,
+                StartMs
+            );
+        {error, Reason} ->
+            ok = cowboy_req:stream_body(<<>>, fin, StreamReq),
+            {error, Reason};
+        Other ->
+            {error, {await_response_unexpected, Other}}
+    end.
+
 do_proxy_http_streaming(Req, ConnPid, StreamRef, Status, RespHeaders, Host, Site, TrackingId, ReqBodyBytes) ->
     {Req1, RawHeaders} = response_headers_to_req(Req, RespHeaders),
     ReqPath = cowboy_req:path(Req),
@@ -749,6 +937,7 @@ normalize_event_stream_headers(Headers) when is_map(Headers) ->
     Headers2#{
         <<"content-type">> => <<"text/event-stream">>,
         <<"cache-control">> => <<"no-cache, no-transform">>,
+        <<"connection">> => <<"keep-alive">>,
         <<"x-accel-buffering">> => <<"no">>
     };
 normalize_event_stream_headers(Headers) ->
@@ -881,7 +1070,7 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
         <<"x-forwarded-proto-version">> => ProtoVsn,
         <<"x-request-id">> => TrackingId
     },
-    Base2 = maybe_add_eventstream_request_headers(ReqKind, Base0),
+    Base2 = maybe_add_eventstream_request_headers(ReqKind, maybe_add_argocd_bearer_from_cookie(Base0)),
 
     %% Proxmox console ticket endpoints may validate source identity across
     %% termproxy/vncproxy and vncwebsocket calls; avoid XFF drift between H3 and TCP.
@@ -903,6 +1092,67 @@ maybe_add_eventstream_request_headers(eventstream, Headers) when is_map(Headers)
     };
 maybe_add_eventstream_request_headers(_, Headers) ->
     Headers.
+
+maybe_add_argocd_bearer_from_cookie(Headers) when is_map(Headers) ->
+    case maps:is_key(<<"authorization">>, Headers) of
+        true ->
+            Headers;
+        false ->
+            case maps:get(<<"cookie">>, Headers, undefined) of
+                Cookie when is_binary(Cookie) ->
+                    case extract_argocd_token_from_cookie(Cookie) of
+                        {ok, Token} when Token =/= <<>> ->
+                            Headers#{
+                                <<"authorization">> => <<"Bearer ", Token/binary>>,
+                                <<"cookie">> => Cookie
+                            };
+                        _ ->
+                            Headers
+                    end;
+                _ ->
+                    Headers
+            end
+    end;
+maybe_add_argocd_bearer_from_cookie(Headers) ->
+    Headers.
+
+extract_argocd_token_from_cookie(CookieHeader) when is_binary(CookieHeader) ->
+    case extract_cookie_value(CookieHeader, <<"argocd.token">>) of
+        {ok, Token} ->
+            {ok, Token};
+        error ->
+            extract_cookie_value(CookieHeader, <<"argocd.token.v2">>)
+    end;
+extract_argocd_token_from_cookie(_) ->
+    error.
+
+extract_cookie_value(CookieHeader, Name) when is_binary(CookieHeader), is_binary(Name) ->
+    Segments = binary:split(CookieHeader, <<";">>, [global]),
+    extract_cookie_value_segments(Segments, string:lowercase(Name));
+extract_cookie_value(_, _) ->
+    error.
+
+extract_cookie_value_segments([], _NameLower) ->
+    error;
+extract_cookie_value_segments([Seg | Rest], NameLower) ->
+    Trimmed = string:trim(Seg),
+    case binary:match(Trimmed, <<"=">>) of
+        {Pos, 1} ->
+            Key = string:lowercase(binary:part(Trimmed, 0, Pos)),
+            ValPos = Pos + 1,
+            ValLen = byte_size(Trimmed) - ValPos,
+            Value =
+                case ValLen > 0 of
+                    true -> binary:part(Trimmed, ValPos, ValLen);
+                    false -> <<>>
+                end,
+            case Key =:= NameLower of
+                true -> {ok, Value};
+                false -> extract_cookie_value_segments(Rest, NameLower)
+            end;
+        nomatch ->
+            extract_cookie_value_segments(Rest, NameLower)
+    end.
 
 skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
@@ -1146,10 +1396,8 @@ has_grpc_metadata_headers(Req) ->
 gun_protocols_for_request(grpc, _Transport) ->
     %% gRPC requires HTTP/2 transport semantics.
     [http2];
-gun_protocols_for_request(eventstream, _Transport) ->
-    %% Some upstream SSE/watch implementations are more stable over HTTP/1.1
-    %% than HTTP/2 when proxied through intermediary pools.
-    [http];
+gun_protocols_for_request(eventstream, Transport) ->
+    gun_protocols_for_eventstream(Transport);
 gun_protocols_for_request(_, tls) ->
     %% Prefer HTTP/2 when upstream TLS endpoint supports ALPN; keep HTTP/1 fallback.
     [http2, http];
@@ -1158,13 +1406,151 @@ gun_protocols_for_request(_, _) ->
 
 gun_protocols_for_request(grpc, _Transport, _UpPort) ->
     [http2];
-gun_protocols_for_request(eventstream, _Transport, _UpPort) ->
-    [http];
+gun_protocols_for_request(eventstream, Transport, _UpPort) ->
+    gun_protocols_for_eventstream(Transport);
 gun_protocols_for_request(_, _Transport, 8006) ->
     %% Proxmox API/noVNC traffic is sensitive to upstream stream reuse; force HTTP/1.
     [http];
 gun_protocols_for_request(ReqKind, Transport, _UpPort) ->
     gun_protocols_for_request(ReqKind, Transport).
+
+%% @doc gun protocol list for long-lived SSE/watch upstream connections.
+%% Plain TCP gun connections only accept a single protocol (see gun.erl connecting/3).
+-spec gun_protocols_for_eventstream(tcp | tls | term()) -> [atom()].
+gun_protocols_for_eventstream(tls) ->
+    [http2, http];
+gun_protocols_for_eventstream(tcp) ->
+    %% Plain TCP backends (e.g. Gitea /user/events) use HTTP/1.1 SSE.
+    [http];
+gun_protocols_for_eventstream(_) ->
+    [http].
+
+%% @doc Candidate upstream targets for long-lived SSE/watch streams.
+-spec eventstream_upstream_candidates(
+    term(), non_neg_integer(), tcp | tls | term(), binary()
+) -> [map()].
+eventstream_upstream_candidates(UpHost, UpPort, Transport, _Path) ->
+    [eventstream_upstream_candidate(UpHost, UpPort, Transport, gun_protocols_for_eventstream(Transport))].
+
+eventstream_upstream_candidate(UpHost, UpPort, Transport, Protocols) ->
+    #{
+        host => UpHost,
+        port => UpPort,
+        transport => Transport,
+        protocols => Protocols
+    }.
+
+-spec upstream_gun_opts_eventstream(map()) -> map().
+upstream_gun_opts_eventstream(#{host := UpHost, transport := Transport, protocols := Protocols}) ->
+    Base = #{
+        transport => Transport,
+        protocols => Protocols,
+        connect_timeout => ?CONNECT_TIMEOUT,
+        tcp_opts => [{keepalive, true}, {nodelay, true}]
+    },
+    Base1 =
+        case lists:member(http2, Protocols) of
+            true ->
+                Base#{
+                    http2_opts => #{
+                        keepalive => ?GRPC_HTTP2_KEEPALIVE_MS,
+                        keepalive_tolerance => ?GRPC_HTTP2_KEEPALIVE_TOLERANCE
+                    }
+                };
+            false ->
+                Base
+        end,
+    case Transport of
+        tls ->
+            Base1#{tls_opts => upstream_tls_opts(UpHost)};
+        _ ->
+            Base1
+    end.
+
+-spec eventstream_initial_await_timeout_ms(map()) -> timeout().
+eventstream_initial_await_timeout_ms(_Candidate) ->
+    sse_initial_headers_timeout_ms().
+
+-spec eventstream_upstream_retryable(term()) -> boolean().
+eventstream_upstream_retryable({await_up, _}) -> true;
+eventstream_upstream_retryable({connect, _}) -> true;
+eventstream_upstream_retryable({stream_error, closed}) -> true;
+eventstream_upstream_retryable({stream_error, _}) -> true;
+eventstream_upstream_retryable(timeout) -> true;
+eventstream_upstream_retryable({timeout, _}) -> true;
+eventstream_upstream_retryable({await_response_unexpected, _}) -> true;
+eventstream_upstream_retryable(_) -> false.
+
+%% @doc Try SSE upstream candidates until one connects and proxies successfully.
+-spec with_eventstream_upstream(
+    fun((pid(), map()) -> term()), term(), non_neg_integer(), tcp | tls | term(), binary()
+) -> term().
+with_eventstream_upstream(Fun, UpHost0, UpPort0, Transport0, Path) ->
+    Candidates = eventstream_upstream_candidates(UpHost0, UpPort0, Transport0, Path),
+    with_eventstream_upstream_candidates(Fun, Candidates).
+
+with_eventstream_upstream_candidates(_Fun, []) ->
+    {error, all_eventstream_upstreams_failed};
+with_eventstream_upstream_candidates(Fun, [Candidate | Rest]) ->
+    #{host := H, port := P} = Candidate,
+    GunOpts = upstream_gun_opts_eventstream(Candidate),
+    Candidate1 = Candidate#{gun_opts => GunOpts},
+    case open_direct_connection(H, P, GunOpts) of
+        {error, ConnectReason} ->
+            case Rest =/= [] andalso eventstream_upstream_retryable(ConnectReason) of
+                true ->
+                    lager:debug(
+                        "eventstream upstream connect ~s:~p failed ~p, trying next",
+                        [H, P, ConnectReason]
+                    ),
+                    with_eventstream_upstream_candidates(Fun, Rest);
+                false ->
+                    {error, ConnectReason}
+            end;
+        {ok, ConnPid} ->
+            try
+                case Fun(ConnPid, Candidate1) of
+                    {error, ProxyReason} = Err ->
+                        case Rest =/= [] andalso eventstream_upstream_retryable(ProxyReason) of
+                            true ->
+                                lager:debug(
+                                    "eventstream upstream ~s:~p failed ~p, trying next",
+                                    [H, P, ProxyReason]
+                                ),
+                                with_eventstream_upstream_candidates(Fun, Rest);
+                            false ->
+                                Err
+                        end;
+                    Ok ->
+                        Ok
+                end
+            after
+                catch gun:close(ConnPid)
+            end
+    end.
+
+sse_initial_headers_timeout_ms() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(sse_initial_headers_timeout_ms, Config, ?DEFAULT_SSE_INITIAL_HEADERS_MS) of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?DEFAULT_SSE_INITIAL_HEADERS_MS
+    end.
+
+headers_have_sse_auth(Headers) when is_map(Headers) ->
+    case maps:get(<<"authorization">>, Headers, undefined) of
+        Auth when is_binary(Auth), Auth =/= <<>> ->
+            true;
+        _ ->
+            case maps:get(<<"cookie">>, Headers, undefined) of
+                Cookie when is_binary(Cookie) ->
+                    binary:match(Cookie, <<"argocd.token">>) =/= nomatch orelse
+                        binary:match(Cookie, <<"argocd.token.v2">>) =/= nomatch;
+                _ ->
+                    false
+            end
+    end;
+headers_have_sse_auth(_) ->
+    false.
 
 client_ip(Req) ->
     case cowboy_req:header(<<"x-forwarded-for">>, Req) of
@@ -1386,22 +1772,37 @@ request_timeout_ms(Req, ReqKind, _Host, UpHost) ->
     end.
 
 stream_request_timeout(Config, GlobalTimeout) when is_map(Config) ->
-    case maps:get(upstream_stream_request_timeout_ms, Config, infinity) of
+    case maps:get(upstream_stream_request_timeout_ms, Config, 120000) of
         infinity -> infinity;
         <<"infinity">> -> infinity;
         N when is_integer(N), N > 0 -> N;
-        _ -> GlobalTimeout
+        _ -> min(GlobalTimeout, 120000)
     end;
 stream_request_timeout(_, GlobalTimeout) ->
     GlobalTimeout.
 
 is_event_stream_request(Req) ->
-    Accept = string:lowercase(cowboy_req:header(<<"accept">>, Req, <<>>)),
-    binary:match(Accept, <<"text/event-stream">>) =/= nomatch.
+    is_event_stream_accept(cowboy_req:header(<<"accept">>, Req, <<>>)).
 
 is_stream_endpoint_request(Req) ->
-    ReqPath = cowboy_req:path(Req),
-    is_stream_endpoint_path(ReqPath).
+    is_sse_proxy_path(cowboy_req:path(Req)).
+
+is_event_stream_accept(Accept) when is_binary(Accept) ->
+    binary:match(string:lowercase(Accept), <<"text/event-stream">>) =/= nomatch;
+is_event_stream_accept(_) ->
+    false.
+
+is_sse_proxy_request(Path, Headers) when is_binary(Path), is_map(Headers) ->
+    is_event_stream_accept(maps:get(<<"accept">>, Headers, <<>>))
+        orelse is_sse_proxy_path(Path);
+is_sse_proxy_request(Path, _Headers) when is_binary(Path) ->
+    is_sse_proxy_path(Path);
+is_sse_proxy_request(_, _) ->
+    false.
+
+is_sse_proxy_path(ReqPath) ->
+    is_stream_endpoint_path(ReqPath)
+        orelse is_gitea_events_path(ReqPath).
 
 is_stream_endpoint_path(ReqPath) ->
     case ReqPath of
@@ -1410,3 +1811,8 @@ is_stream_endpoint_path(ReqPath) ->
         _ ->
             false
     end.
+
+is_gitea_events_path(<<"/user/events", _/binary>>) ->
+    true;
+is_gitea_events_path(_) ->
+    false.
