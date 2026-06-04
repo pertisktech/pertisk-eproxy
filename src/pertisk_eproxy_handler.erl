@@ -27,7 +27,6 @@
 
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS, 15000).
--define(DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS, 20000).
 -define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
@@ -284,24 +283,13 @@ open_direct_connection(UpHost, UpPort, GunOpts) ->
 
 should_use_ephemeral_connection(grpc, _Host, _UpHost, _UpPort, _Transport) ->
     false;
-should_use_ephemeral_connection(_ReqKind, Host, UpHost, _UpPort, _Transport) ->
+should_use_ephemeral_connection(_ReqKind, _Host, UpHost, _UpPort, _Transport) ->
     %% Loopback HTTP upstreams are sensitive to stale pooled sockets and can
     %% fall into the 15s loopback timeout path before Gun retries kick in.
     %% Use a fresh connection for any non-gRPC loopback request, while keeping
     %% gRPC on the shared pool for stream reuse.
     %%
-    %% Argo CD UI occasionally exhibits long hangs on stale pooled upstream
-    %% sockets (for example static assets taking 49s/180s before retry). For
-    %% the Argo public host, prefer ephemeral upstream connections to fail fast.
-    is_loopback_host(UpHost)
-        orelse should_force_ephemeral_host(Host).
-
-should_force_ephemeral_host(Host) when is_binary(Host) ->
-    normalize_host(Host) =:= <<"argocd.talos.pertisk.com">>;
-should_force_ephemeral_host(Host) when is_list(Host) ->
-    should_force_ephemeral_host(list_to_binary(Host));
-should_force_ephemeral_host(_) ->
-    false.
+    is_loopback_host(UpHost).
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
@@ -877,7 +865,7 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
                               <<"trailers">>, <<"transfer-encoding">>,
                               <<"upgrade">>], InHeaders),
     Filtered =
-        case is_stream_endpoint_path(FullPath) of
+        case is_stream_endpoint_path(FullPath) orelse ReqKind =:= eventstream of
             true -> maps:remove(<<"accept-encoding">>, Filtered0);
             false -> Filtered0
         end,
@@ -893,132 +881,28 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
         <<"x-forwarded-proto-version">> => ProtoVsn,
         <<"x-request-id">> => TrackingId
     },
-    Base1 = maybe_add_argocd_auth_header(OrigHost, Base0),
+    Base2 = maybe_add_eventstream_request_headers(ReqKind, Base0),
 
     %% Proxmox console ticket endpoints may validate source identity across
     %% termproxy/vncproxy and vncwebsocket calls; avoid XFF drift between H3 and TCP.
     case skip_forwarded_for(OrigHost, FullPath) of
         true ->
-            maps:remove(<<"x-forwarded-for">>, Base1);
+            maps:remove(<<"x-forwarded-for">>, Base2);
         false ->
-            XFF = case maps:find(<<"x-forwarded-for">>, Base1) of
+            XFF = case maps:find(<<"x-forwarded-for">>, Base2) of
                 {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
                 error          -> ClientIp
             end,
-            Base1#{<<"x-forwarded-for">> => XFF}
+            Base2#{<<"x-forwarded-for">> => XFF}
     end.
 
-maybe_add_argocd_auth_header(OrigHost, Headers) when is_map(Headers) ->
-    case should_force_ephemeral_host(OrigHost) of
-        true ->
-            case maps:is_key(<<"authorization">>, Headers) of
-                true ->
-                    Headers;
-                false ->
-                    case maps:get(<<"cookie">>, Headers, undefined) of
-                        Cookie when is_binary(Cookie) ->
-                            case extract_argocd_token_from_cookie(Cookie) of
-                                {ok, Token} when Token =/= <<>> ->
-                                    Headers#{<<"authorization">> => <<"Bearer ", Token/binary>>};
-                                _ ->
-                                    Headers
-                            end;
-                        _ ->
-                            Headers
-                    end
-            end;
-        false ->
-            Headers
-    end;
-maybe_add_argocd_auth_header(_OrigHost, Headers) ->
+maybe_add_eventstream_request_headers(eventstream, Headers) when is_map(Headers) ->
+    Headers#{
+        <<"accept">> => <<"text/event-stream">>,
+        <<"cache-control">> => <<"no-cache">>
+    };
+maybe_add_eventstream_request_headers(_, Headers) ->
     Headers.
-
-extract_argocd_token_from_cookie(CookieHeader) when is_binary(CookieHeader) ->
-    case extract_cookie_value(CookieHeader, <<"argocd.token">>) of
-        {ok, Token} ->
-            {ok, normalize_argocd_cookie_token(Token)};
-        error ->
-            case extract_cookie_value(CookieHeader, <<"argocd.token.v2">>) of
-                {ok, TokenV2} -> {ok, normalize_argocd_cookie_token(TokenV2)};
-                error -> error
-            end
-    end;
-extract_argocd_token_from_cookie(_) ->
-    error.
-
-normalize_argocd_cookie_token(Token) when is_binary(Token) ->
-    Token1 = strip_wrapping_quotes(Token),
-    Token2 = maybe_percent_decode_token(Token1),
-    strip_bearer_prefix(Token2);
-normalize_argocd_cookie_token(Token) ->
-    Token.
-
-maybe_percent_decode_token(Token) when is_binary(Token) ->
-    case binary:match(Token, <<"%">>) of
-        nomatch -> Token;
-        _ ->
-            try
-                iolist_to_binary(uri_string:percent_decode(Token))
-            catch
-                _:_ -> Token
-            end
-    end;
-maybe_percent_decode_token(Token) ->
-    Token.
-
-strip_bearer_prefix(Token) when is_binary(Token) ->
-    Trimmed = string:trim(Token),
-    Lower = string:lowercase(Trimmed),
-    case binary:match(Lower, <<"bearer ">>) of
-        {0, _} ->
-            PrefixLen = byte_size(<<"bearer ">>),
-            binary:part(Trimmed, PrefixLen, byte_size(Trimmed) - PrefixLen);
-        _ ->
-            Trimmed
-    end;
-strip_bearer_prefix(Token) ->
-    Token.
-
-extract_cookie_value(CookieHeader, Name) when is_binary(CookieHeader), is_binary(Name) ->
-    Segments = binary:split(CookieHeader, <<";">>, [global]),
-    extract_cookie_value_segments(Segments, string:lowercase(Name));
-extract_cookie_value(_, _) ->
-    error.
-
-extract_cookie_value_segments([], _NameLower) ->
-    error;
-extract_cookie_value_segments([Seg | Rest], NameLower) ->
-    Trimmed = string:trim(Seg),
-    case binary:match(Trimmed, <<"=">>) of
-        {Pos, 1} ->
-            Key = string:lowercase(binary:part(Trimmed, 0, Pos)),
-            ValPos = Pos + 1,
-            ValLen = byte_size(Trimmed) - ValPos,
-            Value =
-                case ValLen > 0 of
-                    true -> binary:part(Trimmed, ValPos, ValLen);
-                    false -> <<>>
-                end,
-            case Key =:= NameLower of
-                true -> {ok, Value};
-                false -> extract_cookie_value_segments(Rest, NameLower)
-            end;
-        nomatch ->
-            extract_cookie_value_segments(Rest, NameLower)
-    end.
-
-strip_wrapping_quotes(<<$", Rest/binary>>) ->
-    case byte_size(Rest) of
-        N when N > 0 ->
-            case binary:last(Rest) of
-                $" -> binary:part(Rest, 0, N - 1);
-                _ -> <<$", Rest/binary>>
-            end;
-        _ ->
-            <<>>
-    end;
-strip_wrapping_quotes(Token) ->
-    Token.
 
 skip_forwarded_for(_Host, Path) when is_binary(Path) ->
     IsConsolePath =
@@ -1200,12 +1084,12 @@ request_proto_metric(Req) ->
     end.
 
 detect_request_kind(Req) ->
-    case is_stream_endpoint_request(Req) of
+    case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
         true ->
-            %% Argo /api/v1/stream/* endpoints are HTTP watch/EventSource APIs.
-            %% Even when upstream internally uses gRPC, client-facing traffic
-            %% must stay on the HTTP streaming path.
-            http;
+            %% EventSource/watch endpoints are client-facing HTTP streams.
+            %% Route them through the HTTP streaming path and prefer upstream
+            %% HTTP/1.1 for compatibility with long-lived SSE streams.
+            eventstream;
         false ->
             case is_websocket_upgrade(Req) of
                 true -> websocket;
@@ -1262,6 +1146,10 @@ has_grpc_metadata_headers(Req) ->
 gun_protocols_for_request(grpc, _Transport) ->
     %% gRPC requires HTTP/2 transport semantics.
     [http2];
+gun_protocols_for_request(eventstream, _Transport) ->
+    %% Some upstream SSE/watch implementations are more stable over HTTP/1.1
+    %% than HTTP/2 when proxied through intermediary pools.
+    [http];
 gun_protocols_for_request(_, tls) ->
     %% Prefer HTTP/2 when upstream TLS endpoint supports ALPN; keep HTTP/1 fallback.
     [http2, http];
@@ -1270,6 +1158,8 @@ gun_protocols_for_request(_, _) ->
 
 gun_protocols_for_request(grpc, _Transport, _UpPort) ->
     [http2];
+gun_protocols_for_request(eventstream, _Transport, _UpPort) ->
+    [http];
 gun_protocols_for_request(_, _Transport, 8006) ->
     %% Proxmox API/noVNC traffic is sensitive to upstream stream reuse; force HTTP/1.
     [http];
@@ -1469,7 +1359,7 @@ normalize_host(H) when is_binary(H) ->
 normalize_host(H) when is_list(H) ->
     normalize_host(list_to_binary(H)).
 
-request_timeout_ms(Req, ReqKind, Host, UpHost) ->
+request_timeout_ms(Req, ReqKind, _Host, UpHost) ->
     Config = pertisk_eproxy_config:get_config(),
     GlobalTimeout = case maps:get(upstream_request_timeout_ms, Config, ?DEFAULT_REQUEST_TIMEOUT_MS) of
         GN when is_integer(GN), GN > 0 -> GN;
@@ -1481,29 +1371,17 @@ request_timeout_ms(Req, ReqKind, Host, UpHost) ->
             %% Stream timeout is configurable; defaults to infinity.
             stream_request_timeout(Config, GlobalTimeout);
         false ->
-            case ReqKind =/= grpc andalso should_force_ephemeral_host(Host) of
+            case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
                 true ->
-                    EphemeralHostTimeout =
-                        case maps:get(upstream_ephemeral_host_request_timeout_ms,
-                                      Config,
-                                      ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS) of
-                            EN when is_integer(EN), EN > 0 -> EN;
-                            _ -> ?DEFAULT_EPHEMERAL_HOST_REQUEST_TIMEOUT_MS
-                        end,
-                    min(GlobalTimeout, EphemeralHostTimeout);
+                    LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
+                                                    Config,
+                                                    ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
+                        LN when is_integer(LN), LN > 0 -> LN;
+                        _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
+                    end,
+                    min(GlobalTimeout, LoopbackTimeout);
                 false ->
-                    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
-                        true ->
-                            LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
-                                                            Config,
-                                                            ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS) of
-                                LN when is_integer(LN), LN > 0 -> LN;
-                                _ -> ?DEFAULT_LOOPBACK_REQUEST_TIMEOUT_MS
-                            end,
-                            min(GlobalTimeout, LoopbackTimeout);
-                        false ->
-                            GlobalTimeout
-                    end
+                    GlobalTimeout
             end
     end.
 
