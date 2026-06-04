@@ -9,7 +9,7 @@ import {
   type Metrics,
   type K8sPodRow,
 } from '@/api/client';
-import { formatBeamCpuPct, formatPertiskVmCpuLine, pertiskVmCpuTooltip } from '@/utils/beamCpu';
+import { formatBeamCpuPct, formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
 import styles from './Dashboard.module.css';
 
 type DashboardCache = {
@@ -159,12 +159,29 @@ export default function Dashboard() {
     (typeof pi?.memory_total_bytes === 'number' ? pi.memory_total_bytes : null);
   const codeMemBytes = typeof memBreakdown?.code === 'number' ? memBreakdown.code : null;
   const beamCpu = management?.process_cpu_usage_percent;
-  const cpuSummary =
-    beamCpu != null && Number.isFinite(beamCpu) ? formatBeamCpuPct(beamCpu) : null;
-  const cpuSummarySub =
-    beamCpu != null && Number.isFinite(beamCpu)
-      ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
+  const selfPod =
+    isIngressMode && pi?.hostname
+      ? ingressPods.find((pod) => pod.name === pi.hostname)
+      : undefined;
+  const containerCpuMilli = selfPod?.cpu_usage_millicores;
+  const containerCpuLimitMilli = selfPod?.cpu_limit_millicores ?? 1000;
+  const containerCpuSummary =
+    containerCpuMilli != null && containerCpuLimitMilli != null
+      ? formatContainerCpuLine(containerCpuMilli, containerCpuLimitMilli)
       : null;
+  const cpuSummary =
+    containerCpuSummary ??
+    (beamCpu != null && Number.isFinite(beamCpu) ? formatBeamCpuPct(beamCpu) : null);
+  const cpuSummarySub =
+    containerCpuSummary != null
+      ? 'metrics-server (this pod)'
+      : beamCpu != null && Number.isFinite(beamCpu)
+        ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
+        : null;
+  const cpuTileTitle =
+    containerCpuSummary != null
+      ? containerCpuTooltip()
+      : pertiskVmCpuTooltip(pi?.logical_processors);
   const processCount = typeof pi?.process_count === 'number' ? pi.process_count : null;
   const processLimit = typeof pi?.process_limit === 'number' ? pi.process_limit : null;
   const processUsagePct =
@@ -217,7 +234,7 @@ export default function Dashboard() {
             <div className={styles.glanceMetrics} role="group" aria-label="Dashboard summary">
               <div
                 className={`${styles.metricTile} ${styles.metricTileResource}`}
-                title={pertiskVmCpuTooltip(pi?.logical_processors)}
+                title={cpuTileTitle}
               >
                 <div className={styles.metricTileVal}>{cpuSummary ?? '—'}</div>
                 <div className={styles.metricTileLabel}>CPU usage</div>
@@ -263,8 +280,19 @@ export default function Dashboard() {
                 </h2>
                 <dl className={styles.kv}>
                   <dt>CPU</dt>
-                  <dd title={pertiskVmCpuTooltip(pi?.logical_processors)}>
-                    {beamCpu != null && Number.isFinite(beamCpu) ? (
+                  <dd title={cpuTileTitle}>
+                    {containerCpuSummary != null ? (
+                      <>
+                        <div>{containerCpuSummary}</div>
+                        <div className={styles.kvMuted}>metrics-server (this pod)</div>
+                        {beamCpu != null && Number.isFinite(beamCpu) ? (
+                          <div className={styles.kvMuted}>
+                            BEAM scheduler sample: {formatBeamCpuPct(beamCpu)} —{' '}
+                            {formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : beamCpu != null && Number.isFinite(beamCpu) ? (
                       <>
                         <div>{formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)}</div>
                         <div className={styles.kvMuted}>Scheduler sample (internal): {formatBeamCpuPct(beamCpu)}</div>

@@ -32,6 +32,24 @@ The controller binds UDP on container port **8443**; the Service exposes **443/u
 
 TLS for QUIC/TCP comes from Ingress TLS Secrets (cert-manager). Ensure `tls.crt` includes the **full chain** (not leaf-only) so Chrome accepts QUIC.
 
+## SSE / EventSource tuning
+
+For idle watch streams (e.g. Argo CD `/api/v1/stream/*`), configure in `controller.config`:
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `sse_early_flush_enabled` | `true` | Send `: connected` before upstream headers when authenticated |
+| `sse_initial_headers_timeout_ms` | `5000` | Wait for upstream headers before early flush |
+| `event_stream_heartbeat_ms` | `15000` | Idle `: ` comment interval |
+| `upstream_stream_request_timeout_ms` | `120000` | Max wait for unauthenticated/error paths |
+
+Per-Ingress overrides (annotations on `metadata`):
+
+- `pertisk.io/sse-early-flush: "false"` — disable for all paths on that Ingress
+- `pertisk.io/sse-early-flush-paths: '{"prefix:/api/v1/stream/":true}'` — per-path override
+
+Per-site/route in JSON config: `sse_early_flush` on the site or route object.
+
 ## App traffic (standard Ingress)
 
 ```bash

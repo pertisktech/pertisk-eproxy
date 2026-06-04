@@ -817,6 +817,7 @@ h3_handle_sse_proxy(
                 StreamId,
                 Method,
                 LogHost,
+                PathOnly,
                 UpPath,
                 Qs,
                 UpstreamAddr,
@@ -875,6 +876,7 @@ proxy_via_gun_sse(
     StreamId,
     MethodBin,
     OrigHost,
+    ClientPath,
     UpstreamPath,
     Qs,
     UpstreamAddr,
@@ -904,6 +906,9 @@ proxy_via_gun_sse(
                 ConnPid,
                 GunMethod,
                 FullPath,
+                OrigHost,
+                ClientPath,
+                HeadersMap,
                 HeadersList,
                 Body,
                 ReqBodyBytes,
@@ -923,6 +928,9 @@ proxy_via_gun_sse_conn(
     ConnPid,
     GunMethod,
     FullPath,
+    OrigHost,
+    ClientPath,
+    HeadersMap,
     HeadersList,
     Body,
     ReqBodyBytes,
@@ -950,7 +958,9 @@ proxy_via_gun_sse_conn(
             _ = h3_reply_status(H3Conn, StreamId, StatusCode, H3Headers, RespBody),
             {ok, StatusCode, ReqBodyBytes, byte_size(RespBody)};
         {error, timeout} ->
-            case headers_have_sse_auth(HeadersList) of
+            case pertisk_eproxy_handler:should_sse_early_flush(
+                OrigHost, ClientPath, HeadersMap
+            ) of
                 true ->
                     h3_sse_idle_upstream(
                         H3Conn,
@@ -1058,22 +1068,6 @@ h3_sse_idle_upstream_await(H3Conn, StreamId, ConnPid, StreamRef, HeartbeatMs, Re
             _ = h3_send_data(H3Conn, StreamId, <<>>, true),
             RespBytes
     end.
-
-headers_have_sse_auth(HeadersList) when is_list(HeadersList) ->
-    lists:any(
-        fun
-            ({<<"authorization">>, V}) when is_binary(V), V =/= <<>> ->
-                true;
-            ({<<"cookie">>, V}) when is_binary(V) ->
-                binary:match(V, <<"argocd.token">>) =/= nomatch orelse
-                    binary:match(V, <<"argocd.token.v2">>) =/= nomatch;
-            (_) ->
-                false
-        end,
-        HeadersList
-    );
-headers_have_sse_auth(_) ->
-    false.
 
 h3_sse_upstream_loop(H3Conn, StreamId, ConnPid, StreamRef, HeartbeatMs, RespBytes) ->
     case gun:await(ConnPid, StreamRef, HeartbeatMs) of

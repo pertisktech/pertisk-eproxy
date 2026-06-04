@@ -848,8 +848,20 @@ json_to_config(Json) ->
         downstream_idle_timeout_ms => parse_opt_int(maps:get(<<"downstream_idle_timeout_ms">>, Json, null)),
         management_idle_timeout_ms => parse_opt_int(maps:get(<<"management_idle_timeout_ms">>, Json, null)),
         upstream_request_timeout_ms => parse_opt_int(maps:get(<<"upstream_request_timeout_ms">>, Json, null)),
+        upstream_stream_request_timeout_ms =>
+            parse_opt_int(maps:get(<<"upstream_stream_request_timeout_ms">>, Json, null)),
         upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
-        upstream_pool_idle_timeout_secs => parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
+        upstream_pool_idle_timeout_secs =>
+            parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
+        sse_early_flush_enabled =>
+            case maps:get(<<"sse_early_flush_enabled">>, Json, true) of
+                false -> false;
+                _ -> true
+            end,
+        sse_initial_headers_timeout_ms =>
+            parse_opt_int(maps:get(<<"sse_initial_headers_timeout_ms">>, Json, null)),
+        event_stream_heartbeat_ms =>
+            parse_opt_int(maps:get(<<"event_stream_heartbeat_ms">>, Json, null)),
         %% When true, the management listener uses TLS (same certs as the HTTPS proxy).
         %% This allows browsers to negotiate HTTP/2 via ALPN, enabling WebSocket over HTTP/2 (RFC 8441).
         management_tls_enabled =>
@@ -884,6 +896,7 @@ parse_site(S) ->
         acme_wildcard_base => parse_opt_str(maps:get(<<"acme_wildcard_base">>, S, null)),
         acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
         advertise_http3 => parse_opt_bool(maps:get(<<"advertise_http3">>, S, true)),
+        sse_early_flush => parse_opt_bool(maps:get(<<"sse_early_flush">>, S, null)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
     }.
 
@@ -894,7 +907,8 @@ parse_route(R) ->
     #{
         path      => maps:get(<<"path">>,      R, <<"/">>),
         path_type => parse_path_type(maps:get(<<"path_type">>, R, <<"prefix">>)),
-        rewrite   => parse_opt_str(maps:get(<<"rewrite">>, R, null))
+        rewrite   => parse_opt_str(maps:get(<<"rewrite">>, R, null)),
+        sse_early_flush => parse_opt_bool(maps:get(<<"sse_early_flush">>, R, null))
     }.
 
 parse_path_type(<<"exact">>)  -> exact;

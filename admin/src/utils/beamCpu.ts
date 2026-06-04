@@ -14,6 +14,21 @@ export function beamCpuShareOfHostCpusPercent(pct: number, logicalProcessors: nu
   return (beamCpuEquivalentCores(pct) / logicalProcessors) * 100;
 }
 
+export function formatContainerCpuLine(usageMilli: number, limitMilli: number): string {
+  const usedCores = usageMilli / 1000;
+  const limitCores = limitMilli / 1000;
+  const pct = limitMilli > 0 ? (usageMilli / limitMilli) * 100 : 0;
+  const usedStr = usedCores < 0.01 ? usedCores.toFixed(4) : usedCores.toFixed(3);
+  const limitStr = limitCores.toFixed(3);
+  const pctStr = pct < 0.01 ? pct.toFixed(4) : pct < 1 ? pct.toFixed(2) : pct.toFixed(1);
+  return `${usedStr} / ${limitStr} cores (${pctStr}%)`;
+}
+
+/** Short tooltip for metrics-server container CPU (kubectl top). */
+export function containerCpuTooltip(): string {
+  return 'Container CPU from metrics-server (kubectl top). This is cgroup usage vs the pod CPU limit.';
+}
+
 export function formatBeamCpuPct(pct: number): string {
   return `${pct.toFixed(1)}%`;
 }

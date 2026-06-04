@@ -27,6 +27,8 @@
     eventstream_initial_await_timeout_ms/1,
     eventstream_upstream_retryable/1,
     with_eventstream_upstream/5,
+    should_sse_early_flush/3,
+    headers_have_sse_auth/1,
     websocket_init/1,
     websocket_handle/2,
     websocket_info/2,
@@ -488,7 +490,8 @@ do_proxy(
                             Req2 = reply_upstream_fin(Method, Status, with_tracking_id_header(TrackingId, CowboyHeaders), Req1),
                             {ok, Status, Req2};
                         {error, timeout} when ReqKind =:= eventstream ->
-                            case headers_have_sse_auth(HeadersMap) of
+                            ReqPath = cowboy_req:path(Req),
+                            case should_sse_early_flush(Host, ReqPath, HeadersMap) of
                                 true ->
                                     do_proxy_sse_idle_upstream(
                                         Req,
@@ -1536,19 +1539,67 @@ sse_initial_headers_timeout_ms() ->
         _ -> ?DEFAULT_SSE_INITIAL_HEADERS_MS
     end.
 
+sse_early_flush_enabled() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(sse_early_flush_enabled, Config, true) of
+        false -> false;
+        _ -> true
+    end.
+
+%% @doc True when an authenticated SSE request should flush `: connected` before
+%% upstream response headers (idle watch APIs such as Argo CD).
+-spec should_sse_early_flush(binary(), binary(), map() | [{binary(), binary()}]) -> boolean().
+should_sse_early_flush(Host, Path, Headers) when is_binary(Host), is_binary(Path) ->
+    headers_have_sse_auth(Headers) andalso resolve_sse_early_flush(Host, Path);
+should_sse_early_flush(_, _, _) ->
+    false.
+
+resolve_sse_early_flush(Host, Path) ->
+    Override = sse_early_flush_override(Host, Path),
+    case sse_early_flush_enabled() of
+        true ->
+            case Override of
+                false -> false;
+                _ -> true
+            end;
+        false ->
+            Override =:= true
+    end.
+
+sse_early_flush_override(Host, Path) ->
+    case pertisk_eproxy_router:route(Host, Path) of
+        {ok, #{sse_early_flush := Setting}} when Setting =:= true; Setting =:= false ->
+            Setting;
+        {ok, _} ->
+            site_sse_early_flush_setting(Host);
+        {error, no_route} ->
+            site_sse_early_flush_setting(Host)
+    end.
+
+site_sse_early_flush_setting(Host) ->
+    Config = pertisk_eproxy_config:get_config(),
+    Sites = maps:get(sites, Config, []),
+    case find_site_for_host(Sites, normalize_host(Host)) of
+        undefined -> undefined;
+        Site -> maps:get(sse_early_flush, Site, undefined)
+    end.
+
+%% Any non-empty Authorization or Cookie header (not app-specific).
+-spec headers_have_sse_auth(map() | [{binary(), binary()}]) -> boolean().
 headers_have_sse_auth(Headers) when is_map(Headers) ->
     case maps:get(<<"authorization">>, Headers, undefined) of
-        Auth when is_binary(Auth), Auth =/= <<>> ->
+        Auth when is_binary(Auth), byte_size(Auth) > 0 ->
             true;
         _ ->
             case maps:get(<<"cookie">>, Headers, undefined) of
-                Cookie when is_binary(Cookie) ->
-                    binary:match(Cookie, <<"argocd.token">>) =/= nomatch orelse
-                        binary:match(Cookie, <<"argocd.token.v2">>) =/= nomatch;
+                Cookie when is_binary(Cookie), byte_size(Cookie) > 0 ->
+                    true;
                 _ ->
                     false
             end
     end;
+headers_have_sse_auth(Headers) when is_list(Headers) ->
+    headers_have_sse_auth(maps:from_list(Headers));
 headers_have_sse_auth(_) ->
     false.
 

@@ -452,9 +452,28 @@ pod_row(Pod, {CpuMilli, MemBytes}) ->
         <<"ready">> => Ready,
         <<"restarts">> => Restarts,
         <<"cpu_usage_millicores">> => maybe_null(CpuMilli),
+        <<"cpu_limit_millicores">> => maybe_null(pod_cpu_limit_millicores(Spec)),
         <<"memory_usage_bytes">> => maybe_null(MemBytes),
         <<"created_at">> => meta_created_at(Pod)
     }.
+
+pod_cpu_limit_millicores(Spec) ->
+    Containers = maps:get(<<"containers">>, Spec, []),
+    Limits = [
+        cpu_quantity_to_millicores(
+            maps:get(
+                <<"cpu">>,
+                maps:get(<<"limits">>, maps:get(<<"resources">>, C, #{}), #{}),
+                undefined
+            )
+        )
+     || C <- Containers,
+        is_map(C)
+    ],
+    case [L || L <- Limits, L =/= undefined] of
+        [] -> undefined;
+        [L | _] -> L
+    end.
 
 %% Kubernetes resource.Quantity (subset; matches metrics-server / kubectl top).
 cpu_quantity_to_millicores(undefined) ->

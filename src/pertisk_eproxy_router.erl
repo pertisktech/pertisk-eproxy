@@ -22,18 +22,20 @@
     path      := binary(),
     path_type := path_type(),
     rewrite   => binary() | undefined,
-    backend   := binary()
+    backend   := binary(),
+    sse_early_flush => boolean() | undefined
+}.
+
+-type route_match() :: #{
+    upstream_path := binary(),
+    backend       := binary(),
+    site_host     := binary(),
+    sse_early_flush => boolean() | undefined
 }.
 
 -type host_entry() :: {Host :: binary(), Rules :: [route_rule()]}.
 
 -opaque router() :: [host_entry()].
-
--type route_match() :: #{
-    upstream_path := binary(),
-    backend       := binary(),
-    site_host     := binary()
-}.
 
 %% ---------------------------------------------------------------------------
 %% API
@@ -53,7 +55,12 @@ build(Sites) ->
             path      => maps:get(path,      R, <<"/">>),
             path_type => maps:get(path_type, R, prefix),
             rewrite   => maps:get(rewrite,   R, undefined),
-            backend   => Backend
+            backend   => Backend,
+            sse_early_flush =>
+                route_sse_early_flush(
+                    R,
+                    maps:get(sse_early_flush, Site, undefined)
+                )
         } || R <- maps:get(routes, Site, [])],
         maps:update_with(Host, fun(Existing) -> Existing ++ Rules end,
                          Rules, Acc)
@@ -135,7 +142,7 @@ longest_prefix(Candidates) ->
         end
     end, undefined, Candidates).
 
-apply_rewrite(#{path := RulePath, rewrite := Rewrite, backend := Backend}, RequestPath)
+apply_rewrite(#{path := RulePath, rewrite := Rewrite, backend := Backend} = Rule, RequestPath)
     when Rewrite =/= undefined ->
     RewriteBin = to_binary(Rewrite),
     %% Strip the matched prefix from the request path and prepend rewrite target.
@@ -150,9 +157,17 @@ apply_rewrite(#{path := RulePath, rewrite := Rewrite, backend := Backend}, Reque
             end,
             <<RewriteBin/binary, Suffix/binary>>
     end,
-    #{upstream_path => UpstreamPath, backend => Backend};
-apply_rewrite(#{backend := Backend}, RequestPath) ->
-    #{upstream_path => RequestPath, backend => Backend}.
+    #{upstream_path => UpstreamPath, backend => Backend,
+      sse_early_flush => maps:get(sse_early_flush, Rule, undefined)};
+apply_rewrite(#{backend := Backend} = Rule, RequestPath) ->
+    #{upstream_path => RequestPath, backend => Backend,
+      sse_early_flush => maps:get(sse_early_flush, Rule, undefined)}.
+
+route_sse_early_flush(Route, SiteDefault) ->
+    case maps:get(sse_early_flush, Route, undefined) of
+        V when V =:= true; V =:= false -> V;
+        _ -> SiteDefault
+    end.
 
 ensure_trailing_mode(<<>>) -> without_slash;
 ensure_trailing_mode(Bin) ->

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.5.43}"
+VERSION="${VERSION:-0.5.46}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
 ADMIN_HOST="${ADMIN_HOST:-admin.talos.pertisk.com}"
-HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
+HELM_TIMEOUT="${HELM_TIMEOUT:-20m}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
 

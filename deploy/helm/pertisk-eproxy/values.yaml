@@ -91,6 +91,11 @@ controller:
     quic_enabled: false
     h3_api_gateway_enabled: true
     tls_http2_enabled: true
+    # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
+    sse_early_flush_enabled: true
+    sse_initial_headers_timeout_ms: 5000
+    event_stream_heartbeat_ms: 15000
+    upstream_stream_request_timeout_ms: 120000
     sites: []
     backends: []
 

@@ -4,6 +4,9 @@
 -export([snapshot/0, app_version/0, init_cpu_sample/0]).
 
 -define(CPU_PREV_KEY, {pertisk_eproxy, management_cpu_prev}).
+-define(CPU_LAST_PCT_KEY, {pertisk_eproxy, management_cpu_last_pct}).
+%% Ignore samples closer than this — concurrent /api/management + WS ticks share one baseline.
+-define(CPU_SAMPLE_MIN_MS, 2000).
 
 %% @doc Seed wall/runtime counters so the first `/api/management` response can compute CPU%.
 init_cpu_sample() ->
@@ -217,15 +220,16 @@ beam_cpu_usage_percent() ->
             persistent_term:put(?CPU_PREV_KEY, {Wall, Run}),
             null;
         {W0, R0} ->
-            persistent_term:put(?CPU_PREV_KEY, {Wall, Run}),
             Dw = Wall - W0,
             Dr = Run - R0,
             if
-                Dw < 1 ->
-                    null;
+                Dw < ?CPU_SAMPLE_MIN_MS ->
+                    persistent_term:get(?CPU_LAST_PCT_KEY, null);
                 true ->
-                    P = 100.0 * (Dr / Dw),
-                    round(P * 100) / 100.0
+                    persistent_term:put(?CPU_PREV_KEY, {Wall, Run}),
+                    P = round(100.0 * (Dr / Dw) * 100) / 100.0,
+                    persistent_term:put(?CPU_LAST_PCT_KEY, P),
+                    P
             end
     end.
 

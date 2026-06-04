@@ -1145,6 +1145,7 @@ export interface K8sPodRow {
   ready: string;
   restarts?: number | null;
   cpu_usage_millicores?: number | null;
+  cpu_limit_millicores?: number | null;
   memory_usage_bytes?: number | null;
   created_at?: string | null;
 }
