@@ -26,7 +26,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
   --set ingress.className=pertisk-eproxy \
-  --set ingress.watchNamespace="" \
-  --set controller.config.upstream_pool_size=128 \
-  --set controller.config.upstream_pool_idle_timeout_secs=240 \
+  #--set ingress.watchNamespace="" \
+  #--set controller.config.upstream_pool_size=128 \
+  #--set controller.config.upstream_pool_idle_timeout_secs=240 \
   --set adminIngress.tlsSecretName=admin-talos-tls
