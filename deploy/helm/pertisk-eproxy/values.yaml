@@ -106,7 +106,7 @@ controller:
     upstream_pool_idle_timeout_secs: 90
     upstream_request_timeout_ms: 180000
     health_cache_refresh_ms: 3000
-    # health_access_log: false
+    health_access_log: false
     # health_access_log_sample: 1000
     # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
     sse_early_flush_enabled: true
