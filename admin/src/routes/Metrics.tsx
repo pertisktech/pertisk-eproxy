@@ -20,6 +20,7 @@ import {
 } from '@/api/client';
 import { formatTimeOnly } from '@/utils/dateFormat';
 import { formatPertiskVmCpuLine } from '@/utils/beamCpu';
+import PrometheusScrapePanel from '@/components/PrometheusScrapePanel';
 import styles from './Metrics.module.css';
 
 const MAX_POINTS = 60; // 5 min at 5s interval
@@ -218,6 +219,7 @@ function buildMetricPoint(m: Metrics, mgmt: ManagementInfo, t: number): MetricPo
 
 export default function Metrics() {
   const [history, setHistory] = useState<MetricPoint[]>([]);
+  const [management, setManagement] = useState<ManagementInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [missingRequestTotals, setMissingRequestTotals] = useState(false);
 
@@ -228,6 +230,7 @@ export default function Metrics() {
     function applySnapshot(snapshot: RealtimeSnapshot) {
       const m = snapshot.stats;
       const mgmt = snapshot.management;
+      setManagement(mgmt);
       const rec = m as unknown as Record<string, unknown>;
       const hasRequestTotals =
         typeof rec.http_requests_total === 'number' &&
@@ -243,6 +246,7 @@ export default function Metrics() {
       try {
         const [st1, mg1] = await Promise.all([api.metrics(), api.management()]);
         if (cancelled) return;
+        setManagement(mg1);
         const t1 = Date.now();
         const p1 = buildMetricPoint(st1, mg1, t1);
         await new Promise<void>((r) => {
@@ -715,6 +719,10 @@ export default function Metrics() {
             </ResponsiveContainer>
           )}
         </div>
+      </section>
+
+      <section className={`${styles.chartSection} ${styles.scrapeSection}`}>
+        <PrometheusScrapePanel management={management} compact />
       </section>
 
       {hostProtocolRows.length > 0 && (

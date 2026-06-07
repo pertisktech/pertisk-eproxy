@@ -37,12 +37,16 @@ snapshot() ->
     PI = process_info_json(),
     MemBytes = maps:get(<<"memory_total_bytes">>, PI, 0),
     CpuPct = beam_cpu_usage_percent(),
+    MetricsEnabled = pertisk_eproxy_config:metrics_enabled(),
+    {MetricsAddr, MetricsPort} = pertisk_eproxy_config:metrics_listen(),
     Base = #{
         <<"version">> => app_version(),
         <<"mode">> => ModeBin,
         <<"http_addr">> => iolist_to_binary(io_lib:format("0.0.0.0:~w", [HttpPort])),
         <<"https_addr">> => HttpsAddr,
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
+        <<"metrics_enabled">> => MetricsEnabled,
+        <<"metrics_addr">> => iolist_to_binary([inet:ntoa(MetricsAddr), $:, integer_to_list(MetricsPort)]),
         <<"config_file">> => config_file_path_bin(),
         <<"db_path">> => db_path_bin(),
         <<"leader_election">> => leader_election_json(),
@@ -171,9 +175,24 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
         <<"tls">> => MgmtTls,
         <<"stack">> => <<"single_bind">>
     }],
+    L2b = case pertisk_eproxy_config:metrics_enabled() of
+        false ->
+            L2;
+        true ->
+            {MetricsBind, MetricsPort} = pertisk_eproxy_config:metrics_listen(),
+            L2 ++ [#{
+                <<"id">> => <<"metrics">>,
+                <<"description">> => <<"Prometheus metrics server">>,
+                <<"protocol">> => <<"tcp">>,
+                <<"bind">> => iolist_to_binary(inet:ntoa(MetricsBind)),
+                <<"port">> => MetricsPort,
+                <<"tls">> => false,
+                <<"stack">> => <<"single_bind">>
+            }]
+    end,
     L3 = case {maps:get(quic_enabled, C, false), maps:get(quic_port, C, undefined)} of
         {true, P} when is_integer(P) ->
-            L2 ++ [#{
+            L2b ++ [#{
                 <<"id">> => <<"proxy_quic">>,
                 <<"description">> => <<"HTTP/3 via Cowboy QUIC (when built with quicer)">>,
                 <<"protocol">> => <<"udp">>,
@@ -183,7 +202,7 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
                 <<"stack">> => <<"dual_stack">>
             }];
         _ ->
-            L2
+            L2b
     end,
     case maps:get(h3_api_gateway_enabled, C, true) of
         true ->

@@ -10,6 +10,8 @@ import {
   type K8sPodRow,
 } from '@/api/client';
 import { formatBeamCpuPct, formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
+import PrometheusScrapePanel from '@/components/PrometheusScrapePanel';
+import HealthProbesPanel from '@/components/HealthProbesPanel';
 import styles from './Dashboard.module.css';
 
 type DashboardCache = {
@@ -535,6 +537,14 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
+          </div>
+
+          <div className={`card ${styles.panel}`}>
+            <PrometheusScrapePanel management={management} />
+          </div>
+
+          <div className={`card ${styles.panel}`}>
+            <HealthProbesPanel />
           </div>
 
           <div className={`card ${styles.panel} ${styles.tlsValidationCard}`}>

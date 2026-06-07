@@ -1,4 +1,4 @@
-{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -16,7 +16,7 @@ spec:
     matchNames:
       - {{ .Release.Namespace }}
   endpoints:
-    - port: management
+    - port: metrics
       path: {{ .Values.metrics.serviceMonitor.path | quote }}
       interval: {{ .Values.metrics.serviceMonitor.interval | quote }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | quote }}

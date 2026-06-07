@@ -44,6 +44,12 @@ spec:
       port: {{ .Values.service.managementPort }}
       targetPort: management
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
     {{- if .Values.service.http3Port }}
     - name: http3
       port: {{ .Values.service.http3Port }}

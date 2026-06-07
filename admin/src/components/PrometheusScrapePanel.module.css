@@ -1,0 +1,144 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.compact .title {
+  font-size: 1rem;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.disabledNote {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-dashboard-warning) 35%, var(--color-border));
+  background: color-mix(in srgb, var(--color-dashboard-warning) 8%, var(--color-card));
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-hover));
+  min-width: 0;
+}
+
+.cardLabel {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-muted);
+}
+
+.endpointList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.endpointRow {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 7rem) minmax(0, 1fr) auto;
+  gap: 0.45rem 0.55rem;
+  align-items: center;
+}
+
+.endpointKey {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-muted);
+}
+
+.endpointUrl {
+  font-size: 0.72rem;
+  word-break: break-all;
+  color: var(--color-text);
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copyBtn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chip {
+  display: inline-flex;
+  padding: 0.22rem 0.48rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-card));
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+@media (max-width: 720px) {
+  .endpointRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

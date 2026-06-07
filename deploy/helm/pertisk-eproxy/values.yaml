@@ -88,6 +88,8 @@ controller:
     alt_svc_persist: false
     management_addr: "0.0.0.0"
     management_port: 9080
+    metrics_addr: "0.0.0.0"
+    metrics_port: 9090
     quic_enabled: false
     h3_api_gateway_enabled: true
     tls_http2_enabled: true
@@ -188,11 +190,26 @@ readinessProbe:
   timeoutSeconds: 5
   failureThreshold: 6
 
+metrics:
+  enabled: true
+  addr: "0.0.0.0:9090"
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    path: /metrics
+    interval: 15s
+    scrapeTimeout: 10s
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+
 service:
   type: LoadBalancer
   httpPort: 80
   httpsPort: 443
   managementPort: 9080
+  metricsPort: 9090
   # HTTP/3 (UDP). Set to null/0 in overrides to disable UDP Service port.
   http3Port: 443
   annotations: {}
@@ -207,17 +224,6 @@ service:
       timeoutSeconds: 10800
   # Set to Local so UDP/TCP from a client tend to hit pods on the same node (helps HTTP/3).
   externalTrafficPolicy: ""
-
-metrics:
-  serviceMonitor:
-    enabled: false
-    labels: {}
-    path: /api/metrics
-    interval: 15s
-    scrapeTimeout: 10s
-    honorLabels: false
-    relabelings: []
-    metricRelabelings: []
 
 nodeSelector: {}
 tolerations: []

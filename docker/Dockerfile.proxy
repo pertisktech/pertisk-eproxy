@@ -62,7 +62,7 @@ ENV PERTISK_CONFIG_FILE=/opt/pertisk_eproxy/config/proxy.json
 
 USER pertisk
 
-EXPOSE 8080 8443 9080 8443/udp
+EXPOSE 8080 8443 9080 9090 8443/udp
 
 # Uses management listener (default 127.0.0.1:9080). Override in Compose/K8s if `management_port` differs.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \

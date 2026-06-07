@@ -148,7 +148,7 @@ health:
 	curl -sf http://127.0.0.1:9080/api/health | python3 -m json.tool
 
 metrics:
-	curl -sf http://127.0.0.1:9080/api/metrics
+	curl -sf http://127.0.0.1:9090/metrics || curl -sf http://127.0.0.1:9080/api/metrics
 
 test-dns-provider-validate:
 	bash scripts/test-dns-provider-validate.sh

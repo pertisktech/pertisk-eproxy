@@ -124,6 +124,10 @@
   border-radius: 50%;
 }
 
+.scrapeSection {
+  padding-top: 0.25rem;
+}
+
 .chartSection {
   margin-bottom: 0.2rem;
 }

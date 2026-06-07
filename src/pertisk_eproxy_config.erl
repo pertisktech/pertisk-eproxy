@@ -30,6 +30,7 @@
          management_loopback_upstream_bin/0,
          is_management_upstream_addr/1,
          backend_is_management_only/1,
+         metrics_enabled/0, metrics_listen/0,
          reload/0, put_config/1, sync_ingress/2,
          ingress_mode/0, proxy_mode/0, json_to_config_pub/1,
          db_file/0, data_dir/0]).
@@ -97,6 +98,42 @@ backend_is_management_only(BackendName) when is_binary(BackendName) ->
     end;
 backend_is_management_only(_) ->
     false.
+
+%% @doc Whether the dedicated Prometheus listener should start (default true).
+-spec metrics_enabled() -> boolean().
+metrics_enabled() ->
+    case os:getenv("PERTISK_METRICS_ENABLED") of
+        "false" -> false;
+        "0" -> false;
+        "true" -> true;
+        "1" -> true;
+        _ ->
+            case maps:get(metrics_enabled, get_config(), true) of
+                false -> false;
+                _ -> true
+            end
+    end.
+
+%% @doc Bind address/port for the Prometheus listener (`PERTISK_METRICS_ADDR` overrides JSON).
+-spec metrics_listen() -> {inet:ip_address(), pos_integer()}.
+metrics_listen() ->
+    case os:getenv("PERTISK_METRICS_ADDR") of
+        false ->
+            metrics_listen_from_config();
+        Env when is_list(Env) ->
+            case parse_host_port(string:trim(Env)) of
+                {ok, Addr, Port} ->
+                    {Addr, Port};
+                error ->
+                    metrics_listen_from_config()
+            end
+    end.
+
+metrics_listen_from_config() ->
+    C = get_config(),
+    Addr = maps:get(metrics_addr, C, {0, 0, 0, 0}),
+    Port = maps:get(metrics_port, C, 9090),
+    {Addr, Port}.
 
 %% Return list of site maps.
 -spec get_sites() -> [map()].
@@ -858,6 +895,19 @@ json_to_config(Json) ->
             parse_opt_int(maps:get(<<"h3_conn_receive_window">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
+        metrics_enabled =>
+            case maps:get(<<"metrics_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        metrics_addr => parse_addr(maps:get(<<"metrics_addr">>, Json, <<"0.0.0.0">>)),
+        metrics_port =>
+            case maps:get(<<"metrics_port">>, Json, null) of
+                null -> 9090;
+                V -> parse_opt_int(V)
+            end,
+        metrics_max_connections =>
+            parse_opt_int(maps:get(<<"metrics_max_connections">>, Json, null)),
         management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
         management_max_connections => parse_opt_int(maps:get(<<"management_max_connections">>, Json, null)),
         downstream_idle_timeout_ms => parse_opt_int(maps:get(<<"downstream_idle_timeout_ms">>, Json, null)),
@@ -1042,6 +1092,26 @@ parse_addr(Bin) ->
     case inet:parse_address(binary_to_list(Bin)) of
         {ok, Addr} -> Addr;
         _          -> {0,0,0,0}
+    end.
+
+parse_host_port(S) when is_list(S) ->
+    case string:rchr(S, $:) of
+        0 ->
+            error;
+        Pos ->
+            HostPart = string:slice(S, 0, Pos),
+            PortPart = string:slice(S, Pos + 1),
+            case string:to_integer(PortPart) of
+                {Port, ""} when Port > 0, Port =< 65535 ->
+                    case inet:parse_address(HostPart) of
+                        {ok, Addr} ->
+                            {ok, Addr, Port};
+                        _ ->
+                            error
+                    end;
+                _ ->
+                    error
+            end
     end.
 
 parse_opt_int(null)             -> undefined;

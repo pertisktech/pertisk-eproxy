@@ -7,6 +7,8 @@
   "alt_svc_port": 443,
   "management_addr": "0.0.0.0",
   "management_port": 9080,
+  "metrics_addr": "0.0.0.0",
+  "metrics_port": 9090,
   "proxy_max_connections": 16384,
   "management_max_connections": 2048,
   "downstream_idle_timeout_ms": 300000,

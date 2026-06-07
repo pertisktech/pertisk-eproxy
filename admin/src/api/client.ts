@@ -390,6 +390,9 @@ export interface ManagementInfo {
   http_addr: string;
   https_addr: string;
   management_addr: string;
+  /** Prometheus scrape listener, e.g. 0.0.0.0:9090 */
+  metrics_addr?: string;
+  metrics_enabled?: boolean;
   /** On-disk proxy JSON path (`config_file` in sys.config); same file `POST /api/reload` reads. */
   config_file?: string;
   version: string;

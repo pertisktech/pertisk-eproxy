@@ -48,6 +48,7 @@ stop(_State) ->
     stop_listener(quic4),
     stop_listener(quic6),
     stop_listener(management),
+    stop_listener(metrics),
     ok.
 
 %% @doc Full listener restart (management + proxy). Prefer {@link reload_proxy_tls_listeners/0} in ingress mode.
@@ -104,8 +105,19 @@ ports_text(Config) ->
             _ -> "disabled"
         end,
     MgmtPort = maps:get(management_port, Config, 9080),
+    MetricsText =
+        case pertisk_eproxy_config:metrics_enabled() of
+            false ->
+                "disabled";
+            true ->
+                {_Addr, MetricsPort} = pertisk_eproxy_config:metrics_listen(),
+                integer_to_list(MetricsPort)
+        end,
     lists:flatten(
-        io_lib:format("http=~w, https=~s, management=~w", [HttpPort, HttpsText, MgmtPort])
+        io_lib:format(
+            "http=~w, https=~s, management=~w, metrics=~s",
+            [HttpPort, HttpsText, MgmtPort, MetricsText]
+        )
     ).
 
 vsn_text(V) when is_binary(V) ->
@@ -146,6 +158,7 @@ start_listeners() ->
     },
     ok = start_clear_listener_opts(management, MgmtPort, MgmtAddr, MgmtAcceptors, [], MgmtProtoOpts),
     lager:info("Management API listening on ~s:~w (http/1.1)", [inet:ntoa(MgmtAddr), MgmtPort]),
+    ok = maybe_start_metrics_listener(MgmtPort, Config),
     ok.
 
 start_proxy_tls_listeners(Config, Routes) ->
@@ -822,8 +835,57 @@ build_listen_socket_opts(Ip, Port, Extra) ->
 
 listener_max_connections(Name, Config) when Name =:= management ->
     maps:get(management_max_connections, Config, 2048);
+listener_max_connections(Name, Config) when Name =:= metrics ->
+    maps:get(metrics_max_connections, Config, 256);
 listener_max_connections(_Name, Config) ->
     maps:get(proxy_max_connections, Config, 16384).
+
+maybe_start_metrics_listener(MgmtPort, Config) ->
+    case pertisk_eproxy_config:metrics_enabled() of
+        false ->
+            lager:info("Prometheus metrics server disabled"),
+            ok;
+        true ->
+            {MetricsAddr, MetricsPort} = pertisk_eproxy_config:metrics_listen(),
+            case MetricsPort =:= MgmtPort of
+                true ->
+                    lager:error(
+                        "Metrics port ~p cannot match management port; "
+                        "set metrics_port or PERTISK_METRICS_ADDR",
+                        [MetricsPort]
+                    ),
+                    ok;
+                false ->
+                    start_metrics_listener(MetricsAddr, MetricsPort, Config)
+            end
+    end.
+
+start_metrics_listener(MetricsAddr, MetricsPort, Config) ->
+    MetricsAcceptors = 2,
+    MetricsProtoOpts = #{
+        env => #{dispatch => pertisk_eproxy_metrics_routes:dispatch()},
+        logger => pertisk_eproxy_cowboy_logger,
+        idle_timeout => 60000,
+        request_timeout => 60000,
+        enable_connect_protocol => false
+    },
+    case start_clear_listener_opts(
+        metrics, MetricsPort, MetricsAddr, MetricsAcceptors, [], MetricsProtoOpts
+    ) of
+        ok ->
+            lager:info(
+                "Prometheus metrics server listening on http://~s:~w/metrics",
+                [inet:ntoa(MetricsAddr), MetricsPort]
+            ),
+            ok;
+        {error, Reason} ->
+            lager:error(
+                "Prometheus metrics server failed on ~s:~w: ~p "
+                "(set PERTISK_METRICS_ADDR or free the port)",
+                [inet:ntoa(MetricsAddr), MetricsPort, Reason]
+            ),
+            ok
+    end.
 
 downstream_idle_timeout_ms(Config) ->
     Configured =

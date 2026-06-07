@@ -126,7 +126,7 @@ If `can-i` is `no`, apply the chart again or check `rbac.create: true` in values
 | | rproxy `pertisk-ingress` | eproxy `pertisk-eproxy` |
 |--|--------------------------|-------------------------|
 | CRDs | Optional PertiskBackend/Ingress | Not included (standard Ingress only) |
-| Metrics | Dedicated `:9090` | `GET /api/metrics` on management port |
+| Metrics | Dedicated `:9090` (`GET /metrics`) | Same (`GET /metrics` on `:9090`; legacy `GET /api/metrics` on management) |
 | Probes | `/live`, `/ready` | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
 | Auth secret | `PERTISK_ADMIN` / `PERTISK_PASSWORD` (+ optional Auth0) | Same as pertisk-rproxy: local login and/or SSO; stateless `ptskv1` bearer tokens across replicas |
 | Listen ports | 8080 / 8443 in container | 80 / 443 (configurable via `controller.config`) |

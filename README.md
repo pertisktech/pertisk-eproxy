@@ -89,6 +89,21 @@ Erlang/OTP will not match native Rust TPS on identical hardware; for maximum thr
 
 Prometheus metrics (`inc_request`) still count health traffic when logging is off.
 
+### Prometheus metrics server
+
+A dedicated listener exposes Prometheus text at **`GET /metrics`** (default port **9090**), separate from the management API on `:9080`. This matches pertisk-rproxy and keeps scrape traffic off the admin listener.
+
+| Key / env | Default | Effect |
+|-----------|---------|--------|
+| `metrics_port` | `9090` | Prometheus listen port |
+| `metrics_addr` | `0.0.0.0` | Bind address |
+| `metrics_enabled` | `true` | Set `false` or `PERTISK_METRICS_ENABLED=false` to disable |
+| `PERTISK_METRICS_ADDR` | — | Overrides JSON, e.g. `0.0.0.0:9090` |
+
+Legacy **`GET /api/metrics`** on the management port still works for backward compatibility. Prefer `:9090/metrics` for Prometheus Operator / ServiceMonitor scrapes.
+
+**Helm:** `metrics.enabled`, `metrics.addr`, `service.metricsPort`, and `metrics.serviceMonitor` (scrapes `port: metrics`, `path: /metrics`).
+
 **Ingress mode (Helm):** set keys under `controller.config` in `values.yaml` (rendered to `/opt/pertisk_eproxy/config/ingress.json`). After `helm upgrade`, pods reload config on restart. View lines in the admin UI **Logs** tab or `kubectl logs` (JSON to stdout / `log/proxy.log` in the pod).
 
 **Local / dev:** edit `config/ingress.json` when `mode` is `ingress`.
@@ -185,7 +200,7 @@ Base URL follows **`management_addr`** and **`management_port`** (default **`htt
 | `GET` | `/api/backends/:name` | Backend definition and live upstream health |
 | `DELETE` | `/api/backends/:name` | Remove backend |
 | `GET` | `/api/health` | Aggregated health |
-| `GET` | `/api/metrics` | **Prometheus** metrics (text exposition) |
+| `GET` | `/api/metrics` | **Prometheus** metrics on management port (legacy; prefer `:9090/metrics`) |
 | `POST` | `/api/reload` | Reload configuration from the on-disk config file |
 | `GET` | `/api/ingress/live` | Ingress liveness probe |
 | `HEAD` | `/api/ingress/live` | Same as `GET` (no JSON body) |

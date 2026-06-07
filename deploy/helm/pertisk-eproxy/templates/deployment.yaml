@@ -45,6 +45,11 @@ spec:
             - name: management
               containerPort: {{ .Values.controller.config.management_port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.service.http3Port }}
             - name: http3
               containerPort: {{ .Values.controller.config.https_port }}
@@ -102,6 +107,10 @@ spec:
             {{- if .Values.controller.configMap.enabled }}
             - name: PERTISK_CONFIG_FILE
               value: /opt/pertisk_eproxy/config/ingress.json
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: PERTISK_METRICS_ADDR
+              value: {{ .Values.metrics.addr | quote }}
             {{- end }}
             {{- if .Values.auth.enabled }}
             - name: PERTISK_AUTH_MODE
