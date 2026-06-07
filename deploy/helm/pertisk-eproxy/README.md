@@ -48,7 +48,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 | `service.type` | Service type | `LoadBalancer` |
 | `service.http3Port` | UDP port for HTTP/3 (0/null to disable) | `443` |
 | `controller.config` | `ingress.json` body | see `values.yaml` |
-| `controller.config.log_level` | Lager verbosity (`debug`, `info`, `warning`, `error`) | `info` |
+| `controller.config.log_level` | Lager verbosity (`debug`, `info`, `warn`, `error`) | `info` |
 | `logging.level` | Sets `PERTISK_LOG_LEVEL` env (overrides JSON) | `""` (use JSON only) |
 | `persistence.enabled` | `emptyDir` or PVC for `data/` (K8s TLS PEM cache) | `true` |
 

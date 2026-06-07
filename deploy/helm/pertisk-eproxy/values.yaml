@@ -110,8 +110,8 @@ controller:
     health_cache_refresh_ms: 3000
     health_access_log: false
     # health_access_log_sample: 1000
-    # Application log verbosity (console + proxy.log): debug | info | warning | error
-    log_level: info
+    # Application log verbosity (console + proxy.log): debug | info | warn | error
+    log_level: warn
     # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
     sse_early_flush_enabled: true
     sse_initial_headers_timeout_ms: 5000

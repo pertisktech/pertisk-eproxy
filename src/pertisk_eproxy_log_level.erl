@@ -1,7 +1,7 @@
 %% @doc Runtime log level from JSON config (`log_level`) or `PERTISK_LOG_LEVEL` env.
 -module(pertisk_eproxy_log_level).
 
--export([apply/0, configured/0, parse/1]).
+-export([apply/0, configured/0, parse/1, label/1]).
 
 -define(ENV_KEY, "PERTISK_LOG_LEVEL").
 -define(DEFAULT, info).
@@ -10,23 +10,24 @@
 -spec apply() -> ok.
 apply() ->
     Level = configured(),
-    case lager:set_loglevel(lager_console_backend, Level) of
+    LagerLevel = to_lager_level(Level),
+    case lager:set_loglevel(lager_console_backend, LagerLevel) of
         ok ->
             ok;
         {error, _} ->
             ok
     end,
-    case lager:set_loglevel(lager_file_backend, Level) of
+    case lager:set_loglevel(lager_file_backend, LagerLevel) of
         ok ->
             ok;
         {error, _} ->
             ok
     end,
-    lager:info("Log level set to ~s", [level_label(Level)]),
+    lager:info("Log level set to ~s", [label(Level)]),
     ok.
 
-%% @doc Effective level atom (env overrides JSON config).
--spec configured() -> lager:loglevel().
+%% @doc Effective canonical level atom (env overrides JSON config).
+-spec configured() -> atom().
 configured() ->
     case os:getenv(?ENV_KEY) of
         false ->
@@ -40,16 +41,21 @@ configured() ->
             end
     end.
 
+%% @doc User-facing label for API / logs (`warn`, not `warning`).
+-spec label(atom()) -> string().
+label(Level) ->
+    atom_to_list(canonical_level(Level)).
+
 from_config() ->
     case pertisk_eproxy_config:get_config() of
         #{log_level := Level} when is_atom(Level) ->
-            Level;
+            canonical_level(Level);
         _ ->
             ?DEFAULT
     end.
 
-%% @doc Parse user-facing level string (debug, info, warn, warning, error, …).
--spec parse(term()) -> {ok, lager:loglevel()} | error.
+%% @doc Parse user-facing level string (debug, info, warn, error, …).
+-spec parse(term()) -> {ok, atom()} | error.
 parse(Level) when is_atom(Level) ->
     case normalize_atom(Level) of
         undefined -> error;
@@ -65,16 +71,19 @@ parse(Level) when is_list(Level) ->
 parse(_) ->
     error.
 
-level_label(Level) when is_atom(Level) ->
-    atom_to_list(Level);
-level_label(_) ->
-    "unknown".
+%% Lager uses `warning`; config and API use `warn`.
+to_lager_level(warn) -> warning;
+to_lager_level(Level) -> Level.
+
+canonical_level(warning) -> warn;
+canonical_level(warn) -> warn;
+canonical_level(Level) -> Level.
 
 normalize_atom(debug) -> debug;
 normalize_atom(info) -> info;
 normalize_atom(notice) -> notice;
-normalize_atom(warning) -> warning;
-normalize_atom(warn) -> warning;
+normalize_atom(warning) -> warn;
+normalize_atom(warn) -> warn;
 normalize_atom(error) -> error;
 normalize_atom(critical) -> critical;
 normalize_atom(alert) -> alert;
@@ -84,8 +93,8 @@ normalize_atom(_) -> undefined.
 normalize_string("debug") -> debug;
 normalize_string("info") -> info;
 normalize_string("notice") -> notice;
-normalize_string("warning") -> warning;
-normalize_string("warn") -> warning;
+normalize_string("warning") -> warn;
+normalize_string("warn") -> warn;
 normalize_string("error") -> error;
 normalize_string("critical") -> critical;
 normalize_string("alert") -> alert;

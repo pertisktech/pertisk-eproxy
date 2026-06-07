@@ -113,7 +113,7 @@ leader_election_json() ->
     end.
 
 log_level_bin() ->
-    atom_to_binary(pertisk_eproxy_log_level:configured(), utf8).
+    list_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())).
 
 config_file_path_bin() ->
     case application:get_env(pertisk_eproxy, config_file) of

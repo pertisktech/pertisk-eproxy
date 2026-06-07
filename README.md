@@ -84,7 +84,7 @@ Application logs (stderr JSON and `log/proxy.log`) use Lager. Set verbosity in t
 
 | Key / env | Default | Effect |
 |-----------|---------|--------|
-| `log_level` | `info` | `debug`, `info`, `warning` (or `warn`), `error` |
+| `log_level` | `info` | `debug`, `info`, `warn` (`warning` accepted), `error` |
 | `PERTISK_LOG_LEVEL` | — | Overrides JSON (both proxy and ingress modes) |
 
 Applied on startup and when config is reloaded (`POST /api/reload` in proxy mode, or pod restart after Helm `controller.config` change in ingress mode).
