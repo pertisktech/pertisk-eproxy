@@ -337,6 +337,12 @@ export default function Dashboard() {
                       ? `${processCount} / ${processLimit} (${formatPercent(processUsagePct)})`
                       : '—'}
                   </dd>
+                  {management?.log_level ? (
+                    <>
+                      <dt>Log level</dt>
+                      <dd className="mono">{management.log_level}</dd>
+                    </>
+                  ) : null}
                   <dt>Ports</dt>
                   <dd>
                     {runtimePorts.length === 0 ? (

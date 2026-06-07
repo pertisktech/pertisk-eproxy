@@ -78,6 +78,21 @@ The H3 gateway uses the same upstream Gun options as TCP HTTPS (`[http2, http]` 
 
 Erlang/OTP will not match native Rust TPS on identical hardware; for maximum throughput use pertisk-rproxy. These settings close the largest eproxy-specific gaps.
 
+### Log level
+
+Application logs (stderr JSON and `log/proxy.log`) use Lager. Set verbosity in the JSON config file or via env.
+
+| Key / env | Default | Effect |
+|-----------|---------|--------|
+| `log_level` | `info` | `debug`, `info`, `warning` (or `warn`), `error` |
+| `PERTISK_LOG_LEVEL` | — | Overrides JSON (both proxy and ingress modes) |
+
+Applied on startup and when config is reloaded (`POST /api/reload` in proxy mode, or pod restart after Helm `controller.config` change in ingress mode).
+
+**Helm (ingress):** `controller.config.log_level` in `values.yaml`, or `logging.level` to set `PERTISK_LOG_LEVEL` on the pod.
+
+**Local proxy:** `log_level` in `config/proxy.json`.
+
 ### Health probe logging
 
 `GET /api/health` (and `/health`, `/healthz`, `/readyz`) with status **200** is **not** written to access logs or `log/proxy.log` by default — at k6 rates (~4000+ TPS) logging every line would dominate CPU.

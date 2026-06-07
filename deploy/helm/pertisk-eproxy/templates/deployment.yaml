@@ -112,6 +112,10 @@ spec:
             - name: PERTISK_METRICS_ADDR
               value: {{ .Values.metrics.addr | quote }}
             {{- end }}
+            {{- if .Values.logging.level }}
+            - name: PERTISK_LOG_LEVEL
+              value: {{ .Values.logging.level | quote }}
+            {{- end }}
             {{- if .Values.auth.enabled }}
             - name: PERTISK_AUTH_MODE
               value: {{ .Values.auth.mode | quote }}

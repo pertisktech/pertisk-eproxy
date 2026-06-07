@@ -47,6 +47,7 @@ snapshot() ->
         <<"management_addr">> => iolist_to_binary([inet:ntoa(MgmtAddr), $:, integer_to_list(MgmtPort)]),
         <<"metrics_enabled">> => MetricsEnabled,
         <<"metrics_addr">> => iolist_to_binary([inet:ntoa(MetricsAddr), $:, integer_to_list(MetricsPort)]),
+        <<"log_level">> => log_level_bin(),
         <<"config_file">> => config_file_path_bin(),
         <<"db_path">> => db_path_bin(),
         <<"leader_election">> => leader_election_json(),
@@ -110,6 +111,9 @@ leader_election_json() ->
                 <<"lease_name">> => pertisk_ingress_env:leader_lease_name()
             }
     end.
+
+log_level_bin() ->
+    atom_to_binary(pertisk_eproxy_log_level:configured(), utf8).
 
 config_file_path_bin() ->
     case application:get_env(pertisk_eproxy, config_file) of

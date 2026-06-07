@@ -110,6 +110,8 @@ controller:
     health_cache_refresh_ms: 3000
     health_access_log: false
     # health_access_log_sample: 1000
+    # Application log verbosity (console + proxy.log): debug | info | warning | error
+    log_level: info
     # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
     sse_early_flush_enabled: true
     sse_initial_headers_timeout_ms: 5000
@@ -148,6 +150,10 @@ auth0:
   domainKey: "PERTISK_AUTH0_DOMAIN"
   clientIdKey: "PERTISK_AUTH0_CLIENT_ID"
   audienceKey: "PERTISK_AUTH0_AUDIENCE"
+
+# Optional env override for log level (takes precedence over controller.config.log_level).
+logging:
+  level: ""
 
 extraEnv: []
 # - name: PERTISK_K8S_INGRESS_CLASS

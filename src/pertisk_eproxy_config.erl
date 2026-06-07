@@ -908,6 +908,7 @@ json_to_config(Json) ->
             end,
         metrics_max_connections =>
             parse_opt_int(maps:get(<<"metrics_max_connections">>, Json, null)),
+        log_level => parse_log_level(maps:get(<<"log_level">>, Json, null)),
         management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
         management_max_connections => parse_opt_int(maps:get(<<"management_max_connections">>, Json, null)),
         downstream_idle_timeout_ms => parse_opt_int(maps:get(<<"downstream_idle_timeout_ms">>, Json, null)),
@@ -1094,6 +1095,14 @@ parse_addr(Bin) ->
         _          -> {0,0,0,0}
     end.
 
+parse_log_level(null) ->
+    undefined;
+parse_log_level(V) ->
+    case pertisk_eproxy_log_level:parse(V) of
+        {ok, Level} -> Level;
+        error -> undefined
+    end.
+
 parse_host_port(S) when is_list(S) ->
     case string:rchr(S, $:) of
         0 ->
@@ -1197,6 +1206,8 @@ apply_config(Config) ->
     %% Rebuild the router from sites
     Router = pertisk_eproxy_router:build(Sites),
     ets:insert(?TAB, {router, Router}),
+
+    _ = pertisk_eproxy_log_level:apply(),
 
     lager:info("Config applied: ~w site(s), ~w backend(s), ~w dns provider(s)",
                [length(Sites), length(Backends), length(DnsProviders)]).
