@@ -20,22 +20,45 @@
     | {error, unsupported}
     | {error, term()}.
 try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
-    case h3_local_management_path(Path) of
-        false ->
-            {error, unsupported};
-        true ->
-            case serve_static_h3(Method, Host, Path) of
-                {ok, Status, Headers, RespBody} ->
-                    {ok, Status, Headers, RespBody};
-                not_found ->
-                    case serve_spa_h3(Method, Host, Path) of
+    case try_fast_api_h3(Method, Path) of
+        {ok, Status, Headers, RespBody} ->
+            {ok, Status, Headers, RespBody};
+        not_fast ->
+            case h3_local_management_path(Path) of
+                false ->
+                    {error, unsupported};
+                true ->
+                    case serve_static_h3(Method, Host, Path) of
                         {ok, Status, Headers, RespBody} ->
                             {ok, Status, Headers, RespBody};
                         not_found ->
-                            dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+                            case serve_spa_h3(Method, Host, Path) of
+                                {ok, Status, Headers, RespBody} ->
+                                    {ok, Status, Headers, RespBody};
+                                not_found ->
+                                    dispatch_management(Method, Host, Path, Qs, H3Headers, Body, ClientIp)
+                            end
                     end
             end
     end.
+
+%% Lightweight API responses without Cowboy stub overhead (benchmark / hot path).
+try_fast_api_h3(<<"GET">>, <<"/api/ingress/live">>) ->
+    {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<"{\"status\":\"ok\"}">>};
+try_fast_api_h3(<<"HEAD">>, <<"/api/ingress/live">>) ->
+    {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
+try_fast_api_h3(<<"GET">>, <<"/api/health">>) ->
+    case pertisk_eproxy_health_cache:get() of
+        {ok, Body} ->
+            {ok, 200, [{<<"content-type">>, <<"application/json">>}], Body};
+        {error, _} ->
+            {ok, 200, [{<<"content-type">>, <<"application/json">>}],
+             pertisk_eproxy_admin_handler:h3_light_health_json()}
+    end;
+try_fast_api_h3(<<"HEAD">>, <<"/api/health">>) ->
+    {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
+try_fast_api_h3(_, _) ->
+    not_fast.
 
 %% WebSocket realtime stays on the TCP management listener only.
 h3_local_management_path(<<"/api/realtime", _/binary>>) ->

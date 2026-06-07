@@ -36,8 +36,32 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site) -
             gen_server:cast(?SERVER, {log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site})
     end.
 
+%% Successful health probes are skipped by default (k6 / kube probes at thousands of TPS).
+%% Enable with health_access_log=true or health_access_log_sample=N in ingress.json / proxy.json.
 should_skip_hot_path(Path, Status) ->
-    Status =:= 200 andalso is_health_path(Path).
+    case Status =:= 200 andalso is_health_path(Path) of
+        false ->
+            false;
+        true ->
+            not should_log_health()
+    end.
+
+should_log_health() ->
+    Config = pertisk_eproxy_config:get_config(),
+    case maps:get(health_access_log, Config, false) of
+        true ->
+            true;
+        _ ->
+            health_access_log_sample_hit(maps:get(health_access_log_sample, Config, 0))
+    end.
+
+health_access_log_sample_hit(N) when is_integer(N), N > 1 ->
+    case erlang:unique_integer([positive, monotonic]) rem N of
+        0 -> true;
+        _ -> false
+    end;
+health_access_log_sample_hit(_) ->
+    false.
 
 is_health_path(<<"/api/health">>) -> true;
 is_health_path(<<"/health">>) -> true;

@@ -29,6 +29,8 @@
     with_eventstream_upstream/5,
     should_sse_early_flush/3,
     headers_have_sse_auth/1,
+    upstream_gun_opts_with_port/4,
+    upstream_req_kind/2,
     websocket_init/1,
     websocket_handle/2,
     websocket_info/2,
@@ -97,7 +99,42 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             {ok, Req2, State};
         {ok, #{upstream_path := UpstreamPath, backend := BackendName, site_host := SiteHost}} ->
             ClientIp = client_ip(Req),
-            case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
+            case pertisk_eproxy_config:backend_is_management_only(BackendName) of
+                true ->
+                    case proxy_local_management(
+                        Req, Method, Host, SiteHost, UpstreamPath, Qs, ClientIp, TrackingId, Proto
+                    ) of
+                        {ok, StatusCode, Req2} ->
+                            StatusBin = integer_to_binary(StatusCode),
+                            inc_request_metrics(Host, SiteHost, StatusBin, Proto),
+                            log_access(
+                                Host,
+                                SiteHost,
+                                Method,
+                                Path,
+                                StatusCode,
+                                T0,
+                                Vsn,
+                                pertisk_eproxy_config:management_loopback_upstream_bin()
+                            ),
+                            {ok, Req2, State};
+                        {error, Reason} ->
+                            inc_request_metrics(Host, SiteHost, <<"502">>, Proto),
+                            lager:warning("Local management proxy error ~p for ~s~s", [Reason, Host, Path]),
+                            H502 = maybe_add_alt_svc(
+                                Req,
+                                Host,
+                                with_tracking_id_header(TrackingId, #{<<"content-type">> => <<"text/plain">>})
+                            ),
+                            Body502 = <<"Bad Gateway">>,
+                            {H502Out, Body502Out} =
+                                pertisk_eproxy_compression:maybe_compress_cowboy(502, Req, H502, Body502),
+                            Req2 = cowboy_req:reply(502, H502Out, Body502Out, Req),
+                            log_access(Host, SiteHost, Method, Path, 502, T0, Vsn, <<>>),
+                            {ok, Req2, State}
+                    end;
+                false ->
+                    case pertisk_eproxy_backend:pick_upstream(BackendName, ClientIp) of
                 {error, no_healthy_upstream} ->
                     case maybe_proxy_via_local_management(
                         Req,
@@ -201,6 +238,7 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                     {ok, Req2, State}
                             end
                     end
+                    end
             end
     end.
 
@@ -209,9 +247,56 @@ maybe_proxy_via_local_management(Req, Method, Host, Site, UpstreamPath, Qs, Clie
         false ->
             no_fallback;
         true ->
-            Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
-            proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId)
+            proxy_local_management(
+                Req, Method, Host, Site, UpstreamPath, Qs, ClientIp, TrackingId, request_proto_metric(Req)
+            )
     end.
+
+proxy_local_management(Req, Method, Host, _Site, UpstreamPath, Qs, ClientIp, TrackingId, _Proto) ->
+    {ok, Body} = read_body(Req),
+    MethodBin =
+        case Method of
+            M when is_binary(M) -> M;
+            M when is_list(M) -> iolist_to_binary(M);
+            M when is_atom(M) -> atom_to_binary(M, utf8);
+            _ -> <<"GET">>
+        end,
+    H3Headers = cowboy_headers_to_h3(cowboy_req:headers(Req)),
+    case pertisk_eproxy_h3_local_admin:try_dispatch(
+        MethodBin, Host, UpstreamPath, Qs, H3Headers, Body, ClientIp
+    ) of
+        {ok, Status, RespHeaders, RespBody} ->
+            HeadersMap = h3_response_headers_to_cowboy(RespHeaders),
+            Headers1 = with_tracking_id_header(Req, HeadersMap),
+            Headers2 = maybe_add_alt_svc(Req, Host, Headers1),
+            {OutHeaders, OutBody} =
+                pertisk_eproxy_compression:maybe_compress_cowboy(Status, Req, Headers2, RespBody),
+            Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
+            {ok, Status, Req2};
+        {error, unsupported} ->
+            Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+            proxy_request(Req, Method, Host, Host, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+cowboy_headers_to_h3(Headers) when is_map(Headers) ->
+    [
+        {K, V}
+     || {K, V} <- maps:to_list(Headers),
+        is_binary(K),
+        is_binary(V)
+    ];
+cowboy_headers_to_h3(_) ->
+    [].
+
+h3_response_headers_to_cowboy(Headers) when is_list(Headers) ->
+    maps:from_list([
+        {string:lowercase(K), V}
+     || {K, V} <- Headers,
+        is_binary(K),
+        is_binary(V)
+    ]).
 
 should_try_local_management_fallback(Host, _Path) ->
     LowerHost = string:lowercase(Host),
@@ -277,6 +362,35 @@ proxy_eventstream_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAdd
     ).
 
 proxy_request_impl(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId, ReqKind) ->
+    case pertisk_eproxy_config:is_management_upstream_addr(UpstreamAddr) of
+        true ->
+            proxy_local_management(
+                Req,
+                Method,
+                Host,
+                Site,
+                UpstreamPath,
+                Qs,
+                ClientIp,
+                TrackingId,
+                request_proto_metric(Req)
+            );
+        false ->
+            proxy_request_impl_upstream(
+                Req,
+                Method,
+                Host,
+                Site,
+                UpstreamPath,
+                Qs,
+                UpstreamAddr,
+                ClientIp,
+                TrackingId,
+                ReqKind
+            )
+    end.
+
+proxy_request_impl_upstream(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId, ReqKind) ->
     {UpHost, UpPort, Transport} = parse_upstream(UpstreamAddr),
     FullPath = case Qs of
         <<>> -> UpstreamPath;
@@ -1334,6 +1448,41 @@ request_proto_metric(Req) ->
     case detect_request_kind(Req) of
         grpc -> <<"grpc">>;
         _ -> cowboy_req_proto_metric(Req)
+    end.
+
+%% Path + header map variant for HTTP/3 gateway (no cowboy_req).
+-spec upstream_req_kind(binary(), map()) -> http | eventstream | grpc.
+upstream_req_kind(Path, HeadersMap) when is_binary(Path), is_map(HeadersMap) ->
+    case is_sse_proxy_request(Path, HeadersMap) of
+        true ->
+            eventstream;
+        false ->
+            case is_grpc_headers_map(HeadersMap) of
+                true -> grpc;
+                false -> http
+            end
+    end.
+
+is_grpc_headers_map(HMap) ->
+    Ct = string:lowercase(maps:get(<<"content-type">>, HMap, <<>>)),
+    case Ct of
+        <<"application/grpc", _/binary>> -> true;
+        <<"application/grpc-web", _/binary>> -> true;
+        <<"application/connect+", _/binary>> -> true;
+        _ ->
+            lists:any(
+                fun(K) when is_binary(K) ->
+                    case K of
+                        <<"grpc-metadata-", _/binary>> -> true;
+                        <<"grpc-timeout">> -> true;
+                        <<"x-grpc-web">> -> true;
+                        _ -> false
+                    end;
+                   (_) ->
+                    false
+                end,
+                maps:keys(HMap)
+            )
     end.
 
 detect_request_kind(Req) ->

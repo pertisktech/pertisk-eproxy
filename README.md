@@ -49,6 +49,37 @@ Current auto behavior in this app:
 
 This gives an "auto workers" model similar to NGINX tuning, while still allowing explicit per-listener overrides when required.
 
+### HTTP/3 performance (pertisk-rproxy parity)
+
+Defaults in `config/proxy.json` / `config/ingress.json` mirror [pertisk-rproxy](https://github.com/pertisktech/pertisk-rproxy) ingress perf settings:
+
+| Key | Default | rproxy equivalent |
+|-----|---------|-------------------|
+| `h3_max_streams` | 2048 | `PERTISK_HTTP3_MAX_STREAMS` |
+| `h3_stream_receive_window` | 8388608 (8 MiB) | stream receive window |
+| `h3_conn_receive_window` | 67108864 (64 MiB) | connection receive window |
+| `upstream_pool_size` | 256 | `PERTISK_UPSTREAM_POOL_MAX_IDLE_PER_HOST` |
+| `upstream_pool_idle_timeout_secs` | 90 | pool idle timeout |
+
+The H3 gateway uses the same upstream Gun options as TCP HTTPS (`[http2, http]` on TLS) so many concurrent requests can share one upstream HTTP/2 connection. Previously H3 forced `[http]` (one request per connection), which capped throughput around ~120 TPS at 100 VUs.
+
+Erlang/OTP will not match native Rust TPS on identical hardware; for maximum throughput use pertisk-rproxy. These settings close the largest eproxy-specific gaps.
+
+### Health probe logging
+
+`GET /api/health` (and `/health`, `/healthz`, `/readyz`) with status **200** is **not** written to access logs or `log/proxy.log` by default — at k6 rates (~4000+ TPS) logging every line would dominate CPU.
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `health_access_log` | `false` | Log every successful health request |
+| `health_access_log_sample` | `0` | Log 1/N health requests (e.g. `1000` ≈ few lines/sec at 4632 TPS) |
+
+Prometheus metrics (`inc_request`) still count health traffic when logging is off.
+
+**Ingress mode (Helm):** set keys under `controller.config` in `values.yaml` (rendered to `/opt/pertisk_eproxy/config/ingress.json`). After `helm upgrade`, pods reload config on restart. View lines in the admin UI **Logs** tab or `kubectl logs` (JSON to stdout / `log/proxy.log` in the pod).
+
+**Local / dev:** edit `config/ingress.json` when `mode` is `ingress`.
+
 Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME-related keys). Proxy routing, sites, backends, and listener ports are loaded from the JSON file pointed to by `config_file` (default `config/proxy.json`). See `README_SQLITE.md` for database-backed certificate and DNS provider storage.
 
 ## Modes

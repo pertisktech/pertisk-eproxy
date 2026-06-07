@@ -19,7 +19,7 @@
 -module(pertisk_eproxy_admin_handler).
 -behaviour(cowboy_handler).
 
--export([init/2]).
+-export([init/2, h3_light_health_json/0, build_health_json/0]).
 
 init(Req, Resource) ->
     Method = cowboy_req:method(Req),
@@ -743,19 +743,20 @@ handle(<<"DELETE">>, backend, Req) ->
     end;
 
 handle(<<"GET">>, health, Req) ->
-    Backends = pertisk_eproxy_config:get_backends(),
-    Sites = pertisk_eproxy_config:get_sites(),
-    Health = lists:map(fun(#{name := Name}) ->
-        case pertisk_eproxy_backend:status(Name) of
-            {ok, #{upstreams := Ups}} ->
-                Healthy = length([U || U = #{healthy := true} <- Ups]),
-                #{name => Name, total => length(Ups), healthy => Healthy};
-            _ ->
-                #{name => Name, total => 0, healthy => 0}
-        end
-    end, Backends),
-    TlsSites = site_tls_health_rows(Sites),
-    json_reply(200, #{backends => Health, acme => lego_health_snapshot(), tls_sites => TlsSites}, Req);
+    case pertisk_eproxy_health_cache:get() of
+        {ok, Body} ->
+            json_reply_body(200, Body, Req);
+        {error, Reason} ->
+            error_reply(500, Reason, Req)
+    end;
+
+handle(<<"HEAD">>, health, Req) ->
+    case pertisk_eproxy_health_cache:get() of
+        {ok, _Body} ->
+            json_reply_body(200, <<>>, Req);
+        {error, Reason} ->
+            error_reply(500, Reason, Req)
+    end;
 
 handle(<<"GET">>, metrics, Req) ->
     Output = prometheus_text_format:format(),
@@ -769,7 +770,9 @@ handle(<<"GET">>, metrics, Req) ->
 
 handle(<<"POST">>, reload, Req) ->
     case pertisk_eproxy_config:reload() of
-        ok         -> json_reply(200, #{status => <<"reloaded">>}, Req);
+        ok ->
+            _ = pertisk_eproxy_health_cache:invalidate(),
+            json_reply(200, #{status => <<"reloaded">>}, Req);
         {error, R} -> error_reply(500, R, Req)
     end;
 
@@ -881,8 +884,62 @@ inc_management_request_metric(_Req, _Status) ->
 host_metric_bin(H) when is_binary(H) -> H;
 host_metric_bin(H) -> iolist_to_binary(io_lib:format("~s", [H])).
 
+%% Minimal JSON for HTTP/3 fast path when cache is cold (rare).
+-spec h3_light_health_json() -> binary().
+h3_light_health_json() ->
+    thoas:encode(#{<<"status">> => <<"ok">>}).
+
+-spec build_health_json() -> binary().
+build_health_json() ->
+    Backends = pertisk_eproxy_config:get_backends(),
+    Sites = pertisk_eproxy_config:get_sites(),
+    Health = parallel_backend_health_summary(Backends),
+    TlsSites = site_tls_health_rows(Sites),
+    thoas:encode(#{backends => Health, acme => lego_health_snapshot(), tls_sites => TlsSites}).
+
+parallel_backend_health_summary(Backends) ->
+    Parent = self(),
+    Ref = erlang:make_ref(),
+    lists:foreach(
+        fun(#{name := Name}) ->
+            spawn(fun() ->
+                Row =
+                    case pertisk_eproxy_backend:status(Name) of
+                        {ok, #{upstreams := Ups}} ->
+                            Healthy = length([U || U = #{healthy := true} <- Ups]),
+                            #{name => Name, total => length(Ups), healthy => Healthy};
+                        _ ->
+                            #{name => Name, total => 0, healthy => 0}
+                    end,
+                Parent ! {Ref, Row}
+            end)
+        end,
+        Backends
+    ),
+    collect_backend_health_rows(length(Backends), Ref, []).
+
+collect_backend_health_rows(0, _Ref, Acc) ->
+    Acc;
+collect_backend_health_rows(N, Ref, Acc) ->
+    receive
+        {Ref, Row} ->
+            collect_backend_health_rows(N - 1, Ref, [Row | Acc])
+    after 30000 ->
+        Acc
+    end.
+
 json_reply(Status, Data, Req) ->
     json_reply(Status, Data, Req, #{}).
+
+json_reply_body(Status, Body, Req) when is_binary(Body) ->
+    inc_management_request_metric(Req, Status),
+    Req2 = reply_compressed(
+        Status,
+        with_alt_svc(Req, #{<<"content-type">> => <<"application/json">>}),
+        Body,
+        Req
+    ),
+    {ok, Req2, undefined}.
 
 json_reply(Status, Data, Req, ExtraHeaders) when is_map(ExtraHeaders) ->
     inc_management_request_metric(Req, Status),

@@ -91,6 +91,23 @@ controller:
     quic_enabled: false
     h3_api_gateway_enabled: true
     tls_http2_enabled: true
+    # HTTP/3 QUIC throughput (see README high-performance tuning)
+    h3_idle_timeout_secs: 300
+    h3_keepalive_interval_secs: 20
+    h3_quic_pool_size: 8
+    h3_max_udp_payload_size: 1472
+    h3_pmtu_enabled: true
+    h3_max_streams: 2048
+    h3_stream_receive_window: 8388608
+    h3_conn_receive_window: 67108864
+    h3_udp_bind: dual_stack
+    # Upstream Gun connection pool (H3 → backend HTTP)
+    upstream_pool_size: 256
+    upstream_pool_idle_timeout_secs: 90
+    upstream_request_timeout_ms: 180000
+    health_cache_refresh_ms: 3000
+    # health_access_log: false
+    # health_access_log_sample: 1000
     # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
     sse_early_flush_enabled: true
     sse_initial_headers_timeout_ms: 5000
@@ -136,11 +153,11 @@ extraEnv: []
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
-  limits:
-    cpu: "1"
+    cpu: 1000m
     memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 1Gi
 
 startupProbe:
   httpGet:

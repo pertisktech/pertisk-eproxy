@@ -62,12 +62,17 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
                        [1 + length(CertChain), length(CertChain)])
     end,
     _ = lager:info(
-        "HTTP/3 gateway QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w",
+        "HTTP/3 gateway QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p max_streams_bidi=~w stream_recv_window=~w conn_recv_window=~w",
         [
             maps:get(idle_timeout, QuicOpts, undefined),
             maps:get(keep_alive_interval, QuicOpts, undefined),
             maps:get(max_udp_payload_size, QuicOpts, undefined),
-            maps:get(max_datagram_frame_size, QuicOpts, undefined)
+            maps:get(max_datagram_frame_size, QuicOpts, undefined),
+            maps:get(pool_size, QuicOpts, undefined),
+            maps:get(pmtu_enabled, QuicOpts, undefined),
+            maps:get(max_streams_bidi, QuicOpts, undefined),
+            maps:get(max_stream_data_bidi_local, QuicOpts, undefined),
+            maps:get(max_receive_window, QuicOpts, undefined)
         ]
     ),
     _ = case maps:size(SniCerts) of
@@ -153,12 +158,14 @@ do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
     Config = pertisk_eproxy_config:get_config(),
     QuicOpts = quic_transport_opts(Config),
     _ = lager:info(
-        "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w",
+        "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p",
         [
             maps:get(idle_timeout, QuicOpts, undefined),
             maps:get(keep_alive_interval, QuicOpts, undefined),
             maps:get(max_udp_payload_size, QuicOpts, undefined),
-            maps:get(max_datagram_frame_size, QuicOpts, undefined)
+            maps:get(max_datagram_frame_size, QuicOpts, undefined),
+            maps:get(pool_size, QuicOpts, undefined),
+            maps:get(pmtu_enabled, QuicOpts, undefined)
         ]
     ),
     ProbeOpts = maps:merge(
@@ -564,10 +571,20 @@ extract_cookie_value_segments([Seg | Rest], NameLower) ->
     end.
 
 %% Keep H3 sessions stable across browser idle windows and NAT/LB churn.
--define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 1800).
--define(H3_IDLE_TIMEOUT_SECS_MIN, 900).
+-define(H3_IDLE_TIMEOUT_SECS_DEFAULT, 300).
+-define(H3_IDLE_TIMEOUT_SECS_MIN, 60).
+-define(H3_IDLE_TIMEOUT_SECS_BROWSER_WARN, 300).
 -define(H3_KEEPALIVE_SECS_DEFAULT, 20).
--define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1200).
+%% Chrome advertises 1472 as max_udp_payload_size transport parameter (Ethernet
+%% MTU 1500 minus IPv4 20 + UDP 8). Use 1472 instead of the hard QUIC minimum
+%% (1200) so throughput is not artificially capped. Still safe for all paths.
+-define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1472).
+%% Explicit h3_quic_pool_size: 0 in JSON means erlang_quic default (~1 acceptor).
+-define(H3_QUIC_POOL_ERLANG_DEFAULT, 0).
+%% Match pertisk-rproxy defaults (PERTISK_HTTP3_MAX_STREAMS / window env vars).
+-define(H3_MAX_STREAMS_DEFAULT, 2048).
+-define(H3_STREAM_RECV_WINDOW_DEFAULT, 8388608).
+-define(H3_CONN_RECV_WINDOW_DEFAULT, 67108864).
 
 %% HTTP/3 SETTINGS sent to clients.
 %% Force default dynamic QPACK for Chromium compatibility.
@@ -1166,6 +1183,32 @@ should_try_local_admin_fallback(Host, <<"/api/", _/binary>>) ->
 should_try_local_admin_fallback(_Host, _Path) ->
     false.
 
+h3_quic_int_opt(Config, Key, Default, Min, Max) ->
+    case maps:get(Key, Config, undefined) of
+        N when is_integer(N), N >= Min, N =< Max ->
+            N;
+        undefined ->
+            Default;
+        _ ->
+            Default
+    end.
+
+h3_quic_pool_size(Config) ->
+    case maps:get(h3_quic_pool_size, Config, undefined) of
+        0 ->
+            ?H3_QUIC_POOL_ERLANG_DEFAULT;
+        PoolN when is_integer(PoolN), PoolN > 0 ->
+            PoolN;
+        undefined ->
+            default_h3_quic_pool_size();
+        _ ->
+            default_h3_quic_pool_size()
+    end.
+
+default_h3_quic_pool_size() ->
+    Schedulers = erlang:system_info(schedulers_online),
+    max(4, min(32, Schedulers * 2)).
+
 quic_transport_opts(Config) ->
     IdleSecs0 =
         case maps:get(h3_idle_timeout_secs, Config, undefined) of
@@ -1198,29 +1241,64 @@ quic_transport_opts(Config) ->
         case {IdleSecs0, IdleSecs} of
             {I0, ClampedIdle} when I0 =/= 0, I0 < ClampedIdle ->
                 lager:warning(
-                    "h3_idle_timeout_secs=~w too low for stable browser idle behavior; clamped to ~w",
+                    "h3_idle_timeout_secs=~w below minimum ~w; clamped",
                     [I0, ClampedIdle]
+                );
+            {I0, _} when I0 =/= 0, I0 < ?H3_IDLE_TIMEOUT_SECS_BROWSER_WARN ->
+                lager:info(
+                    "h3_idle_timeout_secs=~w is below ~w; fine for load tests, "
+                    "raise for long-lived browser idle tabs",
+                    [I0, ?H3_IDLE_TIMEOUT_SECS_BROWSER_WARN]
                 );
             _ ->
                 ok
         end,
+    %% Max UDP payload: 1472 (Chrome's advertised transport parameter on Ethernet).
+    %% Chrome >= M125 handles this correctly. Only pin to 1200 via h3_max_udp_payload_size
+    %% if operator needs to work around path MTU issues on a specific deployment.
+    MaxUdpPayload =
+        case maps:get(h3_max_udp_payload_size, Config, undefined) of
+            N when is_integer(N), N >= 1200, N =< 65527 ->
+                N;
+            undefined ->
+                ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE;
+            _ ->
+                ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE
+        end,
+    %% PMTUD: enabled by default so the QUIC stack probes the path MTU and
+    %% converges to the real limit. Disable only via h3_pmtu_enabled: false.
+    PmtuEnabled = maps:get(h3_pmtu_enabled, Config, true),
+    %% Quic listener acceptor pool: parallel gen_udp acceptors for new QUIC connections.
+    %% Omit h3_quic_pool_size in JSON to auto-scale with schedulers; set 0 for erlang_quic default.
+    PoolSize = h3_quic_pool_size(Config),
+    MaxStreams = h3_quic_int_opt(Config, h3_max_streams, ?H3_MAX_STREAMS_DEFAULT, 1, 1000000),
+    StreamRecvWindow =
+        h3_quic_int_opt(Config, h3_stream_receive_window, ?H3_STREAM_RECV_WINDOW_DEFAULT, 65536, 268435456),
+    ConnRecvWindow =
+        h3_quic_int_opt(Config, h3_conn_receive_window, ?H3_CONN_RECV_WINDOW_DEFAULT, 65536, 268435456),
     Base = #{
         idle_timeout => IdleSecs * 1000,
-        %% Chromium can close with QUIC_PACKET_TOO_LARGE on some paths.
-        %% Keep server datagrams at QUIC minimum and avoid PMTU probing regressions.
         socket_backend => gen_udp,
         backend => gen_udp,
-        batching => #{enabled => false},
         max_datagram_frame_size => 0,
-        max_udp_payload_size => ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE,
-        pmtu_enabled => false,
-        pmtu_max_mtu => ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE
+        max_udp_payload_size => MaxUdpPayload,
+        pmtu_enabled => PmtuEnabled,
+        pmtu_max_mtu => MaxUdpPayload,
+        max_streams_bidi => MaxStreams,
+        max_stream_data_bidi_local => StreamRecvWindow,
+        max_stream_data_bidi_remote => StreamRecvWindow,
+        max_receive_window => ConnRecvWindow,
+        initial_max_data => ConnRecvWindow
     },
+    Base1 = case PoolSize of
+        0 -> Base;
+        _ -> Base#{pool_size => PoolSize}
+    end,
     case KeepSecs of
         0 ->
-            Base;
+            Base1;
         _ ->
-            Base#{keep_alive_interval => max(5000, KeepSecs * 1000)}
+            Base1#{keep_alive_interval => max(5000, KeepSecs * 1000)}
     end.
 
 proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Body, ClientIp) ->
@@ -1233,9 +1311,10 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
     HeadersMap = forward_headers_h3(HMap, OrigHost, ClientIp, FullPath),
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
-    GunOpts = upstream_gun_opts(UpHost, Transport),
+    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, HMap),
+    GunOpts = pertisk_eproxy_handler:upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind),
     UseEphemeralConn = should_use_ephemeral_connection_h3(UpHost, FullPath, H3Headers),
-    case checkout_or_open_connection_h3(UseEphemeralConn, UpHost, UpPort, Transport, GunOpts) of
+    case checkout_or_open_connection_h3(UseEphemeralConn, UpHost, UpPort, Transport, ReqKind, GunOpts) of
         {error, Reason} ->
             {error, Reason};
         {ok, ConnPid} ->
@@ -1255,10 +1334,10 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
             )
     end.
 
-checkout_or_open_connection_h3(true, UpHost, UpPort, _Transport, GunOpts) ->
+checkout_or_open_connection_h3(true, UpHost, UpPort, _Transport, _ReqKind, GunOpts) ->
     open_direct_connection_h3(UpHost, UpPort, GunOpts);
-checkout_or_open_connection_h3(false, UpHost, UpPort, Transport, GunOpts) ->
-    pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, http, GunOpts).
+checkout_or_open_connection_h3(false, UpHost, UpPort, Transport, ReqKind, GunOpts) ->
+    pertisk_eproxy_upstream_pool:checkout(UpHost, UpPort, Transport, ReqKind, GunOpts).
 
 open_direct_connection_h3(UpHost, UpPort, GunOpts) ->
     case gun:open(UpHost, UpPort, GunOpts) of
@@ -1303,6 +1382,7 @@ do_proxy_via_gun(
 ) ->
     TimeoutMs = request_timeout_ms(),
     BodyTimeoutMs = response_body_timeout_ms(FullPath, ReqHeadersMap, TimeoutMs),
+    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, ReqHeadersMap),
     Result =
         try
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
@@ -1339,6 +1419,7 @@ do_proxy_via_gun(
                         UpHost,
                         UpPort,
                         Transport,
+                        ReqKind,
                         GunOpts
                     ) of
                         {ok, ConnPid2} ->
@@ -1416,33 +1497,6 @@ maybe_invalidate_connection(ConnPid, Reason) ->
 
 is_connection_fatal_error({stream_error, {closing, owner_down}}) -> false;
 is_connection_fatal_error(_) -> true.
-
-upstream_gun_opts(UpHost, tls) ->
-    #{
-        transport => tls,
-        protocols => [http],
-        connect_timeout => ?CONNECT_TIMEOUT,
-        tls_opts => upstream_tls_opts(UpHost)
-    };
-upstream_gun_opts(_UpHost, Transport) ->
-    #{
-        transport => Transport,
-        protocols => [http],
-        connect_timeout => ?CONNECT_TIMEOUT
-    }.
-
-upstream_tls_opts(UpHost) ->
-    [{verify, verify_none} | maybe_sni_opt(UpHost)].
-
-maybe_sni_opt(UpHost) when is_list(UpHost) ->
-    case inet:parse_address(UpHost) of
-        {ok, _Ip} -> [{server_name_indication, disable}];
-        _ -> [{server_name_indication, UpHost}]
-    end;
-maybe_sni_opt(UpHost) when is_binary(UpHost) ->
-    maybe_sni_opt(binary_to_list(UpHost));
-maybe_sni_opt(_) ->
-    [{server_name_indication, disable}].
 
 method_to_gun(<<"GET">>) -> <<"GET">>;
 method_to_gun(<<"POST">>) -> <<"POST">>;
@@ -1711,7 +1765,6 @@ start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
                 reuseport => false,
-                pool_size => 0,
                 extra_socket_opts => [inet6, {ipv6_v6only, false}]
             })
     },
@@ -1739,7 +1792,6 @@ start_unix_split_udp(ServerName, Port, BaseOpts) ->
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
                 reuseport => false,
-                pool_size => 0,
                 extra_socket_opts => []
             })
     },
@@ -1748,7 +1800,6 @@ start_unix_split_udp(ServerName, Port, BaseOpts) ->
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
                 reuseport => false,
-                pool_size => 0,
                 extra_socket_opts => [inet6, {ipv6_v6only, true}]
             })
     },
@@ -1806,7 +1857,6 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     maps:merge(QuicBase, #{
                         socket_backend => gen_udp,
                         reuseport => true,
-                        pool_size => 0,
                         extra_socket_opts => []
                     })
             },
@@ -1817,7 +1867,6 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     maps:merge(QuicBase, #{
                         socket_backend => gen_udp,
                         reuseport => true,
-                        pool_size => 0,
                         extra_socket_opts => [inet6, {ipv6_v6only, true}]
                     })
             },
@@ -1853,7 +1902,6 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                                 maps:merge(QuicBase, #{
                                     socket_backend => gen_udp,
                                     reuseport => false,
-                                    pool_size => 0,
                                     extra_socket_opts => [inet6, {ipv6_v6only, false}]
                                 })
                         }

@@ -841,6 +841,21 @@ json_to_config(Json) ->
         h3_udp_bind => parse_h3_udp_bind(maps:get(<<"h3_udp_bind">>, Json, <<"dual_stack">>)),
         %% true = default static-only QPACK (maximum browser interop); false = dynamic table.
         h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
+        h3_quic_pool_size =>
+            parse_opt_int(maps:get(<<"h3_quic_pool_size">>, Json, null)),
+        h3_max_udp_payload_size =>
+            parse_opt_int(maps:get(<<"h3_max_udp_payload_size">>, Json, null)),
+        h3_pmtu_enabled =>
+            case maps:get(<<"h3_pmtu_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        h3_max_streams =>
+            parse_opt_int(maps:get(<<"h3_max_streams">>, Json, null)),
+        h3_stream_receive_window =>
+            parse_opt_int(maps:get(<<"h3_stream_receive_window">>, Json, null)),
+        h3_conn_receive_window =>
+            parse_opt_int(maps:get(<<"h3_conn_receive_window">>, Json, null)),
         management_addr => parse_addr(maps:get(<<"management_addr">>, Json, <<"0.0.0.0">>)),
         management_port => maps:get(<<"management_port">>, Json, 9080),
         management_num_acceptors => parse_opt_int(maps:get(<<"management_num_acceptors">>, Json, null)),
@@ -853,6 +868,15 @@ json_to_config(Json) ->
         upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
         upstream_pool_idle_timeout_secs =>
             parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
+        health_cache_refresh_ms =>
+            parse_opt_int(maps:get(<<"health_cache_refresh_ms">>, Json, null)),
+        health_access_log =>
+            case maps:get(<<"health_access_log">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        health_access_log_sample =>
+            parse_opt_int(maps:get(<<"health_access_log_sample">>, Json, null)),
         sse_early_flush_enabled =>
             case maps:get(<<"sse_early_flush_enabled">>, Json, true) of
                 false -> false;
