@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
 VERSION="${VERSION:-0.5.47}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
-CHART_PATH="${CHART_PATH:-pertisk/pertisk-eproxy}"
-ADMIN_HOST="${ADMIN_HOST:-admin.cloud.thaidevops.co}"
-HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
+CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
+ADMIN_HOST="${ADMIN_HOST:-admin.talos.pertisk.com}"
+HELM_TIMEOUT="${HELM_TIMEOUT:-20m}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
 
-# Build and push the ingress image, then deploy/update the Kubernetes release.
 make docker-ingress-multi VERSION="$VERSION"
+
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
+  --create-namespace \
+  --wait \
+  --timeout "$HELM_TIMEOUT" \
   --set image.tag="$VERSION" \
   --set image.pullPolicy=Always \
-  --set-string 'service.annotations.pertisk\.tech/floating-ip-enabled=true' \
-  --set-string 'service.annotations.pertisk\.tech/floating-ip-family=dual-stack' \
-  --set-string 'service.annotations.pertisk\.tech/floating-ip-home-location=nbg1' \
   --set auth.username=admin \
   --set auth.password='admin' \
   --set auth0.domain=dev-od6cfzs2tugxm53g.us.auth0.com \
@@ -25,7 +28,5 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set auth0.audience=https://dev-od6cfzs2tugxm53g.us.auth0.com/api/v2/ \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
-  #--set ingress.watchNamespace="" \
-  #--set controller.config.upstream_pool_size=128 \
-  #--set controller.config.upstream_pool_idle_timeout_secs=240 \
-  --set adminIngress.tlsSecretName=admin-cloud-tls
+  --set ingress.className=pertisk-eproxy \
+  --set adminIngress.tlsSecretName=admin-talos-tls

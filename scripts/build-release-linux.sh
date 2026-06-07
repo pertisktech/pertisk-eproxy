@@ -12,7 +12,7 @@ RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-}"
 
 prepare_and_release() {
   cd "$ROOT_DIR"
-  # Never reuse host _build/ in Docker (macOS beams break relx xref on Linux). Same as Dockerfile.
+  # Never reuse host _build/ in Docker (macOS beams break relx xref on Linux). Same as docker/Dockerfile.proxy.
   rm -rf _build deps
   rebar3 get-deps
   bash scripts/patch-ekub.sh

@@ -8,6 +8,19 @@ Erlang/OTP reverse proxy built on **Cowboy**, with an optional **management list
 - `rebar3`
 - Optional: Node.js 20+ to rebuild the admin UI (`admin/` → `priv/admin/`)
 
+## Repository layout
+
+| Path | Purpose |
+|------|---------|
+| `src/` | Erlang application |
+| `config/` | Runtime JSON (`proxy.json`, `ingress.json`) and `sys.config` |
+| `docker/` | Dockerfiles (`Dockerfile.proxy`, `Dockerfile.ingress`) |
+| `build/` | Package and image build wrappers (`deploy-deb.sh`, `docker-harbor.sh`) |
+| `deploy/` | Helm chart and cluster deploy scripts (`erlang.sh`, `h255.sh`, …) |
+| `scripts/` | Release helpers (patches, verify, deb/rpm internals) |
+
+Same layout as [pertisk-rproxy](https://github.com/pertisktech/pertisk-rproxy) (`docker/`, `build/`, `deploy/helm/…`).
+
 ## Build
 
 ```bash
@@ -93,16 +106,17 @@ Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME
 
 | Mode | Dockerfile | Image |
 |------|------------|--------|
-| Proxy / admin | `Dockerfile` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` |
-| Ingress controller | `Dockerfile.ingress` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` |
+| Proxy / admin | `docker/Dockerfile.proxy` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` |
+| Ingress controller | `docker/Dockerfile.ingress` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` |
 
 ```bash
 make docker-proxy-multi VERSION=0.1.0      # push proxy
-make docker-ingress-multi VERSION=0.1.0  # push ingress
-make docker-harbor-multi VERSION=0.1.0   # push both
+make docker-ingress-multi VERSION=0.1.0    # push ingress
+make docker-harbor-multi VERSION=0.1.0     # push both
+./build/docker-harbor.sh 0.1.0             # same as docker-harbor-multi
 ```
 
-Helm chart `deploy/helm/pertisk-eproxy` uses the **ingress** image by default.
+Helm chart `deploy/helm/pertisk-eproxy` uses the **ingress** image by default. Cluster deploy wrappers: `deploy/erlang.sh`, `deploy/h255.sh`, etc. — see [`deploy/README.md`](deploy/README.md).
 
 ## Management listener
 

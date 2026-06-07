@@ -31,8 +31,8 @@ HELM_OCI_REPO ?= oci://$(HARBOR_REGISTRY)/pertisksoft/helm
 
 # Back-compat aliases (default IMAGE = proxy)
 IMAGE ?= $(HARBOR_PROXY_IMAGE)
-DOCKERFILE ?= Dockerfile
-DOCKERFILE_INGRESS ?= Dockerfile.ingress
+DOCKERFILE ?= docker/Dockerfile.proxy
+DOCKERFILE_INGRESS ?= docker/Dockerfile.ingress
 
 all: compile
 

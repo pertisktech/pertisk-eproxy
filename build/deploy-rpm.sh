@@ -6,7 +6,9 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-135.181.197.40}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
-PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-0.5.47}}"
+RAW_PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-${VERSION:-0.5.47}}}"
+PACKAGE_VERSION="${RAW_PACKAGE_VERSION#v}"
+PACKAGE_VERSION="${PACKAGE_VERSION#V}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
@@ -24,8 +26,10 @@ log_ok() { echo -e "${GREEN}$*${NC}"; }
 log_err() { echo -e "${RED}$*${NC}"; }
 
 echo -e "${GREEN}Starting RPM deployment of ${PACKAGE_NAME} version ${PACKAGE_VERSION}${NC}"
+echo -e "${YELLOW}Remote: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}${NC}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
 if [[ "$ADMIN_BUILD" = "1" ]]; then
   log_info "Building admin UI assets..."
@@ -43,6 +47,11 @@ fi
 # Step 1: Build package
 log_info "Building RPM package..."
 make package-rpm-amd64 VERSION="${PACKAGE_VERSION}"
+
+if [[ ! -f "release/${RPM_FILE}" ]]; then
+  log_err "Expected package not found: release/${RPM_FILE}"
+  exit 1
+fi
 
 # Step 2: Copy package to remote server
 log_info "Copying package to remote server..."
