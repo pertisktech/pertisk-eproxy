@@ -8,7 +8,7 @@ VERSION="${VERSION:-0.5.47}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
-ADMIN_HOST="${ADMIN_HOST:-admin.talos.pertisk.com}"
+ADMIN_HOST="${ADMIN_HOST:-admin.erlang.pertisk.com}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-20m}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
@@ -29,4 +29,4 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
   --set ingress.className=pertisk-eproxy \
-  --set adminIngress.tlsSecretName=admin-talos-tls
+  --set adminIngress.tlsSecretName=admin-erlang-tls
