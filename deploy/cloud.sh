@@ -10,6 +10,10 @@ RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
 ADMIN_HOST="${ADMIN_HOST:-admin.cloud.thaidevops.co}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
+CPU_REQUEST="${CPU_REQUEST:-500m}"
+MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
+CPU_LIMIT="${CPU_LIMIT:-1000m}"
+MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE}"
 
@@ -29,6 +33,12 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
   --set adminIngress.tlsSecretName=admin-cloud-tls \
+  --set controller.config.proxy_access_log=false \
+  --set controller.config.log_level=warn \
+  --set resources.requests.cpu="$CPU_REQUEST" \
+  --set resources.requests.memory="$MEMORY_REQUEST" \
+  --set resources.limits.cpu="$CPU_LIMIT" \
+  --set resources.limits.memory="$MEMORY_LIMIT" \
   --set-string service.annotations."pertisk\.tech/floating-ip-enabled"=true \
   --set-string service.annotations."pertisk\.tech/floating-ip-family"=dual-stack \
   --set-string service.annotations."pertisk\.tech/floating-ip-home-location"=nbg1
