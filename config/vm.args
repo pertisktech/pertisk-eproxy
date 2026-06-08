@@ -11,8 +11,8 @@
 # Omit +S to use all CPUs visible to the pod (respects cgroup limits in K8s).
 # Optional fixed count for small CPU limits: +S 2:2
 
-# Async thread pool
-+A 32
+# Async thread pool (QUIC UDP I/O at high throughput needs many async threads)
++A 64
 
 # Maximum number of ports (file descriptors)
 +Q 65536

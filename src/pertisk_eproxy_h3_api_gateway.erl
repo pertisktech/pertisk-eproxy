@@ -1829,21 +1829,29 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
 %% (open_socket_backend hardcodes `inet` family), so inet6/ipv6_v6only opts are silently
 %% dropped. gen_udp backend appends extra_socket_opts after the base `inet` flag so the
 %% last entry (inet6) wins, producing a dual-stack [::] socket identical to the Rust rproxy.
+-define(UDP_RECV_BUF, 1048576).
+-define(UDP_SEND_BUF, 1048576).
+
 start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
     QuicBase = maps:get(quic_opts, BaseOpts, #{}),
     Opts = BaseOpts#{
         quic_opts =>
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
-                reuseport => false,
-                extra_socket_opts => [inet6, {ipv6_v6only, false}]
+                reuseport => true,
+                extra_socket_opts => [
+                    inet6,
+                    {ipv6_v6only, false},
+                    {recbuf, ?UDP_RECV_BUF},
+                    {sndbuf, ?UDP_SEND_BUF}
+                ]
             })
     },
     case quic_h3:start_server(ServerName, Port, Opts) of
         {ok, _} = Ok ->
             _ = lager:info(
-                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack, Chrome/Node/Rust compatible)",
-                [Port]
+                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack reuseport recbuf=~w sndbuf=~w)",
+                [Port, ?UDP_RECV_BUF, ?UDP_SEND_BUF]
             ),
             Ok;
         {error, Reason} ->
