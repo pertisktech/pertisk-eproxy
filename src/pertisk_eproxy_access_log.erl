@@ -37,13 +37,33 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site) -
     end.
 
 %% Successful health probes are skipped by default (k6 / kube probes at thousands of TPS).
-%% Enable with health_access_log=true or health_access_log_sample=N in ingress.json / proxy.json.
+%% Disable all successful proxy access logs with proxy_access_log=false (ingress default; rproxy proxyLog).
+%% When disabled, 4xx/5xx are still logged for ops visibility.
 should_skip_hot_path(Path, Status) ->
-    case Status =:= 200 andalso is_health_path(Path) of
-        false ->
-            false;
-        true ->
-            not should_log_health()
+    case proxy_access_log_enabled() of
+        false when Status < 400 ->
+            true;
+        _ ->
+            case Status =:= 200 andalso is_health_path(Path) of
+                false ->
+                    false;
+                true ->
+                    not should_log_health()
+            end
+    end.
+
+proxy_access_log_enabled() ->
+    case os:getenv("PERTISK_PROXY_ACCESS_LOG") of
+        "false" -> false;
+        "0" -> false;
+        "true" -> true;
+        "1" -> true;
+        _ ->
+            Config = pertisk_eproxy_config:get_config(),
+            case maps:get(proxy_access_log, Config, true) of
+                false -> false;
+                _ -> true
+            end
     end.
 
 should_log_health() ->

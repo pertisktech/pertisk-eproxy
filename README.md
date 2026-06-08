@@ -76,7 +76,38 @@ Defaults in `config/proxy.json` / `config/ingress.json` mirror [pertisk-rproxy](
 
 The H3 gateway uses the same upstream Gun options as TCP HTTPS (`[http2, http]` on TLS) so many concurrent requests can share one upstream HTTP/2 connection. Previously H3 forced `[http]` (one request per connection), which capped throughput around ~120 TPS at 100 VUs.
 
-Erlang/OTP will not match native Rust TPS on identical hardware; for maximum throughput use pertisk-rproxy. These settings close the largest eproxy-specific gaps.
+Erlang/OTP will not match native Rust TPS on identical hardware; for maximum throughput use [pertisk-rproxy](https://github.com/pertisktech/pertisk-rproxy). These settings close the largest eproxy-specific gaps.
+
+### Ingress throughput: eproxy vs rproxy
+
+| Area | pertisk-rproxy (Rust) | pertisk-eproxy (Erlang) | Tuning |
+|------|----------------------|-------------------------|--------|
+| Runtime | Tokio `performance` mode, auto worker threads from CPU limit | BEAM schedulers from cgroup CPUs (`vm.args` `+A 32`) | Give pods enough CPU; avoid `log_level: debug` |
+| Per-request access log | `runtime.proxyLog: false` (default) | `proxy_access_log: false` (ingress default) | **Biggest eproxy win** — skips ring buffer + Lager JSON on 2xx/3xx |
+| Health probe logging | N/A (no ring buffer path) | `health_access_log: false` | Keep off under k6 / many replicas |
+| Upstream pool | 256 idle/host, H2 keepalive 20s | `upstream_pool_size: 256`, idle 90s | Match rproxy `upstream.*` |
+| HTTP/3 QUIC | 2048 streams, 8/64 MiB windows | `h3_max_streams`, `h3_*_receive_window` | Same defaults as rproxy |
+| Metrics | `:9090` atomics, no admin listener | `:9090` counters | Use Prometheus, not access logs, for TPS |
+| LB pick | `AtomicUsize` round-robin | `gen_server:call` per backend | Minor at typical ingress scale |
+| Raw TPS ceiling | Higher (native async I/O) | Lower (BEAM + Cowboy + Gun) | Use rproxy when TPS is the primary goal |
+
+**Recommended ingress Helm overlay** (after defaults in `values.yaml`):
+
+```yaml
+controller:
+  config:
+    proxy_access_log: false
+    health_access_log: false
+    log_level: warn
+    upstream_pool_size: 256
+    h3_max_streams: 2048
+replicaCount: 1          # or service.externalTrafficPolicy: Local for HTTP/3
+resources:
+  limits:
+    cpu: 2000m
+```
+
+Env override: `PERTISK_PROXY_ACCESS_LOG=false` (same as rproxy `PERTISK_PROXY_LOG=false`).
 
 ### Log level
 
@@ -103,6 +134,17 @@ Applied on startup and when config is reloaded (`POST /api/reload` in proxy mode
 | `health_access_log_sample` | `0` | Log 1/N health requests (e.g. `1000` ≈ few lines/sec at 4632 TPS) |
 
 Prometheus metrics (`inc_request`) still count health traffic when logging is off.
+
+### Proxy access logging
+
+Every proxied request normally writes to the admin ring buffer and Lager JSON (`log/proxy.log` + stderr). At ingress scale this dominates CPU (same class of cost as rproxy `proxyLog: true`).
+
+| Key / env | Default (ingress) | Effect |
+|-----------|-------------------|--------|
+| `proxy_access_log` | `false` in `ingress.json` / Helm | Skip 2xx/3xx access logs; **4xx/5xx still logged** |
+| `PERTISK_PROXY_ACCESS_LOG` | — | Overrides JSON (`true` / `false`) |
+
+Prometheus `pertisk_eproxy_requests_total` still records all traffic when access logging is off.
 
 ### Prometheus metrics server
 

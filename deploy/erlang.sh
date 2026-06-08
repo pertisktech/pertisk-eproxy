@@ -28,4 +28,6 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set auth0.audience=https://dev-od6cfzs2tugxm53g.us.auth0.com/api/v2/ \
   --set adminIngress.enabled=true \
   --set adminIngress.host="$ADMIN_HOST" \
-  --set adminIngress.tlsSecretName=admin-erlang-tls
+  --set adminIngress.tlsSecretName=admin-erlang-tls \
+  --set controller.config.proxy_access_log=false \
+  --set controller.config.log_level=warn

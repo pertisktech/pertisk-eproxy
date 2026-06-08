@@ -48,6 +48,7 @@ snapshot() ->
         <<"metrics_enabled">> => MetricsEnabled,
         <<"metrics_addr">> => iolist_to_binary([inet:ntoa(MetricsAddr), $:, integer_to_list(MetricsPort)]),
         <<"log_level">> => log_level_bin(),
+        <<"proxy_access_log">> => proxy_access_log_json(),
         <<"config_file">> => config_file_path_bin(),
         <<"db_path">> => db_path_bin(),
         <<"leader_election">> => leader_election_json(),
@@ -114,6 +115,20 @@ leader_election_json() ->
 
 log_level_bin() ->
     list_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())).
+
+proxy_access_log_json() ->
+    case os:getenv("PERTISK_PROXY_ACCESS_LOG") of
+        "false" -> false;
+        "0" -> false;
+        "true" -> true;
+        "1" -> true;
+        _ ->
+            C = pertisk_eproxy_config:get_config(),
+            case maps:get(proxy_access_log, C, true) of
+                false -> false;
+                _ -> true
+            end
+    end.
 
 config_file_path_bin() ->
     case application:get_env(pertisk_eproxy, config_file) of

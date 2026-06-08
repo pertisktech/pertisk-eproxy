@@ -928,6 +928,11 @@ json_to_config(Json) ->
             end,
         health_access_log_sample =>
             parse_opt_int(maps:get(<<"health_access_log_sample">>, Json, null)),
+        proxy_access_log =>
+            case maps:get(<<"proxy_access_log">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
         sse_early_flush_enabled =>
             case maps:get(<<"sse_early_flush_enabled">>, Json, true) of
                 false -> false;
