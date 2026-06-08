@@ -4,7 +4,8 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([log_proxy/6, log_proxy/7, log_proxy/8, log_system/3, list/2, list/3, count/0]).
+-export([log_proxy/6, log_proxy/7, log_proxy/8, log_system/3, list/2, list/3, count/0,
+         is_health_path/1, refresh_hot_path_flags/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -52,27 +53,52 @@ should_skip_hot_path(Path, Status) ->
             end
     end.
 
+-define(LOG_HOT_PATH_KEY, {pertisk_eproxy, log_hot_path}).
+
+%% @doc Cache log flags in persistent_term (avoid get_config/0 on every proxied request).
+-spec refresh_hot_path_flags() -> ok.
+refresh_hot_path_flags() ->
+    Config = pertisk_eproxy_config:get_config(),
+    ProxyLog =
+        case os:getenv("PERTISK_PROXY_ACCESS_LOG") of
+            "false" -> false;
+            "0" -> false;
+            "true" -> true;
+            "1" -> true;
+            _ ->
+                case maps:get(proxy_access_log, Config, true) of
+                    false -> false;
+                    _ -> true
+                end
+        end,
+    persistent_term:put(
+        ?LOG_HOT_PATH_KEY,
+        #{
+            proxy => ProxyLog,
+            health => maps:get(health_access_log, Config, false),
+            health_sample => maps:get(health_access_log_sample, Config, 0)
+        }
+    ),
+    ok.
+
 proxy_access_log_enabled() ->
-    case os:getenv("PERTISK_PROXY_ACCESS_LOG") of
-        "false" -> false;
-        "0" -> false;
-        "true" -> true;
-        "1" -> true;
-        _ ->
-            Config = pertisk_eproxy_config:get_config(),
-            case maps:get(proxy_access_log, Config, true) of
-                false -> false;
-                _ -> true
-            end
+    case persistent_term:get(?LOG_HOT_PATH_KEY, undefined) of
+        #{proxy := Flag} ->
+            Flag;
+        undefined ->
+            refresh_hot_path_flags(),
+            proxy_access_log_enabled()
     end.
 
 should_log_health() ->
-    Config = pertisk_eproxy_config:get_config(),
-    case maps:get(health_access_log, Config, false) of
-        true ->
+    case persistent_term:get(?LOG_HOT_PATH_KEY, undefined) of
+        #{health := true} ->
             true;
-        _ ->
-            health_access_log_sample_hit(maps:get(health_access_log_sample, Config, 0))
+        #{health := false, health_sample := N} ->
+            health_access_log_sample_hit(N);
+        undefined ->
+            refresh_hot_path_flags(),
+            should_log_health()
     end.
 
 health_access_log_sample_hit(N) when is_integer(N), N > 1 ->
@@ -108,6 +134,7 @@ count() ->
 
 %% ---------------------------------------------------------------------------
 init([]) ->
+    _ = refresh_hot_path_flags(),
     {ok, #st{}}.
 
 handle_call({list, Type, HostFilter, SiteFilter}, _From, #st{entries = Es} = St) ->

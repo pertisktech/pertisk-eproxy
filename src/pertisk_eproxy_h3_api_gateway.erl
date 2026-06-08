@@ -20,6 +20,7 @@
 -define(DEFAULT_REQUEST_TIMEOUT_MS, 180000).
 -define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
+-define(H3_BENCHMARK_BODY, <<"{\"status\":\"ok\"}">>).
 
 start(Config) ->
     _ = ensure_quic_started(),
@@ -187,6 +188,14 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     Auth = authority_host(Headers),
     LogHost = host_for_route(Auth),
     {PathOnly, Qs} = split_path_query(Path),
+    case try_h3_benchmark_fast_path(H3Conn, StreamId, Method, PathOnly) of
+        ok ->
+            ok;
+        skip ->
+            h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, PathOnly, Qs)
+    end.
+
+h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, PathOnly, Qs) ->
     try
         case is_grpc_h3_request(Headers) of
             true ->
@@ -769,15 +778,17 @@ h3_handle_buffered_proxy(
                 {ok, Status0, RespHeaders, RespBody} ->
                     Status = gun_response_status_int(Status0),
                     StatusBin = integer_to_binary(Status),
-                    inc_h3_metrics(LogHost, SiteHost, StatusBin),
                     RespBin = safe_iolist_to_binary(RespBody),
-                    ok = pertisk_eproxy_metrics:record_proxy_bytes(
-                        LogHost, byte_size(Body), byte_size(RespBin)
+                    maybe_h3_success_side_effects(
+                        LogHost,
+                        SiteHost,
+                        PathOnly,
+                        StatusBin,
+                        Body,
+                        RespBin,
+                        BackendName,
+                        UpstreamAddr
                     ),
-                    ok = pertisk_eproxy_metrics:record_site_bytes(
-                        SiteHost, byte_size(Body), byte_size(RespBin)
-                    ),
-                    ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok),
                     H3Headers0 = maybe_add_h3_alt_svc(PathOnly, Qs, LogHost, RespHeaders),
                     {H3Headers, RespOut} = pertisk_eproxy_compression:maybe_compress_h3(
                         Status,
@@ -792,7 +803,7 @@ h3_handle_buffered_proxy(
                         end,
                     _ = h3_reply_status(H3Conn, StreamId, Status, H3Headers, RespData),
                     UpstreamLog = upstream_log_label(UpstreamAddr),
-                    log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, UpstreamLog),
+                    maybe_log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, UpstreamLog),
                     ok;
                 {error, ProxyReason} ->
                     inc_h3_metrics(LogHost, SiteHost, <<"502">>),
@@ -1564,6 +1575,66 @@ safe_iolist_to_binary(V) ->
 log_h3_access(Host, Site, Method, Path, Status, T0, Upstream) ->
     Dt = max(0, erlang:monotonic_time(millisecond) - T0),
     catch pertisk_eproxy_access_log:log_proxy(Host, Method, Path, Status, Dt, 'HTTP/3', Upstream, Site).
+
+maybe_log_h3_access(Host, Site, Method, Path, Status, T0, Upstream) ->
+    case pertisk_eproxy_access_log:is_health_path(Path) of
+        true ->
+            ok;
+        false ->
+            log_h3_access(Host, Site, Method, Path, Status, T0, Upstream)
+    end.
+
+%% k6 / probe hot path: skip router, backend pick, compression, metrics, access log.
+try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly) ->
+    case is_h3_benchmark_path(PathOnly) of
+        false ->
+            skip;
+        true ->
+            case normalize_h3_method(Method0) of
+                <<"GET">> ->
+                    _ = h3_reply_status(
+                        H3Conn,
+                        StreamId,
+                        200,
+                        [{<<"content-type">>, <<"application/json">>}],
+                        ?H3_BENCHMARK_BODY
+                    ),
+                    ok;
+                <<"HEAD">> ->
+                    _ = h3_reply_status(
+                        H3Conn,
+                        StreamId,
+                        200,
+                        [{<<"content-type">>, <<"application/json">>}],
+                        <<>>
+                    ),
+                    ok;
+                _ ->
+                    skip
+            end
+    end.
+
+is_h3_benchmark_path(<<"/api/ingress/live">>) ->
+    true;
+is_h3_benchmark_path(Path) ->
+    pertisk_eproxy_access_log:is_health_path(Path).
+
+maybe_h3_success_side_effects(
+    LogHost, SiteHost, PathOnly, StatusBin, Body, RespBin, BackendName, UpstreamAddr
+) ->
+    case pertisk_eproxy_access_log:is_health_path(PathOnly) of
+        true ->
+            ok;
+        false ->
+            inc_h3_metrics(LogHost, SiteHost, StatusBin),
+            ok = pertisk_eproxy_metrics:record_proxy_bytes(
+                LogHost, byte_size(Body), byte_size(RespBin)
+            ),
+            ok = pertisk_eproxy_metrics:record_site_bytes(
+                SiteHost, byte_size(Body), byte_size(RespBin)
+            ),
+            ok = pertisk_eproxy_backend:done_upstream(BackendName, UpstreamAddr, ok)
+    end.
 
 inc_h3_metrics(Host, Site, StatusBin) ->
     ok = pertisk_eproxy_metrics:inc_request(Host, StatusBin, <<"h3">>),

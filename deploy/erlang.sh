@@ -15,7 +15,7 @@ MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
 CPU_LIMIT="${CPU_LIMIT:-2000m}"
 MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
-REPLICA_COUNT="${REPLICA_COUNT:-3}"
+REPLICA_COUNT="${REPLICA_COUNT:-1}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT})"
 

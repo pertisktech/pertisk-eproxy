@@ -48,13 +48,10 @@ try_fast_api_h3(<<"GET">>, <<"/api/ingress/live">>) ->
 try_fast_api_h3(<<"HEAD">>, <<"/api/ingress/live">>) ->
     {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
 try_fast_api_h3(<<"GET">>, <<"/api/health">>) ->
-    case pertisk_eproxy_health_cache:get() of
-        {ok, Body} ->
-            {ok, 200, [{<<"content-type">>, <<"application/json">>}], Body};
-        {error, _} ->
-            {ok, 200, [{<<"content-type">>, <<"application/json">>}],
-             pertisk_eproxy_admin_handler:h3_light_health_json()}
-    end;
+    %% H3 benchmark/admin probe path: always minimal JSON (~20 bytes).
+    %% Full health (backends/TLS rows) is on :9080 /api/health via health_cache.
+    {ok, 200, [{<<"content-type">>, <<"application/json">>}],
+     pertisk_eproxy_admin_handler:h3_light_health_json()};
 try_fast_api_h3(<<"HEAD">>, <<"/api/health">>) ->
     {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
 try_fast_api_h3(_, _) ->

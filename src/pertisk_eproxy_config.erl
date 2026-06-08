@@ -1213,6 +1213,7 @@ apply_config(Config) ->
     ets:insert(?TAB, {router, Router}),
 
     _ = pertisk_eproxy_log_level:apply(),
+    _ = pertisk_eproxy_access_log:refresh_hot_path_flags(),
 
     lager:info("Config applied: ~w site(s), ~w backend(s), ~w dns provider(s)",
                [length(Sites), length(Backends), length(DnsProviders)]).
