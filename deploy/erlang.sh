@@ -17,6 +17,9 @@ MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
 PROXY_ACCESS_LOG="${PROXY_ACCESS_LOG:-false}"
 HEALTH_ACCESS_LOG="${HEALTH_ACCESS_LOG:-false}"
 HEALTH_ACCESS_LOG_SAMPLE="${HEALTH_ACCESS_LOG_SAMPLE:-0}"
+METRICS_ENABLED="${METRICS_ENABLED:-true}"
+SERVICEMONITOR_ENABLED="${SERVICEMONITOR_ENABLED:-true}"
+SERVICEMONITOR_RELEASE_LABEL="${SERVICEMONITOR_RELEASE_LABEL:-kube-prometheus-stack}"
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 
@@ -44,6 +47,9 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set controller.config.proxy_access_log="$PROXY_ACCESS_LOG" \
   --set controller.config.health_access_log="$HEALTH_ACCESS_LOG" \
   --set controller.config.health_access_log_sample="$HEALTH_ACCESS_LOG_SAMPLE" \
+  --set metrics.enabled="$METRICS_ENABLED" \
+  --set metrics.serviceMonitor.enabled="$SERVICEMONITOR_ENABLED" \
+  --set metrics.serviceMonitor.labels.release="$SERVICEMONITOR_RELEASE_LABEL" \
   --set controller.config.log_level=info \
   --set controller.config.h3_quic_pool_size=32 \
   --set resources.requests.cpu="$CPU_REQUEST" \
