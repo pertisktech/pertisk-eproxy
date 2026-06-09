@@ -49,22 +49,14 @@ scrape_configs:
           - localhost
         labels:
           job: pertisk-eproxy-proxy
-          service: pertisk-rproxy
-          host: localhost
-          __path__: /var/log/pertisk-rproxy/pertisk-rproxy.log
-      - targets:
-          - localhost
-        labels:
-          job: pertisk-eproxy-proxy
           service: pertisk-eproxy
-          mode: proxy
           host: localhost
           __path__: /var/log/pertisk-eproxy/proxy.log
 
-  - job_name: pertisk-ingress
+  - job_name: pertisk-eproxy-ingress
     pipeline_stages:
       - match:
-          selector: '{job="pertisk-ingress"} |~ "^\\{.*\\}$"'
+          selector: '{job="pertisk-eproxy-ingress"} |~ "^\\{.*\\}$"'
           stages:
             - json:
                 drop_malformed: true
@@ -91,15 +83,15 @@ scrape_configs:
       - targets:
           - localhost
         labels:
-          job: pertisk-ingress
+          job: pertisk-eproxy-ingress
           service: pertisk-eproxy
           mode: ingress
           host: localhost
-          __path__: /var/log/pertisk-ingress/pertisk-ingress.log
+          __path__: /var/log/containers/*_pertisk-eproxy_*.log
       - targets:
           - localhost
         labels:
-          job: pertisk-ingress
+          job: pertisk-eproxy-ingress
           service: pertisk-eproxy
           mode: ingress
           host: localhost
