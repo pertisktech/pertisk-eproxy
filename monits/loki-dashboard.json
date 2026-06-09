@@ -89,7 +89,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum(count_over_time({job=~\"$job\",filename=~\"$filename\"} |~ \"$search\" [$__interval]))",
+          "expr": "sum(count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} |~ \"$search\" [$__interval]))",
           "legendFormat": "Logs",
           "queryType": "range",
           "refId": "A"
@@ -129,7 +129,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "{job=~\"$job\",filename=~\"$filename\"} |~ \"$search\"",
+          "expr": "{namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} |~ \"$search\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -152,17 +152,17 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values({job=~\"pertisk-eproxy-(ingress|proxy)\"}, job)",
+        "definition": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\"}, job)",
         "hide": 0,
         "includeAll": true,
-        "allValue": "pertisk-eproxy-(ingress|proxy)",
+        "allValue": ".*",
         "label": "Mode",
         "multi": false,
         "name": "job",
         "options": [],
-        "query": "label_values({job=~\"pertisk-eproxy-(ingress|proxy)\"}, job)",
+        "query": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\"}, job)",
         "refresh": 1,
-        "regex": "pertisk-eproxy-(ingress|proxy)",
+        "regex": "",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
@@ -173,7 +173,7 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values({job=~\"$job\"}, filename)",
+        "definition": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\"}, filename)",
         "hide": 0,
         "includeAll": true,
         "allValue": ".*",
@@ -181,7 +181,7 @@
         "multi": false,
         "name": "filename",
         "options": [],
-        "query": "label_values({job=~\"$job\"}, filename)",
+        "query": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\"}, filename)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,

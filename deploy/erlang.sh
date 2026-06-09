@@ -14,6 +14,9 @@ CPU_REQUEST="${CPU_REQUEST:-1000m}"
 MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
 CPU_LIMIT="${CPU_LIMIT:-2000m}"
 MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
+PROXY_ACCESS_LOG="${PROXY_ACCESS_LOG:-false}"
+HEALTH_ACCESS_LOG="${HEALTH_ACCESS_LOG:-false}"
+HEALTH_ACCESS_LOG_SAMPLE="${HEALTH_ACCESS_LOG_SAMPLE:-0}"
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 
@@ -38,8 +41,10 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set replicaCount="$REPLICA_COUNT" \
   --set autoscaling.enabled=true \
   --set service.externalTrafficPolicy=Cluster \
-  --set controller.config.proxy_access_log=false \
-  --set controller.config.log_level=warn \
+  --set controller.config.proxy_access_log="$PROXY_ACCESS_LOG" \
+  --set controller.config.health_access_log="$HEALTH_ACCESS_LOG" \
+  --set controller.config.health_access_log_sample="$HEALTH_ACCESS_LOG_SAMPLE" \
+  --set controller.config.log_level=info \
   --set controller.config.h3_quic_pool_size=32 \
   --set resources.requests.cpu="$CPU_REQUEST" \
   --set resources.requests.memory="$MEMORY_REQUEST" \

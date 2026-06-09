@@ -97,7 +97,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(filename) (count_over_time({job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
+          "expr": "sum by(filename) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -160,7 +160,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "count(sum by (client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"}[$__interval])))",
+          "expr": "count(sum by (client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval])))",
           "queryType": "range",
           "refId": "A"
         }
@@ -224,7 +224,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum(sum_over_time({job=~\"$job\",filename=~\"$filename\"} | json | unwrap bytes_sent | __error__=\"\" [$__interval]))",
+          "expr": "sum(sum_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | unwrap bytes_sent | __error__=\"\" [$__interval]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -554,8 +554,8 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(response_code) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | response_code != \"\" [$__interval]))",
-          "legendFormat": "HTTP status: {{response_code}}",
+          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "legendFormat": "HTTP status: {{status}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -916,8 +916,8 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(response_code) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | response_code != \"\" [$__interval]))",
-          "legendFormat": "status: {{response_code}}",
+          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "legendFormat": "status: {{status}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -1278,7 +1278,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(method) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
+          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
           "legendFormat": "Method: {{method}}",
           "queryType": "range",
           "refId": "A"
@@ -1385,7 +1385,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(protocol) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | protocol != \"\" [$__interval]))",
+          "expr": "sum by(protocol) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | protocol != \"\" [$__interval]))",
           "legendFormat": "Protocol: {{protocol}}",
           "queryType": "range",
           "refId": "A"
@@ -1492,7 +1492,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(compression) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\"  [$__interval]))",
+          "expr": "sum by(compression) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\"  [$__interval]))",
           "legendFormat": "Compression: {{compression}}",
           "queryType": "range",
           "refId": "A"
@@ -1879,8 +1879,8 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(response_code) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | response_code != \"\" [$__interval]))",
-          "legendFormat": "status: {{response_code}}",
+          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "legendFormat": "status: {{status}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -2244,7 +2244,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(method) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
+          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
           "legendFormat": "Method: {{method}}",
           "queryType": "range",
           "refId": "A"
@@ -2609,7 +2609,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(http_user_agent) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | http_user_agent != \"\" [$__interval]))",
+          "expr": "sum by(http_user_agent) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | http_user_agent != \"\" [$__interval]))",
           "legendFormat": "Browser: {{http_user_agent}}",
           "queryType": "range",
           "refId": "A"
@@ -2714,7 +2714,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | client_ip != \"\" [$__interval]))",
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
           "refId": "A"
@@ -2853,8 +2853,8 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(authority) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | authority != \"\" [$__interval]))",
-          "legendFormat": "{{authority}}",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | host != \"\" [$__interval]))",
+          "legendFormat": "{{host}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -3006,7 +3006,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 401 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 401 | client_ip != \"\" [$__interval]))",
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
           "refId": "401"
@@ -3017,7 +3017,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 403 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 403 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3029,7 +3029,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 404 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 404 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3041,7 +3041,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 400 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 400 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3053,7 +3053,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 500 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 500 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3065,7 +3065,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 502 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 502 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3077,7 +3077,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 301 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 301 | client_ip != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3218,7 +3218,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 401 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 401 [$__interval]))",
           "legendFormat": "{{path}}",
           "queryType": "range",
           "refId": "401"
@@ -3229,7 +3229,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 403 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 403 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3241,7 +3241,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 404 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 404 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3253,7 +3253,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 400 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 400 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3265,7 +3265,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 500 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 500 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3277,7 +3277,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 502 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 502 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3289,7 +3289,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code = 301 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 301 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3409,7 +3409,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "{job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | line_format \"Request for {{.path}} with HTTP response_code {{.response_code}}\"",
+          "expr": "{namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | line_format \"Request for {{.path}} with HTTP status {{.status}}\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -3501,7 +3501,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum(count_over_time({job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
+          "expr": "sum(count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
           "legendFormat": "Logs",
           "queryType": "range",
           "refId": "A"
@@ -3599,7 +3599,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | path != \"\" [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | path != \"\" [$__interval]))",
           "legendFormat": "{{path}}",
           "queryType": "range",
           "refId": "A"
@@ -3701,7 +3701,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate({job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | response_code >= 500 [$__interval])) / sum(rate({job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
+          "expr": "100 * sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status >= 500 [$__interval])) / sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
           "legendFormat": "Error rate",
           "queryType": "range",
           "refId": "A"
@@ -3768,7 +3768,7 @@
             "uid": "P8E80F9AEF21F6940"
           },
           "editorMode": "code",
-          "expr": "sum(rate({job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
+          "expr": "sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
           "legendFormat": "Queries/sec",
           "queryType": "range",
           "refId": "A"
@@ -3793,17 +3793,17 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values({job=~\"pertisk-eproxy-(ingress|proxy)\"}, job)",
+        "definition": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\"}, job)",
         "hide": 0,
         "includeAll": true,
-        "allValue": "pertisk-eproxy-(ingress|proxy)",
+        "allValue": ".*",
         "label": "Mode",
         "multi": false,
         "name": "job",
         "options": [],
-        "query": "label_values({job=~\"pertisk-eproxy-(ingress|proxy)\"}, job)",
+        "query": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\"}, job)",
         "refresh": 1,
-        "regex": "pertisk-eproxy-(ingress|proxy)",
+        "regex": "",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
@@ -3814,7 +3814,7 @@
           "text": "All",
           "value": "$__all"
         },
-        "definition": "label_values({job=~\"$job\"}, filename)",
+        "definition": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\"}, filename)",
         "hide": 0,
         "includeAll": true,
         "allValue": ".*",
@@ -3822,7 +3822,7 @@
         "multi": false,
         "name": "filename",
         "options": [],
-        "query": "label_values({job=~\"$job\"}, filename)",
+        "query": "label_values({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\"}, filename)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
