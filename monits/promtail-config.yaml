@@ -1,0 +1,106 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          service: system
+          host: localhost
+          __path__: /var/log/*log
+
+  - job_name: pertisk-eproxy-proxy
+    pipeline_stages:
+      - match:
+          selector: '{job="pertisk-eproxy-proxy"} |~ "^\\{.*\\}$"'
+          stages:
+            - json:
+                drop_malformed: true
+                expressions:
+                  timestamp: timestamp
+                  level: level
+                  message: message
+                  target: target
+                  response_code: response_code
+                  method: method
+                  authority: authority
+                  path: path
+                  client_ip: client_ip
+                  bytes_sent: bytes_sent
+            - labels:
+                level:
+                target:
+                service:
+            - timestamp:
+                source: timestamp
+                format: RFC3339Nano
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pertisk-eproxy-proxy
+          service: pertisk-rproxy
+          host: localhost
+          __path__: /var/log/pertisk-rproxy/pertisk-rproxy.log
+      - targets:
+          - localhost
+        labels:
+          job: pertisk-eproxy-proxy
+          service: pertisk-eproxy
+          mode: proxy
+          host: localhost
+          __path__: /var/log/pertisk-eproxy/proxy.log
+
+  - job_name: pertisk-ingress
+    pipeline_stages:
+      - match:
+          selector: '{job="pertisk-ingress"} |~ "^\\{.*\\}$"'
+          stages:
+            - json:
+                drop_malformed: true
+                expressions:
+                  timestamp: timestamp
+                  level: level
+                  message: message
+                  target: target
+                  response_code: response_code
+                  method: method
+                  authority: authority
+                  path: path
+                  client_ip: client_ip
+                  bytes_sent: bytes_sent
+            - labels:
+                level:
+                target:
+                service:
+                mode:
+            - timestamp:
+                source: timestamp
+                format: RFC3339Nano
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pertisk-ingress
+          service: pertisk-eproxy
+          mode: ingress
+          host: localhost
+          __path__: /var/log/pertisk-ingress/pertisk-ingress.log
+      - targets:
+          - localhost
+        labels:
+          job: pertisk-ingress
+          service: pertisk-eproxy
+          mode: ingress
+          host: localhost
+          __path__: /var/log/pertisk-eproxy/proxy.log

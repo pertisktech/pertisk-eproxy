@@ -15,7 +15,7 @@ MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
 CPU_LIMIT="${CPU_LIMIT:-2000m}"
 MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
-REPLICA_COUNT="${REPLICA_COUNT:-1}"
+REPLICA_COUNT="${REPLICA_COUNT:-3}"
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT})"
 
@@ -36,7 +36,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set adminIngress.host="$ADMIN_HOST" \
   --set adminIngress.tlsSecretName=admin-erlang-tls \
   --set replicaCount="$REPLICA_COUNT" \
-  --set autoscaling.enabled=false \
+  --set autoscaling.enabled=true \
   --set service.externalTrafficPolicy=Cluster \
   --set controller.config.proxy_access_log=false \
   --set controller.config.log_level=warn \
