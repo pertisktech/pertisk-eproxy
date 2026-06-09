@@ -6,6 +6,10 @@
 -define(HTTP_TYPE, http).
 
 %% @doc Proxy / admin HTTP access line with structured fields for log aggregators.
+%% Successful (2xx/3xx) responses use debug level: at default log_level=info lager
+%% drops them immediately with zero gen_event dispatch / JSON formatting / I/O.
+%% The in-memory ring buffer (pertisk_eproxy_access_log) always captures entries
+%% for the admin UI regardless of lager level.  4xx/5xx still emit at warn/error.
 -spec http(
     Level :: binary(),
     Protocol :: binary(),
@@ -25,11 +29,7 @@ http(Level, Proto, Host, Method, Path, Status, DurationMs) ->
         {status, Status},
         {duration_ms, DurationMs}
     ],
-    Msg =
-        iolist_to_binary(
-            io_lib:format("~s ~s ~s -> ~w (~wms)", [Method, Path, Host, Status, DurationMs])
-        ),
-    emit(Level, Meta, Msg).
+    emit_http(Level, Meta, Method, Path, Host, Status, DurationMs).
 
 -spec info(term(), [term()]) -> ok.
 info(Fmt, Args) ->
@@ -47,11 +47,16 @@ error(Fmt, Args) ->
     _ = catch pertisk_eproxy_access_log:log_system(<<"error">>, <<"error">>, Msg),
     lager:error(Fmt, Args).
 
-emit(<<"error">>, Meta, Msg) ->
-    lager:error(Meta, "~s", [Msg]);
-emit(<<"warn">>, Meta, Msg) ->
-    lager:warning(Meta, "~s", [Msg]);
-emit(<<"warning">>, Meta, Msg) ->
-    lager:warning(Meta, "~s", [Msg]);
-emit(_, Meta, Msg) ->
-    lager:info(Meta, "~s", [Msg]).
+%% Use lager format strings (lazy) so the iolist is only built when the
+%% message is actually written to at least one backend.
+emit_http(<<"error">>, Meta, Method, Path, Host, Status, DurationMs) ->
+    lager:error(Meta, "~s ~s ~s -> ~w (~wms)", [Method, Path, Host, Status, DurationMs]);
+emit_http(<<"warn">>, Meta, Method, Path, Host, Status, DurationMs) ->
+    lager:warning(Meta, "~s ~s ~s -> ~w (~wms)", [Method, Path, Host, Status, DurationMs]);
+emit_http(<<"warning">>, Meta, Method, Path, Host, Status, DurationMs) ->
+    lager:warning(Meta, "~s ~s ~s -> ~w (~wms)", [Method, Path, Host, Status, DurationMs]);
+emit_http(_Level, Meta, Method, Path, Host, Status, DurationMs) ->
+    %% Successful (2xx/3xx) HTTP access at debug level.
+    %% At default log_level=info lager drops these immediately: no gen_event
+    %% dispatch, no JSON formatter, no stderr/file I/O.
+    lager:debug(Meta, "~s ~s ~s -> ~w (~wms)", [Method, Path, Host, Status, DurationMs]).
