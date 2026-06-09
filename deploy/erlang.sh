@@ -50,7 +50,6 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set metrics.enabled="$METRICS_ENABLED" \
   --set metrics.serviceMonitor.enabled="$SERVICEMONITOR_ENABLED" \
   --set metrics.serviceMonitor.labels.release="$SERVICEMONITOR_RELEASE_LABEL" \
-  --set controller.config.log_level=info \
   --set controller.config.h3_quic_pool_size=32 \
   --set resources.requests.cpu="$CPU_REQUEST" \
   --set resources.requests.memory="$MEMORY_REQUEST" \

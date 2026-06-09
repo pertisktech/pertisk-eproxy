@@ -43,8 +43,8 @@
     },
     {
       "datasource": {
-        "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "type": "prometheus",
+        "uid": "$prometheus_ds"
       },
       "description": "",
       "fieldConfig": {
@@ -93,12 +93,12 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "type": "prometheus",
+            "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(filename) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
-          "queryType": "range",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
+          "legendFormat": "Requests",
           "refId": "A"
         }
       ],
@@ -234,8 +234,8 @@
     },
     {
       "datasource": {
-        "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "type": "prometheus",
+        "uid": "$prometheus_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -550,13 +550,12 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "type": "prometheus",
+            "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "expr": "sum by(status) (increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
           "legendFormat": "HTTP status: {{status}}",
-          "queryType": "range",
           "refId": "A"
         }
       ],
@@ -3844,6 +3843,26 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "api.erlang.pertisk.com",
+          "value": "api.erlang.pertisk.com"
+        },
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Site",
+        "multi": false,
+        "name": "site",
+        "options": [],
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\"}, site)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
         "type": "query"
       }
     ]
