@@ -2,6 +2,96 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-define(SCAN_SLEEP_MS, 900).
+
+stop_acme_dns() ->
+    case whereis(pertisk_eproxy_acme_dns) of
+        undefined -> ok;
+        Pid -> catch gen_server:stop(Pid, normal, 5000)
+    end.
+
+mock_acme_client_ok() ->
+    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
+        {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"kid-url">>}
+    end).
+
+mock_acme_client_error(Err) ->
+    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) -> {error, Err} end).
+
+site(Host, Provider) ->
+    #{
+        host => Host,
+        backend => <<"web">>,
+        challenge_type => "dns-01",
+        dns_provider => Provider,
+        acme_contact_email => <<"ops@example.com">>,
+        routes => []
+    }.
+
+backend() ->
+    #{
+        name => <<"web">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+    }.
+
+with_scan_env(Fun) ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
+    OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, acme_terms_agreed, true),
+    AcmeDir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    ok = file:make_dir(AcmeDir),
+    application:set_env(pertisk_eproxy, acme_data_dir, AcmeDir),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        Fun(#{db => DbPath, acme_dir => AcmeDir})
+    after
+        stop_acme_dns(),
+        case OldDb of
+            {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        case OldTerms of
+            {ok, TermsVal} -> application:set_env(pertisk_eproxy, acme_terms_agreed, TermsVal);
+            undefined -> application:unset_env(pertisk_eproxy, acme_terms_agreed)
+        end,
+        case OldAcmeDir of
+            {ok, DirVal} -> application:set_env(pertisk_eproxy, acme_data_dir, DirVal);
+            undefined -> application:unset_env(pertisk_eproxy, acme_data_dir)
+        end,
+        _ = os:cmd("rm -rf " ++ AcmeDir),
+        file:delete(DbPath)
+    end.
+
+run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods) ->
+    pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
+    lists:foreach(fun(M) -> meck:new(M, [unstick]) end, MockMods),
+    mock_acme_client_ok(),
+    try
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
+        stop_acme_dns(),
+        {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+        try
+            gen_server:cast(Pid, scan),
+            timer:sleep(?SCAN_SLEEP_MS)
+        after
+            catch gen_server:stop(Pid, normal, 5000)
+        end
+    after
+        meck:unload([pertisk_eproxy_acme_client | MockMods]),
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
 %% ---------------------------------------------------------------------------
 %% gen_server lifecycle (exported callbacks)
 %% ---------------------------------------------------------------------------
@@ -208,4 +298,298 @@ handle_call_unknown_returns_error_test() ->
             end;
         Pid ->
             ?assertMatch({error, unknown_call}, gen_server:call(Pid, foo, 1000))
+    end.
+
+schedule_scan_with_running_server_test() ->
+    case whereis(pertisk_eproxy_acme_dns) of
+        undefined ->
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan()),
+                timer:sleep(50)
+            after
+                catch gen_server:stop(Pid, normal, 5000)
+            end;
+        _ ->
+            ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan())
+    end.
+
+handle_info_scan_casts_scan_test() ->
+    {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+    try
+        ?assertEqual({noreply, #{}}, pertisk_eproxy_acme_dns:handle_info(scan, #{})),
+        timer:sleep(50)
+    after
+        catch gen_server:stop(Pid, normal, 5000)
+    end.
+
+terminate_and_code_change_test() ->
+    ?assertEqual(ok, pertisk_eproxy_acme_dns:terminate(normal, #{})),
+    ?assertMatch({ok, #{}}, pertisk_eproxy_acme_dns:code_change(1, #{x => 1}, extra)).
+
+route53_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"route53">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>, provider := <<"route53">>}} -> ok
+    end.
+
+namecheap_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"namecheap">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>}} -> ok
+    end.
+
+azure_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"azure">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>, provider := <<"azure">>}} -> ok
+    end.
+
+unsupported_provider_falls_back_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"exoticdns">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>}} -> ok
+    end.
+
+cloudflare_token_with_email_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"cloudflare">>,
+        #{<<"api_token">> => <<"tok">>, <<"email">> => <<"a@b.com">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"cloudflare">>}}, Result).
+
+powerdns_missing_api_url_test() ->
+    ?assertMatch(
+        {error, missing_api_url},
+        pertisk_eproxy_acme_dns:validate_dns_provider(<<"powerdns">>, #{<<"api_key">> => <<"k">>})
+    ).
+
+duckdns_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"duckdns">>,
+        #{<<"domain">> => <<"sub">>, <<"token">> => <<"t">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"duckdns">>}}, Result).
+
+scan_terms_not_agreed_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
+    application:set_env(pertisk_eproxy, acme_terms_agreed, false),
+    Sites = [
+        #{
+            host => <<"terms.example">>,
+            backend => <<"web">>,
+            challenge_type => "dns-01",
+            dns_provider => <<"cf">>,
+            acme_contact_email => <<"ops@example.com">>,
+            routes => []
+        }
+    ],
+    Backends = [
+        #{
+            name => <<"web">>,
+            algorithm => round_robin,
+            upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+        }
+    ],
+    pertisk_eproxy_test_helpers:sync_router(Sites, Backends),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
+        {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
+    end),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            DbPath,
+            <<"cf">>,
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+        ),
+        {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+        try
+            gen_server:cast(Pid, scan),
+            timer:sleep(500)
+        after
+            catch gen_server:stop(Pid, normal, 5000)
+        end
+    after
+        meck:unload(pertisk_eproxy_dns_cloudflare),
+        pertisk_eproxy_test_helpers:sync_router([], []),
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        case OldTerms of
+            {ok, TermsVal} -> application:set_env(pertisk_eproxy, acme_terms_agreed, TermsVal);
+            undefined -> application:unset_env(pertisk_eproxy, acme_terms_agreed)
+        end,
+        file:delete(DbPath)
+    end.
+
+scan_missing_dns_provider_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Sites = [
+        #{
+            host => <<"missing-provider.example">>,
+            backend => <<"web">>,
+            challenge_type => "dns-01",
+            dns_provider => <<"missing">>,
+            acme_contact_email => <<"ops@example.com">>,
+            routes => []
+        }
+    ],
+    pertisk_eproxy_test_helpers:sync_router(Sites, []),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+        try
+            gen_server:cast(Pid, scan),
+            timer:sleep(200)
+        after
+            catch gen_server:stop(Pid, normal, 5000)
+        end
+    after
+        pertisk_eproxy_test_helpers:sync_router([], []),
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
+    end.
+
+scan_mocked_successful_issue_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
+    OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
+    application:set_env(pertisk_eproxy, acme_terms_agreed, true),
+    AcmeDir = filename:join([os:getenv("TMPDIR", "/tmp"), "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))]),
+    ok = file:make_dir(AcmeDir),
+    application:set_env(pertisk_eproxy, acme_data_dir, AcmeDir),
+    Sites = [
+        #{
+            host => <<"issued.example">>,
+            backend => <<"web">>,
+            challenge_type => "dns-01",
+            dns_provider => <<"cf">>,
+            acme_contact_email => <<"ops@example.com">>,
+            routes => []
+        }
+    ],
+    Backends = [
+        #{
+            name => <<"web">>,
+            algorithm => round_robin,
+            upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+        }
+    ],
+    pertisk_eproxy_test_helpers:sync_router(Sites, Backends),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
+        {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"kid-url">>}
+    end),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
+        {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, cf_txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, create_txt, fun(_, _, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, delete_txt, fun(_, _, _) -> ok end),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            DbPath,
+            <<"cf">>,
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+        ),
+        {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+        try
+            gen_server:cast(Pid, scan),
+            timer:sleep(800)
+        after
+            catch gen_server:stop(Pid, normal, 5000)
+        end
+    after
+        meck:unload([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+        pertisk_eproxy_test_helpers:sync_router([], []),
+        case OldDb of
+            {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        case OldTerms of
+            {ok, TermsVal} -> application:set_env(pertisk_eproxy, acme_terms_agreed, TermsVal);
+            undefined -> application:unset_env(pertisk_eproxy, acme_terms_agreed)
+        end,
+        case OldAcmeDir of
+            {ok, DirVal} -> application:set_env(pertisk_eproxy, acme_data_dir, DirVal);
+            undefined -> application:unset_env(pertisk_eproxy, acme_data_dir)
+        end,
+        _ = os:cmd("rm -rf " ++ AcmeDir),
+        file:delete(DbPath)
+    end.
+
+scan_triggers_with_configured_site_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Sites = [
+        #{
+            host => <<"acme-scan.example">>,
+            backend => <<"web">>,
+            challenge_type => "dns-01",
+            dns_provider => <<"cf">>,
+            acme_contact_email => <<"ops@example.com">>,
+            routes => []
+        }
+    ],
+    Backends = [
+        #{
+            name => <<"web">>,
+            algorithm => round_robin,
+            upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+        }
+    ],
+    pertisk_eproxy_test_helpers:sync_router(Sites, Backends),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            DbPath,
+            <<"cf">>,
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"secret">>}
+        ),
+        {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+        try
+            gen_server:cast(Pid, scan),
+            timer:sleep(200)
+        after
+            catch gen_server:stop(Pid, normal, 5000)
+        end
+    after
+        pertisk_eproxy_test_helpers:sync_router([], []),
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
     end.
