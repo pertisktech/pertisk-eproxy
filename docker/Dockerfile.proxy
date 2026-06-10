@@ -3,7 +3,7 @@
 # Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
 
 # buildx sets the platform per matrix leg; do not use empty BUILDPLATFORM on FROM
-FROM erlang:27-alpine AS builder
+FROM erlang:29-alpine AS builder
 
 ARG VERSION=0.1.0
 
@@ -33,8 +33,8 @@ RUN chmod +x \
     && /src/scripts/verify-release-build.sh /src \
     && /src/scripts/verify-release-quic.sh /src
 
-# Runtime must provide OpenSSL >= 3.4 symbols (e.g. EVP_MD_CTX_get_size_ex) for OTP 27 crypto NIF.
-# Alpine 3.20 apk openssl is too old; copy libs from erlang:27-alpine builder.
+# Runtime must provide OpenSSL >= 3.4 symbols (e.g. EVP_MD_CTX_get_size_ex) for OTP 29 crypto NIF.
+# Alpine 3.20 apk openssl is too old; copy libs from erlang:29-alpine builder.
 FROM alpine:3.20
 
 ARG APP_HOME=/opt/pertisk_eproxy
