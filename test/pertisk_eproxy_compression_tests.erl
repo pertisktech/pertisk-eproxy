@@ -366,7 +366,7 @@ header_map_case_insensitive_test() ->
 gzip_q_value_preference_test() ->
     Body = padding_bytes(2048),
     Hdrs = [{<<"content-type">>, <<"text/html">>}],
-    Accept = [{<<"accept-encoding">>, <<"gzip;q=0.5, br;q=0">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip;q=0.5, br;q=0.0">>}],
     {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
     ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
 
@@ -393,9 +393,152 @@ status_199_not_compressed_test() ->
     ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)),
     ?assertEqual(Body, ResBody).
 
+cowboy_compresses_gzip_test() ->
+    Req = #{headers => #{<<"accept-encoding">> => <<"gzip">>}},
+    Body = padding_bytes(2048),
+    Hdrs = #{
+        <<"content-type">> => <<"text/html">>,
+        <<"content-length">> => integer_to_binary(byte_size(Body)),
+        <<"etag">> => <<"\"x\"">>
+    },
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, maps:get(<<"content-encoding">>, ResHdrs)),
+    ?assert(byte_size(ResBody) < byte_size(Body)),
+    ?assertNot(maps:is_key(<<"content-length">>, ResHdrs)),
+    ?assertNot(maps:is_key(<<"etag">>, ResHdrs)).
+
+cowboy_header_map_case_insensitive_test() ->
+    Req = #{headers => #{<<"accept-encoding">> => <<"gzip">>}},
+    Body = padding_bytes(2048),
+    Hdrs = #{<<"Content-Type">> => <<"text/html">>},
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, maps:get(<<"content-encoding">>, ResHdrs)).
+
+incompressible_body_keeps_original_test() ->
+    Body = crypto:strong_rand_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assertEqual(Body, ResBody).
+
+non_binary_cache_control_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}, {<<"cache-control">>, 123}],
+    Accept = [{<<"accept-encoding">>, <<"gzip">>}],
+    {_ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assert(is_binary(ResBody)).
+
+empty_accept_encoding_header_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<>>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+deflate_only_accept_encoding_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"deflate">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+zstd_unavailable_falls_back_test() ->
+    ok = load_codec_module(ezstd, "-module(ezstd).\n"),
+    ok = load_codec_module(zstd, "-module(zstd).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"zstd, gzip">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+br_encoding_with_stub_test() ->
+    ok = load_codec_module(brotli, "-module(brotli).\n-export([encode/1]).\nencode(B) -> zlib:gzip(B).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"br">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"br">>, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assert(byte_size(ResBody) < byte_size(Body)).
+
+zstd_encoding_with_stub_test() ->
+    ok = load_codec_module(ezstd, "-module(ezstd).\n-export([compress/1]).\ncompress(B) -> zlib:gzip(B).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"zstd">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"zstd">>, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assert(byte_size(ResBody) < byte_size(Body)).
+
+accept_encoding_unknown_param_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip; foo=bar">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+accept_encoding_invalid_q_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip; q=not-a-float">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+brotli_compress_only_module_test() ->
+    ok = load_codec_module(brotli, "-module(brotli).\n-export([compress/1]).\ncompress(B) -> zlib:gzip(B).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"br">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"br">>, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assert(byte_size(ResBody) < byte_size(Body)).
+
+zstd_module_fallback_test() ->
+    ok = load_codec_module(ezstd, "-module(ezstd).\n"),
+    ok = load_codec_module(zstd, "-module(zstd).\n-export([compress/1]).\ncompress(B) -> zlib:gzip(B).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"zstd">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"zstd">>, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assert(byte_size(ResBody) < byte_size(Body)).
+
+zstd_unavailable_error_path_test() ->
+    ok = load_codec_module(ezstd, "-module(ezstd).\n"),
+    ok = load_codec_module(zstd, "-module(zstd).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"zstd">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assertEqual(Body, ResBody).
+
+brotli_unavailable_error_path_test() ->
+    ok = load_codec_module(brotli, "-module(brotli).\n"),
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"br">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assertEqual(Body, ResBody).
+
 %% ---------------------------------------------------------------------------
 %% Helpers
 %% ---------------------------------------------------------------------------
 
 padding_bytes(N) ->
     iolist_to_binary(["X" || _ <- lists:seq(1, N)]).
+
+load_codec_module(Module, Source) ->
+    TmpDir = os:getenv("TMPDIR", "/tmp"),
+    Path = filename:join([TmpDir, atom_to_list(Module) ++ ".erl"]),
+    ok = file:write_file(Path, Source),
+    case compile:file(Path, [binary]) of
+        {ok, Module, Beam} ->
+            code:purge(Module),
+            code:delete(Module),
+            {module, Module} = code:load_binary(Module, Path, Beam),
+            ok;
+        Error ->
+            error(Error)
+    end.

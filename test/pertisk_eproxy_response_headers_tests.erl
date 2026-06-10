@@ -66,3 +66,14 @@ merge_h3_atom_key_stripped_test() ->
     Input = [{server, <<"old">>}],
     Result = pertisk_eproxy_response_headers:merge_h3(Input),
     ?assertEqual(3, length(Result)).
+
+apply_cowboy_req_sets_identity_headers_test() ->
+    Req0 = #{},
+    Req1 = pertisk_eproxy_response_headers:apply_cowboy_req(Req0),
+    Hdrs = maps:get(resp_headers, Req1),
+    ?assertEqual(<<"pertisk-eproxy">>, maps:get(<<"x-app-name">>, Hdrs)).
+
+merge_h3_list_header_key_stripped_test() ->
+    Input = [{"Server", "old"}],
+    Result = pertisk_eproxy_response_headers:merge_h3(Input),
+    ?assertEqual(3, length(Result)).

@@ -334,3 +334,76 @@ route_no_router_returns_error_test() ->
     ensure_config_started(),
     ok = pertisk_eproxy_config:sync_ingress([], []),
     ?assertEqual({error, no_route}, pertisk_eproxy_router:route(<<"missing.com">>, <<"/">>)).
+
+build_sorts_exact_before_wildcard_test() ->
+    Sites = [
+        #{host => <<"*.example.com">>, backend => <<"wild">>, routes => []},
+        #{host => <<"api.example.com">>, backend => <<"api">>, routes => []},
+        #{host => <<"z.example.com">>, backend => <<"z">>, routes => []}
+    ],
+    Router = pertisk_eproxy_router:build(Sites),
+    Hosts = [H || {H, _} <- Router],
+    WildIdx = [I || {I, H} <- lists:zip(lists:seq(1, length(Hosts)), Hosts), binary:match(H, <<"*.">>) =/= nomatch],
+    ExactIdx = [I || {I, H} <- lists:zip(lists:seq(1, length(Hosts)), Hosts), binary:match(H, <<"*.">>) =:= nomatch],
+    ?assert(lists:max(ExactIdx) < lists:min(WildIdx)).
+
+build_host_entry_less_exact_before_wildcard_test() ->
+    Sites = [
+        #{host => <<"a.example.com">>, backend => <<"a">>, routes => []},
+        #{host => <<"*.example.com">>, backend => <<"w">>, routes => []}
+    ],
+    Router = pertisk_eproxy_router:build(Sites),
+    [FirstHost, SecondHost] = [H || {H, _} <- Router],
+    ?assertEqual(<<"a.example.com">>, FirstHost),
+    ?assertEqual(<<"*.example.com">>, SecondHost).
+
+route_equal_prefix_length_keeps_first_test() ->
+    load_router_sites([
+        #{
+            host => <<"example.com">>,
+            backend => <<"first">>,
+            routes => [#{path => <<"/api">>, path_type => prefix}]
+        },
+        #{
+            host => <<"example.com">>,
+            backend => <<"second">>,
+            routes => [#{path => <<"/api">>, path_type => prefix}]
+        }
+    ]),
+    {ok, Match} = pertisk_eproxy_router:route(<<"example.com">>, <<"/api/x">>),
+    ?assertEqual(<<"first">>, maps:get(backend, Match)).
+
+route_rewrite_with_trailing_slash_and_suffix_test() ->
+    load_router_sites([#{
+        host => <<"example.com">>,
+        backend => <<"web">>,
+        routes => [#{path => <<"/old">>, path_type => prefix, rewrite => <<"/new/">>}]
+    }]),
+    {ok, Match} = pertisk_eproxy_router:route(<<"example.com">>, <<"/old/extra">>),
+    ?assertEqual(<<"/new//extra">>, maps:get(upstream_path, Match)).
+
+route_rewrite_empty_target_test() ->
+    load_router_sites([#{
+        host => <<"example.com">>,
+        backend => <<"web">>,
+        routes => [#{path => <<"/old">>, path_type => prefix, rewrite => <<>>}]
+    }]),
+    {ok, Match} = pertisk_eproxy_router:route(<<"example.com">>, <<"/old/extra">>),
+    ?assertEqual(<<"//extra">>, maps:get(upstream_path, Match)).
+
+route_rewrite_list_target_test() ->
+    load_router_sites([#{
+        host => <<"example.com">>,
+        backend => <<"web">>,
+        routes => [#{path => <<"/old">>, path_type => prefix, rewrite => "/new"}]
+    }]),
+    {ok, Match} = pertisk_eproxy_router:route(<<"example.com">>, <<"/old/extra">>),
+    ?assertEqual(<<"/new//extra">>, maps:get(upstream_path, Match)).
+
+route_wildcard_rejects_host_without_dot_test() ->
+    load_router_sites([#{
+        host => <<"*.example.com">>,
+        backend => <<"wild">>,
+        routes => [#{path => <<"/">>, path_type => prefix}]
+    }]),
+    ?assertEqual({error, no_route}, pertisk_eproxy_router:route(<<"localhost">>, <<"/">>)).

@@ -14,3 +14,15 @@ openssl_executable_finds_or_errors_test() ->
         {error, openssl_not_found} ->
             ok
     end.
+
+openssl_not_found_when_missing_from_path_test() ->
+    OldPath = os:getenv("PATH"),
+    os:putenv("PATH", "/nonexistent"),
+    try
+        ?assertEqual({error, openssl_not_found}, pertisk_eproxy_shell:openssl_executable())
+    after
+        case OldPath of
+            false -> os:unsetenv("PATH");
+            Path -> os:putenv("PATH", Path)
+        end
+    end.
