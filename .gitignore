@@ -36,3 +36,7 @@ rebar3.crashdump
 compile.log
 migrations/
 
+# meck + cover can drop these in the repo root during eunit --cover
+*.coverdata
+*_meck_original.*.coverdata
+

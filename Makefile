@@ -61,11 +61,15 @@ test:
 	$(REBAR) eunit --cover
 
 cover:
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) eunit --cover
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) cover -v -p 2 -m $(COVER_MIN)
 
 cover-local:
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) eunit --cover
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) cover -v -p 2
  
 dialyzer:
@@ -74,6 +78,7 @@ dialyzer:
 clean:
 	$(REBAR) clean
 	rm -rf _build
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 
 release:
 	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"

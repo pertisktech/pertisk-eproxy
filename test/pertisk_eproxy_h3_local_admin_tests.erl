@@ -76,9 +76,11 @@ static_asset_test() ->
 
 dot_segment_asset_falls_back_to_spa_test() ->
     ensure_env(),
-    {ok, 200, Hdrs, _} =
-        dispatch([<<"GET">>, <<"example.com">>, <<"/assets/.">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
-    ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs)).
+    with_spa_index(fun() ->
+        {ok, 200, Hdrs, _} =
+            dispatch([<<"GET">>, <<"example.com">>, <<"/assets/.">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs))
+    end).
 
 api_version_get_test() ->
     ensure_env(),
@@ -140,3 +142,24 @@ static_css_head_test() ->
             ok
     end.
 
+spa_index_path() ->
+    filename:join([code:priv_dir(pertisk_eproxy), "admin", "index.html"]).
+
+with_spa_index(Fun) ->
+    Path = spa_index_path(),
+    Previous =
+        case file:read_file(Path) of
+            {ok, Bin} -> {ok, Bin};
+            {error, enoent} -> undefined;
+            {error, _} -> undefined
+        end,
+    ok = filelib:ensure_dir(Path),
+    ok = file:write_file(Path, <<"<html><body>spa</body></html>">>),
+    try
+        Fun()
+    after
+        case Previous of
+            undefined -> _ = file:delete(Path);
+            {ok, Saved} -> ok = file:write_file(Path, Saved)
+        end
+    end.

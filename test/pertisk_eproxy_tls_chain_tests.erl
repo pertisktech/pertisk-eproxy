@@ -23,3 +23,23 @@ tmp_pem(Bin) ->
         "tls_chain_" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".pem"]),
     ok = file:write_file(Path, Bin),
     Path.
+
+verify_listener_parity_leaf_mismatch_test() ->
+    application:ensure_all_started(lager),
+    CertPath = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    {ok, Pem} = file:read_file(CertPath),
+    [Leaf | Chain] = [D || {'Certificate', D, not_encrypted} <- public_key:pem_decode(Pem)],
+    ?assertEqual(ok, pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, <<0>>, Chain)).
+
+verify_listener_parity_chain_mismatch_test() ->
+    application:ensure_all_started(lager),
+    CertPath = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    {ok, Pem} = file:read_file(CertPath),
+    [Leaf | _Chain] = [D || {'Certificate', D, not_encrypted} <- public_key:pem_decode(Pem)],
+    ?assertEqual(ok, pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, Leaf, [<<1>>])).
+
+verify_listener_parity_missing_file_test() ->
+    application:ensure_all_started(lager),
+    ?assertEqual(ok, pertisk_eproxy_tls_chain:verify_listener_parity(
+        "/nonexistent/listener.pem", <<>>, []
+    )).
