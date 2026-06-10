@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic patch-hackney shell test clean release \
+.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -56,7 +56,11 @@ shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
 test:
-	$(REBAR) eunit
+	$(REBAR) eunit --cover
+
+cover:
+	$(REBAR) eunit --cover
+	$(REBAR) cover -v -p 2
 
 dialyzer:
 	$(REBAR) dialyzer
