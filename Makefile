@@ -57,15 +57,15 @@ shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
 test:
-	$(REBAR) eunit --cover || true
+	$(REBAR) eunit --cover
 
 cover:
 	$(REBAR) eunit --cover
-	$(REBAR) cover -v -p 2 -m $(COVER_MIN) || true
+	$(REBAR) cover -v -p 2 -m $(COVER_MIN)
 
 cover-local:
-	$(REBAR) eunit --cover || true
-	$(REBAR) cover -v -p 2 || true
+	$(REBAR) eunit --cover
+	$(REBAR) cover -v -p 2
  
 dialyzer:
 	$(REBAR) dialyzer
