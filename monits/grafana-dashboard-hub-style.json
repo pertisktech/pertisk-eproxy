@@ -78,7 +78,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[$__range]))",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[$__range]))",
           "legendFormat": "Total",
           "refId": "A"
         }
@@ -146,7 +146,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
           "legendFormat": "RPS",
           "refId": "A"
         }
@@ -214,7 +214,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status!~\"(2..|401)\"}[$__range])) / clamp_min(sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status=~\".+\"}[$__range])), 1)",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status!~\"(2..|401)\"}[$__range])) / clamp_min(sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status=~\".+\"}[$__range])), 1)",
           "legendFormat": "Error ratio",
           "refId": "A"
         }
@@ -278,7 +278,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(pertisk_eproxy_upstream_healthy{namespace=\"pertisk-eproxy\"})",
+          "expr": "sum(max by (backend, upstream) (pertisk_eproxy_upstream_healthy{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}))",
           "legendFormat": "healthy",
           "refId": "A"
         }
@@ -329,7 +329,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (site) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (site) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{site}}",
           "refId": "A"
         }
@@ -380,7 +380,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{proto}}",
           "refId": "A"
         }
@@ -431,7 +431,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -482,7 +482,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_bytes_sent_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_bytes_sent_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[1m]))",
           "legendFormat": "egress",
           "refId": "A"
         },
@@ -492,7 +492,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_bytes_received_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_bytes_received_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[1m]))",
           "legendFormat": "ingress",
           "refId": "B"
         }
@@ -543,8 +543,8 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (upstream_name) (pertisk_eproxy_upstream_connections{namespace=\"pertisk-eproxy\"})",
-          "legendFormat": "{{upstream_name}}",
+          "expr": "sum by (backend) (max by (backend, upstream, pod) (pertisk_eproxy_upstream_connections{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}))",
+          "legendFormat": "{{backend}}",
           "refId": "A"
         }
       ],
@@ -593,7 +593,7 @@
         "multi": false,
         "name": "site",
         "options": [],
-        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\"}, site)",
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}, site)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -613,7 +613,7 @@
         "multi": false,
         "name": "proto",
         "options": [],
-        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}, proto)",
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}, proto)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -630,6 +630,6 @@
   "timezone": "",
   "title": "Pertisk Eproxy Hub-Style Dashboard",
   "uid": "pertisk-eproxy-hub-style",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

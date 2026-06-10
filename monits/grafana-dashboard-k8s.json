@@ -97,7 +97,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
           "legendFormat": "Requests",
           "refId": "A"
         }
@@ -108,7 +108,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "description": "",
       "fieldConfig": {
@@ -157,21 +157,21 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "count(sum by (client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval])))",
+          "expr": "count(sum by (host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | host != \"\" [$__interval])))",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Visitor per Hour",
+      "title": "Unique Hosts",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "type": "prometheus",
+        "uid": "$prometheus_ds"
       },
       "description": "",
       "fieldConfig": {
@@ -220,16 +220,16 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "type": "prometheus",
+            "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(sum_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | unwrap bytes_sent | __error__=\"\" [$__interval]))",
-          "queryType": "range",
+          "expr": "sum(increase(pertisk_eproxy_site_bytes_sent_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
+          "legendFormat": "bytes",
           "refId": "A"
         }
       ],
-      "title": "Total Bytes Sent",
+      "title": "Bytes Sent (Prometheus)",
       "type": "stat"
     },
     {
@@ -554,7 +554,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(status) (increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
+          "expr": "sum by(status) (increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[$__interval]))",
           "legendFormat": "HTTP status: {{status}}",
           "refId": "A"
         }
@@ -588,7 +588,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -912,10 +912,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | status != \"\" [$__interval]))",
           "legendFormat": "status: {{status}}",
           "queryType": "range",
           "refId": "A"
@@ -950,7 +950,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -1274,10 +1274,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
+          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | method != \"\" [$__interval]))",
           "legendFormat": "Method: {{method}}",
           "queryType": "range",
           "refId": "A"
@@ -1384,7 +1384,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\"}[$__rate_interval]))",
+          "expr": "sum by(proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}[$__rate_interval]))",
           "legendFormat": "Protocol: {{proto}}",
           "refId": "A"
         }
@@ -1418,7 +1418,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -1487,16 +1487,16 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(compression) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\"  [$__interval]))",
+          "expr": "sum by(protocol) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\"  [$__interval]))",
           "legendFormat": "Compression: {{compression}}",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Compression",
+      "title": "Protocol (Loki)",
       "transformations": [
         {
           "id": "seriesToRows",
@@ -1525,7 +1525,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -1874,10 +1874,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | status != \"\" [$__interval]))",
+          "expr": "sum by(status) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | status != \"\" [$__interval]))",
           "legendFormat": "status: {{status}}",
           "queryType": "range",
           "refId": "A"
@@ -1890,7 +1890,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -2239,10 +2239,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | method != \"\" [$__interval]))",
+          "expr": "sum by(method) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | method != \"\" [$__interval]))",
           "legendFormat": "Method: {{method}}",
           "queryType": "range",
           "refId": "A"
@@ -2255,7 +2255,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -2604,10 +2604,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(http_user_agent) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | http_user_agent != \"\" [$__interval]))",
+          "expr": "sum by(protocol) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | protocol != \"\" [$__interval]))",
           "legendFormat": "Browser: {{http_user_agent}}",
           "queryType": "range",
           "refId": "A"
@@ -2620,7 +2620,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -2709,10 +2709,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | host != \"\" [$__interval]))",
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
           "refId": "A"
@@ -2759,7 +2759,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -2848,10 +2848,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | host != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | host != \"\" [$__interval]))",
           "legendFormat": "{{host}}",
           "queryType": "range",
           "refId": "A"
@@ -2911,7 +2911,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "description": "",
       "fieldConfig": {
@@ -3001,10 +3001,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 401 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 401 | host != \"\" [$__interval]))",
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
           "refId": "401"
@@ -3012,10 +3012,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 403 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 403 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3024,10 +3024,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 404 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 404 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3036,10 +3036,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 400 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 400 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3048,10 +3048,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 500 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 500 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3060,10 +3060,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 502 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 502 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3072,10 +3072,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(client_ip) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 301 | client_ip != \"\" [$__interval]))",
+          "expr": "sum by(host) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 301 | host != \"\" [$__interval]))",
           "hide": false,
           "legendFormat": "{{client_ip}}",
           "queryType": "range",
@@ -3123,7 +3123,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "description": "All request_uri that get a status between the following: 401,403,404,400,500,502,301",
       "fieldConfig": {
@@ -3213,10 +3213,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 401 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 401 [$__interval]))",
           "legendFormat": "{{path}}",
           "queryType": "range",
           "refId": "401"
@@ -3224,10 +3224,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 403 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 403 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3236,10 +3236,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 404 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 404 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3248,10 +3248,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 400 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 400 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3260,10 +3260,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 500 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 500 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3272,10 +3272,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 502 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 502 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3284,10 +3284,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status = 301 [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | type=\"http\" | __error__=\"\" | status = 301 [$__interval]))",
           "hide": false,
           "legendFormat": "{{path}}",
           "queryType": "range",
@@ -3348,7 +3348,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -3404,7 +3404,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
           "expr": "{namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | line_format \"Request for {{.path}} with HTTP status {{.status}}\"",
@@ -3431,7 +3431,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -3496,7 +3496,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
           "expr": "sum(count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
@@ -3512,7 +3512,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -3594,10 +3594,10 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
-          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | __error__=\"\" | path != \"\" [$__interval]))",
+          "expr": "sum by(path) (count_over_time({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}| json | type=\"http\" | __error__=\"\" | path != \"\" [$__interval]))",
           "legendFormat": "{{path}}",
           "queryType": "range",
           "refId": "A"
@@ -3644,7 +3644,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -3696,7 +3696,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
           "expr": "100 * sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"} | json | __error__=\"\" | status >= 500 [$__interval])) / sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
@@ -3711,7 +3711,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "$loki_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -3763,7 +3763,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "$loki_ds"
           },
           "editorMode": "code",
           "expr": "sum(rate({namespace=\"pertisk-eproxy\",app=\"pertisk-eproxy\",job=~\"$job\",filename=~\"$filename\"}[$__interval]))",
@@ -3844,7 +3844,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[$__range]))",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[$__range]))",
           "legendFormat": "Total",
           "refId": "A"
         }
@@ -3912,7 +3912,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
           "legendFormat": "RPS",
           "refId": "A"
         }
@@ -3980,7 +3980,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status!~\"(2..|401)\"}[$__range])) / clamp_min(sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status=~\".+\"}[$__range])), 1)",
+          "expr": "sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status!~\"(2..|401)\"}[$__range])) / clamp_min(sum(increase(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\",status=~\".+\"}[$__range])), 1)",
           "legendFormat": "Error ratio",
           "refId": "A"
         }
@@ -4044,7 +4044,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(pertisk_eproxy_upstream_healthy{namespace=\"pertisk-eproxy\"})",
+          "expr": "sum(max by (backend, upstream) (pertisk_eproxy_upstream_healthy{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}))",
           "legendFormat": "healthy",
           "refId": "A"
         }
@@ -4095,7 +4095,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (site) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (site) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{site}}",
           "refId": "A"
         }
@@ -4146,7 +4146,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{proto}}",
           "refId": "A"
         }
@@ -4197,7 +4197,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
+          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m])) > 0",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -4248,7 +4248,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_bytes_sent_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_bytes_sent_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[1m]))",
           "legendFormat": "egress",
           "refId": "A"
         },
@@ -4258,7 +4258,7 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_bytes_received_total{namespace=\"pertisk-eproxy\",site=~\"$site\",proto=~\"$proto\"}[1m]))",
+          "expr": "sum(rate(pertisk_eproxy_site_bytes_received_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}[1m]))",
           "legendFormat": "ingress",
           "refId": "B"
         }
@@ -4309,8 +4309,8 @@
             "uid": "$prometheus_ds"
           },
           "editorMode": "code",
-          "expr": "sum by (upstream_name) (pertisk_eproxy_upstream_connections{namespace=\"pertisk-eproxy\"})",
-          "legendFormat": "{{upstream_name}}",
+          "expr": "sum by (backend) (max by (backend, upstream, pod) (pertisk_eproxy_upstream_connections{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}))",
+          "legendFormat": "{{backend}}",
           "refId": "A"
         }
       ],
@@ -4341,6 +4341,24 @@
         "name": "prometheus_ds",
         "options": [],
         "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "Loki",
+          "value": "Loki"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Loki Datasource",
+        "multi": false,
+        "name": "loki_ds",
+        "options": [],
+        "query": "loki",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -4401,7 +4419,7 @@
         "multi": false,
         "name": "site",
         "options": [],
-        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\"}, site)",
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\"}, site)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -4421,7 +4439,7 @@
         "multi": false,
         "name": "proto",
         "options": [],
-        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",site=~\"$site\"}, proto)",
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"pertisk-eproxy\",job=\"pertisk-eproxy\",site=~\"$site\"}, proto)",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -4438,6 +4456,6 @@
   "timezone": "",
   "title": "Pertisk Eproxy Dashboard",
   "uid": "f32c8ffe-d1be-4230-94f3-cc935b82e046",
-  "version": 123,
+  "version": 124,
   "weekStart": ""
 }

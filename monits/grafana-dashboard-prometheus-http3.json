@@ -79,7 +79,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m])) or vector(0)",
+          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m])) or vector(0)",
           "legendFormat": "RPS",
           "range": true,
           "refId": "A"
@@ -149,7 +149,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\",proto=~\"h3|http3|HTTP/3\"}[5m])) or vector(0)",
+          "expr": "sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\",proto=\"h3\"}[5m])) or vector(0)",
           "legendFormat": "HTTP/3",
           "range": true,
           "refId": "A"
@@ -219,7 +219,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "100 * (sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\",proto=~\"h3|http3|HTTP/3\"}[5m])) / clamp_min(sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m])), 1e-9)) or vector(0)",
+          "expr": "100 * (sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\",proto=\"h3\"}[5m])) / clamp_min(sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m])), 1e-9)) or vector(0)",
           "legendFormat": "HTTP/3 Share",
           "range": true,
           "refId": "A"
@@ -289,7 +289,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m])), 1e-9) or vector(0)",
+          "expr": "100 * sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m])), 1e-9) or vector(0)",
           "legendFormat": "5xx %",
           "range": true,
           "refId": "A"
@@ -342,7 +342,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m]))",
+          "expr": "sum by (proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m]))",
           "legendFormat": "{{proto}}",
           "range": true,
           "refId": "A"
@@ -395,7 +395,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m]))",
+          "expr": "sum by (status) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m]))",
           "legendFormat": "status {{status}}",
           "range": true,
           "refId": "A"
@@ -557,7 +557,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum by (status, proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",site=~\"$site\"}[5m]))",
+          "expr": "sum by (status, proto) (rate(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\",site=~\"$site\"}[5m]))",
           "legendFormat": "{{proto}} {{status}}",
           "range": true,
           "refId": "A"
@@ -608,9 +608,9 @@
         "multi": false,
         "name": "namespace",
         "options": [],
-        "query": "label_values(kube_pod_info, namespace)",
+        "query": "label_values(kube_pod_info{namespace=~\"pertisk.*\"}, namespace)",
         "refresh": 2,
-        "regex": "pertisk-eproxy",
+        "regex": "pertisk.*",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
@@ -654,7 +654,7 @@
         "multi": true,
         "name": "site",
         "options": [],
-        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"$namespace\"}, site)",
+        "query": "label_values(pertisk_eproxy_site_requests_total{namespace=\"$namespace\",job=\"pertisk-eproxy\"}, site)",
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -671,6 +671,6 @@
   "timezone": "",
   "title": "Pertisk Eproxy Prometheus HTTP/3",
   "uid": "pertisk-eproxy-prom-http3",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
