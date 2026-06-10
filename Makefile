@@ -9,7 +9,7 @@
 
 REBAR = rebar3
 # All src/ modules are in scope ({cover_excl_mods, []}); raise as unit tests grow.
-COVER_MIN ?= 18
+COVER_MIN ?= 80
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
 HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress

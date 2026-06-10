@@ -85,6 +85,18 @@ resolve_key_file_non_map_proxy_mode_test() ->
         ?assert(is_list(Result))
     end).
 
+resolve_cert_file_proxy_mode_undefined_value_test() ->
+    with_proxy_env(fun() ->
+        Result = pertisk_eproxy_tls_paths:resolve_cert_file(#{tls_cert_file => undefined}),
+        ?assert(Result =:= undefined orelse is_list(Result))
+    end).
+
+resolve_key_file_proxy_mode_undefined_value_test() ->
+    with_proxy_env(fun() ->
+        Result = pertisk_eproxy_tls_paths:resolve_key_file(#{tls_key_file => undefined}),
+        ?assert(Result =:= undefined orelse is_list(Result))
+    end).
+
 default_if_readable_missing_packaged_file_test() ->
     Pem = pertisk_eproxy_tls_paths:default_cert_file(),
     Bak = Pem ++ ".cover_bak",
