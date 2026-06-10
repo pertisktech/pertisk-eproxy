@@ -19,3 +19,15 @@ ingress_sup_init_test() ->
         end,
         Children
     ).
+
+ingress_sup_start_link_test() ->
+    meck:new(supervisor, [unstick]),
+    meck:expect(supervisor, start_link, fun
+        ({local, pertisk_ingress_sup}, pertisk_ingress_sup, []) -> {ok, self()}
+    end),
+    try
+        {ok, Pid} = pertisk_ingress_sup:start_link(),
+        ?assert(is_pid(Pid))
+    after
+        meck:unload(supervisor)
+    end.
