@@ -19,6 +19,14 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([backend_name/1, parse_addr/1, split_host_port/2, safe_port/1,
+         scheme_default_port/1, uri_text_to_list/1, transient_backoff_ms/1,
+         conn_for_addr/2, increment_conns/2, decrement_conns/2,
+         mark_transient_down/2, clear_transient_down/2,
+         maybe_recover_transient_down/1, merge_update/2]).
+-endif.
+
 -define(HEALTH_DEFAULT_SECS, 30).
 -define(TRANSIENT_DOWN_DEFAULT_MS, 5000).
 -define(TRANSIENT_DOWN_MAX_MS, 60000).
