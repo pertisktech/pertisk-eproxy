@@ -326,6 +326,73 @@ gzip_compresses_legacy_js_test() ->
     {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
     ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
 
+br_accept_encoding_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"br, gzip">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    Enc = proplists:get_value(<<"content-encoding">>, ResHdrs),
+    case Enc of
+        undefined ->
+            ?assertEqual(Body, ResBody);
+        <<"br">> ->
+            ?assert(byte_size(ResBody) < byte_size(Body));
+        <<"gzip">> ->
+            ?assert(byte_size(ResBody) < byte_size(Body))
+    end.
+
+zstd_accept_encoding_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/plain">>}],
+    Accept = [{<<"accept-encoding">>, <<"zstd, gzip">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    Enc = proplists:get_value(<<"content-encoding">>, ResHdrs),
+    case Enc of
+        undefined ->
+            ?assertEqual(Body, ResBody);
+        <<"zstd">> ->
+            ?assert(byte_size(ResBody) < byte_size(Body));
+        <<"gzip">> ->
+            ?assert(byte_size(ResBody) < byte_size(Body))
+    end.
+
+header_map_case_insensitive_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"Content-Type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+gzip_q_value_preference_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip;q=0.5, br;q=0">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+accept_encoding_whitespace_trimmed_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<" gzip , deflate">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    ?assertEqual(<<"gzip">>, proplists:get_value(<<"content-encoding">>, ResHdrs)).
+
+vary_empty_string_gets_accept_encoding_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}, {<<"vary">>, <<>>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip">>}],
+    {ResHdrs, _} = pertisk_eproxy_compression:maybe_compress_h3(200, Accept, Hdrs, Body),
+    Vary = proplists:get_value(<<"vary">>, ResHdrs),
+    ?assertNotEqual(nomatch, binary:match(string:lowercase(Vary), <<"accept-encoding">>)).
+
+status_199_not_compressed_test() ->
+    Body = padding_bytes(2048),
+    Hdrs = [{<<"content-type">>, <<"text/html">>}],
+    Accept = [{<<"accept-encoding">>, <<"gzip">>}],
+    {ResHdrs, ResBody} = pertisk_eproxy_compression:maybe_compress_h3(199, Accept, Hdrs, Body),
+    ?assertEqual(undefined, proplists:get_value(<<"content-encoding">>, ResHdrs)),
+    ?assertEqual(Body, ResBody).
+
 %% ---------------------------------------------------------------------------
 %% Helpers
 %% ---------------------------------------------------------------------------

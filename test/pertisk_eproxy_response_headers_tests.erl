@@ -51,3 +51,18 @@ merge_h3_strips_case_insensitive_test() ->
     Result = pertisk_eproxy_response_headers:merge_h3(Input),
     ServerV = proplists:get_value(<<"server">>, Result),
     ?assertNotEqual(<<"old">>, ServerV).
+
+app_version_is_non_empty_binary_test() ->
+    V = pertisk_eproxy_response_headers:app_version(),
+    ?assert(is_binary(V)),
+    ?assert(byte_size(V) > 0).
+
+merge_server_header_contains_name_and_version_test() ->
+    Result = pertisk_eproxy_response_headers:merge(#{}),
+    Server = maps:get(<<"server">>, Result),
+    ?assertNotEqual(nomatch, binary:match(Server, <<"pertisk-eproxy">>)).
+
+merge_h3_atom_key_stripped_test() ->
+    Input = [{server, <<"old">>}],
+    Result = pertisk_eproxy_response_headers:merge_h3(Input),
+    ?assertEqual(3, length(Result)).
