@@ -79,8 +79,11 @@ patch_release_wrapper_ld_library_path "$PKG_ROOT/opt/$PKG_NAME/bin/pertisk_eprox
 
 read -r ERTS_VSN REL_VSN < <(read_start_erl_data "$PKG_ROOT/opt/$PKG_NAME/releases/start_erl.data")
 
+REL_DIR="$PKG_ROOT/opt/$PKG_NAME/releases/${REL_VSN}"
+BOOT_BASE="$(bash "$ROOT_DIR/scripts/resolve-release-boot-base.sh" "$REL_DIR")"
+
 ERLEXEC_PATH="/opt/$PKG_NAME/erts-${ERTS_VSN}/bin/erlexec"
-BOOT_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/pertisk_eproxy"
+BOOT_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/${BOOT_BASE}"
 SYS_CONFIG_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/sys.config"
 VM_ARGS_PATH="/opt/$PKG_NAME/releases/${REL_VSN}/vm.args"
 

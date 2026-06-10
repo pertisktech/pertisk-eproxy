@@ -3,7 +3,7 @@
 set -euo pipefail
 
 DEST_ROOT="${1:?usage: bundle-runtime-libs-for-rpm.sh /path/to/pkg/opt/pertisk-eproxy}"
-ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:27}"
+ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
 OUT_DIR="${DEST_ROOT}/lib/runtime"
 
 if ! command -v docker >/dev/null 2>&1; then

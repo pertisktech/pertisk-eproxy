@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Copy OpenSSL 3.x libs from the Erlang release build image into the RPM tree.
-# OTP 27 crypto NIF needs symbols (e.g. EVP_sm4_cbc) missing from older host libcrypto.
+# OTP 29 crypto NIF needs symbols (e.g. EVP_sm4_cbc) missing from older host libcrypto.
 set -euo pipefail
 
 DEST_ROOT="${1:?usage: bundle-openssl-for-rpm.sh /path/to/pkg/opt/pertisk-eproxy}"
-ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:27}"
+ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
 OUT_DIR="${DEST_ROOT}/lib/openssl"
 
 if ! command -v docker >/dev/null 2>&1; then

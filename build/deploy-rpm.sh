@@ -100,7 +100,18 @@ if [ -z "\${ERTS_VSN}" ] || [ -z "\${REL_VSN}" ]; then
   exit 1
 fi
 
-echo "Refreshing systemd override with release \${REL_VSN} (erts \${ERTS_VSN})..." >&2
+REL_DIR="\${PACKAGE_ROOT}/releases/\${REL_VSN}"
+if [ -f "\${REL_DIR}/pertisk_eproxy.boot" ]; then
+  BOOT_BASE="pertisk_eproxy"
+elif [ -f "\${REL_DIR}/start.boot" ]; then
+  BOOT_BASE="start"
+else
+  echo "ERROR: no boot file in \${REL_DIR}" >&2
+  ls -la "\${REL_DIR}" >&2 || true
+  exit 1
+fi
+
+echo "Refreshing systemd override with release \${REL_VSN} (erts \${ERTS_VSN}, boot \${BOOT_BASE})..." >&2
 DROPIN_DIR="/etc/systemd/system/${PACKAGE_NAME}.service.d"
 MANAGED_DROPIN="\${DROPIN_DIR}/10-execstart-compat.conf"
 sudo mkdir -p "\${DROPIN_DIR}"
@@ -124,7 +135,7 @@ Environment=EMU=beam
 Environment=PROGNAME=erl
 Environment=LD_LIBRARY_PATH=\${PACKAGE_ROOT}/lib/runtime:\${PACKAGE_ROOT}/lib/openssl
 ExecStart=
-ExecStart=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin/erlexec -noinput +Bd -boot \${PACKAGE_ROOT}/releases/\${REL_VSN}/pertisk_eproxy -mode embedded -boot_var SYSTEM_LIB_DIR \${PACKAGE_ROOT}/lib -config \${PACKAGE_ROOT}/releases/\${REL_VSN}/sys.config -args_file \${PACKAGE_ROOT}/releases/\${REL_VSN}/vm.args -- foreground
+ExecStart=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin/erlexec -noinput +Bd -boot \${PACKAGE_ROOT}/releases/\${REL_VSN}/\${BOOT_BASE} -mode embedded -boot_var SYSTEM_LIB_DIR \${PACKAGE_ROOT}/lib -config \${PACKAGE_ROOT}/releases/\${REL_VSN}/sys.config -args_file \${PACKAGE_ROOT}/releases/\${REL_VSN}/vm.args -- foreground
 UNITEOF
 
 sudo systemctl daemon-reload
