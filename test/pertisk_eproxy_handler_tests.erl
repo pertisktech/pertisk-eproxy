@@ -51,3 +51,62 @@ eventstream_upstream_retryable_test() ->
     ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable({connect, timeout})),
     ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable(timeout)),
     ?assertNot(pertisk_eproxy_handler:eventstream_upstream_retryable({error, refused})).
+
+parse_upstream_grpc_scheme_test() ->
+    ?assertEqual({"grpc.example.com", 80, tcp}, pertisk_eproxy_handler:parse_upstream("grpc://grpc.example.com")).
+
+parse_upstream_grpcs_scheme_test() ->
+    ?assertEqual({"secure.example.com", 443, tls}, pertisk_eproxy_handler:parse_upstream("grpcs://secure.example.com")).
+
+upstream_req_kind_connect_test() ->
+    H = #{<<"content-type">> => <<"application/connect+json">>},
+    ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
+
+upstream_req_kind_grpc_web_test() ->
+    H = #{<<"content-type">> => <<"application/grpc-web+proto">>},
+    ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
+
+upstream_req_kind_grpc_metadata_test() ->
+    H = #{<<"grpc-metadata-x">> => <<"1">>},
+    ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
+
+upstream_gun_opts_grpc_test() ->
+    Opts = pertisk_eproxy_handler:upstream_gun_opts_with_port("host", 443, tls, grpc),
+    ?assertEqual([http2], maps:get(protocols, Opts)).
+
+upstream_gun_opts_http_test() ->
+    Opts = pertisk_eproxy_handler:upstream_gun_opts_with_port("host", 443, tls, http),
+    ?assertEqual([http2, http], maps:get(protocols, Opts)).
+
+site_advertise_http3_default_test() ->
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => <<"h3.example.com">>, backend => <<"b">>, routes => []}],
+        []
+    ),
+    ?assert(pertisk_eproxy_handler:site_advertise_http3(<<"h3.example.com">>)).
+
+site_advertise_http3_disabled_test() ->
+    pertisk_eproxy_test_helpers:sync_router(
+        [
+            #{
+                host => <<"noh3.example.com">>,
+                backend => <<"b">>,
+                routes => [],
+                advertise_http3 => false
+            }
+        ],
+        []
+    ),
+    ?assertNot(pertisk_eproxy_handler:site_advertise_http3(<<"noh3.example.com">>)).
+
+eventstream_upstream_candidates_test() ->
+    Cands = pertisk_eproxy_handler:eventstream_upstream_candidates(
+        <<"127.0.0.1">>, 8080, tls, <<"/api/v1/stream">>
+    ),
+    ?assert(is_list(Cands)),
+    ?assert(length(Cands) > 0).
+
+eventstream_initial_await_timeout_test() ->
+    T = pertisk_eproxy_handler:eventstream_initial_await_timeout_ms(<<"127.0.0.1:8080">>),
+    ?assert(is_integer(T)),
+    ?assert(T > 0).

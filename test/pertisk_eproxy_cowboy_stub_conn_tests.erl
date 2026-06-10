@@ -16,3 +16,25 @@ start_replies_to_read_body_test() ->
         ?assert(false)
     end,
     exit(Pid, shutdown).
+
+captures_response_test() ->
+    Parent = self(),
+    Pid = pertisk_eproxy_cowboy_stub_conn:start(Parent, <<>>),
+    true = erlang:unlink(Pid),
+    Body = iolist_to_binary("{}"),
+    Pid ! {{Pid, 1}, {response, 200, #{<<"content-type">> => <<"application/json">>}, Body}},
+    receive
+        {h3_admin_response, 200, _, Body} -> ok
+    after 1000 ->
+        ?assert(false)
+    end,
+    exit(Pid, shutdown).
+
+ignores_unknown_message_test() ->
+    Parent = self(),
+    Pid = pertisk_eproxy_cowboy_stub_conn:start(Parent, <<>>),
+    true = erlang:unlink(Pid),
+    Pid ! {unknown, message},
+    Pid ! {{Pid, 1}, {headers, 200, #{}}},
+    exit(Pid, shutdown),
+    ok.

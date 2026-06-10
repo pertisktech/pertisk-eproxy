@@ -113,3 +113,31 @@ unsupported_provider_type_uses_lego_fallback_test() ->
         {error, _} -> ok;
         {ok, _} -> ok
     end.
+
+namecheap_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"namecheap">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>, provider := <<"namecheap">>}} -> ok
+    end.
+
+azure_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"azure">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>, provider := <<"azure">>}} -> ok
+    end.
+
+vultr_validation_accepts_token_only_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"vultr">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"vultr">>}}, Result).
+
+porkbun_validation_accepts_keys_only_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"porkbun">>,
+        #{<<"api_key">> => <<"k">>, <<"secret_api_key">> => <<"s">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"porkbun">>}}, Result).

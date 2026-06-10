@@ -52,9 +52,28 @@ configured_defaults_when_unset_test() ->
         _ -> ok
     end,
     os:unsetenv("PERTISK_LOG_LEVEL"),
-    Base = pertisk_eproxy_config:get_config(),
-    ok = pertisk_eproxy_config:put_config(maps:remove(log_level, Base)),
-    ?assertEqual(info, pertisk_eproxy_log_level:configured()).
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        {ok, _} = pertisk_eproxy_db:init(DbPath),
+        Base = pertisk_eproxy_config:get_config(),
+        Config = maps:merge(maps:remove(log_level, Base), #{
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        }),
+        ok = pertisk_eproxy_config:put_config(Config),
+        ?assertEqual(info, pertisk_eproxy_log_level:configured())
+    after
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
+    end.
 
 parse_atom_levels_test() ->
     ?assertEqual({ok, debug}, pertisk_eproxy_log_level:parse(debug)),

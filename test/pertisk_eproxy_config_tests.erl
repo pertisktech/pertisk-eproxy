@@ -388,3 +388,264 @@ null_values_pass_through_unchanged_test() ->
     }),
     ?assertEqual(null, maps:get(management_port, C)),
     ?assertEqual(null, maps:get(http_port, C)).
+
+%% ---------------------------------------------------------------------------
+%% TLS paths and listener options
+%% ---------------------------------------------------------------------------
+
+tls_paths_parsed_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"tls_cert_file">> => <<"/etc/ssl/cert.pem">>,
+        <<"tls_key_file">> => <<"/etc/ssl/key.pem">>
+    }),
+    ?assertEqual("/etc/ssl/cert.pem", maps:get(tls_cert_file, C)),
+    ?assertEqual("/etc/ssl/key.pem", maps:get(tls_key_file, C)).
+
+tls_redacted_cert_path_filtered_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"tls_cert_file">> => <<"[redacted]">>,
+        <<"tls_key_file">> => <<"/etc/ssl/key.pem">>
+    }),
+    ?assertEqual(false, maps:is_key(tls_cert_file, C)),
+    ?assertEqual("/etc/ssl/key.pem", maps:get(tls_key_file, C)).
+
+log_level_parsed_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"log_level">> => <<"warning">>}),
+    ?assertEqual(warn, maps:get(log_level, C)).
+
+sse_early_flush_default_true_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{}),
+    ?assertEqual(true, maps:get(sse_early_flush_enabled, C)).
+
+sse_early_flush_disabled_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"sse_early_flush_enabled">> => false}),
+    ?assertEqual(false, maps:get(sse_early_flush_enabled, C)).
+
+health_access_log_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"health_access_log">> => true,
+        <<"health_access_log_sample">> => 50
+    }),
+    ?assertEqual(true, maps:get(health_access_log, C)),
+    ?assertEqual(50, maps:get(health_access_log_sample, C)).
+
+sites_wildcard_and_dns_provider_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [#{
+            <<"host">> => <<"*.example.com">>,
+            <<"backend">> => <<"web">>,
+            <<"wildcard">> => true,
+            <<"dns_provider">> => <<"cf">>,
+            <<"acme_wildcard_base">> => <<"*.example.com">>,
+            <<"acme_contact_email">> => <<"ops@example.com">>
+        }]
+    }),
+    [#{wildcard := true, dns_provider := "cf"}] = maps:get(sites, C).
+
+dns_providers_skips_invalid_entries_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"dns_providers">> => [
+            #{<<"provider_type">> => <<"label">>},
+            <<"valid-legacy">>
+        ]
+    }),
+    Providers = maps:get(dns_providers, C),
+    ?assertEqual(1, length(Providers)),
+    ?assertEqual("valid-legacy", maps:get(name, hd(Providers))).
+
+metrics_enabled_from_json_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"metrics_enabled">> => false}),
+    ?assertEqual(false, maps:get(metrics_enabled, C)).
+
+metrics_addr_parsed_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"metrics_addr">> => <<"127.0.0.1">>}),
+    ?assertEqual({127, 0, 0, 1}, maps:get(metrics_addr, C)).
+
+upstream_pool_settings_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"upstream_pool_size">> => 32,
+        <<"upstream_pool_idle_timeout_secs">> => 120
+    }),
+    ?assertEqual(32, maps:get(upstream_pool_size, C)),
+    ?assertEqual(120, maps:get(upstream_pool_idle_timeout_secs, C)).
+
+h3_feature_flags_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"h3_api_gateway_enabled">> => true,
+        <<"h3_probe_enabled">> => false,
+        <<"h3_probe_port">> => 4433
+    }),
+    ?assertEqual(true, maps:get(h3_api_gateway_enabled, C)),
+    ?assertEqual(false, maps:get(h3_probe_enabled, C)),
+    ?assertEqual(4433, maps:get(h3_probe_port, C)).
+
+%% ---------------------------------------------------------------------------
+%% Runtime API (ETS-backed gen_server)
+%% ---------------------------------------------------------------------------
+
+with_config(Fun) ->
+    application:ensure_all_started(lager),
+    Started = case whereis(pertisk_eproxy_config) of
+        undefined ->
+            {ok, _} = pertisk_eproxy_config:start_link(),
+            true;
+        _ ->
+            false
+    end,
+    BaseConfig = pertisk_eproxy_config:get_config(),
+    BaseSites = pertisk_eproxy_config:get_sites(),
+    BaseBackends = pertisk_eproxy_config:get_backends(),
+    try
+        Fun()
+    after
+        _ = catch pertisk_eproxy_config:put_config(BaseConfig),
+        catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
+        maybe_stop_config(Started)
+    end.
+
+with_tmp_db_config(Fun) ->
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        with_config(fun() ->
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            Fun()
+        end)
+    after
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
+    end.
+
+maybe_stop_config(true) ->
+    case whereis(pertisk_eproxy_config) of
+        undefined -> ok;
+        Pid -> gen_server:stop(Pid)
+    end;
+maybe_stop_config(_) ->
+    ok.
+
+sync_ingress_updates_sites_and_backends_test() ->
+    with_config(fun() ->
+        Sites = [#{host => <<"a.example">>, backend => <<"web">>, routes => []}],
+        Backends = [#{
+            name => <<"web">>,
+            algorithm => round_robin,
+            upstreams => [#{addr => <<"127.0.0.1:8080">>, weight => 1}]
+        }],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, Backends),
+        ?assertEqual(Sites, pertisk_eproxy_config:get_sites()),
+        ?assertEqual(Backends, pertisk_eproxy_config:get_backends()),
+        ?assertMatch({ok, _}, pertisk_eproxy_config:get_backend(<<"web">>)),
+        ?assertEqual(error, pertisk_eproxy_config:get_backend(<<"missing">>)),
+        Router = pertisk_eproxy_config:get_router(),
+        ?assert(is_list(Router))
+    end).
+
+get_config_returns_applied_map_test() ->
+    with_config(fun() ->
+        C = pertisk_eproxy_config:get_config(),
+        ?assert(is_map(C)),
+        ?assert(maps:is_key(http_port, C) orelse maps:is_key(sites, C))
+    end).
+
+get_certificates_and_dns_providers_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            certificates => [<<"cert-a">>],
+            dns_providers => [#{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}],
+            sites => [],
+            backends => []
+        },
+        ok = pertisk_eproxy_config:put_config(Config),
+        ?assertEqual([<<"cert-a">>], pertisk_eproxy_config:get_certificates()),
+        ?assertEqual(["cf"], pertisk_eproxy_config:get_dns_providers())
+    end).
+
+management_upstream_bin_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            management_addr => {127, 0, 0, 1},
+            management_port => 19080,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = pertisk_eproxy_config:put_config(Config),
+        ?assertEqual(<<"127.0.0.1:19080">>, pertisk_eproxy_config:management_upstream_bin()),
+        ?assertEqual(<<"127.0.0.1:19080">>, pertisk_eproxy_config:management_loopback_upstream_bin())
+    end).
+
+metrics_enabled_defaults_true_test() ->
+    with_config(fun() ->
+        ?assertEqual(true, pertisk_eproxy_config:metrics_enabled())
+    end).
+
+metrics_listen_defaults_test() ->
+    with_config(fun() ->
+        ?assertEqual({{0, 0, 0, 0}, 9090}, pertisk_eproxy_config:metrics_listen())
+    end).
+
+backend_is_management_only_test() ->
+    with_config(fun() ->
+        Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+        Sites = [],
+        Backends = [#{
+            name => <<"mgmt">>,
+            algorithm => round_robin,
+            upstreams => [#{addr => Mgmt, weight => 1}]
+        }],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, Backends),
+        ?assert(pertisk_eproxy_config:backend_is_management_only(<<"mgmt">>)),
+        ?assertNot(pertisk_eproxy_config:backend_is_management_only(<<"other">>))
+    end).
+
+proxy_mode_default_test() ->
+    with_config(fun() ->
+        ?assert(pertisk_eproxy_config:proxy_mode())
+    end).
+
+db_file_and_data_dir_test() ->
+    with_config(fun() ->
+        Db = pertisk_eproxy_config:db_file(),
+        ?assert(is_list(Db)),
+        DataDir = pertisk_eproxy_config:data_dir(),
+        ?assertEqual(filename:dirname(Db), DataDir)
+    end).
+
+put_config_with_tmp_db_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config)),
+        ?assertMatch({ok, _}, pertisk_eproxy_db:get_runtime_config(DbPath))
+    end).
+
+put_config_persists_runtime_config_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{host => <<"x.example">>, backend => <<"web">>, routes => []}],
+            backends => [#{
+                name => <<"web">>,
+                algorithm => round_robin,
+                upstreams => [#{addr => <<"127.0.0.1:1">>, weight => 1}]
+            }],
+            certificates => [],
+            dns_providers => [#{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}]
+        },
+        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config)),
+        {ok, Stored} = pertisk_eproxy_db:get_runtime_config(DbPath),
+        ?assertEqual(1, length(maps:get(sites, Stored))),
+        ?assertMatch({ok, [_]}, pertisk_eproxy_db:list_dns_providers(DbPath))
+    end).
