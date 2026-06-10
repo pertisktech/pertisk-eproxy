@@ -46,7 +46,14 @@ configured_invalid_env_falls_back_test() ->
     ?assert(is_atom(Level)).
 
 configured_defaults_when_unset_test() ->
+    application:ensure_all_started(lager),
+    case whereis(pertisk_eproxy_config) of
+        undefined -> {ok, _} = pertisk_eproxy_config:start_link();
+        _ -> ok
+    end,
     os:unsetenv("PERTISK_LOG_LEVEL"),
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_config:put_config(maps:remove(log_level, Base)),
     ?assertEqual(info, pertisk_eproxy_log_level:configured()).
 
 parse_atom_levels_test() ->
