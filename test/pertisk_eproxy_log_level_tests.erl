@@ -86,6 +86,21 @@ apply_without_console_backend_test() ->
     application:ensure_all_started(lager),
     os:unsetenv("PERTISK_LOG_LEVEL").
 
+apply_empty_handlers_covers_backend_error_paths_test() ->
+    application:load(lager),
+    application:set_env(lager, handlers, []),
+    application:stop(lager),
+    {ok, _} = application:ensure_all_started(lager),
+    os:putenv("PERTISK_LOG_LEVEL", "info"),
+    try
+        ?assertEqual(ok, pertisk_eproxy_log_level:apply())
+    after
+        os:unsetenv("PERTISK_LOG_LEVEL"),
+        application:set_env(lager, handlers, [{lager_console_backend, [{level, info}]}]),
+        application:stop(lager),
+        application:ensure_all_started(lager)
+    end.
+
 configured_from_config_log_level_test() ->
     application:ensure_all_started(lager),
     case whereis(pertisk_eproxy_config) of

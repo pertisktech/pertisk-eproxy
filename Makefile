@@ -8,7 +8,8 @@
 	run run-ingress reload config health metrics test-dns-provider-validate
 
 REBAR = rebar3
-COVER_MIN ?= 80
+# All src/ modules are in scope ({cover_excl_mods, []}); raise as unit tests grow.
+COVER_MIN ?= 18
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
 HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress

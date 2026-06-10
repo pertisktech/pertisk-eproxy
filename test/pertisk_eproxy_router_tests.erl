@@ -357,6 +357,22 @@ build_host_entry_less_exact_before_wildcard_test() ->
     ?assertEqual(<<"a.example.com">>, FirstHost),
     ?assertEqual(<<"*.example.com">>, SecondHost).
 
+build_three_hosts_sorts_exact_before_wildcard_test() ->
+    %% lists:sort/2 on two hosts may only compare wildcard-first (L81); three hosts
+    %% forces host_entry_less/2 with {false, true} (exact before wildcard).
+    Sites = [
+        #{host => <<"*.example.com">>, backend => <<"w">>, routes => []},
+        #{host => <<"mid.example.com">>, backend => <<"m">>, routes => []},
+        #{host => <<"z.example.com">>, backend => <<"z">>, routes => []}
+    ],
+    Router = pertisk_eproxy_router:build(Sites),
+    Hosts = [H || {H, _} <- Router],
+    WildIdx = [I || {I, H} <- lists:zip(lists:seq(1, length(Hosts)), Hosts),
+                    binary:match(H, <<"*.">>) =/= nomatch],
+    ExactIdx = [I || {I, H} <- lists:zip(lists:seq(1, length(Hosts)), Hosts),
+                    binary:match(H, <<"*.">>) =:= nomatch],
+    ?assert(lists:max(ExactIdx) < lists:min(WildIdx)).
+
 route_equal_prefix_length_keeps_first_test() ->
     load_router_sites([
         #{
