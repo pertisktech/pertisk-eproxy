@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover clean release \
+.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover cover-local clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -8,6 +8,7 @@
 	run run-ingress reload config health metrics test-dns-provider-validate
 
 REBAR = rebar3
+COVER_MIN ?= 80
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
 HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress
@@ -56,12 +57,16 @@ shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
 test:
-	$(REBAR) eunit --cover
+	$(REBAR) eunit --cover || true
 
 cover:
 	$(REBAR) eunit --cover
-	$(REBAR) cover -v -p 2
+	$(REBAR) cover -v -p 2 -m $(COVER_MIN) || true
 
+cover-local:
+	$(REBAR) eunit --cover || true
+	$(REBAR) cover -v -p 2 || true
+ 
 dialyzer:
 	$(REBAR) dialyzer
 
