@@ -1,4 +1,4 @@
-# Admin UI via standard Ingress (same pattern as pertisk-rproxy pertisk-ingress-admin).
+# Admin UI via standard Ingress (management port 9080).
 # DNS → controller LB; TLS Secret in same namespace (e.g. cert-manager).
 ---
 apiVersion: networking.k8s.io/v1

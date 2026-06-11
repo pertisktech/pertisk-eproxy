@@ -49,12 +49,12 @@ Instead of building K8s API client from scratch, use **ekub** (Travelping's matu
 
 | Aspect | **Option A: Sidecar** | **Option B: ekub (Recommended)** |
 |--------|---------------------|--------------------------------|
-| **Architecture** | Separate rproxy-ingress Pod + eproxy Pod | Single eproxy Pod (integrated) |
+| **Architecture** | Separate ingress sidecar Pod + proxy Pod | Single pertisk-eproxy Pod (integrated) |
 | **Dev Time** | ~2 weeks | ~2 weeks ⭐ |
 | **Performance** | ~50ms API latency | <1ms in-process ⭐ |
 | **Deployment** | Multi-Pod (complex) | Single Pod ⭐ |
 | **Watch Support** | Polling only | Event-driven ⭐ |
-| **HA Complexity** | Handled by rproxy | Mnesia-based ⭐ |
+| **HA Complexity** | Handled by sidecar | Mnesia-based ⭐ |
 | **Long-term** | Lower maintenance | Easier to enhance ⭐ |
 
 **Recommendation**: **Option B (ekub)** is superior across all dimensions.
@@ -274,7 +274,7 @@ data:
   tls.key: <base64-encoded private key>
 ```
 
-### Custom Resources (optional, similar to rproxy)
+### Custom Resources (optional, future)
 ```yaml
 apiVersion: proxy.pertisk.tech/v1alpha1
 kind: PertiskBackend
@@ -310,7 +310,7 @@ spec:
 
 ## Deployment via Helm
 
-Chart path (same layout as pertisk-rproxy): `deploy/helm/pertisk-eproxy/`
+Chart path: `deploy/helm/pertisk-eproxy/`
 
 ```bash
 # Build & push ingress image (optional)
@@ -406,7 +406,7 @@ See `deploy/helm/pertisk-eproxy/README.md` for values reference.
 
 ### Optional Enhancements (Future)
 - [ ] Support for Ingress annotations (e.g., rewrites, auth)
-- [ ] PertiskBackend + PertiskIngress CRDs (like rproxy)
+- [ ] PertiskBackend + PertiskIngress CRDs
 - [ ] Metrics: reconciliation latency, success rate
 - [ ] Kubernetes RBAC permissions document
 - [ ] Multi-namespace support
@@ -474,7 +474,6 @@ curl http://localhost:9080/api/ingress/status
 
 - **ekub**: https://github.com/travelping/ekub (v0.2.0)
 - **K8s API**: https://kubernetes.io/docs/concepts/services-networking/ingress/
-- **rproxy reference**: `/Users/nat/projects/pertisk-tech/pertisk-rproxy/src/ingress/`
 - **Erlang Travelping libraries**: https://github.com/travelping
 
 ---

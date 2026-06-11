@@ -1,4 +1,4 @@
-%% @doc JSON-friendly metrics snapshot for the admin UI (rproxy-compatible subset).
+%% @doc JSON-friendly metrics snapshot for the admin UI.
 %%
 %% Request totals are derived from {@link pertisk_eproxy_metrics}: counter labels
 %% include `proto` (http1, tls_h1, h2, h3, grpc) so HTTP/3 and HTTP/2 are visible

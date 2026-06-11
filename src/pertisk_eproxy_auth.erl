@@ -311,7 +311,7 @@ new_token() ->
 is_local_session_token(<<"ept_", _/binary>>) -> true;
 is_local_session_token(_) -> false.
 
-%% Stateless ingress bearer (`ptskv1.…`), compatible with pertisk-rproxy.
+%% Stateless ingress bearer (`ptskv1.…`) for multi-replica admin auth.
 is_stateless_bearer_token(<<"ptskv1.", _/binary>>) -> true;
 is_stateless_bearer_token(_) -> false.
 

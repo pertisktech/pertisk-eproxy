@@ -38,7 +38,7 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site) -
     end.
 
 %% Successful health probes are skipped by default (k6 / kube probes at thousands of TPS).
-%% Disable all successful proxy access logs with proxy_access_log=false (ingress default; rproxy proxyLog).
+%% Disable all successful proxy access logs with proxy_access_log=false (ingress default).
 %% When disabled, 4xx/5xx are still logged for ops visibility.
 should_skip_hot_path(Path, Status) ->
     case proxy_access_log_enabled() of

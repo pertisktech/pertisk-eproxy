@@ -590,7 +590,7 @@ extract_cookie_value_segments([Seg | Rest], NameLower) ->
 -define(H3_SAFE_MAX_UDP_PAYLOAD_SIZE, 1472).
 %% Explicit h3_quic_pool_size: 0 in JSON means erlang_quic default (~1 acceptor).
 -define(H3_QUIC_POOL_ERLANG_DEFAULT, 0).
-%% Match pertisk-rproxy defaults (PERTISK_HTTP3_MAX_STREAMS / window env vars).
+%% Default HTTP/3 stream and window limits (overridable via config / env).
 -define(H3_MAX_STREAMS_DEFAULT, 2048).
 -define(H3_STREAM_RECV_WINDOW_DEFAULT, 8388608).
 -define(H3_CONN_RECV_WINDOW_DEFAULT, 67108864).
@@ -1824,11 +1824,11 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
             start_single_udp_listener(ServerName, Port, BaseOpts)
     end.
 
-%% Single [::] dual-stack socket on Linux (same model as pertisk-rproxy / Quinn / Node http3).
+%% Single [::] dual-stack socket on Linux (Quinn / Node http3 model).
 %% Must use gen_udp backend: the socket backend ignores extra_socket_opts for server sockets
 %% (open_socket_backend hardcodes `inet` family), so inet6/ipv6_v6only opts are silently
 %% dropped. gen_udp backend appends extra_socket_opts after the base `inet` flag so the
-%% last entry (inet6) wins, producing a dual-stack [::] socket identical to the Rust rproxy.
+%% last entry (inet6) wins, producing a dual-stack [::] socket.
 -define(UDP_RECV_BUF, 1048576).
 -define(UDP_SEND_BUF, 1048576).
 

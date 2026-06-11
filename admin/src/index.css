@@ -33,7 +33,7 @@
   --radius-lg: 14px;
   --radius-xl: 18px;
 
-  /* Tokens used by rproxy-derived UI (Sites modal, cards) — map to eProxy palette */
+  /* Tokens used by Sites modal, cards — eProxy palette */
   --bg: var(--color-surface);
   --bg-card: var(--color-card);
   --border: var(--color-border);
@@ -88,7 +88,7 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar (aligned with pertisk-rproxy admin) */
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

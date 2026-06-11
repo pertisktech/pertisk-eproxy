@@ -104,7 +104,7 @@ export interface ProxyConfig {
   tls_key_file?: string | null;
 }
 
-/** DNS provider row (rproxy-compatible shape; eProxy stores names in `dns_providers` only). */
+/** DNS provider row (eProxy stores names in `dns_providers` only). */
 const DNS_LABEL_PROVIDER_ID = 'label';
 
 /** Known DNS integration ids from `supportedDnsProviders.ts` (upgrade legacy string-only entries). */
@@ -254,7 +254,7 @@ export interface DnsProviderValidateResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Types — shared admin shell (rproxy-compatible subset)
+// Types — shared admin shell
 // ---------------------------------------------------------------------------
 
 export type Health = { status: string };

@@ -76,7 +76,7 @@ controller:
   config:
     mode: ingress
     http_addr: "0.0.0.0"
-    # Container ports (like pertisk-rproxy); Service still exposes 80/443/443-udp.
+    # Container ports; Service still exposes 80/443/443-udp.
     http_port: 8080
     https_port: 8443
     # UDP/TCP bind inside the pod; Service maps 443 → 8443.
@@ -108,7 +108,7 @@ controller:
     upstream_pool_idle_timeout_secs: 90
     upstream_request_timeout_ms: 180000
     # Per-request access log + Lager JSON (ring buffer + stderr). Disable for ingress throughput
-    # (same idea as pertisk-rproxy runtime.proxyLog: false). 4xx/5xx still logged when false.
+    # 4xx/5xx still logged when false.
     proxy_access_log: false
     health_cache_refresh_ms: 3000
     health_access_log: false
@@ -131,7 +131,7 @@ persistence:
   size: 1Gi
   mountPath: /opt/pertisk_eproxy/data
 
-# Admin auth for ingress management UI (env-based, no SQLite) — same model as pertisk-rproxy.
+# Admin auth for ingress management UI (env-based, no SQLite).
 auth:
   mode: both
   enabled: true

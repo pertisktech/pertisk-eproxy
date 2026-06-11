@@ -3,12 +3,12 @@
 **Ingress mode** uses Kubernetes manifests for routing (`networking.k8s.io/v1` Ingress + TLS Secrets).  
 **Proxy mode** uses SQLite (`data/proxy.db`) for sites/backends.
 
-Compared with [pertisk-rproxy `pertisk-ingress`](https://github.com/pertisktech/pertisk-rproxy/tree/main/deploy/helm/pertisk-ingress): same admin Ingress pattern; eproxy reconciles **standard Ingress only** (CRDs are examples for later).
+pertisk-eproxy reconciles **standard Ingress only** (CRD examples below are for future use).
 
-## Admin UI (pertisk-rproxy `pertisk-ingress-admin`)
+## Admin UI
 
 Standard `networking.k8s.io/v1` Ingress, `ingressClassName: pertisk-eproxy`, Service port **9080**.  
-The ingress image ships the admin SPA on `:9080` (same as pertisk-rproxy management UI).
+The ingress image ships the admin SPA on `:9080`.
 
 | File | Purpose |
 |------|---------|
@@ -54,7 +54,7 @@ kubectl apply -f ingress-example.yaml -n my-namespace
 
 ## CRD examples (not reconciled yet)
 
-Mirror pertisk-rproxy; install CRDs from rproxy chart if you want to experiment. The Erlang controller does **not** watch these yet.
+The controller does **not** watch CRDs yet; these manifests are examples only.
 
 ```bash
 kubectl apply -f pertisk-backend-example.yaml

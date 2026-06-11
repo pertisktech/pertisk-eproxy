@@ -1,6 +1,5 @@
 /**
- * Supported DNS provider field definitions (aligned with pertisk-rproxy
- * `supported_dns_providers()` in src/api/mod.rs) for the admin UI.
+ * Supported DNS provider field definitions for the admin UI.
  * eProxy runs ACME DNS-01 automatically when provider type is `cloudflare`,
  * `digitalocean`, `vultr`, `porkbun`, `linode`, `hetzner`, `desec`, `gandi`, `powerdns`, or `duckdns`, and the site
  * uses Auto SSL (DNS-01 + contact email, no certificate label yet), and

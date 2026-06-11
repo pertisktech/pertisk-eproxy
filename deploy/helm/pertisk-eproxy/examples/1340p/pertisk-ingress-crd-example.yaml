@@ -1,5 +1,5 @@
 # PertiskIngress CRD (not reconciled by Erlang controller yet — documentation only).
-# See pertisk-rproxy deploy/helm/pertisk-ingress for a working CRD controller.
+# CRD example — not reconciled by pertisk-eproxy yet.
 apiVersion: proxy.pertisk.tech/v1alpha1
 kind: PertiskIngress
 metadata:

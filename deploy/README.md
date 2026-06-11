@@ -1,6 +1,6 @@
 # Deploy
 
-Helm chart: [`helm/pertisk-eproxy`](helm/pertisk-eproxy/) (mirrors [pertisk-rproxy `pertisk-ingress`](https://github.com/pertisktech/pertisk-rproxy/tree/main/deploy/helm/pertisk-ingress)).
+Helm chart: [`helm/pertisk-eproxy`](helm/pertisk-eproxy/).
 
 Environment-specific wrappers build the ingress image and run `helm upgrade --install`:
 

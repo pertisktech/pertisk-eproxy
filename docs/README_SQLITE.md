@@ -311,7 +311,6 @@ MIT OR Apache-2.0
 
 ## See Also
 
-- **Reference Project**: `/Users/nat/projects/pertisk-tech/pertisk-rproxy` (Rust + admin UI)
 - **Cowboy**: https://ninenines.eu/docs/en/cowboy/2.12/manual/
 - **Gun**: http://ninenines.eu/docs/en/gun/2.1/manual/
 - **Lager**: https://github.com/erlang-lager/lager

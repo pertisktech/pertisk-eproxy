@@ -18,7 +18,7 @@
 
 -define(SERVER, ?MODULE).
 -define(DEFAULT_POOL_SIZE, 256).
-%% 90 seconds — match pertisk-rproxy PERTISK_UPSTREAM_POOL_IDLE_TIMEOUT_SECS.
+%% 90 seconds — default upstream pool idle timeout.
 -define(DEFAULT_IDLE_TIMEOUT_MS, 90000).
 %% Sweep interval: evict stale connections proactively every minute.
 -define(SWEEP_INTERVAL_MS, 60000).

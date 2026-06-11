@@ -183,7 +183,7 @@ function LayoutShell() {
 
   useEffect(() => {
     const effectiveAuthMethod = authMethod ?? detectAuthMethodFromToken(getToken());
-    /* Match pertisk-rproxy: only opaque local sessions use POST /api/auth/refresh. SSO uses the Auth0 JWT as-is;
+    /* Only opaque local sessions use POST /api/auth/refresh. SSO uses the Auth0 JWT as-is;
        periodic backend refresh for JWTs can 401 (verify/JWKS edge cases) and clear the session → login loop. */
     const useBackendRefresh = effectiveAuthMethod === 'local';
     if (!loggedIn || !sessionVerified || !useBackendRefresh) {

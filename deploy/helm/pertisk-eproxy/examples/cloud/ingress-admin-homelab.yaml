@@ -1,4 +1,4 @@
-# Standard Ingress: admin UI on management port 9080 (same idea as pertisk-rproxy pertisk-ingress-admin).
+# Standard Ingress: admin UI on management port 9080.
 # Apply after Helm install: kubectl apply -f ingress-admin-homelab.yaml -n pertisk-eproxy
 # Set backend service name to your release Service (kubectl get svc -n pertisk-eproxy).
 # TLS: use cert-manager + Cloudflare DNS (see cert-manager-README.md); then uncomment the tls block below.

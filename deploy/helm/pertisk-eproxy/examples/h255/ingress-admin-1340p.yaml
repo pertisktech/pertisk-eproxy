@@ -1,4 +1,4 @@
-# Same pattern as pertisk-rproxy 1340p admin Ingress (networking.k8s.io/v1).
+# Admin Ingress for 1340p-style host (networking.k8s.io/v1).
 # Apply after Helm install; DNS must point at the controller Service/LB.
 # Service name must match the chart Service (default release name: pertisk-eproxy).
 ---

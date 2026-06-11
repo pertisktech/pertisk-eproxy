@@ -2,8 +2,6 @@
 
 Helm chart for [pertisk-eproxy](https://github.com/pertisktech/pertisk-eproxy) in **ingress mode**: watches Kubernetes `Ingress` resources and TLS `Secret`s, hot-reloads routes and certificates (ekub). Management API is read-only.
 
-Mirrors the layout of [pertisk-rproxy `deploy/helm/pertisk-ingress`](https://github.com/pertisktech/pertisk-rproxy/tree/main/deploy/helm/pertisk-ingress).
-
 ## Prerequisites
 
 - Kubernetes 1.19+
@@ -61,7 +59,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 
 Environment variables on the pod: `PERTISK_MODE=ingress`, `PERTISK_CONFIG_FILE`, `PERTISK_K8S_*`, `PERTISK_HELM_*` (see `pertisk_ingress_env`).
 
-### Ports (same idea as pertisk-rproxy)
+### Ports
 
 | Where | HTTP | HTTPS | HTTP/3 | Management |
 |-------|------|-------|--------|------------|
@@ -123,12 +121,12 @@ kubectl auth can-i list pods \
 
 If `can-i` is `no`, apply the chart again or check `rbac.create: true` in values.
 
-## Differences from pertisk-rproxy chart
+## Chart notes
 
-| | rproxy `pertisk-ingress` | eproxy `pertisk-eproxy` |
-|--|--------------------------|-------------------------|
-| CRDs | Optional PertiskBackend/Ingress | Not included (standard Ingress only) |
-| Metrics | Dedicated `:9090` (`GET /metrics`) | Same (`GET /metrics` on `:9090`; legacy `GET /api/metrics` on management) |
-| Probes | `/live`, `/ready` | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
-| Auth secret | `PERTISK_ADMIN` / `PERTISK_PASSWORD` (+ optional Auth0) | Same as pertisk-rproxy: local login and/or SSO; stateless `ptskv1` bearer tokens across replicas |
-| Listen ports | 8080 / 8443 in container | 80 / 443 (configurable via `controller.config`) |
+| Feature | pertisk-eproxy |
+|---------|----------------|
+| CRDs | Not included (standard Ingress only; CRD examples in `examples/`) |
+| Metrics | Dedicated `:9090` (`GET /metrics`; legacy `GET /api/metrics` on management) |
+| Probes | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
+| Auth secret | `PERTISK_ADMIN` / `PERTISK_PASSWORD` (+ optional Auth0); stateless `ptskv1` bearer tokens across replicas |
+| Listen ports | 8080 / 8443 in container (configurable via `controller.config`) |
