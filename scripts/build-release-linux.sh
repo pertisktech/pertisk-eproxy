@@ -9,8 +9,20 @@ COWBOY_QUIC="${COWBOY_QUIC:-1}"
 ERLANG_BUILD_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
 RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-0}"
 RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-}"
-BUILD_CACHE_VOLUME="${BUILD_CACHE_VOLUME:-pertisk-eproxy-linux-build}"
-DEPS_CACHE_VOLUME="${DEPS_CACHE_VOLUME:-pertisk-eproxy-linux-deps}"
+cache_volume_suffix() {
+  local platform="${RELEASE_BUILD_PLATFORM:-}"
+  platform="${platform#linux/}"
+  if [ -n "$platform" ]; then
+    printf '%s' "$platform"
+  elif [ "$(uname -s)" = "Linux" ]; then
+    uname -m
+  else
+    printf 'docker'
+  fi
+}
+
+BUILD_CACHE_VOLUME="${BUILD_CACHE_VOLUME:-pertisk-eproxy-linux-build-$(cache_volume_suffix)}"
+DEPS_CACHE_VOLUME="${DEPS_CACHE_VOLUME:-pertisk-eproxy-linux-deps-$(cache_volume_suffix)}"
 # +JMsingle: QEMU/emulated amd64 builds (Apple Silicon); -noinput: no TTY in CI/Docker.
 ERL_FLAGS="${ERL_FLAGS:-+JMsingle true -noshell -noinput}"
 ERL_AFLAGS="${ERL_AFLAGS:--noshell -noinput}"
@@ -42,31 +54,36 @@ prepare_and_release() {
   bash scripts/verify-release-quic.sh "$ROOT_DIR"
 }
 
-# Copy release from Docker volume-backed _build to the host bind mount.
+# Tar the release onto the host bind mount. Snapshot on the Linux volume first so relx
+# post-steps cannot mutate files mid-archive; host install unpacks the tarball.
 stage_linux_release_export() {
   cd "$ROOT_DIR"
   local REL_SRC="_build/prod/rel/pertisk_eproxy"
-  local REL_STAGE="_release_export/prod/rel/pertisk_eproxy"
+  local REL_STAGE="_build/.release-export/pertisk_eproxy"
+  local REL_TAR="_release_export/pertisk_eproxy.tgz"
   if [ ! -d "$REL_SRC" ]; then
     echo "stage_linux_release_export: release missing at $REL_SRC" >&2
     exit 1
   fi
-  rm -rf "_release_export"
-  mkdir -p "$(dirname "$REL_STAGE")"
+  rm -rf "_build/.release-export" "_release_export"
+  mkdir -p "_build/.release-export" "_release_export"
   cp -a "$REL_SRC" "$REL_STAGE"
-  echo "stage_linux_release_export: ok ($REL_STAGE)"
+  sync
+  tar -C "_build/.release-export" -czf "$REL_TAR" pertisk_eproxy
+  rm -rf "_build/.release-export"
+  echo "stage_linux_release_export: ok ($REL_TAR)"
 }
 
 install_staged_release_on_host() {
-  local REL_STAGE="$ROOT_DIR/_release_export/prod/rel/pertisk_eproxy"
+  local REL_TAR="$ROOT_DIR/_release_export/pertisk_eproxy.tgz"
   local REL_DST="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
-  if [ ! -d "$REL_STAGE" ]; then
-    echo "install_staged_release_on_host: staged release missing at $REL_STAGE" >&2
+  if [ ! -f "$REL_TAR" ]; then
+    echo "install_staged_release_on_host: staged tarball missing at $REL_TAR" >&2
     exit 1
   fi
   mkdir -p "$(dirname "$REL_DST")"
   rm -rf "$REL_DST"
-  cp -a "$REL_STAGE" "$REL_DST"
+  tar -xzf "$REL_TAR" -C "$(dirname "$REL_DST")"
   rm -rf "$ROOT_DIR/_release_export"
   echo "install_staged_release_on_host: ok ($REL_DST)"
 }
@@ -137,8 +154,34 @@ if [ "${1:-}" = "docker-inner" ]; then
   exit 0
 fi
 
+host_matches_release_platform() {
+  local want_cpu host_cpu
+  [ -n "$RELEASE_BUILD_PLATFORM" ] || return 0
+  want_cpu="${RELEASE_BUILD_PLATFORM#linux/}"
+  host_cpu="$(uname -m)"
+  case "$want_cpu" in
+    amd64|x86_64)
+      case "$host_cpu" in
+        x86_64|amd64) return 0 ;;
+      esac
+      ;;
+    arm64|aarch64)
+      case "$host_cpu" in
+        aarch64|arm64) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
 if [ "$RELEASE_BUILD_FORCE_DOCKER" = "1" ]; then
   echo "RELEASE_BUILD_FORCE_DOCKER=1 set: building release in Docker"
+  build_docker
+  exit 0
+fi
+
+if [ -n "$RELEASE_BUILD_PLATFORM" ] && ! host_matches_release_platform; then
+  echo "Cross-building release for $RELEASE_BUILD_PLATFORM on $(uname -m)/$(uname -s)"
   build_docker
   exit 0
 fi

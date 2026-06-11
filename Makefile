@@ -90,6 +90,11 @@ release:
 	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
 	@COWBOY_QUICER=1 COWBOY_QUIC=1 bash scripts/build-release-linux.sh
 
+## Linux x86_64 release (required for .rpm/.deb amd64 packages from macOS or Linux arm64).
+release-amd64:
+	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
+	@COWBOY_QUICER=1 COWBOY_QUIC=1 RELEASE_BUILD_PLATFORM=linux/amd64 bash scripts/build-release-linux.sh
+
 docker-buildx-multi-builder:
 	@if ! docker buildx inspect $(BUILDX_MULTI_BUILDER) >/dev/null 2>&1; then \
 		docker buildx create --name $(BUILDX_MULTI_BUILDER) --driver docker-container >/dev/null; \
@@ -179,12 +184,12 @@ tls-smoke: compile
 	@erl -pa scripts -pa _build/default/lib/pertisk_eproxy/ebin -pa _build/default/lib/*/ebin \
 		-noshell -eval "tls_pem_smoke:run(\"$${PEM:-priv/tls/listener.pem}\"), init:stop()."
 
-package-deb-amd64: release
+package-deb-amd64: release-amd64
 	@bash scripts/build-deb-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-deb-x86_64: package-deb-amd64
 
-package-rpm-amd64: release
+package-rpm-amd64: release-amd64
 	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-rpm-x86_64: package-rpm-amd64

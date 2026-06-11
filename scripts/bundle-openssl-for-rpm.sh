@@ -5,7 +5,12 @@ set -euo pipefail
 
 DEST_ROOT="${1:?usage: bundle-openssl-for-rpm.sh /path/to/pkg/opt/pertisk-eproxy}"
 ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
+ERLANG_BUILD_PLATFORM="${ERLANG_BUILD_PLATFORM:-}"
 OUT_DIR="${DEST_ROOT}/lib/openssl"
+PLATFORM_OPT=()
+if [ -n "$ERLANG_BUILD_PLATFORM" ]; then
+  PLATFORM_OPT=(--platform "$ERLANG_BUILD_PLATFORM")
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "bundle-openssl-for-rpm: docker required" >&2
@@ -17,6 +22,7 @@ rm -f "${OUT_DIR}"/libcrypto.so* "${OUT_DIR}"/libssl.so* 2>/dev/null || true
 
 echo "bundle-openssl-for-rpm: copying libs from ${ERLANG_IMAGE} -> ${OUT_DIR}"
 docker run --rm \
+  ${PLATFORM_OPT[@]+"${PLATFORM_OPT[@]}"} \
   -v "${OUT_DIR}:/out:rw" \
   "${ERLANG_IMAGE}" \
   bash -lc '

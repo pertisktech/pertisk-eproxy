@@ -6,6 +6,8 @@ VERSION="${2:-0.1.0}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL_SRC="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
+ERLANG_BUILD_PLATFORM="${ERLANG_BUILD_PLATFORM:-linux/amd64}"
+export ERLANG_BUILD_PLATFORM
 OUT_DIR="$ROOT_DIR/release"
 WORK_DIR="$ROOT_DIR/_build/package-rpm-amd64"
 PKG_ROOT="$WORK_DIR/pkg"
@@ -60,9 +62,11 @@ patch_release_wrapper_ld_library_path() {
 }
 
 if [ ! -d "$REL_SRC" ]; then
-  echo "Release directory not found at $REL_SRC. Run 'make release' first." >&2
+  echo "Release directory not found at $REL_SRC. Run 'make release-amd64' first." >&2
   exit 1
 fi
+
+bash "$ROOT_DIR/scripts/verify-release-arch.sh" "$REL_SRC" x86_64
 
 rm -rf "$WORK_DIR"
 mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"

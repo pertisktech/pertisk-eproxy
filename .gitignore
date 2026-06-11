@@ -42,4 +42,5 @@ migrations/
 # meck + cover can drop these in the repo root during eunit --cover
 *.coverdata
 *_meck_original.*.coverdata
+_release_export/
 
