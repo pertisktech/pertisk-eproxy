@@ -115,21 +115,91 @@ ensure_health_cache() ->
             timer:sleep(300)
     end.
 
+stop_config_if_running() ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        Pid ->
+            catch gen_server:stop(Pid, normal, 5000),
+            wait_config_stopped(30)
+    end.
+
+wait_config_stopped(0) ->
+    ok;
+wait_config_stopped(N) ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        _ ->
+            timer:sleep(50),
+            wait_config_stopped(N - 1)
+    end.
+
+init_tmp_db(DbPath) ->
+    init_tmp_db(DbPath, 8).
+
+init_tmp_db(DbPath, 0) ->
+    pertisk_eproxy_db:init(DbPath);
+init_tmp_db(DbPath, Retries) ->
+    case pertisk_eproxy_db:init(DbPath) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, {sqlite_error, Msg, _}} when Retries > 0 ->
+            case sqlite_locked_msg(Msg) of
+                true ->
+                    timer:sleep(75),
+                    init_tmp_db(DbPath, Retries - 1);
+                false ->
+                    {error, {sqlite_error, Msg, locked}}
+            end;
+        Other ->
+            Other
+    end.
+
+sqlite_locked_msg(Msg) when is_binary(Msg) ->
+    binary:match(Msg, <<"locked">>) =/= nomatch;
+sqlite_locked_msg(Msg) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+sqlite_locked_msg(_) ->
+    false.
+
+dispatch_put_config(Body) ->
+    dispatch_put_config(Body, 8).
+
+dispatch_put_config(Body, 0) ->
+    dispatch(<<"PUT">>, <<"/api/config">>, Body);
+dispatch_put_config(Body, Retries) ->
+    case dispatch(<<"PUT">>, <<"/api/config">>, Body) of
+        {ok, 400, Hdrs, Resp} when Retries > 0 ->
+            case binary:match(Resp, <<"locked">>) of
+                nomatch ->
+                    {ok, 400, Hdrs, Resp};
+                _ ->
+                    timer:sleep(75),
+                    dispatch_put_config(Body, Retries - 1)
+            end;
+        Other ->
+            Other
+    end.
+
 with_tmp_db(Fun) ->
     DbPath = pertisk_eproxy_test_helpers:tmp_db(),
     file:delete(DbPath),
     OldDb = application:get_env(pertisk_eproxy, db_file),
+    stop_config_if_running(),
     application:set_env(pertisk_eproxy, db_file, DbPath),
-    ensure_env(),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_tmp_db(DbPath)),
+        ensure_env(),
         Fun(DbPath)
     after
+        stop_config_if_running(),
         case OldDb of
             {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
             undefined -> application:unset_env(pertisk_eproxy, db_file)
         end,
-        file:delete(DbPath)
+        file:delete(DbPath),
+        ensure_env()
     end.
 
 with_auth_server(Fun) ->
@@ -2875,7 +2945,7 @@ api_config_get_includes_tls_quic_fields_test() ->
             <<"tls_http2_enabled">> => false,
             <<"h3_probe_port">> => 9443
         }),
-        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Put)),
+        ?assertMatch({ok, 200, _, _}, dispatch_put_config(Put)),
         {ok, 200, _, Body2} = dispatch(<<"GET">>, <<"/api/config">>),
         {ok, Updated} = thoas:decode(Body2),
         ?assertEqual(443, maps:get(<<"https_port">>, Updated)),
