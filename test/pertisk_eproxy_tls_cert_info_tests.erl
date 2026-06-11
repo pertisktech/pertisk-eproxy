@@ -34,25 +34,73 @@ listener_cert_rows_returns_list_test() ->
     Result = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
     ?assert(is_list(Result)).
 
-listener_cert_rows_with_listener_fixture_test() ->
-    StartedHere = ensure_config_started(),
+with_config(Fun) ->
+    application:ensure_all_started(lager),
+    Started = case whereis(pertisk_eproxy_config) of
+        undefined ->
+            {ok, _} = pertisk_eproxy_config:start_link(),
+            true;
+        _ ->
+            false
+    end,
     BaseConfig = pertisk_eproxy_config:get_config(),
     BaseSites = pertisk_eproxy_config:get_sites(),
+    BaseBackends = pertisk_eproxy_config:get_backends(),
+    try
+        Fun()
+    after
+        _ = catch pertisk_eproxy_config:put_config(BaseConfig),
+        catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
+        maybe_stop_config(Started)
+    end.
+
+with_tmp_db_config(Fun) ->
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        with_config(fun() ->
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            Fun()
+        end)
+    after
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
+    end.
+
+maybe_stop_config(true) ->
+    case whereis(pertisk_eproxy_config) of
+        undefined -> ok;
+        Pid -> gen_server:stop(Pid)
+    end;
+maybe_stop_config(_) ->
+    ok.
+
+listener_cert_rows_with_listener_fixture_test() ->
     CertPath = listener_pem_path(),
     KeyPath = listener_key_path(),
     {ok, Info} = pertisk_eproxy_tls_cert_info:describe_listener_pem(CertPath),
     [SiteHost | _] = maps:get(hosts, Info),
-    Config = BaseConfig#{
-        tls_cert_file => CertPath,
-        tls_key_file => KeyPath
-    },
-    Sites = [#{
-        host => SiteHost,
-        backend => <<"web">>,
-        certificate => <<"listener-tls">>,
-        routes => [#{path => <<"/">>, path_type => prefix}]
-    }],
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [#{
+            host => SiteHost,
+            backend => <<"web">>,
+            certificate => <<"listener-tls">>,
+            routes => [#{path => <<"/">>, path_type => prefix}]
+        }],
         ok = pertisk_eproxy_config:put_config(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
@@ -60,32 +108,7 @@ listener_cert_rows_with_listener_fixture_test() ->
         ?assertEqual([SiteHost], maps:get(<<"sites">>, Row)),
         ?assert(is_list(maps:get(<<"hosts">>, Row))),
         ?assert(is_binary(maps:get(<<"issuer">>, Row)))
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        ok = pertisk_eproxy_config:sync_ingress(BaseSites, []),
-        maybe_stop_config(StartedHere)
-    end.
-
-ensure_config_started() ->
-    application:ensure_all_started(lager),
-    case whereis(pertisk_eproxy_config) of
-        undefined ->
-            {ok, _} = pertisk_eproxy_config:start_link(),
-            true;
-        _ ->
-            false
-    end.
-
-maybe_stop_config(true) ->
-    case whereis(pertisk_eproxy_config) of
-        undefined -> ok;
-        Pid ->
-            unlink(Pid),
-            exit(Pid, shutdown),
-            ok
-    end;
-maybe_stop_config(false) ->
-    ok.
+    end).
 
 listener_pem_path() ->
     filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]).
@@ -94,110 +117,111 @@ listener_key_path() ->
     filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]).
 
 listener_cert_rows_missing_paths_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    Config = maps:without([tls_cert_file, tls_key_file], BaseConfig),
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = maps:without([tls_cert_file, tls_key_file], BaseConfig),
         ok = pertisk_eproxy_config:put_config(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 listener_cert_rows_unreadable_pem_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
     Tmp = tmp_garbage_pem(),
-    Config = BaseConfig#{
-        tls_cert_file => Tmp,
-        tls_key_file => Tmp
-    },
     try
-        ok = pertisk_eproxy_config:put_config(Config),
-        ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
+        with_tmp_db_config(fun() ->
+            BaseConfig = pertisk_eproxy_config:get_config(),
+            Config = BaseConfig#{
+                tls_cert_file => Tmp,
+                tls_key_file => Tmp,
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => []
+            },
+            ok = pertisk_eproxy_config:put_config(Config),
+            ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
+        end)
     after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        file:delete(Tmp),
-        maybe_stop_config(StartedHere)
+        file:delete(Tmp)
     end.
 
 listener_cert_rows_site_cert_list_id_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    BaseSites = pertisk_eproxy_config:get_sites(),
     CertPath = listener_pem_path(),
     KeyPath = listener_key_path(),
     {ok, Info} = pertisk_eproxy_tls_cert_info:describe_listener_pem(CertPath),
     [SiteHost | _] = maps:get(hosts, Info),
-    Config = BaseConfig#{
-        tls_cert_file => CertPath,
-        tls_key_file => KeyPath
-    },
-    Sites = [#{
-        host => SiteHost,
-        backend => <<"web">>,
-        certificate => "listener-tls",
-        routes => [#{path => <<"/">>, path_type => prefix}]
-    }],
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [#{
+            host => SiteHost,
+            backend => <<"web">>,
+            certificate => "listener-tls",
+            routes => [#{path => <<"/">>, path_type => prefix}]
+        }],
         ok = pertisk_eproxy_config:put_config(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([SiteHost], maps:get(<<"sites">>, Row))
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        ok = pertisk_eproxy_config:sync_ingress(BaseSites, []),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 listener_cert_rows_empty_cert_paths_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    Config = BaseConfig#{tls_cert_file => <<>>, tls_key_file => <<>>},
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => <<>>,
+            tls_key_file => <<>>,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
         ok = pertisk_eproxy_config:put_config(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 listener_cert_rows_empty_list_paths_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    Config = BaseConfig#{tls_cert_file => [], tls_key_file => []},
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => [],
+            tls_key_file => [],
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
         ok = pertisk_eproxy_config:put_config(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 listener_cert_rows_ignores_null_certificate_site_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    BaseSites = pertisk_eproxy_config:get_sites(),
     CertPath = listener_pem_path(),
     KeyPath = listener_key_path(),
-    Config = BaseConfig#{
-        tls_cert_file => CertPath,
-        tls_key_file => KeyPath
-    },
-    Sites = [
-        #{host => <<"orphan.example">>, backend => <<"web">>, certificate => null, routes => []}
-    ],
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [
+            #{host => <<"orphan.example">>, backend => <<"web">>, certificate => null, routes => []}
+        ],
         ok = pertisk_eproxy_config:put_config(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([], maps:get(<<"sites">>, Row))
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        ok = pertisk_eproxy_config:sync_ingress(BaseSites, []),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 describe_pem_data_placeholder_hosts_test() ->
     Pem = placeholder_cert_pem(),
@@ -252,33 +276,31 @@ describe_pem_data_long_validity_general_time_test() ->
     ?assert(byte_size(maps:get(not_after, Info)) > 0).
 
 listener_cert_rows_site_list_host_test() ->
-    StartedHere = ensure_config_started(),
-    BaseConfig = pertisk_eproxy_config:get_config(),
-    BaseSites = pertisk_eproxy_config:get_sites(),
     CertPath = listener_pem_path(),
     KeyPath = listener_key_path(),
     {ok, Info} = pertisk_eproxy_tls_cert_info:describe_listener_pem(CertPath),
     [SiteHost | _] = maps:get(hosts, Info),
-    Config = BaseConfig#{
-        tls_cert_file => CertPath,
-        tls_key_file => KeyPath
-    },
-    Sites = [#{
-        host => binary_to_list(SiteHost),
-        backend => <<"web">>,
-        certificate => <<"listener-tls">>,
-        routes => []
-    }],
-    try
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [#{
+            host => binary_to_list(SiteHost),
+            backend => <<"web">>,
+            certificate => <<"listener-tls">>,
+            routes => []
+        }],
         ok = pertisk_eproxy_config:put_config(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([SiteHost], maps:get(<<"sites">>, Row))
-    after
-        ok = pertisk_eproxy_config:put_config(BaseConfig),
-        ok = pertisk_eproxy_config:sync_ingress(BaseSites, []),
-        maybe_stop_config(StartedHere)
-    end.
+    end).
 
 tmp_garbage_pem() ->
     Path = filename:join([
