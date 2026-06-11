@@ -289,16 +289,16 @@ The built SPA is shipped under `priv/admin/`. Rebuild after UI changes:
 cd admin && npm ci && npm run build
 ```
 
-## Erlang API reference (EDoc)
+## Documentation
 
-Generate HTML module documentation from `%% @doc` comments in `src/`:
+Guides and API reference (ExDoc, [Diátaxis](https://diataxis.fr/) layout — same style as [Livery](https://benoitc.github.io/livery/api/readme.html)):
 
 ```bash
 make docs
 open doc/index.html
 ```
 
-Source overview: `doc/overview.edoc`. Generated HTML under `doc/` is gitignored.
+Markdown sources live in `docs/`. Published site: `https://pertisktech.github.io/pertisk-eproxy/` (when GitHub Pages is enabled).
 
 ## Further reading
 

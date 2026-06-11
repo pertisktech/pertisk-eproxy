@@ -15,9 +15,8 @@ deps
 .rebar3
 _build/
 
-# EDoc HTML (source: doc/overview.edoc)
-doc/*
-!doc/overview.edoc
+# ex_doc HTML (sources: docs/*.md)
+doc/
 _checkouts/*
 log/
 data/

@@ -76,10 +76,10 @@ dialyzer:
 	$(REBAR) dialyzer
 
 docs: compile
-	$(REBAR) edoc
+	$(REBAR) ex_doc
 
 docs-clean:
-	@find doc -mindepth 1 -maxdepth 1 ! -name 'overview.edoc' -exec rm -rf {} +
+	rm -rf doc
 
 clean: docs-clean
 	$(REBAR) clean
