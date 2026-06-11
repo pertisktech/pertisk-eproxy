@@ -22,6 +22,7 @@
         ssl,
         inets,
         quic,
+        cowlib,
         cowboy,
         gun,
         thoas,

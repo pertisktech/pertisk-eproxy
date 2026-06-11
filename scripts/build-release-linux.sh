@@ -9,11 +9,30 @@ COWBOY_QUIC="${COWBOY_QUIC:-1}"
 ERLANG_BUILD_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
 RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-0}"
 RELEASE_BUILD_PLATFORM="${RELEASE_BUILD_PLATFORM:-}"
+BUILD_CACHE_VOLUME="${BUILD_CACHE_VOLUME:-pertisk-eproxy-linux-build}"
+DEPS_CACHE_VOLUME="${DEPS_CACHE_VOLUME:-pertisk-eproxy-linux-deps}"
+# +JMsingle: QEMU/emulated amd64 builds (Apple Silicon); -noinput: no TTY in CI/Docker.
+ERL_FLAGS="${ERL_FLAGS:-+JMsingle true -noshell -noinput}"
+ERL_AFLAGS="${ERL_AFLAGS:--noshell -noinput}"
+
+clean_build_tree() {
+  # tmpfs mounts at _build/deps cannot be removed; only their contents.
+  if [ -d _build ] && mountpoint -q _build 2>/dev/null; then
+    find _build -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  elif [ -e _build ]; then
+    rm -rf _build
+  fi
+  if [ -d deps ] && mountpoint -q deps 2>/dev/null; then
+    find deps -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  elif [ -e deps ]; then
+    rm -rf deps
+  fi
+}
 
 prepare_and_release() {
   cd "$ROOT_DIR"
   # Never reuse host _build/ in Docker (macOS beams break relx xref on Linux). Same as docker/Dockerfile.proxy.
-  rm -rf _build deps
+  clean_build_tree
   rebar3 get-deps
   bash scripts/patch-ekub.sh
   bash scripts/patch-quic.sh
@@ -23,8 +42,84 @@ prepare_and_release() {
   bash scripts/verify-release-quic.sh "$ROOT_DIR"
 }
 
+# Copy release from Docker volume-backed _build to the host bind mount.
+stage_linux_release_export() {
+  cd "$ROOT_DIR"
+  local REL_SRC="_build/prod/rel/pertisk_eproxy"
+  local REL_STAGE="_release_export/prod/rel/pertisk_eproxy"
+  if [ ! -d "$REL_SRC" ]; then
+    echo "stage_linux_release_export: release missing at $REL_SRC" >&2
+    exit 1
+  fi
+  rm -rf "_release_export"
+  mkdir -p "$(dirname "$REL_STAGE")"
+  cp -a "$REL_SRC" "$REL_STAGE"
+  echo "stage_linux_release_export: ok ($REL_STAGE)"
+}
+
+install_staged_release_on_host() {
+  local REL_STAGE="$ROOT_DIR/_release_export/prod/rel/pertisk_eproxy"
+  local REL_DST="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
+  if [ ! -d "$REL_STAGE" ]; then
+    echo "install_staged_release_on_host: staged release missing at $REL_STAGE" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$REL_DST")"
+  rm -rf "$REL_DST"
+  cp -a "$REL_STAGE" "$REL_DST"
+  rm -rf "$ROOT_DIR/_release_export"
+  echo "install_staged_release_on_host: ok ($REL_DST)"
+}
+
 build_local() {
+  export ERL_FLAGS="${ERL_FLAGS}"
+  export ERL_AFLAGS="${ERL_AFLAGS}"
   prepare_and_release
+}
+
+maybe_reset_build_volumes() {
+  if [ "${RELEASE_BUILD_CLEAN:-0}" = "1" ]; then
+    echo "RELEASE_BUILD_CLEAN=1: removing Docker build volumes"
+    docker volume rm -f "$BUILD_CACHE_VOLUME" "$DEPS_CACHE_VOLUME" >/dev/null 2>&1 || true
+  fi
+  docker volume create "$BUILD_CACHE_VOLUME" >/dev/null
+  docker volume create "$DEPS_CACHE_VOLUME" >/dev/null
+}
+
+docker_build_release() {
+  local PLATFORM_OPT=()
+  if [ -n "$RELEASE_BUILD_PLATFORM" ]; then
+    echo "Using Docker platform: $RELEASE_BUILD_PLATFORM"
+    PLATFORM_OPT=(--platform "$RELEASE_BUILD_PLATFORM")
+  fi
+
+  maybe_reset_build_volumes
+
+  # Linux-native Docker volumes for _build/deps (bind-mounting from macOS causes partial
+  # compiles: unicode_util_compat ebin ENOENT, relx {missing_module,cow_http_hd}).
+  # shellcheck disable=SC2086
+  docker run --rm \
+    ${PLATFORM_OPT[@]+"${PLATFORM_OPT[@]}"} \
+    -v "$ROOT_DIR:/src" \
+    -v "$BUILD_CACHE_VOLUME:/src/_build" \
+    -v "$DEPS_CACHE_VOLUME:/src/deps" \
+    -w /src \
+    -e COWBOY_QUICER="$COWBOY_QUICER" \
+    -e COWBOY_QUIC="$COWBOY_QUIC" \
+    -e ERL_FLAGS="$ERL_FLAGS" \
+    -e ERL_AFLAGS="$ERL_AFLAGS" \
+    "$ERLANG_BUILD_IMAGE" \
+    bash -lc '
+      set -euo pipefail
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev util-linux
+      export COWBOY_QUICER="'"$COWBOY_QUICER"'"
+      export COWBOY_QUIC="'"$COWBOY_QUIC"'"
+      export ERL_FLAGS="'"$ERL_FLAGS"'"
+      export ERL_AFLAGS="'"$ERL_AFLAGS"'"
+      bash scripts/build-release-linux.sh docker-inner
+    '
 }
 
 build_docker() {
@@ -32,46 +127,13 @@ build_docker() {
     echo "Docker is required to build a Linux release on $(uname -s)." >&2
     exit 1
   fi
-
-  if [ -n "$RELEASE_BUILD_PLATFORM" ]; then
-    echo "Using Docker platform: $RELEASE_BUILD_PLATFORM"
-    docker run --rm \
-      --platform "$RELEASE_BUILD_PLATFORM" \
-      -v "$ROOT_DIR:/src" \
-      -w /src \
-      -e COWBOY_QUICER="$COWBOY_QUICER" \
-      -e COWBOY_QUIC="$COWBOY_QUIC" \
-      "$ERLANG_BUILD_IMAGE" \
-      bash -lc '
-        set -euo pipefail
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev
-        export COWBOY_QUICER="'"$COWBOY_QUICER"'"
-        export COWBOY_QUIC="'"$COWBOY_QUIC"'"
-        bash scripts/build-release-linux.sh docker-inner
-      '
-  else
-    docker run --rm \
-      -v "$ROOT_DIR:/src" \
-      -w /src \
-      -e COWBOY_QUICER="$COWBOY_QUICER" \
-      -e COWBOY_QUIC="$COWBOY_QUIC" \
-      "$ERLANG_BUILD_IMAGE" \
-      bash -lc '
-        set -euo pipefail
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev
-        export COWBOY_QUICER="'"$COWBOY_QUICER"'"
-        export COWBOY_QUIC="'"$COWBOY_QUIC"'"
-        bash scripts/build-release-linux.sh docker-inner
-      '
-  fi
+  docker_build_release
+  install_staged_release_on_host
 }
 
 if [ "${1:-}" = "docker-inner" ]; then
   prepare_and_release
+  stage_linux_release_export
   exit 0
 fi
 
