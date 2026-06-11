@@ -72,3 +72,47 @@ configure_sets_ingress_auth_test() ->
         ?assertEqual(ok, pertisk_eproxy_env_auth:configure()),
         ?assert(pertisk_eproxy_env_auth:supports_local())
     end).
+
+auth_mode_atom_and_login_required_test() ->
+    with_creds(fun() ->
+        ok = pertisk_eproxy_env_auth:configure(),
+        ?assertEqual(both, pertisk_eproxy_env_auth:auth_mode_atom()),
+        ?assert(pertisk_eproxy_env_auth:login_required()),
+        ?assert(pertisk_eproxy_env_auth:supports_local()),
+        ?assertNot(pertisk_eproxy_env_auth:supports_sso())
+    end).
+
+configure_without_creds_disables_login_test() ->
+    OldAdmin = os:getenv("PERTISK_ADMIN"),
+    OldPass = os:getenv("PERTISK_PASSWORD"),
+    os:unsetenv("PERTISK_ADMIN"),
+    os:unsetenv("PERTISK_PASSWORD"),
+    try
+        application:ensure_all_started(lager),
+        ?assertEqual(ok, pertisk_eproxy_env_auth:configure()),
+        ?assertNot(pertisk_eproxy_env_auth:login_required())
+    after
+        restore_env("PERTISK_ADMIN", OldAdmin),
+        restore_env("PERTISK_PASSWORD", OldPass)
+    end.
+
+issue_bearer_token_empty_username_roundtrip_test() ->
+    with_creds(fun() ->
+        {ok, #{token := Token, username := <<>>}} =
+            pertisk_eproxy_env_auth:issue_bearer_token(<<>>),
+        ?assertMatch({ok, <<>>, _}, pertisk_eproxy_env_auth:verify_bearer_token(Token))
+    end).
+
+verify_bearer_token_rejects_wrong_prefix_test() ->
+    with_creds(fun() ->
+        ?assertEqual({error, unauthorized}, pertisk_eproxy_env_auth:verify_bearer_token(<<"ept_abc">>))
+    end).
+
+session_ttl_secs_default_test() ->
+    Old = os:getenv("PERTISK_SESSION_TTL_SECS"),
+    os:unsetenv("PERTISK_SESSION_TTL_SECS"),
+    try
+        ?assertEqual(86400, pertisk_eproxy_env_auth:session_ttl_secs())
+    after
+        restore_env("PERTISK_SESSION_TTL_SECS", Old)
+    end.

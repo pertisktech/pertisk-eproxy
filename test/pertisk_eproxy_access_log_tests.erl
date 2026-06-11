@@ -110,3 +110,111 @@ log_proxy_type_filter_test() ->
 handle_info_unknown_ignored_test() ->
     {ok, St} = pertisk_eproxy_access_log:init([]),
     ?assertMatch({noreply, _}, pertisk_eproxy_access_log:handle_info(unknown, St)).
+
+handle_call_unknown_test() ->
+    {ok, St} = pertisk_eproxy_access_log:init([]),
+    ?assertMatch({reply, {error, unknown}, _},
+        pertisk_eproxy_access_log:handle_call(unknown, self(), St)).
+
+log_proxy_skips_2xx_when_proxy_access_log_disabled_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Old = os:getenv("PERTISK_PROXY_ACCESS_LOG"),
+    os:putenv("PERTISK_PROXY_ACCESS_LOG", "false"),
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        Before = pertisk_eproxy_access_log:count(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"GET">>, <<"/ok">>, 200, 1, 'HTTP/1.1'
+            )),
+        ?assertEqual(Before, pertisk_eproxy_access_log:count())
+    end),
+    case Old of
+        false -> os:unsetenv("PERTISK_PROXY_ACCESS_LOG");
+        V -> os:putenv("PERTISK_PROXY_ACCESS_LOG", V)
+    end.
+
+log_proxy_logs_4xx_when_proxy_access_log_disabled_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Old = os:getenv("PERTISK_PROXY_ACCESS_LOG"),
+    os:putenv("PERTISK_PROXY_ACCESS_LOG", "false"),
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        Before = pertisk_eproxy_access_log:count(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"GET">>, <<"/missing">>, 404, 2, 'HTTP/2'
+            )),
+        ?assert(pertisk_eproxy_access_log:count() > Before)
+    end),
+    case Old of
+        false -> os:unsetenv("PERTISK_PROXY_ACCESS_LOG");
+        V -> os:putenv("PERTISK_PROXY_ACCESS_LOG", V)
+    end.
+
+log_proxy_logs_5xx_test() ->
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"POST">>, <<"/err">>, 503, 3, 'HTTP/3'
+            )),
+        Entries = pertisk_eproxy_access_log:list(<<"error">>, undefined),
+        ?assert(length(Entries) >= 1)
+    end).
+
+log_proxy_seven_arg_upstream_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"GET">>, <<"/api">>, 404, 1, 'HTTP/1.1', <<"127.0.0.1:8080">>
+            )),
+        Entries = pertisk_eproxy_access_log:list(undefined, undefined),
+        ?assert(length(Entries) >= 1),
+        Upstreams = [maps:get(<<"upstream">>, E) || E <- Entries, maps:is_key(<<"upstream">>, E)],
+        ?assert(lists:member(<<"127.0.0.1:8080">>, Upstreams))
+    end).
+
+list_type_proxy_and_system_filters_test() ->
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        ?assertEqual(ok, pertisk_eproxy_access_log:log_system(<<"info">>, <<"system">>, <<"boot">>)),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"h">>, <<"GET">>, <<"/">>, 200, 1, 'HTTP/1.0'
+            )),
+        ?assert(length(pertisk_eproxy_access_log:list(<<"proxy">>, undefined)) >= 1),
+        ?assert(length(pertisk_eproxy_access_log:list(<<"system">>, undefined)) >= 1),
+        ?assert(length(pertisk_eproxy_access_log:list(<<"all">>, undefined)) >= 2)
+    end).
+
+health_access_log_enabled_logs_200_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Base = pertisk_eproxy_config:get_config(),
+    Config = Base#{health_access_log => true},
+    ok = pertisk_eproxy_config:put_config(Config),
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        Before = pertisk_eproxy_access_log:count(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"GET">>, <<"/healthz">>, 200, 1, 'HTTP/1.1'
+            )),
+        ?assert(pertisk_eproxy_access_log:count() > Before)
+    end).
+
+ring_buffer_trim_test() ->
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        lists:foreach(
+            fun(N) ->
+                ok = pertisk_eproxy_access_log:log_system(
+                    <<"info">>, <<"t">>, integer_to_binary(N)
+                )
+            end,
+            lists:seq(1, 1005)
+        ),
+        ?assertEqual(1000, pertisk_eproxy_access_log:count())
+    end).
