@@ -12,6 +12,25 @@ parse_upstream_https_test() ->
 parse_upstream_trims_slash_test() ->
     ?assertEqual({"host", 80, tcp}, pertisk_eproxy_handler:parse_upstream("host/")).
 
+parse_upstream_binary_test() ->
+    ?assertEqual({"127.0.0.1", 8080, tcp}, pertisk_eproxy_handler:parse_upstream(<<"127.0.0.1:8080">>)).
+
+parse_upstream_http_scheme_test() ->
+    ?assertEqual({"example.com", 80, tcp}, pertisk_eproxy_handler:parse_upstream("http://example.com")).
+
+parse_upstream_https_custom_port_test() ->
+    ?assertEqual({"secure.example.com", 8443, tls}, pertisk_eproxy_handler:parse_upstream("https://secure.example.com:8443")).
+
+parse_upstream_ws_schemes_test() ->
+    ?assertEqual({"ws.example.com", 80, tcp}, pertisk_eproxy_handler:parse_upstream("ws://ws.example.com")),
+    ?assertEqual({"wss.example.com", 443, tls}, pertisk_eproxy_handler:parse_upstream("wss://wss.example.com")).
+
+parse_upstream_ipv6_bracket_test() ->
+    ?assertEqual({"::1", 8080, tcp}, pertisk_eproxy_handler:parse_upstream("[::1]:8080")).
+
+parse_upstream_invalid_port_uses_default_port_test() ->
+    ?assertEqual({"host:not-a-port", 80, tcp}, pertisk_eproxy_handler:parse_upstream("host:not-a-port")).
+
 is_event_stream_accept_test() ->
     ?assert(pertisk_eproxy_handler:is_event_stream_accept(<<"text/event-stream">>)),
     ?assert(pertisk_eproxy_handler:is_event_stream_accept(<<"application/json, text/event-stream">>)),
@@ -50,6 +69,9 @@ gun_protocols_for_eventstream_test() ->
 eventstream_upstream_retryable_test() ->
     ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable({connect, timeout})),
     ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable(timeout)),
+    ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable({await_up, timeout})),
+    ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable({stream_error, closed})),
+    ?assert(pertisk_eproxy_handler:eventstream_upstream_retryable({await_response_unexpected, bad})),
     ?assertNot(pertisk_eproxy_handler:eventstream_upstream_retryable({error, refused})).
 
 parse_upstream_grpc_scheme_test() ->
@@ -106,6 +128,21 @@ eventstream_upstream_candidates_test() ->
     ?assert(is_list(Cands)),
     ?assert(length(Cands) > 0).
 
+eventstream_upstream_candidates_tcp_test() ->
+    [Cand] = pertisk_eproxy_handler:eventstream_upstream_candidates(
+        <<"127.0.0.1">>, 8080, tcp, <<"/user/events">>
+    ),
+    ?assertEqual(<<"127.0.0.1">>, maps:get(host, Cand)),
+    ?assertEqual(8080, maps:get(port, Cand)),
+    ?assertEqual(tcp, maps:get(transport, Cand)),
+    ?assertEqual([http], maps:get(protocols, Cand)).
+
+eventstream_upstream_candidates_tls_test() ->
+    [Cand] = pertisk_eproxy_handler:eventstream_upstream_candidates(
+        <<"127.0.0.1">>, 443, tls, <<"/api/v1/stream">>
+    ),
+    ?assertEqual([http2, http], maps:get(protocols, Cand)).
+
 eventstream_initial_await_timeout_test() ->
     T = pertisk_eproxy_handler:eventstream_initial_await_timeout_ms(<<"127.0.0.1:8080">>),
     ?assert(is_integer(T)),
@@ -136,7 +173,7 @@ with_handler_req(Opts, Fun) ->
     pertisk_eproxy_test_helpers:ensure_metrics(),
     meck:new(cowboy_req, [unstick]),
     meck:new(pertisk_eproxy_router, [unstick]),
-    meck:new(pertisk_eproxy_backend, [unstick]),
+    meck:new(pertisk_eproxy_backend, [unstick, passthrough]),
     meck:new(pertisk_eproxy_config, [unstick, passthrough]),
     meck:new(pertisk_eproxy_compression, [unstick]),
     meck:new(pertisk_eproxy_metrics, [unstick]),
@@ -213,3 +250,251 @@ init_websocket_upgrade_delegates_test() ->
     after
         unload_mocks([cowboy_req, pertisk_eproxy_ws_handler])
     end.
+
+add_body_mocks(_Req) ->
+    meck:expect(cowboy_req, has_body, fun(_) -> false end),
+    meck:expect(cowboy_req, read_body, fun(R) -> {ok, <<>>, R} end),
+    meck:expect(cowboy_req, read_body, 2, fun(R, _Opts) -> {ok, <<>>, R} end).
+
+init_proxy_gun_connect_error_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([gun]),
+        meck:new(gun, [unstick]),
+        meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
+        try
+            ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([gun])
+        end
+    end).
+
+init_proxy_gun_await_up_error_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([gun]),
+        meck:new(gun, [unstick]),
+        meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+        meck:expect(gun, await_up, fun(_, _) -> {error, timeout} end),
+        meck:expect(gun, close, fun(_) -> ok end),
+        try
+            ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([gun])
+        end
+    end).
+
+init_http2_version_proto_test() ->
+    with_handler_req(#{
+        version => 'HTTP/2',
+        route => {error, no_route}
+    }, fun(Req) ->
+        ?assertMatch({ok, #{reply := {404, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+    end).
+
+init_https_scheme_proto_test() ->
+    with_handler_req(#{
+        scheme => https,
+        route => {error, no_route}
+    }, fun(Req) ->
+        ?assertMatch({ok, #{reply := {404, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+    end).
+
+with_eventstream_upstream_ok_test() ->
+    unload_mocks([gun]),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, close, fun(_) -> ok end),
+    try
+        Result = pertisk_eproxy_handler:with_eventstream_upstream(
+            fun(ConnPid, _Meta) -> {ok, ConnPid} end,
+            <<"127.0.0.1">>,
+            8080,
+            tcp,
+            <<"/api/v1/stream">>
+        ),
+        ?assertMatch({ok, gun_pid}, Result)
+    after
+        unload_mocks([gun])
+    end.
+
+with_eventstream_upstream_connect_error_test() ->
+    unload_mocks([gun]),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
+    try
+        Result = pertisk_eproxy_handler:with_eventstream_upstream(
+            fun(_ConnPid, _Meta) -> {ok, ok} end,
+            <<"127.0.0.1">>,
+            8080,
+            tcp,
+            <<"/api/v1/stream">>
+        ),
+        ?assertMatch({error, {connect, refused}}, Result)
+    after
+        unload_mocks([gun])
+    end.
+
+with_eventstream_upstream_await_up_error_test() ->
+    unload_mocks([gun]),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+    meck:expect(gun, await_up, fun(_, _) -> {error, timeout} end),
+    meck:expect(gun, close, fun(_) -> ok end),
+    try
+        Result = pertisk_eproxy_handler:with_eventstream_upstream(
+            fun(_ConnPid, _Meta) -> {ok, ok} end,
+            <<"127.0.0.1">>,
+            8080,
+            tcp,
+            <<"/api/v1/stream">>
+        ),
+        ?assertMatch({error, {await_up, timeout}}, Result)
+    after
+        unload_mocks([gun])
+    end.
+
+with_eventstream_upstream_fun_error_test() ->
+    unload_mocks([gun]),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, close, fun(_) -> ok end),
+    try
+        Result = pertisk_eproxy_handler:with_eventstream_upstream(
+            fun(_ConnPid, _Meta) -> {error, refused} end,
+            <<"127.0.0.1">>,
+            8080,
+            tcp,
+            <<"/api/v1/stream">>
+        ),
+        ?assertEqual({error, refused}, Result)
+    after
+        unload_mocks([gun])
+    end.
+
+websocket_callbacks_delegate_test() ->
+    unload_mocks([pertisk_eproxy_ws_handler]),
+    meck:new(pertisk_eproxy_ws_handler, [unstick]),
+    meck:expect(pertisk_eproxy_ws_handler, websocket_init, fun(S) -> {ok, ws_init, S} end),
+    meck:expect(pertisk_eproxy_ws_handler, websocket_handle, fun(F, S) -> {ok, ws_handle, F, S} end),
+    meck:expect(pertisk_eproxy_ws_handler, websocket_info, fun(I, S) -> {ok, ws_info, I, S} end),
+    try
+        ?assertEqual({ok, ws_init, #{st => 1}}, pertisk_eproxy_handler:websocket_init(#{st => 1})),
+        ?assertEqual({ok, ws_handle, ping, #{}}, pertisk_eproxy_handler:websocket_handle(ping, #{})),
+        ?assertEqual({ok, ws_info, down, #{}}, pertisk_eproxy_handler:websocket_info(down, #{}))
+    after
+        unload_mocks([pertisk_eproxy_ws_handler])
+    end.
+
+init_websocket_sec_key_upgrade_test() ->
+    unload_mocks([cowboy_req, pertisk_eproxy_ws_handler]),
+    meck:new(cowboy_req, [unstick]),
+    meck:new(pertisk_eproxy_ws_handler, [unstick]),
+    meck:expect(cowboy_req, method, fun(_) -> <<"GET">> end),
+    meck:expect(cowboy_req, host, fun(_) -> <<"ws.example">> end),
+    meck:expect(cowboy_req, path, fun(_) -> <<"/ws">> end),
+    meck:expect(cowboy_req, qs, fun(_) -> <<>> end),
+    meck:expect(cowboy_req, header, 3, fun
+        (<<"upgrade">>, _Req, _Default) -> <<>>;
+        (<<"sec-websocket-key">>, _Req, _Default) -> <<"dGhlIHNhbXBsZSBub25jZQ==">>;
+        (_, _, Default) -> Default
+    end),
+    meck:expect(pertisk_eproxy_ws_handler, init, fun(Req, State) -> {cowboy_websocket, Req, State, #{}} end),
+    try
+        ?assertMatch({cowboy_websocket, _, _, _}, pertisk_eproxy_handler:init(#{}, #{}))
+    after
+        unload_mocks([cowboy_req, pertisk_eproxy_ws_handler])
+    end.
+
+init_management_only_backend_test() ->
+    with_handler_req(#{
+        mgmt_only => true,
+        route => {ok, #{
+            upstream_path => <<"/api/status">>,
+            backend => <<"mgmt">>,
+            site_host => <<"admin.example.com">>
+        }}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([pertisk_eproxy_h3_local_admin]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick]),
+        meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
+            {ok, 200, [], <<"ok">>}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {200, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_h3_local_admin])
+        end
+    end).
+
+init_admin_fallback_no_upstream_test() ->
+    with_handler_req(#{
+        host => <<"admin.example.com">>,
+        route => {ok, #{
+            upstream_path => <<"/api/health">>,
+            backend => <<"web">>,
+            site_host => <<"admin.example.com">>
+        }},
+        pick => {error, no_healthy_upstream}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([pertisk_eproxy_h3_local_admin]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick]),
+        meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
+            {ok, 204, [], <<>>}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {204, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_h3_local_admin])
+        end
+    end).
+
+init_eventstream_gun_connect_error_test() ->
+    with_handler_req(#{
+        headers => #{<<"accept">> => <<"text/event-stream">>},
+        route => {ok, #{
+            upstream_path => <<"/api/v1/stream">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([gun]),
+        meck:new(gun, [unstick]),
+        meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
+        try
+            ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([gun])
+        end
+    end).
+
+init_http3_version_proto_test() ->
+    with_handler_req(#{
+        version => 'HTTP/3',
+        route => {error, no_route}
+    }, fun(Req) ->
+        ?assertMatch({ok, #{reply := {404, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+    end).
+
+terminate_ok_test() ->
+    ?assertEqual(ok, pertisk_eproxy_handler:terminate(normal, #{}, #{})).

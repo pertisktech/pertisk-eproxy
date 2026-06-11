@@ -75,3 +75,40 @@ gen_server_callbacks_test() ->
         )),
     ?assertEqual(ok, pertisk_eproxy_access_log:terminate(normal, St)),
     ?assertMatch({ok, _}, pertisk_eproxy_access_log:code_change(1, St, extra)).
+
+log_proxy_with_site_and_host_filter_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"filter.example">>, <<"GET">>, <<"/page">>, 200, 3, 'HTTP/1.1',
+                <<"10.0.0.1">>, <<"filter.example">>
+            )),
+        ByHost = pertisk_eproxy_access_log:list(undefined, <<"filter.example">>, undefined),
+        ?assert(length(ByHost) >= 1),
+        BySite = pertisk_eproxy_access_log:list(undefined, undefined, <<"filter.example">>),
+        ?assert(length(BySite) >= 1)
+    end).
+
+log_proxy_skips_readyz_200_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    with_server(fun() ->
+        Before = pertisk_eproxy_access_log:count(),
+        ?assertEqual(ok,
+            pertisk_eproxy_access_log:log_proxy(
+                <<"host">>, <<"GET">>, <<"/readyz">>, 200, 1, 'HTTP/1.1'
+            )),
+        ?assertEqual(Before, pertisk_eproxy_access_log:count())
+    end).
+
+log_proxy_type_filter_test() ->
+    with_server(fun() ->
+        ?assertEqual(ok, pertisk_eproxy_access_log:log_system(<<"warn">>, <<"boot">>, <<"started">>)),
+        Entries = pertisk_eproxy_access_log:list(<<"warn">>, undefined),
+        ?assert(length(Entries) >= 1)
+    end).
+
+handle_info_unknown_ignored_test() ->
+    {ok, St} = pertisk_eproxy_access_log:init([]),
+    ?assertMatch({noreply, _}, pertisk_eproxy_access_log:handle_info(unknown, St)).

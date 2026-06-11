@@ -142,6 +142,116 @@ cloudflare_auth_diag_test() ->
     ?assert(is_map(D)),
     ?assert(maps:is_key(raw_len, D)).
 
+cloudflare_cf_txt_record_name_test() ->
+    Fqdn = <<"_acme-challenge.www.", ?ZONE/binary>>,
+    ?assertEqual(<<"_acme-challenge.www">>, pertisk_eproxy_dns_cloudflare:cf_txt_record_name(Fqdn, ?ZONE)).
+
+cloudflare_cf_txt_record_name_no_suffix_test() ->
+    ?assertEqual(<<"other">>, pertisk_eproxy_dns_cloudflare:cf_txt_record_name(<<"other">>, ?ZONE)).
+
+cloudflare_find_zone_wildcard_host_test() ->
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"*.", ?ZONE/binary>>))
+    end).
+
+cloudflare_find_zone_trailing_dot_test() ->
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"www.", ?ZONE/binary, ".">>))
+    end).
+
+cloudflare_find_zone_not_found_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _Opts, _HttpOpts) ->
+        case binary:match(list_to_binary(U), <<"api.cloudflare.com/client/v4/zones">>) of
+            nomatch -> {error, not_found};
+            _ -> json_ok(#{<<"success">> => true, <<"result">> => []})
+        end
+    end),
+    try
+        ?assertMatch({error, {zone_not_found, _}},
+            pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"missing.example.com">>))
+    after
+        meck:unload(httpc)
+    end.
+
+cloudflare_get_zone_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _Opts, _HttpOpts) ->
+        case binary:match(list_to_binary(U), <<"zones/z1">>) of
+            nomatch -> {error, not_found};
+            _ -> json_ok(#{<<"success">> => false, <<"errors">> => [#{<<"code">> => 1003}]})
+        end
+    end),
+    try
+        ?assertMatch({error, {zone_lookup, _}},
+            pertisk_eproxy_dns_cloudflare:get_zone(?TOKEN, <<"z1">>))
+    after
+        meck:unload(httpc)
+    end.
+
+cloudflare_duplicate_post(<<"https://api.cloudflare.com/client/v4/zones/z1/dns_records">>) ->
+    json_ok(#{
+        <<"success">> => false,
+        <<"errors">> => [#{<<"code">> => 81058}]
+    });
+cloudflare_duplicate_post(_) ->
+    {error, bad_post}.
+
+cloudflare_duplicate_get(U) ->
+    case binary:match(U, <<"dns_records?type=TXT">>) of
+        nomatch ->
+            cloudflare_get(U);
+        _ ->
+            json_ok(#{
+                <<"success">> => true,
+                <<"result">> => [
+                    #{
+                        <<"type">> => <<"TXT">>,
+                        <<"name">> => ?RECORD,
+                        <<"content">> => ?TXT,
+                        <<"id">> => <<"dup-rec">>
+                    }
+                ]
+            })
+    end.
+
+cloudflare_create_txt_duplicate_reuses_id_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
+        M = normalize_method(Method),
+        U = url(M, Req),
+        case M of
+            post -> cloudflare_duplicate_post(U);
+            get -> cloudflare_duplicate_get(U);
+            _ -> dns_http(M, Req, Opts, HttpOpts)
+        end
+    end),
+    try
+        ?assertEqual({ok, <<"dup-rec">>},
+            pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
+    after
+        meck:unload(httpc)
+    end.
+
+cloudflare_delete_txt_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(delete, {U, _}, _Opts, _HttpOpts) ->
+        case U of
+            "https://api.cloudflare.com/client/v4/zones/z1/dns_records/bad" ->
+                json_ok(#{<<"success">> => false, <<"errors">> => [#{<<"code">> => 1001}]});
+            _ ->
+                cloudflare_delete(list_to_binary(U))
+        end
+    end),
+    try
+        ?assertMatch({error, {cloudflare, _}},
+            pertisk_eproxy_dns_cloudflare:delete_txt(?TOKEN, <<"z1">>, <<"bad">>))
+    after
+        meck:unload(httpc)
+    end.
+
 %% deSEC
 desec_patch(<<"https://desec.io/api/v1/domains/", _/binary>>) ->
     json_ok(#{});

@@ -763,3 +763,190 @@ put_config_persists_runtime_config_test() ->
         ?assertEqual(1, length(maps:get(sites, Stored))),
         ?assertMatch({ok, [_]}, pertisk_eproxy_db:list_dns_providers(DbPath))
     end).
+
+put_config_rejected_in_ingress_env_test() ->
+    with_config(fun() ->
+        with_ingress_env(fun() ->
+            ?assertEqual(
+                {error, ingress_manifest_mode},
+                pertisk_eproxy_config:put_config(pertisk_eproxy_config:get_config())
+            )
+        end)
+    end).
+
+put_config_unknown_certificate_rejected_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => <<"tls.example.com">>,
+                backend => <<"web">>,
+                certificate => <<"missing-cert">>,
+                routes => []
+            }],
+            backends => [#{
+                name => <<"web">>,
+                algorithm => round_robin,
+                upstreams => [#{addr => <<"127.0.0.1:8080">>, weight => 1}]
+            }],
+            certificates => [],
+            dns_providers => []
+        },
+        ?assertMatch(
+            {error, {tls_validation_unknown_certificate, _, _}},
+            pertisk_eproxy_config:put_config(Config)
+        )
+    end).
+
+reload_in_ingress_mode_triggers_reconcile_test() ->
+    with_config(fun() ->
+        with_ingress_env(fun() ->
+            Self = self(),
+            meck:new(pertisk_ingress_watcher, [unstick]),
+            meck:expect(pertisk_ingress_watcher, trigger_reconcile, fun() ->
+                Self ! reconcile_triggered,
+                ok
+            end),
+            try
+                ?assertEqual(ok, pertisk_eproxy_config:reload()),
+                receive reconcile_triggered -> ok after 1000 -> ?assert(false) end
+            after
+                meck:unload(pertisk_ingress_watcher)
+            end
+        end)
+    end).
+
+reload_in_proxy_mode_ok_test() ->
+    with_tmp_db_config(fun() ->
+        ?assertEqual(ok, pertisk_eproxy_config:reload())
+    end).
+
+ingress_mode_from_parsed_config_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"mode">> => <<"ingress">>}),
+    ?assertEqual(ingress, maps:get(mode, C)).
+
+ingress_mode_from_env_test() ->
+    with_config(fun() ->
+        with_ingress_env(fun() ->
+            ?assert(pertisk_eproxy_config:ingress_mode()),
+            ?assertNot(pertisk_eproxy_config:proxy_mode())
+        end)
+    end).
+
+management_port_custom_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"management_port">> => 19080}),
+    ?assertEqual(19080, maps:get(management_port, C)).
+
+h3_qpack_static_disabled_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"h3_qpack_static">> => false}),
+    ?assertEqual(false, maps:get(h3_qpack_static, C)).
+
+quic_enabled_default_false_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{}),
+    ?assertEqual(false, maps:get(quic_enabled, C)).
+
+http_addr_invalid_falls_back_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"http_addr">> => <<"not-an-ip">>}),
+    ?assertEqual({0, 0, 0, 0}, maps:get(http_addr, C)).
+
+log_level_invalid_filtered_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"log_level">> => <<"verbose">>}),
+    ?assertEqual(false, maps:is_key(log_level, C)).
+
+log_level_error_parsed_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"log_level">> => <<"error">>}),
+    ?assertEqual(error, maps:get(log_level, C)).
+
+sites_skip_non_map_entries_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [null, #{<<"host">> => <<"ok.example">>, <<"backend">> => <<"web">>}]
+    }),
+    ?assertEqual(1, length(maps:get(sites, C))).
+
+backends_skip_non_map_entries_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"backends">> => [
+            <<"ignored">>,
+            #{<<"name">> => <<"web">>, <<"upstreams">> => [#{<<"addr">> => <<"10.0.0.1:8080">>}]}
+        ]
+    }),
+    ?assertEqual(1, length(maps:get(backends, C))).
+
+route_default_path_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [#{
+            <<"host">> => <<"example.com">>,
+            <<"backend">> => <<"web">>,
+            <<"routes">> => [#{}]
+        }]
+    }),
+    [#{routes := [Route]}] = maps:get(sites, C),
+    ?assertEqual(<<"/">>, maps:get(path, Route)).
+
+sites_invalid_challenge_type_filtered_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [#{
+            <<"host">> => <<"example.com">>,
+            <<"backend">> => <<"web">>,
+            <<"challenge_type">> => <<"tls-alpn-01">>
+        }]
+    }),
+    [#{challenge_type := undefined}] = maps:get(sites, C).
+
+backend_health_interval_default_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"backends">> => [#{
+            <<"name">> => <<"web">>,
+            <<"upstreams">> => [#{<<"addr">> => <<"10.0.0.1:8080">>}]
+        }]
+    }),
+    [#{health_interval_secs := 30}] = maps:get(backends, C).
+
+dns_provider_integer_name_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"dns_providers">> => [#{<<"name">> => 42, <<"provider_type">> => <<"cloudflare">>}]
+    }),
+    [P] = maps:get(dns_providers, C),
+    ?assertEqual("42", maps:get(name, P)).
+
+is_management_upstream_addr_invalid_upstream_test() ->
+    with_config(fun() ->
+        ?assertNot(pertisk_eproxy_config:is_management_upstream_addr(<<"not-an-addr">>))
+    end).
+
+is_management_upstream_addr_wrong_port_test() ->
+    with_config(fun() ->
+        Port = maps:get(management_port, pertisk_eproxy_config:get_config(), 9080),
+        Wrong = iolist_to_binary(["127.0.0.1:", integer_to_list(Port + 1)]),
+        ?assertNot(pertisk_eproxy_config:is_management_upstream_addr(Wrong))
+    end).
+
+is_management_upstream_addr_ipv6_test() ->
+    with_tmp_db_config(fun() ->
+        Port = 19180,
+        Config = (pertisk_eproxy_config:get_config())#{
+            management_port => Port,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = pertisk_eproxy_config:put_config(Config),
+        Upstream = iolist_to_binary(["[::1]:", integer_to_list(Port)]),
+        ?assert(pertisk_eproxy_config:is_management_upstream_addr(Upstream))
+    end).
+
+with_ingress_env(Fun) ->
+    with_env("PERTISK_MODE", {set, "ingress"}, Fun).
+
+with_env(Key, Val, Fun) ->
+    Old = os:getenv(Key),
+    case Val of
+        unset -> os:unsetenv(Key);
+        {set, NewVal} -> os:putenv(Key, NewVal)
+    end,
+    try Fun() after
+        case Old of
+            false -> os:unsetenv(Key);
+            OldVal -> os:putenv(Key, OldVal)
+        end
+    end.

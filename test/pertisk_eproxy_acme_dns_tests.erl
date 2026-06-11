@@ -73,9 +73,10 @@ with_scan_env(Fun) ->
         file:delete(DbPath)
     end.
 
-run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods) ->
+run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupFun) ->
     pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
     lists:foreach(fun(M) -> meck:new(M, [unstick]) end, MockMods),
+    SetupFun(),
     mock_acme_client_ok(),
     try
         {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
@@ -91,6 +92,91 @@ run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods) ->
         meck:unload([pertisk_eproxy_acme_client | MockMods]),
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.
+
+mock_dns_cloudflare() ->
+    meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
+        {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, cf_txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, create_txt, fun(_, _, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_cloudflare, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_digitalocean() ->
+    meck:expect(pertisk_eproxy_dns_digitalocean, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    meck:expect(pertisk_eproxy_dns_digitalocean, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_digitalocean, create_txt, fun(_, _, _, _) -> {ok, 1} end),
+    meck:expect(pertisk_eproxy_dns_digitalocean, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_vultr() ->
+    meck:expect(pertisk_eproxy_dns_vultr, resolve_zone, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    meck:expect(pertisk_eproxy_dns_vultr, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_vultr, create_txt, fun(_, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_vultr, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_porkbun() ->
+    meck:expect(pertisk_eproxy_dns_porkbun, resolve_domain, fun(_, _, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    meck:expect(pertisk_eproxy_dns_porkbun, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_porkbun, create_txt, fun(_, _, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_porkbun, delete_txt, fun(_, _, _, _) -> ok end).
+
+mock_dns_linode() ->
+    meck:expect(pertisk_eproxy_dns_linode, resolve_domain, fun(_, _, _) ->
+        {ok, #{id => 1, domain => <<"example.com">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_linode, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_linode, create_txt, fun(_, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_linode, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_hetzner() ->
+    meck:expect(pertisk_eproxy_dns_hetzner, resolve_zone, fun(_, _, _) ->
+        {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_hetzner, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_hetzner, create_txt, fun(_, _, _, _) -> {ok, <<"rid">>} end),
+    meck:expect(pertisk_eproxy_dns_hetzner, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_desec() ->
+    meck:expect(pertisk_eproxy_dns_desec, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    meck:expect(pertisk_eproxy_dns_desec, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_desec, create_txt, fun(_, _, _, _) ->
+        {ok, {desec, <<"tok">>, <<"example.com">>, <<"_acme-challenge">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_desec, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_gandi() ->
+    meck:expect(pertisk_eproxy_dns_gandi, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    meck:expect(pertisk_eproxy_dns_gandi, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_gandi, create_txt, fun(_, _, _, _) ->
+        {ok, {gandi, <<"tok">>, <<"example.com">>, <<"_acme-challenge">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_gandi, delete_txt, fun(_, _, _) -> ok end).
+
+mock_dns_powerdns() ->
+    meck:expect(pertisk_eproxy_dns_powerdns, resolve_zone, fun(_, _, _, _, _) ->
+        {ok, #{server_id => <<"localhost">>, zone_name => <<"example.com">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_powerdns, txt_record_name, fun(Fqdn, _) -> Fqdn end),
+    meck:expect(pertisk_eproxy_dns_powerdns, create_txt, fun(_, _, _, _, _, _) ->
+        {ok, {powerdns, <<"http://127.0.0.1:8081">>, <<"k">>, <<"localhost">>, <<"example.com">>, <<"_acme-challenge">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_powerdns, delete_txt, fun(_, _, _, _, _) -> ok end).
+
+mock_dns_duckdns() ->
+    meck:expect(pertisk_eproxy_dns_duckdns, create_txt, fun(_, _, _) ->
+        {ok, {duckdns, <<"sub">>, <<"t">>}}
+    end),
+    meck:expect(pertisk_eproxy_dns_duckdns, delete_txt, fun(_, _) -> ok end).
 
 %% ---------------------------------------------------------------------------
 %% gen_server lifecycle (exported callbacks)
@@ -280,6 +366,178 @@ gandi_requires_token_test() ->
         pertisk_eproxy_acme_dns:validate_dns_provider(<<"gandi">>, #{})
     ).
 
+gandi_domain_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_gandi, [unstick]),
+    meck:expect(pertisk_eproxy_dns_gandi, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"gandi">>,
+            #{<<"api_token">> => <<"secret">>, <<"domain">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"gandi">>, domain := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_gandi)
+    end.
+
+desec_domain_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_desec, [unstick]),
+    meck:expect(pertisk_eproxy_dns_desec, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"desec">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_name">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"desec">>, domain := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_desec)
+    end.
+
+hetzner_zone_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_hetzner, [unstick]),
+    meck:expect(pertisk_eproxy_dns_hetzner, resolve_zone, fun(_, _, _) ->
+        {ok, #{zone_name => <<"example.com">>}}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"hetzner">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_name">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"hetzner">>, zone := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_hetzner)
+    end.
+
+linode_domain_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_linode, [unstick]),
+    meck:expect(pertisk_eproxy_dns_linode, resolve_domain, fun(_, _, _) ->
+        {ok, #{domain => <<"example.com">>}}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"linode">>,
+            #{<<"api_token">> => <<"secret">>, <<"domain">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"linode">>, domain := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_linode)
+    end.
+
+digitalocean_domain_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_digitalocean, [unstick]),
+    meck:expect(pertisk_eproxy_dns_digitalocean, resolve_domain, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"digitalocean">>,
+            #{<<"api_token">> => <<"secret">>, <<"domain">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"digitalocean">>, domain := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_digitalocean)
+    end.
+
+vultr_zone_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_vultr, [unstick]),
+    meck:expect(pertisk_eproxy_dns_vultr, resolve_zone, fun(_, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"vultr">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"vultr">>, zone := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_vultr)
+    end.
+
+vultr_api_key_alias_redacted_test() ->
+    ?assertMatch(
+        {error, missing_api_token},
+        pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"vultr">>,
+            #{<<"api_key">> => <<"[redacted]">>}
+        )
+    ).
+
+porkbun_only_secret_key_test() ->
+    ?assertMatch(
+        {error, missing_api_key},
+        pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"porkbun">>,
+            #{<<"secret_api_key">> => <<"secret-only">>}
+        )
+    ).
+
+porkbun_domain_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_porkbun, [unstick]),
+    meck:expect(pertisk_eproxy_dns_porkbun, resolve_domain, fun(_, _, _, _) ->
+        {ok, <<"example.com">>}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"porkbun">>,
+            #{
+                <<"api_key">> => <<"k">>,
+                <<"secretApiKey">> => <<"s">>,
+                <<"domain">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"porkbun">>, domain := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_porkbun)
+    end.
+
+cloudflare_invalid_zone_id_test() ->
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
+        {error, not_found}
+    end),
+    try
+        ?assertMatch(
+            {error, invalid_zone_id},
+            pertisk_eproxy_acme_dns:validate_dns_provider(
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"bad-zone">>}
+            )
+        )
+    after
+        meck:unload(pertisk_eproxy_dns_cloudflare)
+    end.
+
+cloudflare_zone_id_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
+        {ok, #{zone_name => <<"example.com">>}}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"tok">>, <<"zoneId">> => <<"zone-id">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"cloudflare">>, zone_name := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_cloudflare)
+    end.
+
+provider_type_uppercase_normalizes_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"HETZNER">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"hetzner">>}}, Result).
+
+ovh_delegates_to_lego_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(<<"ovh">>, #{}) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{mode := <<"lego">>, provider := <<"ovh">>}} -> ok
+    end.
+
 godaddy_delegates_to_lego_test() ->
     case pertisk_eproxy_acme_dns:validate_dns_provider(<<"godaddy">>, #{}) of
         {error, lego_not_found} -> ok;
@@ -367,6 +625,31 @@ powerdns_missing_api_url_test() ->
         {error, missing_api_url},
         pertisk_eproxy_acme_dns:validate_dns_provider(<<"powerdns">>, #{<<"api_key">> => <<"k">>})
     ).
+
+powerdns_api_url_camel_case_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"powerdns">>,
+        #{<<"apiUrl">> => <<"http://127.0.0.1:8081">>, <<"apiKey">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"powerdns">>}}, Result).
+
+powerdns_zone_resolves_test() ->
+    meck:new(pertisk_eproxy_dns_powerdns, [unstick]),
+    meck:expect(pertisk_eproxy_dns_powerdns, resolve_zone, fun(_, _, _, _, _) ->
+        {ok, #{zone_name => <<"example.com">>}}
+    end),
+    try
+        Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+            <<"powerdns">>,
+            #{
+                <<"api_url">> => <<"http://127.0.0.1:8081">>,
+                <<"api_key">> => <<"secret">>,
+                <<"zone_name">> => <<"example.com">>}
+        ),
+        ?assertMatch({ok, #{provider := <<"powerdns">>, zone := <<"example.com">>}}, Result)
+    after
+        meck:unload(pertisk_eproxy_dns_powerdns)
+    end.
 
 duckdns_ok_test() ->
     Result = pertisk_eproxy_acme_dns:validate_dns_provider(
@@ -593,3 +876,137 @@ scan_triggers_with_configured_site_test() ->
         end,
         file:delete(DbPath)
     end.
+
+%% ---------------------------------------------------------------------------
+%% scan_and_issue/0 — mocked DNS provider issuance paths
+%% ---------------------------------------------------------------------------
+
+scan_cloudflare_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"cf-scan.example">>,
+            <<"cf">>,
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>},
+            [pertisk_eproxy_dns_cloudflare],
+            fun mock_dns_cloudflare/0
+        )
+    end).
+
+scan_digitalocean_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"do-scan.example">>,
+            <<"do">>,
+            <<"digitalocean">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_digitalocean],
+            fun mock_dns_digitalocean/0
+        )
+    end).
+
+scan_vultr_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"vultr-scan.example">>,
+            <<"vultr">>,
+            <<"vultr">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_vultr],
+            fun mock_dns_vultr/0
+        )
+    end).
+
+scan_porkbun_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"pb-scan.example">>,
+            <<"pb">>,
+            <<"porkbun">>,
+            #{<<"api_key">> => <<"k">>, <<"secret_api_key">> => <<"s">>},
+            [pertisk_eproxy_dns_porkbun],
+            fun mock_dns_porkbun/0
+        )
+    end).
+
+scan_linode_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"linode-scan.example">>,
+            <<"lin">>,
+            <<"linode">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_linode],
+            fun mock_dns_linode/0
+        )
+    end).
+
+scan_hetzner_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"hetzner-scan.example">>,
+            <<"hz">>,
+            <<"hetzner">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_hetzner],
+            fun mock_dns_hetzner/0
+        )
+    end).
+
+scan_desec_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"desec-scan.example">>,
+            <<"ds">>,
+            <<"desec">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_desec],
+            fun mock_dns_desec/0
+        )
+    end).
+
+scan_gandi_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"gandi-scan.example">>,
+            <<"gn">>,
+            <<"gandi">>,
+            #{<<"api_token">> => <<"secret">>},
+            [pertisk_eproxy_dns_gandi],
+            fun mock_dns_gandi/0
+        )
+    end).
+
+scan_powerdns_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"pdns-scan.example">>,
+            <<"pdns">>,
+            <<"powerdns">>,
+            #{<<"api_url">> => <<"http://127.0.0.1:8081">>, <<"api_key">> => <<"secret">>},
+            [pertisk_eproxy_dns_powerdns],
+            fun mock_dns_powerdns/0
+        )
+    end).
+
+scan_duckdns_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"sub.duckdns.org">>,
+            <<"dd">>,
+            <<"duckdns">>,
+            #{<<"domain">> => <<"sub">>, <<"token">> => <<"t">>},
+            [pertisk_eproxy_dns_duckdns],
+            fun mock_dns_duckdns/0
+        )
+    end).
