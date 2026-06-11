@@ -16,23 +16,12 @@ init(_Opts) ->
     {ok, #st{}}.
 
 handle_event({log, Message}, St) ->
-    %% Proxy access lines (4xx/5xx) already live in the ring as structured `proxy` entries
-    %% via pertisk_eproxy_access_log:log_proxy/8; skip mirroring lager:warning duplicates.
-    case proxy_http_access_message(Message) of
-        true ->
+    %% Fast path: backend level is warning; skip debug/info before metadata work.
+    case lager_msg:severity(Message) of
+        Sev when Sev =:= debug; Sev =:= info ->
             {ok, St};
-        false ->
-            case lager_msg:severity(Message) of
-                Sev when Sev =:= error; Sev =:= critical; Sev =:= alert; Sev =:= emergency ->
-                    Msg = safe_message(Message),
-                    _ = catch pertisk_eproxy_access_log:log_system(<<"error">>, <<"error">>, Msg);
-                Sev when Sev =:= warning; Sev =:= notice ->
-                    Msg = safe_message(Message),
-                    _ = catch pertisk_eproxy_access_log:log_system(<<"warn">>, <<"system">>, Msg);
-                _ ->
-                    ok
-            end,
-            {ok, St}
+        _ ->
+            mirror_warning_or_error(Message, St)
     end;
 handle_event(_Event, St) ->
     {ok, St}.
@@ -56,6 +45,26 @@ code_change(_OldVsn, St, _Extra) ->
 
 %% ---------------------------------------------------------------------------
 %% Internal
+
+mirror_warning_or_error(Message, St) ->
+    %% Proxy access lines (4xx/5xx) already live in the ring as structured `proxy` entries
+    %% via pertisk_eproxy_access_log:log_proxy/8; skip mirroring lager:warning duplicates.
+    case proxy_http_access_message(Message) of
+        true ->
+            {ok, St};
+        false ->
+            case lager_msg:severity(Message) of
+                Sev when Sev =:= error; Sev =:= critical; Sev =:= alert; Sev =:= emergency ->
+                    Msg = safe_message(Message),
+                    _ = catch pertisk_eproxy_access_log:log_system(<<"error">>, <<"error">>, Msg);
+                Sev when Sev =:= warning; Sev =:= notice ->
+                    Msg = safe_message(Message),
+                    _ = catch pertisk_eproxy_access_log:log_system(<<"warn">>, <<"system">>, Msg);
+                _ ->
+                    ok
+            end,
+            {ok, St}
+    end.
 
 proxy_http_access_message(Message) ->
     case lager_msg:metadata(Message) of

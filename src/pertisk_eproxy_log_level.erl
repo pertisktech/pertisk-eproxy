@@ -17,11 +17,13 @@ apply() ->
         {error, _} ->
             ok
     end,
-    case lager:set_loglevel(lager_file_backend, LagerLevel) of
-        ok ->
-            ok;
-        {error, _} ->
-            ok
+    _ = case lager:set_loglevel(lager_file_backend, "proxy.log", LagerLevel) of
+        ok -> ok;
+        {error, _} -> ok
+    end,
+    _ = case lager:set_loglevel(lager_file_backend, "error.log", error) of
+        ok -> ok;
+        {error, _} -> ok
     end,
     lager:info("Log level set to ~s", [label(Level)]),
     ok.

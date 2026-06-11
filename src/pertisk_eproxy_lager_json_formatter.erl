@@ -122,8 +122,22 @@ message_bin(Msg) ->
     encode_value(lager_msg:message(Msg)).
 
 app_name() ->
+    persistent_term:get(
+        {pertisk_eproxy_lager_json_formatter, app_name},
+        default_app_name()
+    ).
+
+default_app_name() ->
     case application:get_env(pertisk_eproxy, log_app_name) of
-        {ok, Name} when is_binary(Name) -> Name;
-        {ok, Name} when is_list(Name) -> list_to_binary(Name);
-        _ -> <<"pertisk-eproxy">>
+        {ok, Name} when is_binary(Name) ->
+            persistent_term:put({pertisk_eproxy_lager_json_formatter, app_name}, Name),
+            Name;
+        {ok, Name} when is_list(Name) ->
+            Bin = list_to_binary(Name),
+            persistent_term:put({pertisk_eproxy_lager_json_formatter, app_name}, Bin),
+            Bin;
+        _ ->
+            Default = <<"pertisk-eproxy">>,
+            persistent_term:put({pertisk_eproxy_lager_json_formatter, app_name}, Default),
+            Default
     end.
