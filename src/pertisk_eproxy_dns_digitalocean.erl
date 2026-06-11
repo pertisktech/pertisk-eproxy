@@ -90,7 +90,7 @@ trim_space_right(Bin) ->
     Bin.
 
 -spec txt_record_name(binary(), binary()) -> binary().
-%% @doc DigitalOcean `name` field (relative to domain), e.g. `_acme-challenge` or `_acme-challenge.www`.
+%% @doc DigitalOcean 'name' field (relative to domain), e.g. '_acme-challenge' or '_acme-challenge.www'.
 txt_record_name(FullTxtFqdn, Domain) ->
     Suffix = <<$., Domain/binary>>,
     case binary_suffix(FullTxtFqdn, Suffix) of

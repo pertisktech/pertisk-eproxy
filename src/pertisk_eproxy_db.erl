@@ -1,8 +1,8 @@
 %%% SQLite database module for proxy configuration.
 %%% Tables: sites, backends, upstreams, path_rewrites
-%%% Uses the `sqlite3` CLI via `os:cmd/1` (requires the binary on disk; see
-%%% {@link resolve_sqlite3_executable/0} and `sqlite3_executable` in `sys.config`
-%%% when the VM has a minimal PATH and login fails with `sqlite_json_decode`).
+%%% Uses the 'sqlite3' CLI via 'os:cmd/1' (requires the binary on disk; see
+%%% {@link resolve_sqlite3_executable/0} and 'sqlite3_executable' in 'sys.config'
+%%% when the VM has a minimal PATH and login fails with 'sqlite_json_decode').
 
 -module(pertisk_eproxy_db).
 -export([
@@ -47,7 +47,7 @@
 
 -include_lib("lager/include/lager.hrl").
 
-%% @doc First deploy only: create `proxy.db`, schema, and default admin user.
+%% @doc First deploy only: create 'proxy.db', schema, and default admin user.
 -spec init(string()) -> {ok, string()} | {error, term()}.
 init(DbPath) ->
     case filelib:is_dir(DbPath) of
@@ -72,7 +72,7 @@ init(DbPath) ->
             end
     end.
 
-%% @doc On every start: if `proxy.db` exists run schema migration only; if not, config load creates it.
+%% @doc On every start: if 'proxy.db' exists run schema migration only; if not, config load creates it.
 -spec ensure_ready(string()) -> {ok, string()} | {error, term()}.
 ensure_ready(DbPath) ->
     case ensure_db_parent_dir(DbPath) of
@@ -105,7 +105,7 @@ ensure_db_parent_dir(DbPath) ->
         {error, Reason} -> {error, Reason}
     end.
 
-%% @doc Idempotent schema migration (`CREATE TABLE IF NOT EXISTS` on every deploy).
+%% @doc Idempotent schema migration ('CREATE TABLE IF NOT EXISTS' on every deploy).
 -spec migrate_schema(string()) -> ok | {error, term()}.
 migrate_schema(DbPath) ->
     SQL = "CREATE TABLE IF NOT EXISTS runtime_state (
@@ -148,8 +148,8 @@ migrate_schema(DbPath) ->
         {error, Reason} -> {error, Reason}
     end.
 
-%% @doc Resolve `sqlite3` binary: optional `application:get_env(pertisk_eproxy, sqlite3_executable)`,
-%% then `os:find_executable/1`, then common absolute paths (minimal systemd PATH).
+%% @doc Resolve 'sqlite3' binary: optional 'application:get_env(pertisk_eproxy, sqlite3_executable)',
+%% then 'os:find_executable/1', then common absolute paths (minimal systemd PATH).
 -spec resolve_sqlite3_executable() -> {ok, string()} | {error, sqlite3_executable_not_found}.
 resolve_sqlite3_executable() ->
     case application:get_env(pertisk_eproxy, sqlite3_executable) of
@@ -182,7 +182,7 @@ sqlite3_exe_first_existing([P | Rest]) ->
         false -> sqlite3_exe_first_existing(Rest)
     end.
 
-%% `filelib:is_regular_file/1` exists only from OTP 23+; keep compatible with older runtimes.
+%% 'filelib:is_regular_file/1' exists only from OTP 23+; keep compatible with older runtimes.
 sqlite3_path_is_usable_file(Path) when is_list(Path) ->
     filelib:is_file(Path) andalso not filelib:is_dir(Path).
 
@@ -267,7 +267,7 @@ sqlite_output_preview(Bin) when is_binary(Bin), byte_size(Bin) > 240 ->
 sqlite_output_preview(Bin) when is_binary(Bin) ->
     Bin.
 
-%% `/bin/sh: 1: sqlite3: not found` and similar (first printable byte often `/`).
+%% '/bin/sh: 1: sqlite3: not found' and similar (first printable byte often '/').
 sqlite3_shell_failure_output(Output) when is_list(Output) ->
     case string:find(Output, "sqlite3") of
         nomatch ->

@@ -360,7 +360,7 @@ reply_502_plain(H3Conn, StreamId) ->
         <<"Bad Gateway">>
     ).
 
-%% @doc Handle `/api/realtime-sse` over HTTP/3 by streaming SSE events directly.
+%% @doc Handle '/api/realtime-sse' over HTTP/3 by streaming SSE events directly.
 %% gun:await_body cannot forward an indefinite SSE stream, so we replicate the
 %% Local admin handler processing for H3 requests.
 %% Strip a trailing :port for router matching (and log host), same idea as Cowboy's host/1.
@@ -1826,8 +1826,8 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
 
 %% Single [::] dual-stack socket on Linux (Quinn / Node http3 model).
 %% Must use gen_udp backend: the socket backend ignores extra_socket_opts for server sockets
-%% (open_socket_backend hardcodes `inet` family), so inet6/ipv6_v6only opts are silently
-%% dropped. gen_udp backend appends extra_socket_opts after the base `inet` flag so the
+%% (open_socket_backend hardcodes 'inet' family), so inet6/ipv6_v6only opts are silently
+%% dropped. gen_udp backend appends extra_socket_opts after the base 'inet' flag so the
 %% last entry (inet6) wins, producing a dual-stack [::] socket.
 -define(UDP_RECV_BUF, 1048576).
 -define(UDP_SEND_BUF, 1048576).
@@ -2110,7 +2110,7 @@ decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
             {error, {invalid_listener_pem, CertPath, KeyPath}}
     end.
 
-%% Leaf in `cert`, intermediates in `cert_chain` (Chrome QUIC is strict; TCP certfile sends the full PEM).
+%% Leaf in 'cert', intermediates in 'cert_chain' (Chrome QUIC is strict; TCP certfile sends the full PEM).
 tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
     Base = case Chain of
         [] -> #{cert => CertDer, key => KeyTerm};

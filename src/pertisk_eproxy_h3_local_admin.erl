@@ -1,4 +1,4 @@
-%% @doc Serve management admin UI + `/api/*` in-process over HTTP/3 (no gun hop to :9080).
+%% @doc Serve management admin UI + '/api/*' in-process over HTTP/3 (no gun hop to :9080).
 -module(pertisk_eproxy_h3_local_admin).
 
 -export([try_dispatch/7]).

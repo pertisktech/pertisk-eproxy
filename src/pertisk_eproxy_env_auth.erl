@@ -1,5 +1,5 @@
 %% @doc Ingress admin auth from environment (PERTISK_ADMIN / PERTISK_PASSWORD).
-%% Stateless signed bearer tokens (`ptskv1.…`) work across replicas without SQLite.
+%% Stateless signed bearer tokens ('ptskv1.…') work across replicas without SQLite.
 -module(pertisk_eproxy_env_auth).
 
 -export([

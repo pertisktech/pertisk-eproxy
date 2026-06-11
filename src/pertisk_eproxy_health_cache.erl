@@ -1,7 +1,7 @@
-%% @doc Cached `/api/health` JSON refreshed in the background.
+%% @doc Cached '/api/health' JSON refreshed in the background.
 %%
 %% Avoids rebuilding TLS cert rows + backend status on every request under load
-%% (k6 `/api/health` benchmarks and admin dashboard polling).
+%% (k6 '/api/health' benchmarks and admin dashboard polling).
 -module(pertisk_eproxy_health_cache).
 -behaviour(gen_server).
 

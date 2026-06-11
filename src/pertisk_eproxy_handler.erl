@@ -45,7 +45,7 @@
 -define(GRPC_HTTP2_KEEPALIVE_MS, 20000).
 -define(GRPC_HTTP2_KEEPALIVE_TOLERANCE, 2).
 
-%% @doc Prometheus `proto` label for TCP/TLS Cowboy requests (HTTP/3 uses the QUIC gateway).
+%% @doc Prometheus 'proto' label for TCP/TLS Cowboy requests (HTTP/3 uses the QUIC gateway).
 cowboy_req_proto_metric(Req) ->
     case cowboy_req:version(Req) of
         'HTTP/3' ->
@@ -1390,9 +1390,9 @@ is_hop_by_hop_response_header(<<"transfer-encoding">>) -> true;
 is_hop_by_hop_response_header(<<"upgrade">>) -> true;
 is_hop_by_hop_response_header(_) -> false.
 
-%% cow_cookie:parse_set_cookie/1 returns `max_age` as an absolute calendar
-%% datetime, and may include `expires`. cowboy_req:set_resp_cookie/4 expects
-%% `max_age` as a non-negative integer (seconds) and does not accept `expires`.
+%% cow_cookie:parse_set_cookie/1 returns 'max_age' as an absolute calendar
+%% datetime, and may include 'expires'. cowboy_req:set_resp_cookie/4 expects
+%% 'max_age' as a non-negative integer (seconds) and does not accept 'expires'.
 %% Translate so we don't crash with {badarg, {max_age, {{Y,M,D},{H,M,S}}}}.
 cookie_attrs_to_opts(Attrs) when is_map(Attrs) ->
     Attrs1 = maps:remove(expires, Attrs),
@@ -1695,7 +1695,7 @@ sse_early_flush_enabled() ->
         _ -> true
     end.
 
-%% @doc True when an authenticated SSE request should flush `: connected` before
+%% @doc True when an authenticated SSE request should flush ': connected' before
 %% upstream response headers (idle watch APIs such as Argo CD).
 -spec should_sse_early_flush(binary(), binary(), map() | [{binary(), binary()}]) -> boolean().
 should_sse_early_flush(Host, Path, Headers) when is_binary(Host), is_binary(Path) ->

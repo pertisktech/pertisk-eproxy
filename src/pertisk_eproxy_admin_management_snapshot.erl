@@ -1,4 +1,4 @@
-%% @doc Single source for GET /api/management and realtime `management` JSON object.
+%% @doc Single source for GET /api/management and realtime 'management' JSON object.
 -module(pertisk_eproxy_admin_management_snapshot).
 
 -export([snapshot/0, app_version/0, init_cpu_sample/0]).
@@ -8,7 +8,7 @@
 %% Ignore samples closer than this — concurrent /api/management + WS ticks share one baseline.
 -define(CPU_SAMPLE_MIN_MS, 2000).
 
-%% @doc Seed wall/runtime counters so the first `/api/management` response can compute CPU%.
+%% @doc Seed wall/runtime counters so the first '/api/management' response can compute CPU%.
 init_cpu_sample() ->
     {W, _} = erlang:statistics(wall_clock),
     {R, _} = erlang:statistics(runtime),

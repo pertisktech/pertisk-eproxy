@@ -96,7 +96,7 @@ inc_request(Host, StatusCode, Proto) when is_binary(Proto) ->
 inc_site_request(Site, StatusCode, Proto) when is_binary(Proto) ->
     prometheus_counter:inc(pertisk_eproxy_site_requests_total, [Site, StatusCode, Proto]).
 
-%% @doc Add proxied byte volumes for admin `/api/stats` throughput (per virtual host).
+%% @doc Add proxied byte volumes for admin '/api/stats' throughput (per virtual host).
 -spec record_proxy_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
 record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
     case Recv of

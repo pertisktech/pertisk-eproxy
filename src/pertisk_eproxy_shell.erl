@@ -1,7 +1,7 @@
 %% @doc Shell out to host CLI tools without inheriting release OpenSSL libs.
 %%
-%% RPM/systemd sets `LD_LIBRARY_PATH` to `/opt/pertisk-eproxy/lib/openssl` so OTP's
-%% crypto NIF loads. That breaks `/usr/bin/openssl` (built against the host libssl).
+%% RPM/systemd sets 'LD_LIBRARY_PATH' to '/opt/pertisk-eproxy/lib/openssl' so OTP's
+%% crypto NIF loads. That breaks '/usr/bin/openssl' (built against the host libssl).
 -module(pertisk_eproxy_shell).
 
 -export([os_cmd/1, openssl_executable/0]).

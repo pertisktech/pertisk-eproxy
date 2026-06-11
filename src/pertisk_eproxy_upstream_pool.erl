@@ -3,7 +3,7 @@
 %% Maintains a small reusable pool per upstream target + request profile
 %% (e.g. HTTP/1.1 vs gRPC/HTTP2) to avoid per-request connect/handshake cost.
 %%
-%% Idle eviction: connections not used for longer than `upstream_pool_idle_timeout_secs`
+%% Idle eviction: connections not used for longer than 'upstream_pool_idle_timeout_secs'
 %% (default 240 s = 4 min) are proactively closed and removed.  This prevents the
 %% 20-25 minute idle timeout symptom where firewalls/NAT tables silently close the
 %% TCP socket while the Gun process remains alive — causing the next request to hang

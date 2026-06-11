@@ -80,7 +80,7 @@ trim_trailing_dot(Host) ->
     Host.
 
 -spec cf_txt_record_name(binary(), binary()) -> binary().
-%% @doc Cloudflare `name` field (relative to zone), e.g. `_acme-challenge` or `_acme-challenge.www`.
+%% @doc Cloudflare 'name' field (relative to zone), e.g. '_acme-challenge' or '_acme-challenge.www'.
 cf_txt_record_name(FullTxtFqdn, ZoneName) ->
     Suffix = <<$., ZoneName/binary>>,
     case binary_suffix(FullTxtFqdn, Suffix) of

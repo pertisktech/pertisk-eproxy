@@ -21,7 +21,7 @@ merge(Headers) when is_map(Headers) ->
 merge_h3(Headers) when is_list(Headers) ->
     identity_h3() ++ strip_identity_keys(Headers).
 
-%% Cowboy defaults to `server: Cowboy` on 101 WebSocket upgrade unless resp_headers are set.
+%% Cowboy defaults to 'server: Cowboy' on 101 WebSocket upgrade unless resp_headers are set.
 -spec apply_cowboy_req(cowboy_req:req()) -> cowboy_req:req().
 apply_cowboy_req(Req) ->
     cowboy_req:set_resp_headers(identity_map(), Req).

@@ -539,7 +539,7 @@ tls_opts(Config) ->
             end
     end.
 
-%% @doc Listener cert paths: explicit `tls_cert_file` / `tls_key_file`, else default PEMs
+%% @doc Listener cert paths: explicit 'tls_cert_file' / 'tls_key_file', else default PEMs
 %% (same files as {@link pertisk_eproxy_h3_api_gateway}) when both exist on disk.
 -spec tls_cert_key_paths(map()) -> {undefined | string(), undefined | string()}.
 tls_cert_key_paths(Config) ->
@@ -827,7 +827,7 @@ start_clear_listener_ipv6(Name, Port, Routes, NumAcceptors) ->
             ok
     end.
 
-%% inet6 must be the bare atom `inet6`, not `{inet6, true}` (causes inet6_tcp badarg).
+%% inet6 must be the bare atom 'inet6', not '{inet6, true}' (causes inet6_tcp badarg).
 build_listen_socket_opts({0, 0, 0, 0, 0, 0, 0, 0}, Port, Extra) ->
     [{ip, {0, 0, 0, 0, 0, 0, 0, 0}}, inet6, {port, Port} | Extra];
 build_listen_socket_opts(Ip, Port, Extra) ->

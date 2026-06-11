@@ -1,7 +1,7 @@
 %% @doc JSON-friendly metrics snapshot for the admin UI.
 %%
 %% Request totals are derived from {@link pertisk_eproxy_metrics}: counter labels
-%% include `proto` (http1, tls_h1, h2, h3, grpc) so HTTP/3 and HTTP/2 are visible
+%% include 'proto' (http1, tls_h1, h2, h3, grpc) so HTTP/3 and HTTP/2 are visible
 %% in the admin Metrics charts.
 
 -module(pertisk_eproxy_stats).
@@ -192,8 +192,8 @@ sum_gauge(Name) ->
         0
     end.
 
-%% prometheus.erl stores label *names* as printable lists (e.g. `"host"`), not atoms,
-%% so `lists:keyfind(proto, 1, LP)` never matched and all protocol sums stayed 0.
+%% prometheus.erl stores label *names* as printable lists (e.g. '"host"'), not atoms,
+%% so 'lists:keyfind(proto, 1, LP)' never matched and all protocol sums stayed 0.
 -spec label_value([{term(), term()}], atom()) -> term() | undefined.
 label_value(LP, Key) when is_list(LP), is_atom(Key) ->
     KeyStr = atom_to_list(Key),

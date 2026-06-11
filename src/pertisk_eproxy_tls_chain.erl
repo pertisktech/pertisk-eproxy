@@ -3,7 +3,7 @@
 
 -export([verify_listener_parity/3]).
 
-%% @doc Compare decoded QUIC cert material with `listener.pem` (TCP TLS certfile).
+%% @doc Compare decoded QUIC cert material with 'listener.pem' (TCP TLS certfile).
 -spec verify_listener_parity(string(), binary(), [binary()]) -> ok.
 verify_listener_parity(CertPath, LeafDer, ChainDers) ->
     case file:read_file(CertPath) of

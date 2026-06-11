@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover cover-local clean release \
+.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -75,7 +75,13 @@ cover-local:
 dialyzer:
 	$(REBAR) dialyzer
 
-clean:
+docs: compile
+	$(REBAR) edoc
+
+docs-clean:
+	@find doc -mindepth 1 -maxdepth 1 ! -name 'overview.edoc' -exec rm -rf {} +
+
+clean: docs-clean
 	$(REBAR) clean
 	rm -rf _build
 	@find . -maxdepth 1 -name '*.coverdata' -delete

@@ -1,4 +1,4 @@
-%% @doc Runtime log level from JSON config (`log_level`) or `PERTISK_LOG_LEVEL` env.
+%% @doc Runtime log level from JSON config ('log_level') or 'PERTISK_LOG_LEVEL' env.
 -module(pertisk_eproxy_log_level).
 
 -export([apply/0, configured/0, parse/1, label/1]).
@@ -43,7 +43,7 @@ configured() ->
             end
     end.
 
-%% @doc User-facing label for API / logs (`warn`, not `warning`).
+%% @doc User-facing label for API / logs ('warn', not 'warning').
 -spec label(atom()) -> string().
 label(Level) ->
     atom_to_list(canonical_level(Level)).
@@ -73,7 +73,7 @@ parse(Level) when is_list(Level) ->
 parse(_) ->
     error.
 
-%% Lager uses `warning`; config and API use `warn`.
+%% Lager uses 'warning'; config and API use 'warn'.
 to_lager_level(warn) -> warning;
 to_lager_level(Level) -> Level.
 

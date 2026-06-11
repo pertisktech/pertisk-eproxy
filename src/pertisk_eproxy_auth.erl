@@ -153,7 +153,7 @@ verify_request(Req) ->
             end
     end.
 
-%% @doc Prefer `Authorization: Bearer`, then `X-Eproxy-Bearer` (raw JWT or `Bearer …`) for reverse proxies that strip Authorization.
+%% @doc Prefer 'Authorization: Bearer', then 'X-Eproxy-Bearer' (raw JWT or 'Bearer …') for reverse proxies that strip Authorization.
 -spec bearer_from_request(cowboy_req:req()) -> {ok, binary()} | error.
 bearer_from_request(Req) ->
     case cowboy_req:parse_header(<<"authorization">>, Req) of
@@ -311,7 +311,7 @@ new_token() ->
 is_local_session_token(<<"ept_", _/binary>>) -> true;
 is_local_session_token(_) -> false.
 
-%% Stateless ingress bearer (`ptskv1.…`) for multi-replica admin auth.
+%% Stateless ingress bearer ('ptskv1.…') for multi-replica admin auth.
 is_stateless_bearer_token(<<"ptskv1.", _/binary>>) -> true;
 is_stateless_bearer_token(_) -> false.
 

@@ -1,6 +1,6 @@
 %% @doc Per-backend gen_server for pertisk_eproxy.
 %%
-%% Each backend config entry (from proxy.json `backends` list) has one
+%% Each backend config entry (from proxy.json 'backends' list) has one
 %% corresponding process that:
 %%   - tracks LB state (round-robin cursor, connection counts)
 %%   - manages health-check timers and upstream availability

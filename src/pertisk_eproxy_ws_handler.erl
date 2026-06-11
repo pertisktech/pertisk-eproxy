@@ -1,6 +1,6 @@
 %% @doc WebSocket reverse proxy handler for pertisk_eproxy.
 %%
-%% Upgraded when pertisk_eproxy_handler detects an `Upgrade: websocket` header.
+%% Upgraded when pertisk_eproxy_handler detects an 'Upgrade: websocket' header.
 %% The handler:
 %%   1. Connects to the upstream via gun with a WebSocket upgrade.
 %%   2. Bridges frames in both directions until either side closes.

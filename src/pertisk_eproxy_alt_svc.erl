@@ -1,7 +1,7 @@
 %% @doc Alt-Svc header for advertising HTTP/3 (QUIC) on HTTPS responses.
 %%
-%% Browsers only discover HTTP/3 after seeing `Alt-Svc` on an HTTPS (TCP) response.
-%% `curl --http3-only` talks QUIC directly and ignores this header.
+%% Browsers only discover HTTP/3 after seeing 'Alt-Svc' on an HTTPS (TCP) response.
+%% 'curl --http3-only' talks QUIC directly and ignores this header.
 -module(pertisk_eproxy_alt_svc).
 
 -export([header_value/0, merge_response_headers/3]).

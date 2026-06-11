@@ -94,7 +94,7 @@ is_domain_not_found_error({http, 404, _}) -> true;
 is_domain_not_found_error(_) -> false.
 
 -spec txt_record_name(binary(), binary()) -> binary().
-%% @doc Linode record name relative to domain, e.g. `_acme-challenge` or `_acme-challenge.app`.
+%% @doc Linode record name relative to domain, e.g. '_acme-challenge' or '_acme-challenge.app'.
 txt_record_name(FullTxtFqdn, Domain) ->
     Suffix = <<$., Domain/binary>>,
     case binary_suffix(FullTxtFqdn, Suffix) of

@@ -1,6 +1,6 @@
 %% @doc Response compression negotiation for gzip, brotli (br) and zstd.
 %%
-%% `gzip` is always available via zlib. `br` and `zstd` are enabled when
+%% 'gzip' is always available via zlib. 'br' and 'zstd' are enabled when
 %% compatible runtime modules are present.
 
 -module(pertisk_eproxy_compression).

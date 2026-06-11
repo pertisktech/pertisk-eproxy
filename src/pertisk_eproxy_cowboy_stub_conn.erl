@@ -8,7 +8,7 @@
 stub_stream_id() ->
     ?STUB_STREAM_ID.
 
-%% @doc Spawn a process that answers cowboy_req casts for `read_body` and captures `reply`.
+%% @doc Spawn a process that answers cowboy_req casts for 'read_body' and captures 'reply'.
 -spec start(pid(), binary()) -> pid().
 start(Parent, Body) when is_pid(Parent) ->
     spawn_link(fun() -> loop(Parent, Body) end).

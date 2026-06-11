@@ -70,7 +70,7 @@ is_zone_not_found_error({http, 404, _}) -> true;
 is_zone_not_found_error(_) -> false.
 
 -spec txt_record_name(binary(), binary()) -> binary().
-%% @doc Vultr record name relative to zone, e.g. `_acme-challenge` or `_acme-challenge.app`.
+%% @doc Vultr record name relative to zone, e.g. '_acme-challenge' or '_acme-challenge.app'.
 txt_record_name(FullTxtFqdn, Zone) ->
     Suffix = <<$., Zone/binary>>,
     case binary_suffix(FullTxtFqdn, Suffix) of

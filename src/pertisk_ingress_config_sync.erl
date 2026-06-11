@@ -134,7 +134,7 @@ stable_reload_sig(Sites, Backends, Tls) ->
     erlang:phash2({StableSites, StableBackends, StableTls}).
 
 %% @doc Call pertisk_eproxy_config:sync_ingress only when sites/backends have
-%% actually changed.  Returns `unchanged` (no-op) or `synced` / error.
+%% actually changed.  Returns 'unchanged' (no-op) or 'synced' / error.
 %%
 %% Kubernetes watches reopen every few minutes and replay ADDED events for all
 %% existing resources.  Without this guard, each watch restart triggers a

@@ -141,7 +141,7 @@ audience_bin() ->
 issuer_bin(Domain) ->
     <<"https://", Domain/binary, "/">>.
 
-%% Optional override when access tokens use a custom-domain `iss` (defaults to https://<admin_auth0_domain>/).
+%% Optional override when access tokens use a custom-domain 'iss' (defaults to https://<admin_auth0_domain>/).
 issuer_for_verify(Domain) ->
     case application:get_env(pertisk_eproxy, admin_auth0_issuer) of
         {ok, I} when is_binary(I), byte_size(I) > 0 ->
@@ -255,7 +255,7 @@ httpc_request_get(Url) ->
             {error, {jwks_http, Reason}}
     end.
 
-%% @doc TLS for JWKS HTTPS. Auth0 presents wildcard SANs (`*.us.auth0.com`); need HTTPS match_fun + explicit SNI or hostname_check fails (OTP default is stricter than browsers).
+%% @doc TLS for JWKS HTTPS. Auth0 presents wildcard SANs ('*.us.auth0.com'); need HTTPS match_fun + explicit SNI or hostname_check fails (OTP default is stricter than browsers).
 jwks_https_hostname(Url0) when is_list(Url0) ->
     jwks_https_hostname(unicode:characters_to_binary(Url0));
 jwks_https_hostname(Url) when is_binary(Url) ->
@@ -414,7 +414,7 @@ aud_ok(Aud, ClientId, Audience) ->
     NormAuds = [norm_aud_str(A) || A <- AudVals],
     lists:any(fun(N) -> lists:member(N, NormExpected) end, NormAuds).
 
-%% Auth0 may emit `aud` with or without a trailing slash vs dashboard "Identifier".
+%% Auth0 may emit 'aud' with or without a trailing slash vs dashboard "Identifier".
 norm_aud_str(B) when is_binary(B) ->
     binary_trim_trailing_slash(B);
 norm_aud_str(_) ->
@@ -445,7 +445,7 @@ aud_elem(V) when is_list(V) ->
 aud_elem(_) ->
     false.
 
-%% Normalize JWT `exp` (JSON number may decode as integer or float).
+%% Normalize JWT 'exp' (JSON number may decode as integer or float).
 exp_unix(Exp) when is_integer(Exp) -> Exp;
 exp_unix(Exp) when is_float(Exp) -> erlang:round(Exp);
 exp_unix(_) -> 0.

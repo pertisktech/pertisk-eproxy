@@ -1,11 +1,11 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
 %% **Proxy:** runtime config and sites/backends are stored in SQLite
-%% (`data/proxy.db`); JSON file seeds the DB only when that file does not exist yet.
+%% ('data/proxy.db'); JSON file seeds the DB only when that file does not exist yet.
 %%
-%% **Ingress:** listener settings come from `config/ingress.json` (or `PERTISK_CONFIG_FILE`);
+%% **Ingress:** listener settings come from 'config/ingress.json' (or 'PERTISK_CONFIG_FILE');
 %% sites/backends are applied only via {@link sync_ingress/2} from Kubernetes manifests
-%% (standard `networking.k8s.io/v1` Ingress + TLS Secrets). SQLite is not used.
+%% (standard 'networking.k8s.io/v1' Ingress + TLS Secrets). SQLite is not used.
 %%
 %% All modes cache the active config in ETS for fast concurrent reads.
 %%
@@ -57,7 +57,7 @@ get_config() ->
         []            -> #{}
     end.
 
-%% @doc `Host:port` for the management listener (for access logs when forwarding to it).
+%% @doc 'Host:port' for the management listener (for access logs when forwarding to it).
 -spec management_upstream_bin() -> binary().
 management_upstream_bin() ->
     C = get_config(),
@@ -114,7 +114,7 @@ metrics_enabled() ->
             end
     end.
 
-%% @doc Bind address/port for the Prometheus listener (`PERTISK_METRICS_ADDR` overrides JSON).
+%% @doc Bind address/port for the Prometheus listener ('PERTISK_METRICS_ADDR' overrides JSON).
 -spec metrics_listen() -> {inet:ip_address(), pos_integer()}.
 metrics_listen() ->
     case os:getenv("PERTISK_METRICS_ADDR") of
@@ -572,7 +572,7 @@ load_ingress_config() ->
             {error, Reason}
     end.
 
-%% Proxy: SQLite is source of truth; `proxy.json` seeds DB on **first deploy only**.
+%% Proxy: SQLite is source of truth; 'proxy.json' seeds DB on **first deploy only**.
 load_proxy_config() ->
     DbPath = db_file(),
     %% Snapshot whether the DB existed BEFORE we touch it. get_runtime_config/1
@@ -827,8 +827,8 @@ db_file() ->
 data_dir() ->
     filename:dirname(db_file()).
 
-%% JSON `null` or non-lists must not crash list comprehensions (maps:get/3 default is
-%% ignored when the key is present with value `null`).
+%% JSON 'null' or non-lists must not crash list comprehensions (maps:get/3 default is
+%% ignored when the key is present with value 'null').
 -spec json_as_list(term()) -> list().
 json_as_list(undefined) -> [];
 json_as_list(null) -> [];

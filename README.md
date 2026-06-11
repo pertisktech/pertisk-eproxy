@@ -289,6 +289,17 @@ The built SPA is shipped under `priv/admin/`. Rebuild after UI changes:
 cd admin && npm ci && npm run build
 ```
 
+## Erlang API reference (EDoc)
+
+Generate HTML module documentation from `%% @doc` comments in `src/`:
+
+```bash
+make docs
+open doc/index.html
+```
+
+Source overview: `doc/overview.edoc`. Generated HTML under `doc/` is gitignored.
+
 ## Further reading
 
 - **`README_SQLITE.md`** — SQLite schema, certificates, DNS providers, and related operational notes.
