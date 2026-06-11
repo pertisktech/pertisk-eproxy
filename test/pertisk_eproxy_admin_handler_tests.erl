@@ -28,11 +28,46 @@ dispatch(Method, Path, Qs, Body) ->
     dispatch(Method, Path, Qs, Body, []).
 
 dispatch(Method, Path, Qs, Body, Headers) ->
+    dispatch_with_retry(Method, Path, Qs, Body, Headers, 8).
+
+dispatch_with_retry(Method, Path, Qs, Body, Headers, 0) ->
     pertisk_eproxy_test_helpers:with_db_lock(fun() ->
         pertisk_eproxy_h3_local_admin:try_dispatch(
             Method, <<"localhost">>, Path, Qs, Headers, Body, <<"127.0.0.1">>
         )
-    end).
+    end);
+dispatch_with_retry(Method, Path, Qs, Body, Headers, Retries) ->
+    Resp = pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        pertisk_eproxy_h3_local_admin:try_dispatch(
+            Method, <<"localhost">>, Path, Qs, Headers, Body, <<"127.0.0.1">>
+        )
+    end),
+    case should_retry_locked_response(Method, Resp) of
+        true ->
+            timer:sleep(75),
+            dispatch_with_retry(Method, Path, Qs, Body, Headers, Retries - 1);
+        false ->
+            Resp
+    end.
+
+should_retry_locked_response(Method, {ok, 400, _Hdrs, Resp}) ->
+    is_write_method(Method) andalso sqlite_locked_msg(Resp);
+should_retry_locked_response(_, _) ->
+    false.
+
+is_write_method(<<"GET">>) ->
+    false;
+is_write_method(<<"HEAD">>) ->
+    false;
+is_write_method(<<"OPTIONS">>) ->
+    false;
+is_write_method(Method) when is_binary(Method) ->
+    true;
+is_write_method(Method) when is_list(Method) ->
+    Upper = string:uppercase(Method),
+    not lists:member(Upper, ["GET", "HEAD", "OPTIONS"]);
+is_write_method(_) ->
+    false.
 
 dispatch_auth(Method, Path, Body, Token) ->
     dispatch(Method, Path, <<>>, Body, [{<<"authorization">>, <<"Bearer ", Token/binary>>}]).

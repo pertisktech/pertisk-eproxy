@@ -620,6 +620,55 @@ with_config(Fun) ->
 init_tmp_db(DbPath) ->
     init_tmp_db(DbPath, 5).
 
+put_config_retry(Config) ->
+    put_config_retry(Config, 12).
+
+put_config_retry(Config, 0) ->
+    pertisk_eproxy_config:put_config(Config);
+put_config_retry(Config, Retries) ->
+    case pertisk_eproxy_config:put_config(Config) of
+        ok ->
+            ok;
+        {error, Reason} when Retries > 0 ->
+            case config_locked_error(Reason) of
+                true ->
+                    timer:sleep(75),
+                    put_config_retry(Config, Retries - 1);
+                false ->
+                    {error, Reason}
+            end;
+        Other ->
+            Other
+    end.
+
+config_locked_error({persist_runtime_config, Inner}) ->
+    config_locked_error(Inner);
+config_locked_error({persist_dns_providers, Inner}) ->
+    config_locked_error(Inner);
+config_locked_error({tls_validation_cert_store_unavailable, Inner}) ->
+    config_locked_error(Inner);
+config_locked_error({sqlite_error, Msg, _}) ->
+    sqlite_locked_msg(Msg);
+config_locked_error({sqlite_error, Msg}) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_binary(Msg) ->
+    sqlite_locked_msg(Msg);
+config_locked_error(Msg) when is_binary(Msg) ->
+    sqlite_locked_msg(Msg);
+config_locked_error(Msg) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error(_) ->
+    false.
+
+sqlite_locked_msg(Msg) when is_binary(Msg) ->
+    binary:match(Msg, <<"locked">>) =/= nomatch;
+sqlite_locked_msg(Msg) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+sqlite_locked_msg(_) ->
+    false.
+
 init_tmp_db(DbPath, 0) ->
     pertisk_eproxy_db:init(DbPath);
 init_tmp_db(DbPath, Retries) ->
@@ -645,22 +694,24 @@ init_tmp_db(DbPath, Retries) ->
     end.
 
 with_tmp_db_config(Fun) ->
-    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
-    file:delete(DbPath),
-    OldDb = application:get_env(pertisk_eproxy, db_file),
-    application:set_env(pertisk_eproxy, db_file, DbPath),
-    try
-        with_config(fun() ->
-            ?assertMatch({ok, _}, init_tmp_db(DbPath)),
-            Fun()
-        end)
-    after
-        case OldDb of
-            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
-            undefined -> application:unset_env(pertisk_eproxy, db_file)
-        end,
-        file:delete(DbPath)
-    end.
+    pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        try
+            with_config(fun() ->
+                ?assertMatch({ok, _}, init_tmp_db(DbPath)),
+                Fun()
+            end)
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
 
 maybe_stop_config(true) ->
     case whereis(pertisk_eproxy_config) of
@@ -768,7 +819,7 @@ put_config_with_tmp_db_test() ->
             certificates => [],
             dns_providers => []
         },
-        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config)),
+        ?assertEqual(ok, put_config_retry(Config)),
         ?assertMatch({ok, _}, pertisk_eproxy_db:get_runtime_config(DbPath))
     end).
 

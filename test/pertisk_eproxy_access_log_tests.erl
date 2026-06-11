@@ -197,15 +197,19 @@ health_access_log_enabled_logs_200_test() ->
     Base = pertisk_eproxy_config:get_config(),
     Config = Base#{health_access_log => true},
     ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
-    with_server(fun() ->
-        pertisk_eproxy_access_log:refresh_hot_path_flags(),
-        Before = pertisk_eproxy_access_log:count(),
-        ?assertEqual(ok,
-            pertisk_eproxy_access_log:log_proxy(
-                <<"host">>, <<"GET">>, <<"/healthz">>, 200, 1, 'HTTP/1.1'
-            )),
-        ?assert(pertisk_eproxy_access_log:count() > Before)
-    end).
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            Before = pertisk_eproxy_access_log:count(),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"host">>, <<"GET">>, <<"/healthz">>, 200, 1, 'HTTP/1.1'
+                )),
+            ?assert(pertisk_eproxy_access_log:count() > Before)
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.
 
 ring_buffer_trim_test() ->
     with_server(fun() ->

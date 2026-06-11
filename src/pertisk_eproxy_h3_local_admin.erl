@@ -71,7 +71,12 @@ serve_static_h3(Method, Host, Path) ->
         <<"HEAD">> ->
             read_static_file(Host, Path, true);
         _ ->
-            not_found
+            case static_disk_path(Path) of
+                {ok, _} ->
+                    {ok, 405, [{<<"allow">>, <<"GET, HEAD">>}], <<>>};
+                not_found ->
+                    not_found
+            end
     end.
 
 read_static_file(Host, Path, HeadOnly) ->

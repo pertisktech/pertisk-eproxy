@@ -156,24 +156,32 @@ verify_request(Req) ->
 %% @doc Prefer 'Authorization: Bearer', then 'X-Eproxy-Bearer' (raw JWT or 'Bearer …') for reverse proxies that strip Authorization.
 -spec bearer_from_request(cowboy_req:req()) -> {ok, binary()} | error.
 bearer_from_request(Req) ->
-    case cowboy_req:parse_header(<<"authorization">>, Req) of
-        {bearer, T} when is_binary(T), byte_size(T) > 0 ->
-            {ok, T};
+    case cowboy_req:header(<<"authorization">>, Req, <<>>) of
+        <<>> ->
+            bearer_from_x_eproxy_header(Req);
         _ ->
-            case cowboy_req:header(<<"x-eproxy-bearer">>, Req) of
-                undefined ->
-                    error;
-                <<>> ->
-                    error;
-                Raw when is_binary(Raw) ->
-                    Stripped = trim_bin(Raw),
-                    case strip_bearer_prefix(Stripped) of
-                        <<>> -> error;
-                        T -> {ok, T}
-                    end;
+            case cowboy_req:parse_header(<<"authorization">>, Req) of
+                {bearer, T} when is_binary(T), byte_size(T) > 0 ->
+                    {ok, T};
                 _ ->
-                    error
+                    bearer_from_x_eproxy_header(Req)
             end
+    end.
+
+bearer_from_x_eproxy_header(Req) ->
+    case cowboy_req:header(<<"x-eproxy-bearer">>, Req) of
+        undefined ->
+            error;
+        <<>> ->
+            error;
+        Raw when is_binary(Raw) ->
+            Stripped = trim_bin(Raw),
+            case strip_bearer_prefix(Stripped) of
+                <<>> -> error;
+                T -> {ok, T}
+            end;
+        _ ->
+            error
     end.
 
 trim_bin(B) when is_binary(B) ->

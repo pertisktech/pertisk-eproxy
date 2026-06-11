@@ -126,10 +126,16 @@ config_locked_error({persist_runtime_config, Inner}) ->
     config_locked_error(Inner);
 config_locked_error({persist_dns_providers, Inner}) ->
     config_locked_error(Inner);
+config_locked_error({tls_validation_cert_store_unavailable, Inner}) ->
+    config_locked_error(Inner);
 config_locked_error({sqlite_error, Msg, _}) ->
     sqlite_locked_msg(Msg);
 config_locked_error({sqlite_error, Msg}) when is_list(Msg) ->
     string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_binary(Msg) ->
+    sqlite_locked_msg(Msg);
 config_locked_error(Msg) when is_binary(Msg) ->
     sqlite_locked_msg(Msg);
 config_locked_error(Msg) when is_list(Msg) ->

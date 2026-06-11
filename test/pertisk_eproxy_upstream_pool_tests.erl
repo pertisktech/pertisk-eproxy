@@ -121,7 +121,7 @@ pool_full_drops_extra_registration_test() ->
     with_pool(fun(Pool) ->
         pertisk_eproxy_test_helpers:ensure_config(),
         Base = pertisk_eproxy_config:get_config(),
-        ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{upstream_pool_size => 1}),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{upstream_pool_size => 1}, 30),
         try
             Pid1 = fake_conn(),
             Pid2 = fake_conn(),
@@ -133,7 +133,7 @@ pool_full_drops_extra_registration_test() ->
             ),
             ?assertEqual(Pid1, Only)
         after
-            ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+            ok = pertisk_eproxy_test_helpers:put_config_retry(Base, 30)
         end
     end).
 

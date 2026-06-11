@@ -690,7 +690,7 @@ init_proxy_streaming_nofin_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         meck:expect(cowboy_req, stream_reply, fun(S, H, R) -> R#{stream_reply => {S, H}} end),
-        meck:expect(cowboy_req, stream_body, fun(_, fin, R) -> R end),
+        meck:expect(cowboy_req, stream_body, fun(_, fin, _R) -> ok end),
         meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
