@@ -60,3 +60,60 @@ format_skips_internal_metadata_keys_test() ->
     ?assertEqual(false, maps:is_key(<<"severity">>, Map)),
     ?assertEqual(false, maps:is_key(<<"function_arity">>, Map)),
     ?assertEqual(<<"x">>, maps:get(<<"site">>, Map)).
+
+format_custom_app_name_test() ->
+    Old = application:get_env(pertisk_eproxy, log_app_name),
+    application:set_env(pertisk_eproxy, log_app_name, <<"custom-app">>),
+    try
+        Msg = lager_msg:new(<<"app">>, info, [], []),
+        Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+        {ok, Map} = thoas:decode(Bin),
+        ?assertEqual(<<"custom-app">>, maps:get(<<"app">>, Map))
+    after
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, log_app_name, V);
+            undefined -> application:unset_env(pertisk_eproxy, log_app_name)
+        end
+    end.
+
+format_escapes_quotes_in_message_test() ->
+    Msg = lager_msg:new(<<"say \"hi\"">>, info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    ?assertNotEqual(nomatch, binary:match(Bin, <<"\\\"">>)).
+
+format_binary_metadata_key_test() ->
+    Msg = lager_msg:new(<<"k">>, info, [{<<"custom_key">>, <<"v">>}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"v">>, maps:get(<<"custom_key">>, Map)).
+
+format_tuple_metadata_uses_printed_form_test() ->
+    Msg = lager_msg:new(<<"tuple">>, info, [{ctx, {a, 1}}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"{a,1}">>, maps:get(<<"ctx">>, Map)).
+
+format_integer_meta_key_test() ->
+    Msg = lager_msg:new(<<"k">>, info, [{42, <<"v">>}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"v">>, maps:get(<<"42">>, Map)).
+
+format_control_char_message_test() ->
+    Msg = lager_msg:new(<<"tab\there">>, info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"tab\there">>, maps:get(<<"message">>, Map)).
+
+format_nested_map_metadata_test() ->
+    Msg = lager_msg:new(<<"nested">>, info, [{ctx, #{inner => #{flag => true}}}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(#{<<"inner">> => #{<<"flag">> => true}}, maps:get(<<"ctx">>, Map)).
+
+format_skips_sev_metadata_key_test() ->
+    Msg = lager_msg:new(<<"m">>, info, [{sev, critical}, {site, <<"y">>}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(false, maps:is_key(<<"sev">>, Map)),
+    ?assertEqual(<<"y">>, maps:get(<<"site">>, Map)).

@@ -30,3 +30,44 @@ restore_env(Key, undefined) ->
     application:unset_env(pertisk_eproxy, Key);
 restore_env(Key, Val) ->
     application:set_env(pertisk_eproxy, Key, Val).
+
+verify_bearer_not_jwt_test() ->
+    clear_auth0_env(),
+    application:set_env(pertisk_eproxy, admin_auth0_domain, <<"tenant.auth0.com">>),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, <<"client-id">>),
+    try
+        ?assertEqual({error, not_jwt}, pertisk_eproxy_auth0:verify_bearer(<<"not-a-jwt">>))
+    after
+        clear_auth0_env()
+    end.
+
+verify_bearer_auth0_disabled_test() ->
+    clear_auth0_env(),
+    ?assertEqual({error, auth0_disabled}, pertisk_eproxy_auth0:verify_bearer(<<"a.b.c">>)).
+
+verify_bearer_badarg_test() ->
+    ?assertEqual({error, badarg}, pertisk_eproxy_auth0:verify_bearer(123)).
+
+maybe_prefetch_jwks_unconfigured_test() ->
+    clear_auth0_env(),
+    ?assertEqual(ok, pertisk_eproxy_auth0:maybe_prefetch_jwks()).
+
+maybe_prefetch_jwks_configured_test() ->
+    application:set_env(pertisk_eproxy, admin_auth0_domain, <<"tenant.auth0.com">>),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, <<"client-id">>),
+    try
+        ?assertEqual(ok, pertisk_eproxy_auth0:maybe_prefetch_jwks())
+    after
+        clear_auth0_env()
+    end.
+
+auth0_public_config_with_audience_test() ->
+    application:set_env(pertisk_eproxy, admin_auth0_domain, <<"tenant.auth0.com">>),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, <<"client-id">>),
+    application:set_env(pertisk_eproxy, admin_auth0_audience, <<"https://api.example">>),
+    try
+        M = pertisk_eproxy_auth0:auth0_public_config(),
+        ?assertEqual(<<"https://api.example">>, maps:get(<<"auth0_audience">>, M))
+    after
+        clear_auth0_env()
+    end.

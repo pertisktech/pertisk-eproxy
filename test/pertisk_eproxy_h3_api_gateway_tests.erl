@@ -129,3 +129,86 @@ path_with_query_test() ->
         ok,
         h3(self(), 1, <<"GET">>, <<"/missing?x=1">>, auth(<<"unknown.test">>))
     ).
+
+grpc_returns_421_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    Headers = auth(<<"example.com">>) ++ [{<<"content-type">>, <<"application/grpc">>}],
+    ?assertEqual(ok, h3(self(), 1, <<"POST">>, <<"/grpc.Service/Method">>, Headers)).
+
+connect_proto_content_type_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    Headers = auth(<<"example.com">>) ++ [{<<"content-type">>, <<"application/connect+proto">>}],
+    ?assertEqual(ok, h3(self(), 1, <<"POST">>, <<"/connect">>, Headers)).
+
+te_header_alone_not_grpc_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    Headers = auth(<<"example.com">>) ++ [{<<"te">>, <<"trailers">>}],
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/missing">>, Headers)).
+
+missing_authority_uses_dash_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/missing">>, [])).
+
+x_forwarded_for_client_ip_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    Headers = [{<<":authority">>, <<"example.com">>}, {<<"x-forwarded-for">>, <<"203.0.113.1">>}],
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/missing">>, Headers)).
+
+options_no_route_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    ?assertEqual(ok, h3(self(), 1, <<"OPTIONS">>, <<"/missing">>, auth(<<"unknown.test">>))).
+
+head_no_route_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    ?assertEqual(ok, h3(self(), 1, <<"HEAD">>, <<"/missing">>, auth(<<"unknown.test">>))).
+
+benchmark_readyz_get_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/readyz">>, auth(<<"localhost">>))).
+
+post_with_content_length_zero_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    Headers =
+        auth(<<"example.com">>) ++
+        [{<<"content-type">>, <<"application/json">>}, {<<"content-length">>, <<"0">>}],
+    ?assertEqual(ok, h3(self(), 1, <<"POST">>, <<"/api/data">>, Headers)).
+
+routed_site_get_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    Site = #{
+        host => <<"routed.test">>,
+        backend => <<"web">>,
+        routes => [#{path => <<"/">>, path_type => prefix}]
+    },
+    Backend = #{
+        name => <<"web">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+    },
+    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, auth(<<"routed.test">>))).
+
+cookie_header_merge_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    Headers =
+        auth(<<"example.com">>) ++
+        [
+            {<<"cookie">>, <<"a=1">>},
+            {<<"cookie">>, <<"b=2">>}
+        ],
+    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/missing">>, Headers)).
+
+console_path_query_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    pertisk_eproxy_test_helpers:sync_router([], []),
+    ?assertEqual(
+        ok,
+        h3(self(), 1, <<"GET">>, <<"/termproxy">>, auth(<<"example.com">>) ++ [{<<"x">>, <<"1">>}])
+    ).

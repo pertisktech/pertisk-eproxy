@@ -479,6 +479,120 @@ h3_feature_flags_test() ->
     ?assertEqual(false, maps:get(h3_probe_enabled, C)),
     ?assertEqual(4433, maps:get(h3_probe_port, C)).
 
+acceptor_and_connection_limits_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"http_num_acceptors">> => 50,
+        <<"https_num_acceptors">> => 25,
+        <<"quic_num_acceptors">> => 8,
+        <<"proxy_max_connections">> => 4096,
+        <<"management_num_acceptors">> => 4,
+        <<"management_max_connections">> => 512,
+        <<"metrics_max_connections">> => 64
+    }),
+    ?assertEqual(50, maps:get(http_num_acceptors, C)),
+    ?assertEqual(25, maps:get(https_num_acceptors, C)),
+    ?assertEqual(8, maps:get(quic_num_acceptors, C)),
+    ?assertEqual(4096, maps:get(proxy_max_connections, C)),
+    ?assertEqual(4, maps:get(management_num_acceptors, C)),
+    ?assertEqual(512, maps:get(management_max_connections, C)),
+    ?assertEqual(64, maps:get(metrics_max_connections, C)).
+
+alt_svc_and_tls_http2_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"alt_svc_port">> => 4433,
+        <<"tls_http2_enabled">> => false
+    }),
+    ?assertEqual(4433, maps:get(alt_svc_port, C)),
+    ?assertEqual(false, maps:get(tls_http2_enabled, C)).
+
+h3_quic_tuning_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"h3_idle_timeout_secs">> => 120,
+        <<"h3_keepalive_interval_secs">> => 15,
+        <<"h3_quic_pool_size">> => 16,
+        <<"h3_max_udp_payload_size">> => 1400,
+        <<"h3_pmtu_enabled">> => false,
+        <<"h3_max_streams">> => 1024,
+        <<"h3_stream_receive_window">> => 1048576,
+        <<"h3_conn_receive_window">> => 8388608
+    }),
+    ?assertEqual(120, maps:get(h3_idle_timeout_secs, C)),
+    ?assertEqual(15, maps:get(h3_keepalive_interval_secs, C)),
+    ?assertEqual(16, maps:get(h3_quic_pool_size, C)),
+    ?assertEqual(1400, maps:get(h3_max_udp_payload_size, C)),
+    ?assertEqual(false, maps:get(h3_pmtu_enabled, C)),
+    ?assertEqual(1024, maps:get(h3_max_streams, C)),
+    ?assertEqual(1048576, maps:get(h3_stream_receive_window, C)),
+    ?assertEqual(8388608, maps:get(h3_conn_receive_window, C)).
+
+management_addr_parsed_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"management_addr">> => <<"127.0.0.1">>}),
+    ?assertEqual({127, 0, 0, 1}, maps:get(management_addr, C)).
+
+timeout_and_pool_settings_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"downstream_idle_timeout_ms">> => 60000,
+        <<"management_idle_timeout_ms">> => 120000,
+        <<"upstream_request_timeout_ms">> => 90000,
+        <<"upstream_stream_request_timeout_ms">> => 45000,
+        <<"health_cache_refresh_ms">> => 5000,
+        <<"sse_initial_headers_timeout_ms">> => 3000,
+        <<"event_stream_heartbeat_ms">> => 20000
+    }),
+    ?assertEqual(60000, maps:get(downstream_idle_timeout_ms, C)),
+    ?assertEqual(120000, maps:get(management_idle_timeout_ms, C)),
+    ?assertEqual(90000, maps:get(upstream_request_timeout_ms, C)),
+    ?assertEqual(45000, maps:get(upstream_stream_request_timeout_ms, C)),
+    ?assertEqual(5000, maps:get(health_cache_refresh_ms, C)),
+    ?assertEqual(3000, maps:get(sse_initial_headers_timeout_ms, C)),
+    ?assertEqual(20000, maps:get(event_stream_heartbeat_ms, C)).
+
+proxy_access_log_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"proxy_access_log">> => false}),
+    ?assertEqual(false, maps:get(proxy_access_log, C)).
+
+sites_sse_early_flush_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [#{
+            <<"host">> => <<"sse.example.com">>,
+            <<"backend">> => <<"web">>,
+            <<"sse_early_flush">> => false,
+            <<"routes">> => [#{
+                <<"path">> => <<"/events">>,
+                <<"sse_early_flush">> => true
+            }]
+        }]
+    }),
+    [#{sse_early_flush := false, routes := [Route]}] = maps:get(sites, C),
+    ?assertEqual(true, maps:get(sse_early_flush, Route)).
+
+backend_upstream_weight_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"backends">> => [#{
+            <<"name">> => <<"weighted">>,
+            <<"upstreams">> => [#{<<"addr">> => <<"10.0.0.1:8080">>, <<"weight">> => 3}]
+        }]
+    }),
+    [#{upstreams := [#{weight := 3}]}] = maps:get(backends, C).
+
+json_as_list_null_sites_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"sites">> => null, <<"backends">> => null}),
+    ?assertEqual([], maps:get(sites, C)),
+    ?assertEqual([], maps:get(backends, C)).
+
+is_management_upstream_addr_test() ->
+    with_config(fun() ->
+        Port = maps:get(management_port, pertisk_eproxy_config:get_config(), 9080),
+        Upstream = iolist_to_binary(["127.0.0.1:", integer_to_list(Port)]),
+        ?assert(pertisk_eproxy_config:is_management_upstream_addr(Upstream)),
+        ?assertNot(pertisk_eproxy_config:is_management_upstream_addr(<<"127.0.0.1:8080">>))
+    end).
+
+ingress_mode_false_by_default_test() ->
+    with_config(fun() ->
+        ?assertNot(pertisk_eproxy_config:ingress_mode())
+    end).
+
 %% ---------------------------------------------------------------------------
 %% Runtime API (ETS-backed gen_server)
 %% ---------------------------------------------------------------------------
