@@ -2574,9 +2574,11 @@ helm_history_max() ->
         undefined ->
             undefined;
         V ->
-            case catch binary_to_integer(V) of
+            try binary_to_integer(V) of
                 N when is_integer(N), N > 0 -> N;
                 _ -> undefined
+            catch
+                _:_ -> undefined
             end
     end.
 

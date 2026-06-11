@@ -1998,7 +1998,11 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     end,
                     {ok, Pid};
                 {error, V6Reason} ->
-                    _ = catch quic_h3:stop_server(V4Name),
+                    _ =
+                        try quic_h3:stop_server(V4Name)
+                        catch
+                            _:_ -> ok
+                        end,
                     {error, {failed_quic_udp_listener_v6, V6Reason}}
             end;
         _ ->

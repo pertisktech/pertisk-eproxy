@@ -23,7 +23,7 @@ docker run --rm \
     set -euo pipefail
     shopt -s nullglob
     copied=0
-    for dir in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64; do
+    for dir in /usr/lib /lib /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
       [ -d "$dir" ] || continue
       for pat in libcrypto.so.3 libssl.so.3; do
         for f in "$dir"/${pat}*; do

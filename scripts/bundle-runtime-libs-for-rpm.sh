@@ -12,7 +12,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "${OUT_DIR}"/libgcc_s.so* "${OUT_DIR}"/libtinfo.so* 2>/dev/null || true
+rm -f "${OUT_DIR}"/libgcc_s.so* "${OUT_DIR}"/libtinfo.so* "${OUT_DIR}"/libncursesw.so* 2>/dev/null || true
 
 echo "bundle-runtime-libs-for-rpm: copying libs from ${ERLANG_IMAGE} -> ${OUT_DIR}"
 docker run --rm \
@@ -22,9 +22,9 @@ docker run --rm \
     set -euo pipefail
     shopt -s nullglob
     copied=0
-    for dir in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /lib64; do
+    for dir in /usr/lib /lib /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
       [ -d "$dir" ] || continue
-      for pat in libgcc_s.so.1 libtinfo.so.6; do
+      for pat in libgcc_s.so.1 libtinfo.so.6 libtinfo.so libncursesw.so.6; do
         for f in "$dir"/${pat}*; do
           [ -e "$f" ] || continue
           cp -a "$f" /out/
