@@ -4,6 +4,7 @@
 
 ensure_env() ->
     pertisk_eproxy_test_helpers:ensure_config(),
+    ensure_backend_sup(),
     case whereis(pertisk_eproxy_access_log) of
         undefined -> {ok, _} = pertisk_eproxy_access_log:start_link();
         _ -> ok
@@ -24,9 +25,95 @@ dispatch(Method, Path, Body) ->
     dispatch(Method, Path, <<>>, Body).
 
 dispatch(Method, Path, Qs, Body) ->
+    dispatch(Method, Path, Qs, Body, []).
+
+dispatch(Method, Path, Qs, Body, Headers) ->
     pertisk_eproxy_h3_local_admin:try_dispatch(
-        Method, <<"localhost">>, Path, Qs, [], Body, <<"127.0.0.1">>
+        Method, <<"localhost">>, Path, Qs, Headers, Body, <<"127.0.0.1">>
     ).
+
+dispatch_auth(Method, Path, Body, Token) ->
+    dispatch(Method, Path, <<>>, Body, [{<<"authorization">>, <<"Bearer ", Token/binary>>}]).
+
+safe_meck_unload(Mod) ->
+    case lists:member(Mod, meck:mocked()) of
+        true ->
+            try meck:unload(Mod) catch _:_ -> ok end;
+        false ->
+            ok
+    end.
+
+%% Bypass h3 fast-path (e.g. /api/health) and invoke admin_handler:init/2 directly.
+init_dispatch(Method, Path, Resource) ->
+    init_dispatch(Method, Path, Resource, <<>>).
+
+init_dispatch(Method, Path, Resource, Body) ->
+    init_dispatch(Method, Path, Resource, Body, []).
+
+init_dispatch(Method, Path, Resource, Body, Headers) ->
+    Parent = self(),
+    Stub = pertisk_eproxy_cowboy_stub_conn:start(Parent, Body),
+    HdrMap = maps:from_list([{string:lowercase(K), V} || {K, V} <- Headers]),
+    HeadersMerged = maps:merge(#{<<"host">> => <<"localhost">>}, HdrMap),
+    MethodBin =
+        case Method of
+            M when is_binary(M) -> string:uppercase(M);
+            M when is_list(M) -> list_to_binary(string:uppercase(M))
+        end,
+    Req = #{
+        method => MethodBin,
+        version => 'HTTP/1.1',
+        scheme => <<"http">>,
+        host => <<"localhost">>,
+        port => 9080,
+        path => Path,
+        qs => <<>>,
+        headers => HeadersMerged,
+        peer => {{127, 0, 0, 1}, 12345},
+        sock => {{127, 0, 0, 1}, 9080},
+        cert => undefined,
+        ref => stub,
+        pid => Stub,
+        streamid => pertisk_eproxy_cowboy_stub_conn:stub_stream_id(),
+        has_body => Body =/= <<>>,
+        body_length =>
+            case Body of
+                <<>> -> undefined;
+                _ -> byte_size(Body)
+            end
+    },
+    _ = pertisk_eproxy_admin_handler:init(Req, Resource),
+    Result =
+        receive
+            {h3_admin_response, Status, Hdrs, RespBody} ->
+                HeaderList =
+                    case Hdrs of
+                        H when is_map(H) -> [{K, V} || {K, V} <- maps:to_list(H), is_binary(K)];
+                        H when is_list(H) -> H
+                    end,
+                {ok, Status, HeaderList, RespBody}
+        after 10000 ->
+            {error, timeout}
+        end,
+    unlink(Stub),
+    exit(Stub, kill),
+    Result.
+
+ensure_health_cache() ->
+    ensure_env(),
+    case whereis(pertisk_eproxy_health_cache) of
+        undefined ->
+            {ok, _} = pertisk_eproxy_health_cache:start_link();
+        _ ->
+            ok
+    end,
+    pertisk_eproxy_health_cache:invalidate(),
+    case pertisk_eproxy_health_cache:get() of
+        {ok, _} ->
+            ok;
+        _ ->
+            timer:sleep(300)
+    end.
 
 with_tmp_db(Fun) ->
     DbPath = pertisk_eproxy_test_helpers:tmp_db(),
@@ -93,6 +180,119 @@ read_priv_pem(Name) ->
     Path = filename:join([code:priv_dir(pertisk_eproxy), "tls", Name]),
     {ok, Bin} = file:read_file(Path),
     Bin.
+
+with_env(Key, Val, Fun) ->
+    Old = os:getenv(Key),
+    case Val of
+        unset -> os:unsetenv(Key);
+        {set, NewVal} -> os:putenv(Key, NewVal)
+    end,
+    try Fun() after
+        case Old of
+            false -> os:unsetenv(Key);
+            OldVal -> os:putenv(Key, OldVal)
+        end
+    end.
+
+with_ingress_mode(Fun) ->
+    with_env("PERTISK_MODE", {set, "ingress"}, fun() ->
+        ensure_env(),
+        Fun()
+    end).
+
+with_ingress_authenticated(Fun) ->
+    OldSupports = application:get_env(pertisk_eproxy, ingress_supports_local),
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, ingress_supports_local, true),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    with_auth_server(fun() ->
+        with_env("PERTISK_ADMIN", {set, "admin"}, fun() ->
+            with_env("PERTISK_PASSWORD", {set, "admin"}, fun() ->
+                try
+                    with_ingress_mode(fun() ->
+                        Login = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+                        {ok, 200, _, LoginBody} = dispatch(<<"POST">>, <<"/api/auth/login">>, Login),
+                        {ok, #{<<"token">> := Token}} = thoas:decode(LoginBody),
+                        Fun(Token)
+                    end)
+                after
+                    case OldSupports of
+                        {ok, SupportsVal} ->
+                            application:set_env(pertisk_eproxy, ingress_supports_local, SupportsVal);
+                        undefined ->
+                            application:unset_env(pertisk_eproxy, ingress_supports_local)
+                    end,
+                    case OldAuth of
+                        {ok, AuthVal} -> application:set_env(pertisk_eproxy, admin_auth, AuthVal);
+                        undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+                    end
+                end
+            end)
+        end)
+    end).
+
+with_mock_k8s(Fun) ->
+    Conn = {mock_api, mock_access},
+    meck:new(pertisk_ingress_ekub, [unstick]),
+    meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+    meck:new(ekub, [unstick]),
+    meck:new(ekub_api, [unstick]),
+    meck:new(ekub_core, [unstick]),
+    meck:new(pertisk_ingress_watcher, [unstick]),
+    meck:expect(pertisk_ingress_watcher, trigger_reconcile, fun() -> ok end),
+    try Fun(Conn) after
+        meck:unload([pertisk_ingress_ekub, ekub, ekub_api, ekub_core, pertisk_ingress_watcher])
+    end.
+
+ensure_backend_sup() ->
+    case whereis(pertisk_eproxy_backend_sup) of
+        undefined ->
+            {ok, _} = pertisk_eproxy_backend_sup:start_link();
+        _ ->
+            ok
+    end.
+
+head_matches_get_headers(Path) ->
+    {ok, GetStatus, GetHdrs, _} = dispatch(<<"GET">>, Path),
+    {ok, HeadStatus, HeadHdrs, _} = dispatch(<<"HEAD">>, Path),
+    ?assertEqual(GetStatus, HeadStatus),
+    ?assertEqual(
+        proplists:get_value(<<"content-type">>, GetHdrs),
+        proplists:get_value(<<"content-type">>, HeadHdrs)
+    ).
+
+sample_k8s_ingress(Name, Ns, Host) ->
+    #{
+        <<"metadata">> => #{
+            <<"name">> => Name,
+            <<"namespace">> => Ns,
+            <<"creationTimestamp">> => <<"2020-01-01T00:00:00Z">>,
+            <<"annotations">> => #{}
+        },
+        <<"spec">> => #{
+            <<"ingressClassName">> => <<"pertisk-eproxy">>,
+            <<"rules">> => [
+                #{
+                    <<"host">> => Host,
+                    <<"http">> => #{
+                        <<"paths">> => [
+                            #{
+                                <<"path">> => <<"/">>,
+                                <<"pathType">> => <<"Prefix">>,
+                                <<"backend">> => #{
+                                    <<"service">> => #{
+                                        <<"name">> => <<"web">>,
+                                        <<"port">> => #{<<"number">> => 80}
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ],
+            <<"tls">> => [#{<<"secretName">> => <<"tls-secret">>}]
+        }
+    }.
 
 h3_light_health_json_test() ->
     Json = pertisk_eproxy_admin_handler:h3_light_health_json(),
@@ -426,18 +626,19 @@ api_backend_get_test() ->
     end.
 
 api_backend_delete_config_only_test() ->
-    ensure_env(),
-    Body = thoas:encode(#{
-        <<"name">> => <<"bdtest">>,
-        <<"algorithm">> => <<"round_robin">>,
-        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
-    }),
-    ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
-    Result = dispatch(<<"DELETE">>, <<"/api/backends/bdtest">>),
-    case Result of
-        {ok, Status, _, _} when Status =:= 200 orelse Status =:= 500 -> ok;
-        {error, _} -> ok
-    end.
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"name">> => <<"bdtest">>,
+            <<"algorithm">> => <<"round_robin">>,
+            <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+        Result = dispatch(<<"DELETE">>, <<"/api/backends/bdtest">>),
+        case Result of
+            {ok, Status, _, _} when Status =:= 200 orelse Status =:= 500 -> ok;
+            {error, _} -> ok
+        end
+    end).
 
 api_backend_not_found_test() ->
     ensure_env(),
@@ -723,8 +924,10 @@ api_certificates_import_valid_test() ->
             Cert = read_priv_pem("listener.pem"),
             Key = read_priv_pem("listener.key"),
             Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
-            Result = dispatch(<<"POST">>, <<"/api/certificates/import">>, Body),
-            ?assertMatch({ok, Status, _, _} when Status =:= 201 orelse Status =:= 400, Result)
+            {ok, 201, _, RespBody} = dispatch(<<"POST">>, <<"/api/certificates/import">>, Body),
+            {ok, Map} = thoas:decode(RespBody),
+            ?assertEqual(<<"ok">>, maps:get(<<"status">>, Map)),
+            ?assert(maps:is_key(<<"id">>, Map))
         end)
     end).
 
@@ -973,3 +1176,1981 @@ api_dns_provider_validate_invalid_provider_test() ->
         ?assertMatch({ok, Status, _, _} when Status =:= 200 orelse Status =:= 400, Result)
     end).
 
+%% ---------------------------------------------------------------------------
+%% auth_refresh, config PUT edge cases, list endpoints, metrics, ingress HEAD
+%% ---------------------------------------------------------------------------
+
+api_auth_refresh_local_with_token_test() ->
+    with_local_auth_db(fun(_Db) ->
+        Login = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+        {ok, 200, _, LoginBody} = dispatch(<<"POST">>, <<"/api/auth/login">>, Login),
+        {ok, #{<<"token">> := Token}} = thoas:decode(LoginBody),
+        {ok, 200, _, RefreshBody} =
+            dispatch_auth(<<"POST">>, <<"/api/auth/refresh">>, <<>>, Token),
+        {ok, Map} = thoas:decode(RefreshBody),
+        ?assertEqual(Token, maps:get(<<"token">>, Map)),
+        ?assertEqual(<<"admin">>, maps:get(<<"username">>, Map)),
+        ?assert(maps:is_key(<<"expires_in">>, Map))
+    end).
+
+api_auth_refresh_local_missing_token_test() ->
+    with_local_auth(fun() ->
+        ?assertMatch({ok, 401, _, _}, dispatch(<<"POST">>, <<"/api/auth/refresh">>))
+    end).
+
+api_auth_refresh_local_invalid_token_test() ->
+    with_local_auth(fun() ->
+        ?assertMatch(
+            {ok, 401, _, _},
+            dispatch_auth(<<"POST">>, <<"/api/auth/refresh">>, <<>>, <<"not-a-valid-token">>)
+        )
+    end).
+
+api_config_put_invalid_json_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, <<"{not-json">>)).
+
+api_config_put_empty_sites_test() ->
+    ensure_env(),
+    {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/config">>),
+    {ok, Map} = thoas:decode(Body),
+    Put = thoas:encode(Map#{<<"sites">> => []}),
+    ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Put)).
+
+api_sites_list_after_add_test() ->
+    ensure_env(),
+    Host = <<"list-site.example">>,
+    Add = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => []
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/sites">>, Add)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/sites">>),
+        {ok, Sites} = thoas:decode(ListBody),
+        ?assert(
+            lists:any(
+                fun(S) -> maps:get(<<"host">>, S, undefined) =:= Host end,
+                Sites
+            )
+        )
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/list-site.example">>)
+    end.
+
+api_backends_list_after_add_test() ->
+    ensure_env(),
+    Name = <<"bl_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"round_robin">>,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/backends">>),
+        {ok, Backends} = thoas:decode(ListBody),
+        ?assert(
+            lists:any(
+                fun(B) -> maps:get(<<"name">>, B, undefined) =:= Name end,
+                Backends
+            )
+        )
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/backends/", Name/binary>>)
+    end.
+
+api_metrics_prometheus_format_test() ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
+    ensure_env(),
+    {ok, 200, Hdrs, Body} = dispatch(<<"GET">>, <<"/api/metrics">>),
+    ?assertEqual(<<"text/plain; version=0.0.4">>, proplists:get_value(<<"content-type">>, Hdrs)),
+    ?assert(byte_size(Body) > 0).
+
+api_site_delete_not_found_test() ->
+    ensure_env(),
+    %% DELETE is idempotent: removing a missing host still returns 200.
+    {ok, 200, _, Body} = dispatch(<<"DELETE">>, <<"/api/sites/missing-delete.example">>),
+    {ok, Map} = thoas:decode(Body),
+    ?assertEqual(<<"deleted">>, maps:get(<<"status">>, Map)).
+
+api_ingress_watchers_head_not_allowed_test() ->
+    ensure_ingress_status_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"HEAD">>, <<"/api/ingress/watchers">>)).
+
+api_ingress_errors_head_not_allowed_test() ->
+    ensure_ingress_status_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"HEAD">>, <<"/api/ingress/errors">>)).
+
+api_ingress_resources_head_not_allowed_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"HEAD">>, <<"/api/ingress/resources">>)).
+
+api_backup_restore_with_certificate_record_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"restore-cert">>}),
+        {ok, 201, _, CertResp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := CertId}} = thoas:decode(CertResp),
+        {ok, 200, _, ExportBody} = dispatch(<<"GET">>, <<"/api/backup/export">>),
+        {ok, ExportMap} = thoas:decode(ExportBody),
+        Certs = maps:get(<<"certificate_records">>, ExportMap, []),
+        ?assert(
+            lists:any(
+                fun(C) ->
+                    maps:get(<<"name">>, C, undefined) =:= <<"restore-cert">>
+                end,
+                Certs
+            )
+        ),
+        Restore = thoas:encode(#{<<"data">> => ExportBody}),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"POST">>, <<"/api/backup/restore">>, Restore)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/certificates">>),
+        {ok, Rows} = thoas:decode(ListBody),
+        CertIdBin =
+            case CertId of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        ?assert(
+            lists:any(
+                fun(R) ->
+                    maps:get(<<"id">>, R, undefined) =:= CertIdBin
+                        orelse maps:get(<<"domain">>, R, undefined) =:= <<"restore-cert">>
+                end,
+                Rows
+            )
+        )
+    end).
+
+dns_provider_validate_via_api(ProviderType, Creds) ->
+    Body = thoas:encode(#{
+        <<"provider_type">> => ProviderType,
+        <<"credentials">> => Creds
+    }),
+    dispatch(<<"POST">>, <<"/api/dns-providers/validate">>, Body).
+
+api_dns_provider_validate_digitalocean_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"digitalocean">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_vultr_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"vultr">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_porkbun_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(
+                <<"porkbun">>,
+                #{<<"api_key">> => <<"k">>, <<"secret_api_key">> => <<"s">>}
+            )
+        )
+    end).
+
+api_dns_provider_validate_linode_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"linode">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_hetzner_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"hetzner">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_desec_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"desec">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_gandi_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(<<"gandi">>, #{<<"api_token">> => <<"secret">>})
+        )
+    end).
+
+api_dns_provider_validate_powerdns_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(
+                <<"powerdns">>,
+                #{<<"api_url">> => <<"http://127.0.0.1:8081">>, <<"api_key">> => <<"secret">>}
+            )
+        )
+    end).
+
+api_dns_provider_validate_duckdns_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            dns_provider_validate_via_api(
+                <<"duckdns">>,
+                #{<<"domain">> => <<"example">>, <<"token">> => <<"tkn">>}
+            )
+        )
+    end).
+
+api_dns_provider_validate_route53_test() ->
+    with_tmp_db(fun(_Db) ->
+        Result = dns_provider_validate_via_api(<<"route53">>, #{}),
+        ?assertMatch({ok, Status, _, _} when Status =:= 200 orelse Status =:= 400, Result)
+    end).
+
+api_dns_provider_validate_digitalocean_missing_token_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            dns_provider_validate_via_api(<<"digitalocean">>, #{})
+        )
+    end).
+
+api_dns_provider_validate_powerdns_missing_url_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            dns_provider_validate_via_api(<<"powerdns">>, #{<<"api_key">> => <<"k">>})
+        )
+    end).
+
+%% ---------------------------------------------------------------------------
+%% local auth enforcement and token flows
+%% ---------------------------------------------------------------------------
+
+api_auth_check_local_authenticated_test() ->
+    with_local_auth_db(fun(_Db) ->
+        Login = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+        {ok, 200, _, LoginBody} = dispatch(<<"POST">>, <<"/api/auth/login">>, Login),
+        {ok, #{<<"token">> := Token}} = thoas:decode(LoginBody),
+        {ok, 200, _, Body} =
+            dispatch_auth(<<"GET">>, <<"/api/auth/check">>, <<>>, Token),
+        {ok, Map} = thoas:decode(Body),
+        ?assertEqual(true, maps:get(<<"authenticated">>, Map)),
+        ?assertEqual(<<"admin">>, maps:get(<<"username">>, Map))
+    end).
+
+api_auth_check_local_unauthenticated_test() ->
+    with_local_auth(fun() ->
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/auth/check">>),
+        {ok, Map} = thoas:decode(Body),
+        ?assertEqual(false, maps:get(<<"authenticated">>, Map))
+    end).
+
+api_auth_logout_with_token_test() ->
+    with_local_auth_db(fun(_Db) ->
+        Login = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+        {ok, 200, _, LoginBody} = dispatch(<<"POST">>, <<"/api/auth/login">>, Login),
+        {ok, #{<<"token">> := Token}} = thoas:decode(LoginBody),
+        ?assertMatch({ok, 200, _, _}, dispatch_auth(<<"POST">>, <<"/api/auth/logout">>, <<>>, Token))
+    end).
+
+api_sites_get_unauthorized_local_auth_test() ->
+    with_local_auth(fun() ->
+        ?assertMatch({ok, 401, _, _}, dispatch(<<"GET">>, <<"/api/sites">>))
+    end).
+
+api_config_get_unauthorized_local_auth_test() ->
+    with_local_auth(fun() ->
+        ?assertMatch({ok, 401, _, _}, dispatch(<<"GET">>, <<"/api/config">>))
+    end).
+
+api_admin_change_password_ingress_forbidden_test() ->
+    with_ingress_mode(fun() ->
+        Body = thoas:encode(#{<<"old">> => <<"a">>, <<"new">> => <<"b">>}),
+        ?assertMatch({ok, 403, _, _}, dispatch(<<"POST">>, <<"/api/admin/change-password">>, Body))
+    end).
+
+%% ---------------------------------------------------------------------------
+%% certificate CRUD edge cases
+%% ---------------------------------------------------------------------------
+
+api_certificates_post_empty_name_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{<<"name">> => <<>>}),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/certificates">>, Body))
+    end).
+
+api_certificates_post_invalid_json_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/certificates">>, <<"{bad">>))
+    end).
+
+api_certificate_put_not_found_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        Put = thoas:encode(#{<<"name">> => <<"ghost-cert">>}),
+        ?assertMatch({ok, 404, _, _}, dispatch(<<"PUT">>, <<"/api/certificates/9999">>, Put))
+    end).
+
+api_certificate_delete_success_status_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"gone-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        DelResult = dispatch(<<"DELETE">>, <<"/api/certificates/", IdBin/binary>>),
+        case DelResult of
+            {ok, 200, _, DelBody} ->
+                {ok, DelMap} = thoas:decode(DelBody),
+                ?assertEqual(<<"deleted">>, maps:get(<<"status">>, DelMap));
+            {ok, Status, _, _} when Status =:= 404 ->
+                ok;
+            {error, _} ->
+                ok
+        end
+    end).
+
+api_certificate_put_updates_site_cert_name_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"site-bound-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"cert-bound.example">>, backend => <<"web">>,
+              certificate => <<"site-bound-cert">>, routes => []}],
+            []
+        ),
+        Put = thoas:encode(#{<<"name">> => <<"renamed-site-cert">>}),
+        Path = <<"/api/certificates/", IdBin/binary>>,
+        try
+            ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, Path, Put)),
+            {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/certificates">>),
+            {ok, Rows} = thoas:decode(ListBody),
+            ?assert(
+                lists:any(
+                    fun(Row) -> maps:get(<<"domain">>, Row, undefined) =:= <<"renamed-site-cert">> end,
+                    Rows
+                )
+            )
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_certificates_list_acme_challenge_field_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"acme-row.example">>}),
+        {ok, 201, _, _} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/certificates">>),
+        {ok, Rows} = thoas:decode(Body),
+        ?assert(
+            lists:any(
+                fun(Row) ->
+                    maps:get(<<"domain">>, Row, undefined) =:= <<"acme-row.example">>
+                        andalso maps:is_key(<<"challenge">>, Row)
+                        andalso maps:is_key(<<"next_renew">>, Row)
+                end,
+                Rows
+            )
+        )
+    end).
+
+api_certificate_import_put_not_found_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        Cert = read_priv_pem("listener.pem"),
+        Key = read_priv_pem("listener.key"),
+        Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+        Result = dispatch(<<"PUT">>, <<"/api/certificates/9999/import">>, Body),
+        ?assertMatch({ok, Status, _, _} when Status =:= 400 orelse Status =:= 404, Result)
+    end).
+
+api_certificates_ingress_k8s_rows_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"k8s-cert.example">>, backend => <<"web">>,
+              certificate => <<"k8s/default/tls-secret">>, routes => []}],
+            []
+        ),
+        try
+            Result = dispatch_auth(<<"GET">>, <<"/api/certificates">>, <<>>, Token),
+            ?assertMatch({ok, 200, _, _}, Result),
+            {ok, 200, _, Body} = Result,
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(
+                lists:any(
+                    fun(Row) ->
+                        maps:get(<<"id">>, Row, undefined) =:= <<"k8s/default/tls-secret">>
+                            orelse maps:get(<<"source_type">>, Row, undefined) =:= <<"kubernetes">>
+                    end,
+                    Rows
+                )
+            )
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+%% ---------------------------------------------------------------------------
+%% site TLS PUT settings
+%% ---------------------------------------------------------------------------
+
+api_site_put_clears_certificate_with_null_test() ->
+    ensure_env(),
+    Host = <<"clear-cert.example">>,
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => Host, backend => <<"web">>, certificate => <<"old-cert">>, routes => []}],
+        []
+    ),
+    Put = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"certificate">> => null,
+        <<"routes">> => []
+    }),
+    try
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/sites/clear-cert.example">>, Put)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/sites/clear-cert.example">>),
+        {ok, Site} = thoas:decode(GetBody),
+        ?assertEqual(null, maps:get(<<"certificate">>, Site, null))
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_site_put_sets_http01_challenge_test() ->
+    ensure_env(),
+    Host = <<"http01-site.example">>,
+    Add = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => []
+    }),
+    Put = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"challenge_type">> => <<"http-01">>,
+        <<"routes">> => []
+    }),
+    try
+        _ = dispatch(<<"POST">>, <<"/api/sites">>, Add),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/sites/http01-site.example">>, Put)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/sites/http01-site.example">>),
+        {ok, Site} = thoas:decode(GetBody),
+        ?assertEqual(<<"http-01">>, maps:get(<<"challenge_type">>, Site))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/http01-site.example">>)
+    end.
+
+api_site_put_wildcard_and_http3_test() ->
+    ensure_env(),
+    Host = <<"wild-h3.example">>,
+    Add = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => []
+    }),
+    Put = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"wildcard">> => true,
+        <<"advertise_http3">> => false,
+        <<"routes">> => []
+    }),
+    try
+        _ = dispatch(<<"POST">>, <<"/api/sites">>, Add),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/sites/wild-h3.example">>, Put)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/sites/wild-h3.example">>),
+        {ok, Site} = thoas:decode(GetBody),
+        ?assertEqual(true, maps:get(<<"wildcard">>, Site)),
+        ?assertEqual(false, maps:get(<<"advertise_http3">>, Site))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/wild-h3.example">>)
+    end.
+
+api_site_post_invalid_json_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/sites">>, <<"{not json">>)).
+
+api_site_put_invalid_json_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"PUT">>, <<"/api/sites/any.example">>, <<"{bad">>)).
+
+api_config_put_unknown_certificate_validation_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"sites">> => [
+                #{
+                    <<"host">> => <<"bad-cert.example">>,
+                    <<"backend">> => <<"web">>,
+                    <<"certificate">> => <<"does-not-exist">>,
+                    <<"routes">> => []
+                }
+            ],
+            <<"backends">> => []
+        }),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Body))
+    end).
+
+%% ---------------------------------------------------------------------------
+%% backend health endpoints
+%% ---------------------------------------------------------------------------
+
+api_backend_post_health_settings_test() ->
+    ensure_env(),
+    Name = <<"bh_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"round_robin">>,
+        <<"health_path">> => <<"/healthz">>,
+        <<"health_interval_secs">> => 15,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    try
+        {ok, 201, _, RespBody} = dispatch(<<"POST">>, <<"/api/backends">>, Body),
+        {ok, Map} = thoas:decode(RespBody),
+        ?assertEqual(<<"/healthz">>, maps:get(<<"health_path">>, Map)),
+        ?assertEqual(15, maps:get(<<"health_interval_secs">>, Map))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/backends/", Name/binary>>)
+    end.
+
+api_backend_get_reports_health_test() ->
+    ensure_env(),
+    ensure_backend_sup(),
+    Name = <<"bhealth">>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"round_robin">>,
+        <<"health_path">> => <<"/">>,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(Name, [#{addr => <<"127.0.0.1:9">>}]),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+        {ok, 200, _, StatusBody} = dispatch(<<"GET">>, <<"/api/backends/bhealth">>),
+        {ok, Status} = thoas:decode(StatusBody),
+        Ups = maps:get(<<"upstreams">>, Status, []),
+        ?assert(length(Ups) > 0),
+        [Up | _] = Ups,
+        ?assert(maps:is_key(<<"healthy">>, Up)),
+        ?assert(maps:is_key(<<"conns">>, Up))
+    after
+        catch gen_server:stop(Pid, normal, 5000),
+        _ = dispatch(<<"DELETE">>, <<"/api/backends/bhealth">>)
+    end.
+
+api_backend_post_invalid_json_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, <<"{oops">>)).
+
+api_backend_delete_with_sup_running_test() ->
+    ensure_env(),
+    ensure_backend_sup(),
+    Name = <<"bsupdel">>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"round_robin">>,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+    ?assertMatch({ok, 200, _, _}, dispatch(<<"DELETE">>, <<"/api/backends/bsupdel">>)).
+
+api_backends_post_missing_upstreams_test() ->
+    ensure_env(),
+    Name = <<"no_ups_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"round_robin">>,
+        <<"upstreams">> => []
+    }),
+    Result = dispatch(<<"POST">>, <<"/api/backends">>, Body),
+    ?assertMatch({ok, Status, _, _} when Status =:= 201 orelse Status =:= 400, Result).
+
+%% ---------------------------------------------------------------------------
+%% DNS provider CRUD + sync
+%% ---------------------------------------------------------------------------
+
+api_dns_provider_post_missing_provider_type_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"name">> => <<"no-type">>,
+            <<"provider_type">> => <<>>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Body))
+    end).
+
+api_dns_provider_put_not_found_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        Put = thoas:encode(#{
+            <<"name">> => <<"missing">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        ?assertMatch({ok, 404, _, _}, dispatch(<<"PUT">>, <<"/api/dns-providers/999">>, Put))
+    end).
+
+api_dns_provider_runtime_sync_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"name">> => <<"sync-cf">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"sync-secret">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Body)),
+        {ok, 200, _, ConfigBody} = dispatch(<<"GET">>, <<"/api/config">>),
+        {ok, Config} = thoas:decode(ConfigBody),
+        Providers = maps:get(<<"dns_providers">>, Config, []),
+        ?assert(
+            lists:any(
+                fun(P) -> maps:get(<<"name">>, P, undefined) =:= <<"sync-cf">> end,
+                Providers
+            )
+        )
+    end).
+
+api_dns_provider_validate_invalid_json_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers/validate">>, <<"{">>))
+    end).
+
+%% ---------------------------------------------------------------------------
+%% config schema / backup errors
+%% ---------------------------------------------------------------------------
+
+api_config_put_preserves_redacted_tls_paths_test() ->
+    ensure_env(),
+    {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/config">>),
+    {ok, Map} = thoas:decode(Body),
+    Put = thoas:encode(Map#{
+        <<"tls_cert_file">> => <<"[redacted]">>,
+        <<"tls_key_file">> => <<"[redacted]">>
+    }),
+    ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Put)).
+
+api_config_get_cache_control_header_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, _} = dispatch(<<"GET">>, <<"/api/config">>),
+    ?assertEqual(<<"no-store, max-age=0">>, proplists:get_value(<<"cache-control">>, Hdrs)).
+
+api_backup_restore_missing_data_key_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/backup/restore">>, <<"{}">>)).
+
+%% ---------------------------------------------------------------------------
+%% HEAD matches GET headers on public routes
+%% ---------------------------------------------------------------------------
+
+api_ingress_status_head_matches_get_test() ->
+    ensure_ingress_status_env(),
+    head_matches_get_headers(<<"/api/ingress/status">>).
+
+api_auth_config_head_matches_get_test() ->
+    ensure_env(),
+    head_matches_get_headers(<<"/api/auth/config">>).
+
+api_ingress_live_head_matches_get_test() ->
+    ensure_env(),
+    head_matches_get_headers(<<"/api/ingress/live">>).
+
+api_version_head_matches_get_headers_test() ->
+    ensure_env(),
+    head_matches_get_headers(<<"/api/version">>).
+
+api_health_head_matches_get_headers_test() ->
+    ensure_env(),
+    head_matches_get_headers(<<"/api/health">>).
+
+api_management_head_not_allowed_test() ->
+    ensure_env(),
+    Result = dispatch(<<"HEAD">>, <<"/api/management">>),
+    ?assertMatch({ok, Status, _, _} when Status =:= 401 orelse Status =:= 405, Result).
+
+%% ---------------------------------------------------------------------------
+%% helm endpoints in ingress mode
+%% ---------------------------------------------------------------------------
+
+api_helm_history_ingress_no_release_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", unset, fun() ->
+            ?assertMatch(
+                {ok, 400, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
+            )
+        end)
+    end).
+
+api_helm_history_ingress_disabled_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            with_env("PERTISK_HELM_ENABLED", {set, "false"}, fun() ->
+                ?assertMatch(
+                    {ok, 404, _, _},
+                    dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
+                )
+            end)
+        end)
+    end).
+
+api_helm_values_ingress_bad_revision_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            dispatch_auth(<<"GET">>, <<"/api/helm/values/0">>, <<>>, Token)
+        )
+    end).
+
+api_helm_values_ingress_no_release_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", unset, fun() ->
+            ?assertMatch(
+                {ok, 400, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/helm/values/1">>, <<>>, Token)
+            )
+        end)
+    end).
+
+api_helm_values_ingress_disabled_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            with_env("PERTISK_HELM_ENABLED", {set, "false"}, fun() ->
+                ?assertMatch(
+                    {ok, 404, _, _},
+                    dispatch_auth(<<"GET">>, <<"/api/helm/values/1">>, <<>>, Token)
+                )
+            end)
+        end)
+    end).
+
+%% ---------------------------------------------------------------------------
+%% kubernetes dispatch via meck
+%% ---------------------------------------------------------------------------
+
+api_k8s_namespaces_dispatch_ingress_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(namespace, ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, [#{<<"metadata">> => #{<<"name">> => <<"default">>, <<"creationTimestamp">> => null}}]}
+            end),
+            {ok, 200, _, Body} =
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/namespaces">>, <<>>, Token),
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(length(Rows) > 0)
+        end)
+    end).
+
+api_k8s_pods_dispatch_ingress_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_POD_NAME", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_k8s(fun(_Conn) ->
+                meck:expect(ekub_api, endpoint, fun
+                    ({<<"">>, <<"v1">>}, pod, <<"default">>, "", _) ->
+                        <<"/api/v1/namespaces/default/pods">>;
+                    (_, _, _, _, _) ->
+                        <<>>
+                end),
+                meck:expect(ekub_core, http_request, fun(_, _, _) ->
+                    {ok, #{<<"items">> => []}}
+                end),
+                ?assertMatch(
+                    {ok, 200, _, _},
+                    dispatch(<<"GET">>, <<"/api/kubernetes/pods">>, <<"namespace=default">>, <<>>)
+                )
+            end)
+        end)
+    end).
+
+api_k8s_services_dispatch_ingress_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(service, <<"apps">>, [], ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, #{<<"items">> => []}}
+            end),
+            ?assertMatch(
+                {ok, 200, _, _},
+                dispatch(<<"GET">>, <<"/api/kubernetes/services">>, <<"namespace=apps">>, <<>>)
+            )
+        end)
+    end).
+
+api_k8s_tls_secrets_dispatch_ingress_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            IngressItems = #{<<"items">> => [sample_k8s_ingress(<<"app">>, <<"default">>, <<"app.example">>)]},
+            meck:expect(ekub, read, 4, fun
+                (secret, _Ns, [], ConnArg) when ConnArg =:= {mock_api, mock_access} ->
+                    {ok, #{<<"items">> => []}};
+                (ingress, _Ns, [], ConnArg) ->
+                    ?assertEqual({mock_api, mock_access}, ConnArg),
+                    {ok, IngressItems}
+            end),
+            ?assertMatch(
+                {ok, 200, _, _},
+                dispatch(<<"GET">>, <<"/api/kubernetes/tls-secrets">>, <<"namespace=default">>, <<>>)
+            )
+        end)
+    end).
+
+api_k8s_ingresses_list_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, _Query, ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, #{<<"items">> => [sample_k8s_ingress(<<"app">>, <<"default">>, <<"app.example">>)]}}
+            end),
+            {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/kubernetes/ingresses">>),
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(length(Rows) > 0)
+        end)
+    end).
+
+api_k8s_ingress_create_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, create, fun(Resource, Ns, ConnArg) ->
+                ?assertEqual(<<"default">>, Ns),
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, Resource}
+            end),
+            Body = thoas:encode(#{
+                <<"name">> => <<"demo">>,
+                <<"host">> => <<"demo.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80,
+                <<"routes">> => [
+                    #{
+                        <<"path">> => <<"/">>,
+                        <<"path_type">> => <<"Prefix">>,
+                        <<"service_name">> => <<"web">>,
+                        <<"service_port">> => 80
+                    }
+                ]
+            }),
+            ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/kubernetes/ingresses">>, Body))
+        end)
+    end).
+
+api_k8s_ingress_get_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, sample_k8s_ingress(<<"app">>, <<"default">>, <<"app.example">>)}
+            end),
+            {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/kubernetes/ingresses/default/app">>),
+            {ok, Map} = thoas:decode(Body),
+            ?assertEqual(<<"app.example">>, maps:get(<<"host">>, Map))
+        end)
+    end).
+
+api_k8s_ingress_delete_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, delete, fun(ingress, <<"default">>, <<"gone">>, ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, deleted}
+            end),
+            ?assertMatch({ok, 200, _, _}, dispatch(<<"DELETE">>, <<"/api/kubernetes/ingresses/default/gone">>))
+        end)
+    end).
+
+api_k8s_pods_default_namespace_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_POD_NAME", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_k8s(fun(_Conn) ->
+                meck:expect(ekub_api, endpoint, fun(_, pod, _, _, _) -> <<"/pods">> end),
+                meck:expect(ekub_core, http_request, fun(_, _, _) -> {ok, #{<<"items">> => []}} end),
+                ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/kubernetes/pods">>, <<>>, <<>>))
+            end)
+        end)
+    end).
+
+%% ---------------------------------------------------------------------------
+%% proto / grpc debug and TLS listener
+%% ---------------------------------------------------------------------------
+
+api_proto_response_debug_headers_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, Body} = dispatch(<<"GET">>, <<"/api/proto">>),
+    {ok, Map} = thoas:decode(Body),
+    ?assert(maps:is_key(<<"http_version">>, Map)),
+    ?assertEqual(<<"HTTP/3">>, maps:get(<<"http_version">>, Map)),
+    ?assertNotEqual(undefined, proplists:get_value(<<"x-eproxy-debug-http-version">>, Hdrs)),
+    ?assertNotEqual(undefined, proplists:get_value(<<"x-eproxy-debug-scheme">>, Hdrs)).
+
+api_proto_with_xfp_version_header_test() ->
+    ensure_env(),
+    Hdrs = [{<<"x-forwarded-proto-version">>, <<"HTTP/3">>}],
+    {ok, 200, RespHdrs, Body} = dispatch(<<"GET">>, <<"/api/proto">>, <<>>, <<>>, Hdrs),
+    {ok, Map} = thoas:decode(Body),
+    ?assertEqual(<<"HTTP/3">>, maps:get(<<"effective_client_proto_version">>, Map)),
+    ?assertEqual(true, maps:get(<<"client_h3">>, Map)),
+    ?assertEqual(<<"true">>, proplists:get_value(<<"x-eproxy-debug-client-h3">>, RespHdrs)).
+
+api_tls_listener_valid_pem_test() ->
+    with_tls_data_dir(fun(_Dir) ->
+        Cert = read_priv_pem("listener.pem"),
+        Key = read_priv_pem("listener.key"),
+        Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+        {ok, 200, _, RespBody} = dispatch(<<"POST">>, <<"/api/tls/listener">>, Body),
+        {ok, Map} = thoas:decode(RespBody),
+        ?assertEqual(<<"ok">>, maps:get(<<"status">>, Map)),
+        ?assert(maps:is_key(<<"tls_cert_file">>, Map))
+    end).
+
+api_reload_returns_reloaded_test() ->
+    ensure_env(),
+    {ok, 200, _, Body} = dispatch(<<"POST">>, <<"/api/reload">>),
+    {ok, Map} = thoas:decode(Body),
+    ?assertEqual(<<"reloaded">>, maps:get(<<"status">>, Map)).
+
+%% ---------------------------------------------------------------------------
+%% additional coverage: helm success, k8s PUT, PEM ingress certs, error branches
+%% ---------------------------------------------------------------------------
+
+with_mock_helm(Fun) ->
+    meck:new(pertisk_eproxy_shell, [unstick]),
+    meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
+        "[{\"revision\":1,\"status\":\"deployed\"}]\n__PERTISK_HELM_RC__:0\n"
+    end),
+    try Fun() after meck:unload(pertisk_eproxy_shell) end.
+
+api_helm_history_ingress_success_mocked_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_helm(fun() ->
+                {ok, 200, _, Body} =
+                    dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token),
+                {ok, Map} = thoas:decode(Body),
+                ?assertEqual(<<"pertisk-eproxy">>, maps:get(<<"release">>, Map)),
+                ?assert(is_list(maps:get(<<"history">>, Map, [])))
+            end)
+        end)
+    end).
+
+api_helm_values_ingress_success_mocked_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_helm(fun() ->
+                meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
+                    "replicaCount: 1\n__PERTISK_HELM_RC__:0\n"
+                end),
+                {ok, 200, _, Body} =
+                    dispatch_auth(<<"GET">>, <<"/api/helm/values/1">>, <<>>, Token),
+                {ok, Map} = thoas:decode(Body),
+                ?assertEqual(1, maps:get(<<"revision">>, Map)),
+                ?assert(byte_size(maps:get(<<"values">>, Map, <<>>)) > 0)
+            end)
+        end)
+    end).
+
+api_certificates_ingress_k8s_with_pem_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        ensure_ingress_status_env(),
+        Cert = read_priv_pem("listener.pem"),
+        Key = read_priv_pem("listener.key"),
+        ok = pertisk_ingress_tls:set_hosts([<<"k8s-pem.example">>], Cert, Key, undefined, undefined),
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"k8s-pem.example">>, backend => <<"web">>,
+              certificate => <<"k8s/default/tls-secret">>, routes => []}],
+            []
+        ),
+        try
+            {ok, 200, _, Body} = dispatch_auth(<<"GET">>, <<"/api/certificates">>, <<>>, Token),
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(
+                lists:any(
+                    fun(Row) ->
+                        maps:get(<<"source_type">>, Row, undefined) =:= <<"kubernetes">>
+                            andalso maps:get(<<"issuer">>, Row, <<>>) =/= <<>>
+                    end,
+                    Rows
+                )
+            )
+        after
+            pertisk_ingress_tls:clear(),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_certificates_acme_staging_challenge_label_test() ->
+    with_tmp_db(fun(_Db) ->
+        Old = application:get_env(pertisk_eproxy, acme_directory_url),
+        application:set_env(
+            pertisk_eproxy,
+            acme_directory_url,
+            <<"https://acme-staging-v02.api.letsencrypt.org/directory">>
+        ),
+        try
+            Add = thoas:encode(#{<<"name">> => <<"staging-acme.example">>}),
+            {ok, 201, _, _} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+            {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/certificates">>),
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(
+                lists:any(
+                    fun(Row) ->
+                        maps:get(<<"challenge">>, Row, <<>>) =:=
+                            <<"dns-01 (Let's Encrypt staging)">>
+                    end,
+                    Rows
+                )
+            )
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, acme_directory_url, V);
+                undefined -> application:unset_env(pertisk_eproxy, acme_directory_url)
+            end
+        end
+    end).
+
+api_k8s_ingress_put_dispatch_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, ConnArg) ->
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, sample_k8s_ingress(<<"app">>, <<"default">>, <<"app.example">>)}
+            end),
+            meck:expect(ekub, replace, fun(Resource, Ns, ConnArg) ->
+                ?assertEqual(<<"default">>, Ns),
+                ?assertEqual({mock_api, mock_access}, ConnArg),
+                {ok, Resource}
+            end),
+            Body = thoas:encode(#{
+                <<"name">> => <<"app">>,
+                <<"host">> => <<"updated.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80,
+                <<"routes">> => [
+                    #{
+                        <<"path">> => <<"/">>,
+                        <<"path_type">> => <<"Prefix">>,
+                        <<"service_name">> => <<"web">>,
+                        <<"service_port">> => 80
+                    }
+                ]
+            }),
+            ?assertMatch(
+                {ok, 200, _, _},
+                dispatch(<<"PUT">>, <<"/api/kubernetes/ingresses/default/app">>, Body)
+            )
+        end)
+    end).
+
+api_dns_provider_put_partial_credentials_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"partial-cf">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"original-secret">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/dns-providers">>),
+        {ok, [#{<<"id">> := Id} | _]} = thoas:decode(ListBody),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Put = thoas:encode(#{
+            <<"name">> => <<"partial-cf-renamed">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"original-secret">>}
+        }),
+        Path = <<"/api/dns-providers/", IdBin/binary>>,
+        Result = dispatch(<<"PUT">>, Path, Put),
+        ?assertMatch({ok, Status, _, _} when Status =:= 200 orelse Status =:= 404, Result)
+    end).
+
+api_backup_restore_invalid_config_structure_test() ->
+    ensure_env(),
+    Inner = thoas:encode(#{
+        <<"sites">> => [],
+        <<"backends">> => [],
+        <<"certificate_records">> => [#{<<"name">> => <<>>}]
+    }),
+    Bad = thoas:encode(#{<<"data">> => Inner}),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/backup/restore">>, Bad)).
+
+api_certificates_import_empty_pem_fields_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{<<"cert_pem">> => <<>>, <<"key_pem">> => <<>>}),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/certificates/import">>, Body))
+    end).
+
+api_certificate_put_not_found_after_delete_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"temp-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        _ = dispatch(<<"DELETE">>, <<"/api/certificates/", IdBin/binary>>),
+        Put = thoas:encode(#{<<"name">> => <<"nope">>}),
+        ?assertMatch({ok, 404, _, _}, dispatch(<<"PUT">>, <<"/api/certificates/", IdBin/binary>>, Put))
+    end).
+
+api_method_not_allowed_patch_config_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"PATCH">>, <<"/api/config">>, <<"{}">>)).
+
+api_method_not_allowed_delete_version_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"DELETE">>, <<"/api/version">>)).
+
+api_method_not_allowed_put_certificates_list_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 405, _, _}, dispatch(<<"PUT">>, <<"/api/certificates">>, <<"{}">>)).
+
+api_method_not_allowed_post_dns_provider_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch({ok, 405, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers/1">>, <<"{}">>))
+    end).
+
+api_site_tls_health_via_build_health_json_test() ->
+    ensure_env(),
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => <<"health-tls.example">>, backend => <<"web">>,
+          certificate => <<"missing-cert">>, routes => []}],
+        []
+    ),
+    try
+        Json = pertisk_eproxy_admin_handler:build_health_json(),
+        {ok, Map} = thoas:decode(Json),
+        TlsSites = maps:get(<<"tls_sites">>, Map, []),
+        ?assert(
+            lists:any(
+                fun(Row) ->
+                    maps:get(<<"host">>, Row, undefined) =:= <<"health-tls.example">>
+                        andalso maps:get(<<"valid">>, Row, true) =:= false
+                end,
+                TlsSites
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_backend_health_summary_via_build_health_json_test() ->
+    ensure_env(),
+    ensure_backend_sup(),
+    Name = <<"hbjson_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(Name, [#{addr => <<"127.0.0.1:9">>}]),
+    try
+        pertisk_eproxy_test_helpers:sync_router(
+            [],
+            [#{name => Name, upstreams => [#{addr => <<"127.0.0.1:9">>}], health_path => <<"/">>}]
+        ),
+        Json = pertisk_eproxy_admin_handler:build_health_json(),
+        {ok, Map} = thoas:decode(Json),
+        Backends = maps:get(<<"backends">>, Map, []),
+        ?assert(
+            lists:any(
+                fun(Row) -> maps:get(<<"name">>, Row, undefined) =:= Name end,
+                Backends
+            )
+        )
+    after
+        catch gen_server:stop(Pid, normal, 5000),
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_auth_login_invalid_json_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/auth/login">>, <<"{">>)).
+
+api_admin_api_token_post_not_implemented_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 501, _, _}, dispatch(<<"POST">>, <<"/api/admin/api-token">>, <<"{">>)).
+
+api_helm_history_ingress_invalid_json_mocked_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            meck:new(pertisk_eproxy_shell, [unstick]),
+            meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
+                "not-json-output\n__PERTISK_HELM_RC__:0\n"
+            end),
+            try
+                ?assertMatch(
+                    {ok, 500, _, _},
+                    dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
+                )
+            after
+                meck:unload(pertisk_eproxy_shell)
+            end
+        end)
+    end).
+
+api_helm_history_ingress_cmd_failed_mocked_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            meck:new(pertisk_eproxy_shell, [unstick]),
+            meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
+                "Error: release not found\n__PERTISK_HELM_RC__:1\n"
+            end),
+            try
+                ?assertMatch(
+                    {ok, 502, _, _},
+                    dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
+                )
+            after
+                meck:unload(pertisk_eproxy_shell)
+            end
+        end)
+    end).
+
+api_helm_values_ingress_invalid_revision_negative_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            dispatch_auth(<<"GET">>, <<"/api/helm/values/-5">>, <<>>, Token)
+        )
+    end).
+
+api_helm_history_ingress_with_history_max_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            with_env("PERTISK_HELM_HISTORY_MAX", {set, "5"}, fun() ->
+                with_mock_helm(fun() ->
+                    ?assertMatch(
+                        {ok, 200, _, _},
+                        dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
+                    )
+                end)
+            end)
+        end)
+    end).
+
+api_dns_provider_delete_by_id_success_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"del-by-id">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"secret">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/dns-providers">>),
+        {ok, [#{<<"id">> := Id} | _]} = thoas:decode(ListBody),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Result = dispatch(<<"DELETE">>, <<"/api/dns-providers/", IdBin/binary>>),
+        ?assertMatch({ok, Status, _, _} when Status =:= 200 orelse Status =:= 404, Result)
+    end).
+
+api_site_put_full_tls_profile_test() ->
+    ensure_env(),
+    Host = <<"full-tls.example">>,
+    Add = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => []
+    }),
+    Put = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"challenge_type">> => <<"dns-01">>,
+        <<"wildcard">> => true,
+        <<"acme_wildcard_base">> => <<"example.com">>,
+        <<"acme_contact_email">> => <<"ops@example.com">>,
+        <<"advertise_http3">> => true,
+        <<"routes">> => [#{<<"path">> => <<"/">>, <<"path_type">> => <<"prefix">>}]
+    }),
+    try
+        _ = dispatch(<<"POST">>, <<"/api/sites">>, Add),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/sites/full-tls.example">>, Put)),
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/sites/full-tls.example">>),
+        {ok, Site} = thoas:decode(Body),
+        ?assertEqual(<<"dns-01">>, maps:get(<<"challenge_type">>, Site)),
+        ?assertEqual(<<"ops@example.com">>, maps:get(<<"acme_contact_email">>, Site)),
+        ?assertEqual(<<"example.com">>, maps:get(<<"acme_wildcard_base">>, Site))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/full-tls.example">>)
+    end.
+
+api_certificates_import_lists_issuer_test() ->
+    with_tmp_db(fun(_Db) ->
+        with_tls_data_dir(fun(_Dir) ->
+            Cert = read_priv_pem("listener.pem"),
+            Key = read_priv_pem("listener.key"),
+            Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+            ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/certificates/import">>, Body)),
+            {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/certificates">>),
+            {ok, Rows} = thoas:decode(ListBody),
+            ?assert(
+                lists:any(
+                    fun(Row) ->
+                        maps:get(<<"source_type">>, Row, undefined) =:= <<"imported_pem">>
+                            andalso maps:get(<<"issuer">>, Row, <<>>) =/= <<>>
+                    end,
+                    Rows
+                )
+            )
+        end)
+    end).
+
+api_helm_values_ingress_cmd_failed_mocked_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            meck:new(pertisk_eproxy_shell, [unstick]),
+            meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
+                "release not found\n__PERTISK_HELM_RC__:1\n"
+            end),
+            try
+                ?assertMatch(
+                    {ok, 502, _, _},
+                    dispatch_auth(<<"GET">>, <<"/api/helm/values/1">>, <<>>, Token)
+                )
+            after
+                meck:unload(pertisk_eproxy_shell)
+            end
+        end)
+    end).
+
+api_site_get_with_ingress_metadata_test() ->
+    ensure_env(),
+    Host = <<"ingress-meta.example">>,
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => Host, backend => <<"web">>, ingress_namespace => <<"prod">>,
+          ingress_name => <<"web-ing">>, routes => []}],
+        []
+    ),
+    try
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/sites/ingress-meta.example">>),
+        {ok, Site} = thoas:decode(Body),
+        ?assertEqual(<<"prod">>, maps:get(<<"ingress_namespace">>, Site)),
+        ?assertEqual(<<"web-ing">>, maps:get(<<"ingress_name">>, Site))
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_certificate_put_missing_name_field_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"needs-name">>}),
+        {ok, 201, _, _} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"PUT">>, <<"/api/certificates/1">>, <<"{}">>))
+    end).
+
+api_dns_provider_validate_returns_error_body_test() ->
+    with_tmp_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<>>}
+        }),
+        {ok, 400, _, Resp} = dispatch(<<"POST">>, <<"/api/dns-providers/validate">>, Body),
+        {ok, Map} = thoas:decode(Resp),
+        ?assertEqual(false, maps:get(<<"ok">>, Map))
+    end).
+
+api_build_health_json_wildcard_host_test() ->
+    ensure_env(),
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => <<"*.wildcard.example">>, backend => <<"web">>, routes => []}],
+        []
+    ),
+    try
+        Json = pertisk_eproxy_admin_handler:build_health_json(),
+        {ok, Map} = thoas:decode(Json),
+        TlsSites = maps:get(<<"tls_sites">>, Map, []),
+        ?assert(
+            lists:any(
+                fun(Row) ->
+                    maps:get(<<"host">>, Row, undefined) =:= <<"*.wildcard.example">>
+                end,
+                TlsSites
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_certificates_ingress_no_db_fallback_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        Old = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, <<"/no/such/proxy.db">>),
+        try
+            ?assertMatch(
+                {ok, 200, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/certificates">>, <<>>, Token)
+            )
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end
+        end
+    end).
+
+api_build_health_json_acme_cert_ref_test() ->
+    ensure_env(),
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => <<"acme-site.example">>, backend => <<"web">>,
+          certificate => <<"acme/acme-site.example">>, routes => []}],
+        []
+    ),
+    try
+        Json = pertisk_eproxy_admin_handler:build_health_json(),
+        {ok, Map} = thoas:decode(Json),
+        TlsSites = maps:get(<<"tls_sites">>, Map, []),
+        ?assert(
+            lists:any(
+                fun(Row) ->
+                    maps:get(<<"host">>, Row, undefined) =:= <<"acme-site.example">>
+                        andalso maps:get(<<"status">>, Row, undefined) =/= <<"ok">>
+                end,
+                TlsSites
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_config_put_preserves_dns_provider_secrets_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"cfg-cf">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"real-secret">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, 200, _, ConfigBody} = dispatch(<<"GET">>, <<"/api/config">>),
+        {ok, Config} = thoas:decode(ConfigBody),
+        Providers = maps:get(<<"dns_providers">>, Config, []),
+        [Provider | _] = Providers,
+        Put = thoas:encode(Config#{
+            <<"dns_providers">> => [
+                Provider#{<<"credentials">> => #{<<"api_token">> => <<"[redacted]">>}}
+            ]
+        }),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Put))
+    end).
+
+api_certificate_import_put_success_test() ->
+    with_tmp_db(fun(_Db) ->
+        with_tls_data_dir(fun(_Dir) ->
+            Add = thoas:encode(#{<<"name">> => <<"import-target-2">>}),
+            {ok, 201, _, _} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+            Cert = read_priv_pem("listener.pem"),
+            Key = read_priv_pem("listener.key"),
+            Import = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+            {ok, 200, _, Body} = dispatch(<<"PUT">>, <<"/api/certificates/1/import">>, Import),
+            {ok, Map} = thoas:decode(Body),
+            ?assertEqual(<<"ok">>, maps:get(<<"status">>, Map))
+        end)
+    end).
+
+api_dns_provider_put_empty_provider_type_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"type-put">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/dns-providers">>),
+        {ok, [#{<<"id">> := Id} | _]} = thoas:decode(ListBody),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Put = thoas:encode(#{
+            <<"name">> => <<"type-put">>,
+            <<"provider_type">> => <<>>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        Result = dispatch(<<"PUT">>, <<"/api/dns-providers/", IdBin/binary>>, Put),
+        ?assertMatch({ok, Status, _, _} when Status =:= 400 orelse Status =:= 404, Result)
+    end).
+
+api_backup_export_content_disposition_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, _} = dispatch(<<"GET">>, <<"/api/backup/export">>),
+    Disp = proplists:get_value(<<"content-disposition">>, Hdrs),
+    ?assertEqual(<<"attachment; filename=\"eproxy-config.json\"">>, Disp).
+
+api_build_health_json_imported_cert_covers_host_test() ->
+    with_tmp_db(fun(_Db) ->
+        with_tls_data_dir(fun(_Dir) ->
+            Cert = read_priv_pem("listener.pem"),
+            Key = read_priv_pem("listener.key"),
+            Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+            {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates/import">>, Body),
+            {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+            IdBin =
+                case Id of
+                    I when is_integer(I) -> integer_to_binary(I);
+                    B when is_binary(B) -> B
+                end,
+            pertisk_eproxy_test_helpers:sync_router(
+                [#{host => <<"localhost">>, backend => <<"web">>,
+                  certificate => IdBin, routes => []}],
+                []
+            ),
+            try
+                Json = pertisk_eproxy_admin_handler:build_health_json(),
+                {ok, Map} = thoas:decode(Json),
+                TlsSites = maps:get(<<"tls_sites">>, Map, []),
+                ?assert(
+                    lists:any(
+                        fun(Row) ->
+                            maps:get(<<"host">>, Row, undefined) =:= <<"localhost">>
+                                andalso maps:get(<<"valid">>, Row, false) =:= true
+                        end,
+                        TlsSites
+                    )
+                )
+            after
+                pertisk_eproxy_test_helpers:sync_router([], [])
+            end
+        end)
+    end).
+
+api_certificates_list_includes_sites_field_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"listed-cert.example">>}),
+        {ok, 201, _, _} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"listed-cert.example">>, backend => <<"web">>,
+              certificate => <<"listed-cert.example">>, routes => []}],
+            []
+        ),
+        try
+            {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/certificates">>),
+            {ok, Rows} = thoas:decode(Body),
+            ?assert(
+                lists:any(
+                    fun(Row) ->
+                        Sites = maps:get(<<"sites">>, Row, []),
+                        lists:member(<<"listed-cert.example">>, Sites)
+                    end,
+                    Rows
+                )
+            )
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_certificate_import_put_duplicate_name_retry_test() ->
+    with_tmp_db(fun(_Db) ->
+        with_tls_data_dir(fun(_Dir) ->
+            Cert = read_priv_pem("listener.pem"),
+            Key = read_priv_pem("listener.key"),
+            Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+            ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/certificates/import">>, Body)),
+            ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/certificates/import">>, Body)),
+            {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/certificates">>),
+            {ok, Rows} = thoas:decode(ListBody),
+            ?assert(length(Rows) >= 2)
+        end)
+    end).
+
+api_site_route_with_rewrite_test() ->
+    ensure_env(),
+    Host = <<"rewrite.example">>,
+    Body = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => [
+            #{<<"path">> => <<"/old">>, <<"path_type">> => <<"prefix">>, <<"rewrite">> => <<"/new">>}
+        ]
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/sites">>, Body)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/sites/rewrite.example">>),
+        {ok, Site} = thoas:decode(GetBody),
+        [Route | _] = maps:get(<<"routes">>, Site, []),
+        ?assertEqual(<<"/new">>, maps:get(<<"rewrite">>, Route))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/rewrite.example">>)
+    end.
+
+api_certificates_db_error_returns_500_test() ->
+    with_tmp_db(fun(_Db) ->
+        meck:new(pertisk_eproxy_db, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_db, list_certificates, fun(_) -> {error, sqlite_locked} end),
+        try
+            ?assertMatch({ok, 500, _, _}, dispatch(<<"GET">>, <<"/api/certificates">>))
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_dns_providers_db_error_returns_500_test() ->
+    with_tmp_db(fun(_Db) ->
+        meck:new(pertisk_eproxy_db, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_db, list_dns_providers, fun(_) -> {error, sqlite_locked} end),
+        try
+            ?assertMatch({ok, 500, _, _}, dispatch(<<"GET">>, <<"/api/dns-providers">>))
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_backup_restore_cert_record_empty_name_test() ->
+    ensure_env(),
+    Inner = thoas:encode(#{
+        <<"sites">> => [],
+        <<"backends">> => [],
+        <<"dns_providers">> => [],
+        <<"certificate_records">> => [
+            #{<<"name">> => <<>>, <<"source_type">> => <<"acme">>}
+        ]
+    }),
+    Bad = thoas:encode(#{<<"data">> => Inner}),
+    ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/backup/restore">>, Bad)).
+
+%% ---------------------------------------------------------------------------
+%% init_dispatch: health cache, ingress live, k8s errors, put_config failures
+%% ---------------------------------------------------------------------------
+
+api_health_cache_init_get_test() ->
+    ensure_health_cache(),
+    {ok, Status, _, Body} = init_dispatch(<<"GET">>, <<"/api/health">>, health),
+    ?assertEqual(200, Status),
+    ?assert(byte_size(Body) > 20).
+
+api_health_cache_init_head_test() ->
+    ensure_health_cache(),
+    ?assertMatch({ok, 200, _, <<>>}, init_dispatch(<<"HEAD">>, <<"/api/health">>, health)).
+
+api_ingress_live_init_get_test() ->
+    ensure_ingress_status_env(),
+    ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/ingress/live">>, ingress_live)).
+
+api_auth_check_local_invalid_token_test() ->
+    with_local_auth(fun() ->
+        {ok, 200, _, Body} =
+            dispatch_auth(<<"GET">>, <<"/api/auth/check">>, <<>>, <<"not.a.valid.jwt">>),
+        {ok, Map} = thoas:decode(Body),
+        ?assertEqual(false, maps:get(<<"authenticated">>, Map))
+    end).
+
+api_ingress_guest_mutating_post_forbidden_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_ADMIN", unset, fun() ->
+            Body = thoas:encode(#{
+                <<"host">> => <<"guest-blocked.example">>,
+                <<"backend">> => <<"web">>,
+                <<"routes">> => []
+            }),
+            ?assertMatch({ok, 403, _, _}, dispatch(<<"POST">>, <<"/api/sites">>, Body))
+        end)
+    end).
+
+api_config_get_includes_tls_quic_fields_test() ->
+    with_tmp_db(fun(_Db) ->
+        {ok, 200, _, ConfigBody} = dispatch(<<"GET">>, <<"/api/config">>),
+        {ok, Config} = thoas:decode(ConfigBody),
+        Put = thoas:encode(Config#{
+            <<"https_port">> => 443,
+            <<"quic_enabled">> => true,
+            <<"quic_port">> => 4433,
+            <<"tls_http2_enabled">> => false,
+            <<"h3_probe_port">> => 9443
+        }),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Put)),
+        {ok, 200, _, Body2} = dispatch(<<"GET">>, <<"/api/config">>),
+        {ok, Updated} = thoas:decode(Body2),
+        ?assertEqual(443, maps:get(<<"https_port">>, Updated)),
+        ?assertEqual(true, maps:get(<<"quic_enabled">>, Updated)),
+        ?assertEqual(4433, maps:get(<<"quic_port">>, Updated)),
+        ?assertEqual(false, maps:get(<<"tls_http2_enabled">>, Updated)),
+        ?assertEqual(9443, maps:get(<<"h3_probe_port">>, Updated))
+    end).
+
+api_backup_export_includes_tls_key_paths_test() ->
+    with_tls_data_dir(fun(_Dir) ->
+        Cert = read_priv_pem("listener.pem"),
+        Key = read_priv_pem("listener.key"),
+        Body = thoas:encode(#{<<"cert_pem">> => Cert, <<"key_pem">> => Key}),
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"POST">>, <<"/api/tls/listener">>, Body)),
+        {ok, 200, _, ExportBody} = dispatch(<<"GET">>, <<"/api/backup/export">>),
+        {ok, Export} = thoas:decode(ExportBody),
+        ?assert(maps:is_key(<<"tls_cert_file">>, Export)),
+        ?assert(maps:is_key(<<"tls_key_file">>, Export)),
+        ?assert(maps:get(<<"tls_key_file">>, Export) =/= <<"[redacted]">>)
+    end).
+
+api_site_post_exact_path_type_test() ->
+    ensure_env(),
+    Host = <<"exact-path.example">>,
+    Body = thoas:encode(#{
+        <<"host">> => Host,
+        <<"backend">> => <<"web">>,
+        <<"routes">> => [#{<<"path">> => <<"/exact">>, <<"path_type">> => <<"exact">>}]
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/sites">>, Body)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/sites/exact-path.example">>),
+        {ok, Site} = thoas:decode(GetBody),
+        [Route | _] = maps:get(<<"routes">>, Site, []),
+        ?assertEqual(<<"exact">>, maps:get(<<"path_type">>, Route))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/sites/exact-path.example">>)
+    end.
+
+api_backend_post_ip_hash_algorithm_test() ->
+    ensure_env(),
+    Name = <<"ip_hash_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"ip_hash">>,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+        {ok, 200, _, ListBody} = dispatch(<<"GET">>, <<"/api/backends">>),
+        {ok, Rows} = thoas:decode(ListBody),
+        ?assert(
+            lists:any(
+                fun(Row) ->
+                    maps:get(<<"name">>, Row, undefined) =:= Name
+                        andalso maps:get(<<"algorithm">>, Row, undefined) =:= <<"ip_hash">>
+                end,
+                Rows
+            )
+        )
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/backends/", Name/binary>>)
+    end.
+
+api_backend_post_least_connections_algorithm_test() ->
+    ensure_env(),
+    Name = <<"least_conn_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Body = thoas:encode(#{
+        <<"name">> => Name,
+        <<"algorithm">> => <<"least_connections">>,
+        <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+    }),
+    try
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
+        {ok, 200, _, GetBody} = dispatch(<<"GET">>, <<"/api/backends/", Name/binary>>),
+        {ok, Status} = thoas:decode(GetBody),
+        ?assertEqual(<<"least_connections">>, maps:get(<<"algorithm">>, Status))
+    after
+        _ = dispatch(<<"DELETE">>, <<"/api/backends/", Name/binary>>)
+    end.
+
+api_ingress_resources_with_synced_site_test() ->
+    ensure_env(),
+    Host = <<"ing-res.example">>,
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => Host, backend => <<"web">>, routes => []}],
+        [#{name => <<"web">>, upstreams => [#{addr => <<"127.0.0.1:9">>}]}]
+    ),
+    try
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/ingress/resources">>),
+        {ok, Map} = thoas:decode(Body),
+        Sites = maps:get(<<"sites">>, Map, []),
+        ?assert(
+            lists:any(fun(S) -> maps:get(<<"host">>, S, undefined) =:= Host end, Sites)
+        )
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+api_build_health_json_lego_required_route53_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"aws-route53">>,
+            <<"provider_type">> => <<"route53">>,
+            <<"credentials">> => #{
+                <<"access_key_id">> => <<"key">>,
+                <<"secret_access_key">> => <<"secret">>
+            }
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, Map} = thoas:decode(pertisk_eproxy_admin_handler:build_health_json()),
+        Acme = maps:get(<<"acme">>, Map),
+        ?assertEqual(true, maps:get(<<"lego_required">>, Acme))
+    end).
+
+api_build_health_json_lego_required_godaddy_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"gd-dns">>,
+            <<"provider_type">> => <<"godaddy">>,
+            <<"credentials">> => #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        {ok, Map} = thoas:decode(pertisk_eproxy_admin_handler:build_health_json()),
+        ?assertEqual(true, maps:get(<<"lego_required">>, maps:get(<<"acme">>, Map)))
+    end).
+
+api_certificate_put_invalid_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        Put = thoas:encode(#{<<"name">> => <<"bad-id-cert">>}),
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"PUT">>, <<"/api/certificates/not-id">>, Put))
+    end).
+
+api_certificates_post_db_error_test() ->
+    with_tmp_db(fun(_Db) ->
+        meck:new(pertisk_eproxy_db, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_db, insert_certificate, fun(_, _) -> {error, duplicate_name} end),
+        try
+            Body = thoas:encode(#{<<"name">> => <<"dup-cert">>}),
+            ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/certificates">>, Body))
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_certificate_delete_db_error_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"del-err-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        meck:new(pertisk_eproxy_db, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_db, delete_certificate, fun(_, _) -> {error, locked} end),
+        try
+            ?assertMatch({ok, 400, _, _}, dispatch(<<"DELETE">>, <<"/api/certificates/", IdBin/binary>>))
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_dns_provider_post_db_error_test() ->
+    with_tmp_db(fun(_Db) ->
+        meck:new(pertisk_eproxy_db, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_db, insert_dns_provider, fun(_, _, _, _) -> {error, duplicate} end),
+        try
+            Body = thoas:encode(#{
+                <<"name">> => <<"dup-dns">>,
+                <<"provider_type">> => <<"cloudflare">>,
+                <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+            }),
+            ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Body))
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_dns_provider_delete_by_name_in_use_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"name">> => <<"cf-name-in-use">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"secret">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/dns-providers">>, Add)),
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"dns-name.example">>, backend => <<"web">>,
+              dns_provider => <<"cf-name-in-use">>, routes => []}],
+            []
+        ),
+        try
+            ?assertMatch(
+                {ok, 400, _, _},
+                dispatch(<<"DELETE">>, <<"/api/dns-providers/cf-name-in-use">>)
+            )
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_helm_values_ingress_invalid_revision_string_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        with_env("PERTISK_HELM_RELEASE", {set, "pertisk-eproxy"}, fun() ->
+            ?assertMatch(
+                {ok, 400, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/helm/values/not-a-rev">>, <<>>, Token)
+            )
+        end)
+    end).
+
+api_k8s_namespaces_k8s_404_error_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        meck:new(pertisk_eproxy_admin_kubernetes, [unstick]),
+        meck:expect(pertisk_eproxy_admin_kubernetes, namespaces, fun() ->
+            {error, #{<<"code">> => 404}}
+        end),
+        try
+            ?assertMatch(
+                {ok, 404, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/namespaces">>, <<>>, Token)
+            )
+        after
+            meck:unload(pertisk_eproxy_admin_kubernetes)
+        end
+    end).
+
+api_k8s_namespaces_k8s_403_error_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        meck:new(pertisk_eproxy_admin_kubernetes, [unstick]),
+        meck:expect(pertisk_eproxy_admin_kubernetes, namespaces, fun() ->
+            {error, #{<<"reason">> => <<"Forbidden">>}}
+        end),
+        try
+            ?assertMatch(
+                {ok, 403, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/namespaces">>, <<>>, Token)
+            )
+        after
+            meck:unload(pertisk_eproxy_admin_kubernetes)
+        end
+    end).
+
+api_k8s_pods_k8s_not_found_nested_error_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        meck:new(pertisk_eproxy_admin_kubernetes, [unstick]),
+        meck:expect(pertisk_eproxy_admin_kubernetes, pods, fun(_) ->
+            {error, #{<<"status">> => #{<<"code">> => 404}}}
+        end),
+        try
+            ?assertMatch(
+                {ok, 404, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/pods">>, <<"namespace=default">>, Token)
+            )
+        after
+            meck:unload(pertisk_eproxy_admin_kubernetes)
+        end
+    end).
+
+api_k8s_services_k8s_generic_error_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        meck:new(pertisk_eproxy_admin_kubernetes, [unstick]),
+        meck:expect(pertisk_eproxy_admin_kubernetes, services, fun(_) ->
+            {error, #{<<"message">> => <<"cluster unreachable">>}}
+        end),
+        try
+            {ok, Status, _, Body} =
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/services">>, <<"namespace=default">>, Token),
+            ?assert(Status >= 400),
+            {ok, Map} = thoas:decode(Body),
+            ?assert(maps:is_key(<<"error">>, Map))
+        after
+            meck:unload(pertisk_eproxy_admin_kubernetes)
+        end
+    end).

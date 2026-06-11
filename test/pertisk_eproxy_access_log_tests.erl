@@ -15,12 +15,10 @@ is_health_path_other_test() ->
 
 with_server(Fun) ->
     case whereis(pertisk_eproxy_access_log) of
-        undefined ->
-            {ok, Pid} = pertisk_eproxy_access_log:start_link(),
-            try Fun() after catch gen_server:stop(Pid, normal, 5000) end;
-        _ ->
-            Fun()
-    end.
+        undefined -> {ok, _} = pertisk_eproxy_access_log:start_link();
+        _ -> ok
+    end,
+    Fun().
 
 log_proxy_and_list_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),

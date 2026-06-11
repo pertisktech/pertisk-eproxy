@@ -4,6 +4,44 @@
 
 -define(SCAN_SLEEP_MS, 900).
 
+safe_meck_unload(Mod) ->
+    case lists:member(Mod, meck:mocked()) of
+        true ->
+            try meck:unload(Mod) catch _:_ -> ok end;
+        false ->
+            ok
+    end.
+
+safe_meck_unload_all(Mods) ->
+    lists:foreach(fun safe_meck_unload/1, Mods).
+
+init_scan_db(DbPath) ->
+    init_scan_db(DbPath, 5).
+
+init_scan_db(DbPath, 0) ->
+    pertisk_eproxy_db:init(DbPath);
+init_scan_db(DbPath, Retries) ->
+    case pertisk_eproxy_db:init(DbPath) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, {sqlite_error, Msg, _}} when Retries > 0 ->
+            Locked =
+                case Msg of
+                    B when is_binary(B) -> binary:match(B, <<"locked">>) =/= nomatch;
+                    S when is_list(S) -> string:find(S, "locked") =/= nomatch;
+                    _ -> false
+                end,
+            case Locked of
+                true ->
+                    timer:sleep(50),
+                    init_scan_db(DbPath, Retries - 1);
+                false ->
+                    {error, {sqlite_error, Msg, locked}}
+            end;
+        Other ->
+            Other
+    end.
+
 stop_acme_dns() ->
     case whereis(pertisk_eproxy_acme_dns) of
         undefined -> ok;
@@ -11,13 +49,13 @@ stop_acme_dns() ->
     end.
 
 mock_acme_client_ok() ->
-    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:new(pertisk_eproxy_acme_client, [unstick, no_link]),
     meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
         {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"kid-url">>}
     end).
 
 mock_acme_client_error(Err) ->
-    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:new(pertisk_eproxy_acme_client, [unstick, no_link]),
     meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) -> {error, Err} end).
 
 site(Host, Provider) ->
@@ -47,13 +85,17 @@ with_scan_env(Fun) ->
         os:getenv("TMPDIR", "/tmp"),
         "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))
     ]),
-    ok = file:make_dir(AcmeDir),
+    case file:make_dir(AcmeDir) of
+        ok -> ok;
+        {error, eexist} -> ok;
+        {error, Reason} -> error({make_dir, AcmeDir, Reason})
+    end,
     application:set_env(pertisk_eproxy, acme_data_dir, AcmeDir),
     DbPath = pertisk_eproxy_test_helpers:tmp_db(),
     file:delete(DbPath),
     application:set_env(pertisk_eproxy, db_file, DbPath),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_scan_db(DbPath)),
         Fun(#{db => DbPath, acme_dir => AcmeDir})
     after
         stop_acme_dns(),
@@ -75,7 +117,7 @@ with_scan_env(Fun) ->
 
 run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupFun) ->
     pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
-    lists:foreach(fun(M) -> meck:new(M, [unstick]) end, MockMods),
+    lists:foreach(fun(M) -> meck:new(M, [unstick, no_link]) end, MockMods),
     SetupFun(),
     mock_acme_client_ok(),
     try
@@ -89,7 +131,7 @@ run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupF
             catch gen_server:stop(Pid, normal, 5000)
         end
     after
-        meck:unload([pertisk_eproxy_acme_client | MockMods]),
+        safe_meck_unload_all([pertisk_eproxy_acme_client | MockMods]),
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.
 
@@ -367,7 +409,7 @@ gandi_requires_token_test() ->
     ).
 
 gandi_domain_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_gandi, [unstick]),
+    meck:new(pertisk_eproxy_dns_gandi, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_gandi, resolve_domain, fun(_, _, _) ->
         {ok, <<"example.com">>}
     end),
@@ -378,11 +420,11 @@ gandi_domain_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"gandi">>, domain := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_gandi)
+        safe_meck_unload(pertisk_eproxy_dns_gandi)
     end.
 
 desec_domain_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_desec, [unstick]),
+    meck:new(pertisk_eproxy_dns_desec, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_desec, resolve_domain, fun(_, _, _) ->
         {ok, <<"example.com">>}
     end),
@@ -393,11 +435,11 @@ desec_domain_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"desec">>, domain := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_desec)
+        safe_meck_unload(pertisk_eproxy_dns_desec)
     end.
 
 hetzner_zone_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_hetzner, [unstick]),
+    meck:new(pertisk_eproxy_dns_hetzner, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_hetzner, resolve_zone, fun(_, _, _) ->
         {ok, #{zone_name => <<"example.com">>}}
     end),
@@ -408,11 +450,11 @@ hetzner_zone_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"hetzner">>, zone := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_hetzner)
+        safe_meck_unload(pertisk_eproxy_dns_hetzner)
     end.
 
 linode_domain_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_linode, [unstick]),
+    meck:new(pertisk_eproxy_dns_linode, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_linode, resolve_domain, fun(_, _, _) ->
         {ok, #{domain => <<"example.com">>}}
     end),
@@ -423,11 +465,11 @@ linode_domain_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"linode">>, domain := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_linode)
+        safe_meck_unload(pertisk_eproxy_dns_linode)
     end.
 
 digitalocean_domain_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_digitalocean, [unstick]),
+    meck:new(pertisk_eproxy_dns_digitalocean, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_digitalocean, resolve_domain, fun(_, _, _) ->
         {ok, <<"example.com">>}
     end),
@@ -438,11 +480,11 @@ digitalocean_domain_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"digitalocean">>, domain := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_digitalocean)
+        safe_meck_unload(pertisk_eproxy_dns_digitalocean)
     end.
 
 vultr_zone_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_vultr, [unstick]),
+    meck:new(pertisk_eproxy_dns_vultr, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_vultr, resolve_zone, fun(_, _, _) ->
         {ok, <<"example.com">>}
     end),
@@ -453,7 +495,7 @@ vultr_zone_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"vultr">>, zone := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_vultr)
+        safe_meck_unload(pertisk_eproxy_dns_vultr)
     end.
 
 vultr_api_key_alias_redacted_test() ->
@@ -475,7 +517,7 @@ porkbun_only_secret_key_test() ->
     ).
 
 porkbun_domain_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_porkbun, [unstick]),
+    meck:new(pertisk_eproxy_dns_porkbun, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_porkbun, resolve_domain, fun(_, _, _, _) ->
         {ok, <<"example.com">>}
     end),
@@ -489,11 +531,11 @@ porkbun_domain_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"porkbun">>, domain := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_porkbun)
+        safe_meck_unload(pertisk_eproxy_dns_porkbun)
     end.
 
 cloudflare_invalid_zone_id_test() ->
-    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
         {error, not_found}
     end),
@@ -506,11 +548,11 @@ cloudflare_invalid_zone_id_test() ->
             )
         )
     after
-        meck:unload(pertisk_eproxy_dns_cloudflare)
+        safe_meck_unload(pertisk_eproxy_dns_cloudflare)
     end.
 
 cloudflare_zone_id_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
         {ok, #{zone_name => <<"example.com">>}}
     end),
@@ -521,7 +563,7 @@ cloudflare_zone_id_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"cloudflare">>, zone_name := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_cloudflare)
+        safe_meck_unload(pertisk_eproxy_dns_cloudflare)
     end.
 
 provider_type_uppercase_normalizes_test() ->
@@ -634,7 +676,7 @@ powerdns_api_url_camel_case_ok_test() ->
     ?assertMatch({ok, #{provider := <<"powerdns">>}}, Result).
 
 powerdns_zone_resolves_test() ->
-    meck:new(pertisk_eproxy_dns_powerdns, [unstick]),
+    meck:new(pertisk_eproxy_dns_powerdns, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_powerdns, resolve_zone, fun(_, _, _, _, _) ->
         {ok, #{zone_name => <<"example.com">>}}
     end),
@@ -648,7 +690,7 @@ powerdns_zone_resolves_test() ->
         ),
         ?assertMatch({ok, #{provider := <<"powerdns">>, zone := <<"example.com">>}}, Result)
     after
-        meck:unload(pertisk_eproxy_dns_powerdns)
+        safe_meck_unload(pertisk_eproxy_dns_powerdns)
     end.
 
 duckdns_ok_test() ->
@@ -684,7 +726,7 @@ scan_terms_not_agreed_test() ->
     file:delete(DbPath),
     OldDb = application:get_env(pertisk_eproxy, db_file),
     application:set_env(pertisk_eproxy, db_file, DbPath),
-    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
     meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
         {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
@@ -705,7 +747,7 @@ scan_terms_not_agreed_test() ->
             catch gen_server:stop(Pid, normal, 5000)
         end
     after
-        meck:unload(pertisk_eproxy_dns_cloudflare),
+        safe_meck_unload(pertisk_eproxy_dns_cloudflare),
         pertisk_eproxy_test_helpers:sync_router([], []),
         case OldDb of
             {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
@@ -783,11 +825,11 @@ scan_mocked_successful_issue_test() ->
     file:delete(DbPath),
     OldDb = application:get_env(pertisk_eproxy, db_file),
     application:set_env(pertisk_eproxy, db_file, DbPath),
-    meck:new(pertisk_eproxy_acme_client, [unstick]),
+    meck:new(pertisk_eproxy_acme_client, [unstick, no_link]),
     meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
         {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"kid-url">>}
     end),
-    meck:new(pertisk_eproxy_dns_cloudflare, [unstick]),
+    meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
     meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
     meck:expect(pertisk_eproxy_dns_cloudflare, get_zone, fun(_, _) ->
         {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
@@ -811,7 +853,7 @@ scan_mocked_successful_issue_test() ->
             catch gen_server:stop(Pid, normal, 5000)
         end
     after
-        meck:unload([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+        safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
         pertisk_eproxy_test_helpers:sync_router([], []),
         case OldDb of
             {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);

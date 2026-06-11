@@ -5,6 +5,23 @@
 ensure_config() ->
     pertisk_eproxy_test_helpers:ensure_config().
 
+with_tmp_db(Fun) ->
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        ensure_config(),
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        Fun()
+    after
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath)
+    end.
+
 https_req(Extra) ->
     maps:merge(
         #{headers => #{}, scheme => https, path => <<"/">>, qs => <<>>, port => 443},
@@ -17,11 +34,12 @@ header_value_contains_h3_port_test() ->
     ?assertNotEqual(nomatch, binary:match(Val, <<"; ma=">>)).
 
 header_value_custom_port_test() ->
-    ensure_config(),
-    Base = pertisk_eproxy_config:get_config(),
-    ok = pertisk_eproxy_config:put_config(Base#{alt_svc_port => 8443}),
-    Val = pertisk_eproxy_alt_svc:header_value(),
-    ?assertNotEqual(nomatch, binary:match(Val, <<"8443">>)).
+    with_tmp_db(fun() ->
+        Base = pertisk_eproxy_config:get_config(),
+        ok = pertisk_eproxy_config:put_config(Base#{alt_svc_port => 8443}),
+        Val = pertisk_eproxy_alt_svc:header_value(),
+        ?assertNotEqual(nomatch, binary:match(Val, <<"8443">>))
+    end).
 
 merge_skips_grpc_request_test() ->
     ensure_config(),
@@ -128,29 +146,23 @@ merge_https_via_forwarded_proto_test() ->
     ?assert(maps:is_key(<<"alt-svc">>, Result) orelse maps:get(<<"alt-svc">>, Result, undefined) =:= <<"clear">>).
 
 header_value_persist_test() ->
-    ensure_config(),
-    Base = pertisk_eproxy_config:get_config(),
-    try
+    with_tmp_db(fun() ->
+        Base = pertisk_eproxy_config:get_config(),
         ok = pertisk_eproxy_config:put_config(Base#{alt_svc_persist => true}),
         Val = pertisk_eproxy_alt_svc:header_value(),
         ?assertNotEqual(nomatch, binary:match(Val, <<"persist=1">>))
-    after
-        _ = catch pertisk_eproxy_config:put_config(Base)
-    end.
+    end).
 
 header_value_quic_port_fallback_test() ->
-    ensure_config(),
-    Base = pertisk_eproxy_config:get_config(),
-    try
+    with_tmp_db(fun() ->
+        Base = pertisk_eproxy_config:get_config(),
         ok =
             pertisk_eproxy_config:put_config(
                 Base#{alt_svc_port => undefined, quic_port => 9443, https_port => 443}
             ),
         Val = pertisk_eproxy_alt_svc:header_value(),
         ?assertNotEqual(nomatch, binary:match(Val, <<"9443">>))
-    after
-        _ = catch pertisk_eproxy_config:put_config(Base)
-    end.
+    end).
 
 merge_clears_novnc_path_test() ->
     ensure_config(),

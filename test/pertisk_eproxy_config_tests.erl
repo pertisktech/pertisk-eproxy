@@ -617,6 +617,33 @@ with_config(Fun) ->
         maybe_stop_config(Started)
     end.
 
+init_tmp_db(DbPath) ->
+    init_tmp_db(DbPath, 5).
+
+init_tmp_db(DbPath, 0) ->
+    pertisk_eproxy_db:init(DbPath);
+init_tmp_db(DbPath, Retries) ->
+    case pertisk_eproxy_db:init(DbPath) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, {sqlite_error, Msg, _}} when Retries > 0 ->
+            Locked =
+                case Msg of
+                    B when is_binary(B) -> binary:match(B, <<"locked">>) =/= nomatch;
+                    S when is_list(S) -> string:find(S, "locked") =/= nomatch;
+                    _ -> false
+                end,
+            case Locked of
+                true ->
+                    timer:sleep(50),
+                    init_tmp_db(DbPath, Retries - 1);
+                false ->
+                    {error, {sqlite_error, Msg, locked}}
+            end;
+        Other ->
+            Other
+    end.
+
 with_tmp_db_config(Fun) ->
     DbPath = pertisk_eproxy_test_helpers:tmp_db(),
     file:delete(DbPath),
@@ -624,7 +651,7 @@ with_tmp_db_config(Fun) ->
     application:set_env(pertisk_eproxy, db_file, DbPath),
     try
         with_config(fun() ->
-            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            ?assertMatch({ok, _}, init_tmp_db(DbPath)),
             Fun()
         end)
     after
