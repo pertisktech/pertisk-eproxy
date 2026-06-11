@@ -303,3 +303,135 @@ obtain_certificate_with_fake_lego_test() ->
         ?assert(byte_size(Pem) > 0),
         ?assert(byte_size(Key) > 0)
     end).
+
+provider_to_binary_other_type_test() ->
+    ?assertEqual(<<"123">>, pertisk_eproxy_acme_lego:provider_to_binary(123)).
+
+find_lego_executable_empty_env_test() ->
+    Old = os:getenv("PERTISK_LEGO_BIN"),
+    os:putenv("PERTISK_LEGO_BIN", ""),
+    try
+        Result = pertisk_eproxy_acme_lego:find_lego_executable(),
+        ?assert(Result =:= false orelse is_list(Result))
+    after
+        case Old of
+            false -> os:unsetenv("PERTISK_LEGO_BIN");
+            V -> os:putenv("PERTISK_LEGO_BIN", V)
+        end
+    end.
+
+validate_provider_namecheap_creds_test() ->
+    WorkRoot = lego_work_root(),
+    Creds = #{
+        <<"api_user">> => <<"user">>,
+        <<"api_key">> => <<"key">>,
+        <<"username">> => <<"user">>,
+        <<"client_ip">> => <<"127.0.0.1">>
+    },
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
+        false ->
+            ?assertMatch({error, lego_not_found}, pertisk_eproxy_acme_lego:validate_provider(namecheap, Creds, WorkRoot));
+        _Lego ->
+            ?assertMatch({ok, #{env_var_count := 4}}, pertisk_eproxy_acme_lego:validate_provider(namecheap, Creds, WorkRoot))
+    end.
+
+validate_provider_azure_creds_test() ->
+    WorkRoot = lego_work_root(),
+    Creds = #{
+        <<"tenant_id">> => <<"tenant">>,
+        <<"client_id">> => <<"client">>,
+        <<"client_secret">> => <<"secret">>,
+        <<"subscription_id">> => <<"sub">>,
+        <<"resource_group">> => <<"rg">>
+    },
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
+        false ->
+            ?assertMatch({error, lego_not_found}, pertisk_eproxy_acme_lego:validate_provider(azure, Creds, WorkRoot));
+        _Lego ->
+            ?assertMatch({ok, #{env_var_count := 5}}, pertisk_eproxy_acme_lego:validate_provider(azure, Creds, WorkRoot))
+    end.
+
+validate_provider_google_missing_service_account_test() ->
+    WorkRoot = lego_work_root(),
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
+        false ->
+            ?assertMatch({error, lego_not_found},
+                pertisk_eproxy_acme_lego:validate_provider(googleclouddns, #{<<"project_id">> => <<"p">>}, WorkRoot));
+        _Lego ->
+            ?assertMatch({error, missing_service_account_json},
+                pertisk_eproxy_acme_lego:validate_provider(googleclouddns, #{<<"project_id">> => <<"p">>}, WorkRoot))
+    end.
+
+obtain_certificate_no_cert_files_test() ->
+    Dir = filename:join([os:getenv("TMPDIR", "/tmp"), "pertisk-lego-nocert-" ++ integer_to_list(erlang:unique_integer([positive]))]),
+    ok = file:make_dir(Dir),
+    DataDir = filename:join(Dir, "data"),
+    ok = file:make_dir(DataDir),
+    Bin = filename:join(Dir, "lego"),
+    ok = file:write_file(Bin, <<"#!/bin/sh\nexit 0\n">>),
+    ok = file:change_mode(Bin, 8#755),
+    Old = os:getenv("PERTISK_LEGO_BIN"),
+    os:putenv("PERTISK_LEGO_BIN", Bin),
+    try
+        Creds = #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>},
+        ?assertMatch(
+            {error, {lego_no_certificate_files, _}},
+            pertisk_eproxy_acme_lego:obtain_certificate(
+                godaddy,
+                Creds,
+                [<<"example.com">>],
+                <<"ops@example.com">>,
+                <<"https://acme-staging-v02.api.letsencrypt.org/directory">>,
+                DataDir,
+                <<"example-com">>,
+                fun(_, _) -> ok end
+            )
+        )
+    after
+        case Old of
+            false -> os:unsetenv("PERTISK_LEGO_BIN");
+            V -> os:putenv("PERTISK_LEGO_BIN", V)
+        end,
+        _ = os:cmd("rm -rf " ++ Dir)
+    end.
+
+obtain_certificate_calls_progress_callback_test() ->
+    with_fake_lego(fun(AcmeDir) ->
+        Ref = make_ref(),
+        Progress = fun(Phase, Msg) ->
+            self() ! {lego_progress, Phase, Msg},
+            ok
+        end,
+        Creds = #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>},
+        ?assertMatch({ok, _, _},
+            pertisk_eproxy_acme_lego:obtain_certificate(
+                godaddy,
+                Creds,
+                [<<"example.com">>],
+                <<"ops@example.com">>,
+                <<"https://acme-staging-v02.api.letsencrypt.org/directory">>,
+                AcmeDir,
+                <<"example-com">>,
+                Progress
+            )),
+        receive
+            {lego_progress, <<"lego">>, _} -> ok
+        after 1000 ->
+            ?assert(false)
+        end,
+        ?assertEqual(Ref, Ref)
+    end).
+
+validate_provider_customlego_named_provider_test() ->
+    WorkRoot = lego_work_root(),
+    Creds = #{
+        <<"lego_provider">> => <<"route53">>,
+        <<"access_key_id">> => <<"AKIA">>,
+        <<"secret_access_key">> => <<"SECRET">>
+    },
+    case pertisk_eproxy_acme_lego:find_lego_executable() of
+        false ->
+            ?assertMatch({error, lego_not_found}, pertisk_eproxy_acme_lego:validate_provider(customlego, Creds, WorkRoot));
+        _Lego ->
+            ?assertMatch({error, _}, pertisk_eproxy_acme_lego:validate_provider(customlego, Creds, WorkRoot))
+    end.

@@ -1052,3 +1052,196 @@ scan_duckdns_issue_test() ->
             fun mock_dns_duckdns/0
         )
     end).
+
+digitalocean_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"digitalocean">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"digitalocean">>, message := _}}, Result).
+
+vultr_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"vultr">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"vultr">>, message := _}}, Result).
+
+porkbun_keys_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"porkbun">>,
+        #{<<"api_key">> => <<"k">>, <<"secret_api_key">> => <<"s">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"porkbun">>, message := _}}, Result).
+
+linode_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"linode">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"linode">>, message := _}}, Result).
+
+hetzner_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"hetzner">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"hetzner">>, message := _}}, Result).
+
+desec_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"desec">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"desec">>, message := _}}, Result).
+
+gandi_token_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"gandi">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"gandi">>, message := _}}, Result).
+
+powerdns_url_key_only_ok_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"powerdns">>,
+        #{<<"api_url">> => <<"http://127.0.0.1:8081">>, <<"api_key">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"powerdns">>, message := _}}, Result).
+
+customlego_missing_provider_name_test() ->
+    ?assertMatch(
+        {error, missing_lego_provider},
+        pertisk_eproxy_acme_dns:validate_dns_provider(<<"customlego">>, #{})
+    ).
+
+provider_type_integer_normalizes_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        123,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({error, _}, Result).
+
+scan_cloudflare_find_zone_issue_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"cf-find.example">>, <<"cf-find">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_dns_cloudflare, auth_diag, fun(_) -> <<"token">> end),
+        meck:expect(pertisk_eproxy_dns_cloudflare, find_zone, fun(_, _) ->
+            {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
+        end),
+        meck:expect(pertisk_eproxy_dns_cloudflare, cf_txt_record_name, fun(Fqdn, _) -> Fqdn end),
+        meck:expect(pertisk_eproxy_dns_cloudflare, create_txt, fun(_, _, _, _, _) -> {ok, <<"rid">>} end),
+        meck:expect(pertisk_eproxy_dns_cloudflare, delete_txt, fun(_, _, _) -> ok end),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-find">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                catch gen_server:stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_acme_client_failure_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"fail.example">>, <<"cf-fail">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        mock_acme_client_error({acme_failed, timeout}),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-fail">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                catch gen_server:stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_lego_missing_warning_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        OldLego = os:getenv("PERTISK_LEGO_BIN"),
+        os:putenv("PERTISK_LEGO_BIN", "/nonexistent/lego"),
+        pertisk_eproxy_test_helpers:sync_router(
+            [
+                #{
+                    host => <<"lego-warn.example">>,
+                    backend => <<"web">>,
+                    challenge_type => "dns-01",
+                    dns_provider => <<"r53">>,
+                    acme_contact_email => <<"ops@example.com">>,
+                    routes => []
+                }
+            ],
+            [backend()]
+        ),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"r53">>,
+                <<"route53">>,
+                #{<<"access_key_id">> => <<"AKIA">>, <<"secret_access_key">> => <<"SECRET">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(500)
+            after
+                catch gen_server:stop(Pid, normal, 5000)
+            end
+        after
+            case OldLego of
+                false -> os:unsetenv("PERTISK_LEGO_BIN");
+                V -> os:putenv("PERTISK_LEGO_BIN", V)
+            end,
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+digitalocean_domain_lookup_failure_test() ->
+    meck:new(pertisk_eproxy_dns_digitalocean, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_dns_digitalocean, resolve_domain, fun(_, _, _) ->
+        {error, domain_not_found}
+    end),
+    try
+        ?assertMatch(
+            {error, domain_not_found},
+            pertisk_eproxy_acme_dns:validate_dns_provider(
+                <<"digitalocean">>,
+                #{<<"api_token">> => <<"secret">>, <<"domain">> => <<"missing.example.com">>}
+            )
+        )
+    after
+        safe_meck_unload(pertisk_eproxy_dns_digitalocean)
+    end.

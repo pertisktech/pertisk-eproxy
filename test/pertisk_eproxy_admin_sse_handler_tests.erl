@@ -78,3 +78,70 @@ with_mock_req(Opts, Fun) ->
     try Fun(#{}) after
         meck:unload([cowboy_req, pertisk_eproxy_response_headers, pertisk_eproxy_alt_svc])
     end.
+
+init_auth_disabled_starts_stream_test() ->
+    ensure_env(),
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, disabled),
+    try
+        with_mock_req(#{}, fun(Req) ->
+            ?assertMatch({ok, #{stream := started}, _}, pertisk_eproxy_admin_sse_handler:init(Req, #{}))
+        end)
+    after
+        restore_auth_mode(Old)
+    end.
+
+init_authorized_with_valid_token_test() ->
+    ensure_env(),
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    meck:new(pertisk_eproxy_auth, [unstick]),
+    meck:expect(pertisk_eproxy_auth, auth_mode, fun() -> local end),
+    meck:expect(pertisk_eproxy_auth, verify_token, fun(<<"good-token">>) -> {ok, <<"user">>} end),
+    try
+        with_mock_req(#{qs_vals => [{<<"token">>, <<"good-token">>}]}, fun(Req) ->
+            ?assertMatch({ok, #{stream := started}, _}, pertisk_eproxy_admin_sse_handler:init(Req, #{}))
+        end)
+    after
+        meck:unload(pertisk_eproxy_auth),
+        restore_auth_mode(Old)
+    end.
+
+init_invalid_token_unauthorized_test() ->
+    ensure_env(),
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    try
+        with_mock_req(#{qs_vals => [{<<"token">>, <<"bad-token">>}]}, fun(Req) ->
+            ?assertMatch({ok, #{reply := unauthorized}, _}, pertisk_eproxy_admin_sse_handler:init(Req, #{}))
+        end)
+    after
+        restore_auth_mode(Old)
+    end.
+
+snapshot_json_imported_pem_challenge_test() ->
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    TmpDir = filename:join([os:getenv("TMPDIR", "/tmp"), "sse-pem-" ++ integer_to_list(erlang:unique_integer([positive]))]),
+    ok = file:make_dir(TmpDir),
+    CertFile = filename:join(TmpDir, "cert.pem"),
+    KeyFile = filename:join(TmpDir, "key.pem"),
+    ok = file:write_file(CertFile, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>),
+    ok = file:write_file(KeyFile, <<"-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----">>),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    ensure_env(),
+    try
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        {ok, _} = pertisk_eproxy_db:insert_certificate_pem(DbPath, <<"imported-cert">>, CertFile, KeyFile),
+        {ok, Map} = thoas:decode(pertisk_eproxy_admin_sse_handler:snapshot_json()),
+        [Row | _] = maps:get(<<"certificates">>, Map),
+        ?assertEqual(<<"imported PEM">>, maps:get(<<"challenge">>, Row))
+    after
+        case OldDb of
+            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        file:delete(DbPath),
+        _ = os:cmd("rm -rf " ++ TmpDir)
+    end.

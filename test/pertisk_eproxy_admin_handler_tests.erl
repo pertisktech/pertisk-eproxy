@@ -28,9 +28,11 @@ dispatch(Method, Path, Qs, Body) ->
     dispatch(Method, Path, Qs, Body, []).
 
 dispatch(Method, Path, Qs, Body, Headers) ->
-    pertisk_eproxy_h3_local_admin:try_dispatch(
-        Method, <<"localhost">>, Path, Qs, Headers, Body, <<"127.0.0.1">>
-    ).
+    pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        pertisk_eproxy_h3_local_admin:try_dispatch(
+            Method, <<"localhost">>, Path, Qs, Headers, Body, <<"127.0.0.1">>
+        )
+    end).
 
 dispatch_auth(Method, Path, Body, Token) ->
     dispatch(Method, Path, <<>>, Body, [{<<"authorization">>, <<"Bearer ", Token/binary>>}]).
@@ -183,24 +185,26 @@ dispatch_put_config(Body, Retries) ->
     end.
 
 with_tmp_db(Fun) ->
-    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
-    file:delete(DbPath),
-    OldDb = application:get_env(pertisk_eproxy, db_file),
-    stop_config_if_running(),
-    application:set_env(pertisk_eproxy, db_file, DbPath),
-    try
-        ?assertMatch({ok, _}, init_tmp_db(DbPath)),
-        ensure_env(),
-        Fun(DbPath)
-    after
-        stop_config_if_running(),
-        case OldDb of
-            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
-            undefined -> application:unset_env(pertisk_eproxy, db_file)
-        end,
+    pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
-        ensure_env()
-    end.
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        stop_config_if_running(),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        try
+            ?assertMatch({ok, _}, init_tmp_db(DbPath)),
+            ensure_env(),
+            Fun(DbPath)
+        after
+            stop_config_if_running(),
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath),
+            ensure_env()
+        end
+    end).
 
 with_auth_server(Fun) ->
     case whereis(pertisk_eproxy_auth) of
@@ -228,23 +232,25 @@ with_local_auth_db(Fun) ->
     with_local_auth(fun() -> with_tmp_db(Fun) end).
 
 with_tls_data_dir(Fun) ->
-    TmpDir = filename:join([
-        os:getenv("TMPDIR", "/tmp"),
-        "pertisk_admin_tls_" ++ integer_to_list(erlang:unique_integer([positive]))
-    ]),
-    _ = file:del_dir_r(TmpDir),
-    ok = file:make_dir(TmpDir),
-    Old = application:get_env(pertisk_eproxy, tls_data_dir),
-    application:set_env(pertisk_eproxy, tls_data_dir, TmpDir),
-    try
-        Fun(TmpDir)
-    after
-        case Old of
-            {ok, V} -> application:set_env(pertisk_eproxy, tls_data_dir, V);
-            undefined -> application:unset_env(pertisk_eproxy, tls_data_dir)
-        end,
-        _ = file:del_dir_r(TmpDir)
-    end.
+    with_tmp_db(fun(_Db) ->
+        TmpDir = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "pertisk_admin_tls_" ++ integer_to_list(erlang:unique_integer([positive]))
+        ]),
+        _ = file:del_dir_r(TmpDir),
+        ok = file:make_dir(TmpDir),
+        Old = application:get_env(pertisk_eproxy, tls_data_dir),
+        application:set_env(pertisk_eproxy, tls_data_dir, TmpDir),
+        try
+            Fun(TmpDir)
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, tls_data_dir, V);
+                undefined -> application:unset_env(pertisk_eproxy, tls_data_dir)
+            end,
+            _ = file:del_dir_r(TmpDir)
+        end
+    end).
 
 read_priv_pem(Name) ->
     Path = filename:join([code:priv_dir(pertisk_eproxy), "tls", Name]),
@@ -607,7 +613,7 @@ api_config_put_test() ->
     ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Body)).
 
 api_site_get_test() ->
-    ensure_env(),
+    with_tmp_db(fun(_Db) ->
     Host = <<"get-site.example">>,
     Add = thoas:encode(#{
         <<"host">> => Host,
@@ -619,7 +625,8 @@ api_site_get_test() ->
         ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/sites/get-site.example">>))
     after
         _ = dispatch(<<"DELETE">>, <<"/api/sites/get-site.example">>)
-    end.
+    end
+    end).
 
 api_certificate_delete_invalid_id_test() ->
     with_tmp_db(fun(_Db) ->
@@ -655,7 +662,7 @@ api_auth_refresh_disabled_test() ->
     ?assertMatch({ok, 200, _, _}, dispatch(<<"POST">>, <<"/api/auth/refresh">>)).
 
 api_site_put_test() ->
-    ensure_env(),
+    with_tmp_db(fun(_Db) ->
     Host = <<"put-site.example">>,
     Add = thoas:encode(#{
         <<"host">> => Host,
@@ -672,7 +679,8 @@ api_site_put_test() ->
         ?assertMatch({ok, 200, _, _}, dispatch(<<"PUT">>, <<"/api/sites/put-site.example">>, Put))
     after
         _ = dispatch(<<"DELETE">>, <<"/api/sites/put-site.example">>)
-    end.
+    end
+    end).
 
 api_site_not_found_test() ->
     ensure_env(),
@@ -1705,7 +1713,7 @@ api_site_put_clears_certificate_with_null_test() ->
     end.
 
 api_site_put_sets_http01_challenge_test() ->
-    ensure_env(),
+    with_tmp_db(fun(_Db) ->
     Host = <<"http01-site.example">>,
     Add = thoas:encode(#{
         <<"host">> => Host,
@@ -1726,7 +1734,8 @@ api_site_put_sets_http01_challenge_test() ->
         ?assertEqual(<<"http-01">>, maps:get(<<"challenge_type">>, Site))
     after
         _ = dispatch(<<"DELETE">>, <<"/api/sites/http01-site.example">>)
-    end.
+    end
+    end).
 
 api_site_put_wildcard_and_http3_test() ->
     ensure_env(),
@@ -2969,7 +2978,7 @@ api_backup_export_includes_tls_key_paths_test() ->
     end).
 
 api_site_post_exact_path_type_test() ->
-    ensure_env(),
+    with_tmp_db(fun(_Db) ->
     Host = <<"exact-path.example">>,
     Body = thoas:encode(#{
         <<"host">> => Host,
@@ -2984,7 +2993,8 @@ api_site_post_exact_path_type_test() ->
         ?assertEqual(<<"exact">>, maps:get(<<"path_type">>, Route))
     after
         _ = dispatch(<<"DELETE">>, <<"/api/sites/exact-path.example">>)
-    end.
+    end
+    end).
 
 api_backend_post_ip_hash_algorithm_test() ->
     ensure_env(),
@@ -3223,4 +3233,81 @@ api_k8s_services_k8s_generic_error_test() ->
         after
             meck:unload(pertisk_eproxy_admin_kubernetes)
         end
+    end).
+
+%% ---------------------------------------------------------------------------
+%% init_dispatch coverage: ingress errors, auth login, health JSON, k8s TLS
+%% ---------------------------------------------------------------------------
+
+api_ingress_errors_init_get_test() ->
+    ensure_ingress_status_env(),
+    {ok, 200, _, Body} = init_dispatch(<<"GET">>, <<"/api/ingress/errors">>, ingress_errors),
+    {ok, Map} = thoas:decode(Body),
+    ?assert(maps:is_key(<<"last_error">>, Map)).
+
+api_ingress_status_init_head_test() ->
+    ensure_ingress_status_env(),
+    ?assertMatch({ok, 200, _, <<>>}, init_dispatch(<<"HEAD">>, <<"/api/ingress/status">>, ingress_status)).
+
+api_auth_login_init_post_test() ->
+    with_local_auth_db(fun(_Db) ->
+        Body = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"POST">>, <<"/api/auth/login">>, auth_login, Body))
+    end).
+
+api_auth_refresh_init_post_invalid_test() ->
+    with_local_auth(fun() ->
+        Body = thoas:encode(#{<<"token">> => <<"not-a-session-token">>}),
+        ?assertMatch({ok, 401, _, _}, init_dispatch(<<"POST">>, <<"/api/auth/refresh">>, auth_refresh, Body))
+    end).
+
+api_build_health_json_with_backend_test() ->
+    ensure_env(),
+    Name = <<"hb-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(Name, [#{addr => <<"127.0.0.1:9">>, weight => 1}]),
+    true = erlang:unlink(Pid),
+    try
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"health-json.example">>, backend => Name, routes => []}],
+            [#{name => Name, algorithm => round_robin, upstreams => [#{addr => <<"127.0.0.1:9">>}]}]
+        ),
+        {ok, Map} = thoas:decode(pertisk_eproxy_admin_handler:build_health_json()),
+        ?assert(is_list(maps:get(<<"backends">>, Map))),
+        ?assert(is_list(maps:get(<<"tls_sites">>, Map)))
+    after
+        pertisk_eproxy_test_helpers:sync_router([], []),
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    end.
+
+api_k8s_tls_secrets_init_get_test() ->
+    with_ingress_authenticated(fun(Token) ->
+        meck:new(pertisk_eproxy_admin_kubernetes, [unstick]),
+        meck:expect(pertisk_eproxy_admin_kubernetes, tls_secrets, fun(_) -> {ok, []} end),
+        try
+            ?assertMatch(
+                {ok, 200, _, _},
+                dispatch_auth(<<"GET">>, <<"/api/kubernetes/tls-secrets">>, <<>>, Token)
+            )
+        after
+            meck:unload(pertisk_eproxy_admin_kubernetes)
+        end
+    end).
+
+api_unknown_resource_method_not_allowed_test() ->
+    ensure_env(),
+    ?assertMatch({ok, 405, _, _}, init_dispatch(<<"PATCH">>, <<"/api/version">>, version, <<"{}">>)).
+
+api_ingress_viewer_mutating_forbidden_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_ADMIN", unset, fun() ->
+            with_env("PERTISK_PASSWORD", unset, fun() ->
+                pertisk_eproxy_env_auth:configure(),
+                Body = thoas:encode(#{
+                    <<"host">> => <<"viewer-blocked.example">>,
+                    <<"backend">> => <<"web">>,
+                    <<"routes">> => []
+                }),
+                ?assertMatch({ok, 403, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Body))
+            end)
+        end)
     end).

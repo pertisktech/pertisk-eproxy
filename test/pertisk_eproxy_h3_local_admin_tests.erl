@@ -163,3 +163,34 @@ with_spa_index(Fun) ->
             {ok, Saved} -> ok = file:write_file(Path, Saved)
         end
     end.
+
+api_sites_get_dispatch_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, Body} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/sites">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"application/json">>, proplists:get_value(<<"content-type">>, Hdrs)),
+    {ok, _} = thoas:decode(Body).
+
+api_sites_get_with_x_forwarded_for_test() ->
+    ensure_env(),
+    Hdrs = [{<<"x-forwarded-for">>, <<"10.0.0.1">>}],
+    {ok, 200, _, Body} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/sites">>, <<>>, Hdrs, <<>>, <<"203.0.113.5">>]),
+    {ok, _} = thoas:decode(Body).
+
+api_backends_get_dispatch_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, Body} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/backends">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"application/json">>, proplists:get_value(<<"content-type">>, Hdrs)),
+    {ok, _} = thoas:decode(Body).
+
+h3_static_post_not_served_test() ->
+    ensure_env(),
+    Result = dispatch([<<"POST">>, <<"localhost">>, <<"/favicon.svg">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertMatch({ok, Status, _, _} when Status >= 400, Result).
+
+h3_client_ipv6_peer_test() ->
+    ensure_env(),
+    {ok, 200, _, _} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/version">>, <<>>, [], <<>>, <<"::1">>]).

@@ -579,3 +579,207 @@ proxy_retry_after_connection_closed_test() ->
             ?assertEqual(2, get({gun_checkout_count, CRef})), ?assertEqual(200, get(h3_sent_status))
         end) after erase({gun_checkout_count, CRef}), erase({gun_await_queue, ARef}), unload_mocks([gun, pertisk_eproxy_upstream_pool]) end
     end) end).
+
+head_proxied_empty_body_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        capture_h3_status(fun() ->
+            with_gun_h3_proxy_mock(#{awaits => [{response, fin, 200, []}]}, fun() ->
+                with_proxied_site(fun(#{host := H}) ->
+                    ?assertEqual(ok, h3(self(), 1, <<"HEAD">>, <<"/">>, auth(H))),
+                    ?assertEqual(200, get(h3_sent_status))
+                end)
+            end)
+        end)
+    end).
+
+admin_upstream_fallback_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    Host = <<"admin.example.com">>,
+    Site = #{
+        host => Host,
+        backend => <<"web">>,
+        routes => [#{path => <<"/api">>, path_type => prefix}]
+    },
+    Backend = #{
+        name => <<"web">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+    },
+    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    try
+        with_quic_h3_mock(fun() ->
+            capture_h3_status(fun() ->
+                unload_mocks([gun, pertisk_eproxy_upstream_pool]),
+                meck:new(gun, [unstick, no_link]),
+                meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
+                meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) ->
+                    {ok, ?GUN_MOCK_PID}
+                end),
+                meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+                meck:expect(gun, open, fun(_, _, _) -> {ok, ?GUN_MOCK_PID} end),
+                meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+                meck:expect(gun, request, fun(_, _, _, _, _) -> ?GUN_MOCK_STREAM end),
+                meck:expect(gun, await, fun(_, _, _) -> {error, timeout} end),
+                meck:expect(gun, close, fun(_) -> ok end),
+                try
+                    ?assertEqual(
+                        ok,
+                        h3(self(), 1, <<"GET">>, <<"/api/health">>, auth(Host))
+                    ),
+                    ?assertEqual(200, get(h3_sent_status))
+                after
+                    unload_mocks([gun, pertisk_eproxy_upstream_pool])
+                end
+            end)
+        end)
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+sse_early_flush_idle_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    N = <<"h3sseflush">>,
+    Up = #{addr => <<"backend.local:8080">>, weight => 1},
+    Site = #{
+        host => <<"sse-flush.test">>,
+        backend => N,
+        routes => [#{path => <<"/api/v1/stream">>, path_type => prefix}]
+    },
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(N, [Up]),
+    true = erlang:unlink(Pid),
+    pertisk_eproxy_test_helpers:sync_router([Site], [#{name => N, algorithm => round_robin, upstreams => [Up]}]),
+    Headers =
+        auth(<<"sse-flush.test">>) ++
+        [
+            {<<"accept">>, <<"text/event-stream">>},
+            {<<"authorization">>, <<"Bearer token">>}
+        ],
+    try
+        with_quic_h3_mock(fun() ->
+            capture_h3_status(fun() ->
+                with_sse_gun_mock([{error, timeout}, {response, nofin, 200, []}, {data, fin, <<"evt">>}], fun() ->
+                    ?assertEqual(
+                        ok,
+                        h3(self(), 1, <<"GET">>, <<"/api/v1/stream/events">>, Headers)
+                    ),
+                    ?assertEqual(200, get(h3_sent_status))
+                end)
+            end)
+        end)
+    after
+        pertisk_eproxy_test_helpers:stop_backend(N),
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+console_query_alt_svc_clear_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        meck:expect(quic_h3, send_response, fun(_, _, _, Hdrs) -> put(h3_resp_hdrs, Hdrs), ok end),
+        with_gun_h3_proxy_mock(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(
+                    ok,
+                    h3(self(), 1, <<"GET">>, <<"/shell">>, auth(H) ++ [{<<"x">>, <<"1">>}])
+                ),
+                Hdrs = get(h3_resp_hdrs),
+                ?assertEqual({<<"alt-svc">>, <<"clear">>}, lists:keyfind(<<"alt-svc">>, 1, Hdrs))
+            end)
+        end)
+    end).
+
+upstream_500_admin_fallback_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    Host = <<"admin.example.com">>,
+    Site = #{
+        host => Host,
+        backend => <<"web">>,
+        routes => [#{path => <<"/api">>, path_type => prefix}]
+    },
+    Backend = #{
+        name => <<"web">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"backend.local:8080">>, weight => 1}]
+    },
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(<<"web">>, [
+        #{addr => <<"backend.local:8080">>, weight => 1}
+    ]),
+    true = erlang:unlink(Pid),
+    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    try
+        with_quic_h3_mock(fun() ->
+            capture_h3_status(fun() ->
+                with_gun_h3_proxy_mock(#{awaits => [{response, fin, 503, []}]}, fun() ->
+                    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/api/health">>, auth(Host))),
+                    ?assertEqual(200, get(h3_sent_status))
+                end)
+            end)
+        end)
+    after
+        pertisk_eproxy_test_helpers:stop_backend(<<"web">>),
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+argocd_cookie_bearer_forward_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        with_gun_h3_proxy_mock(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                Hdr =
+                    auth(H) ++
+                    [{<<"cookie">>, <<"argocd.token=secret-token; other=1">>}],
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, Hdr)),
+                ?assertEqual(1, meck:num_calls(gun, request, '_'))
+            end)
+        end)
+    end).
+
+sse_fin_short_body_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    N = <<"h3ssefin">>,
+    Up = #{addr => <<"backend.local:8080">>, weight => 1},
+    Site = #{
+        host => <<"sse-fin.test">>,
+        backend => N,
+        routes => [#{path => <<"/user/events">>, path_type => prefix}]
+    },
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(N, [Up]),
+    true = erlang:unlink(Pid),
+    pertisk_eproxy_test_helpers:sync_router([Site], [#{name => N, algorithm => round_robin, upstreams => [Up]}]),
+    try
+        with_quic_h3_mock(fun() ->
+            unload_mocks([gun]),
+            meck:new(gun, [unstick, no_link]),
+            Ref = make_ref(),
+            put({gun_await_queue, Ref}, [{response, fin, 200, []}]),
+            meck:expect(gun, open, fun(_, _, _) -> {ok, ?GUN_MOCK_PID} end),
+            meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+            meck:expect(gun, request, fun(_, _, _, _, _) -> ?GUN_MOCK_STREAM end),
+            meck:expect(gun, await, fun(_, _, _) -> gun_dequeue_await(Ref) end),
+            meck:expect(gun, await_body, fun(_, _, _) -> {ok, <<"payload">>} end),
+            meck:expect(gun, close, fun(_) -> ok end),
+            try
+                H = auth(<<"sse-fin.test">>) ++ [{<<"accept">>, <<"text/event-stream">>}],
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/user/events">>, H))
+            after
+                erase({gun_await_queue, Ref}),
+                unload_mocks([gun])
+            end
+        end)
+    after
+        pertisk_eproxy_test_helpers:stop_backend(N),
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+proxied_options_success_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        capture_h3_status(fun() ->
+            with_gun_h3_proxy_mock(#{awaits => [{response, fin, 204, []}]}, fun() ->
+                with_proxied_site(fun(#{host := H}) ->
+                    ?assertEqual(ok, h3(self(), 1, <<"OPTIONS">>, <<"/">>, auth(H))),
+                    ?assertEqual(204, get(h3_sent_status))
+                end)
+            end)
+        end)
+    end).

@@ -977,3 +977,67 @@ with_env(Key, Val, Fun) ->
             OldVal -> os:putenv(Key, OldVal)
         end
     end.
+
+%% ---------------------------------------------------------------------------
+%% gen_server callbacks and metrics overrides
+%% ---------------------------------------------------------------------------
+
+config_gen_server_callbacks_test() ->
+    with_config(fun() ->
+        State = #{file => pertisk_eproxy_config:db_file()},
+        ?assertMatch({reply, {error, unknown_call}, State},
+            pertisk_eproxy_config:handle_call(unknown, self(), State)),
+        ?assertMatch({noreply, State}, pertisk_eproxy_config:handle_cast(msg, State)),
+        ?assertMatch({noreply, State}, pertisk_eproxy_config:handle_info(msg, State)),
+        ?assertEqual(ok, pertisk_eproxy_config:terminate(normal, State)),
+        ?assertMatch({ok, State}, pertisk_eproxy_config:code_change(1, State, extra))
+    end).
+
+config_metrics_listen_custom_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            metrics_enabled => false,
+            metrics_addr => {127, 0, 0, 1},
+            metrics_port => 9191,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = pertisk_eproxy_config:put_config(Config),
+        ?assertEqual(false, pertisk_eproxy_config:metrics_enabled()),
+        ?assertEqual({{127, 0, 0, 1}, 9191}, pertisk_eproxy_config:metrics_listen())
+    end).
+
+config_reload_load_error_test() ->
+    with_tmp_db_config(fun() ->
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, get_runtime_config, fun(_) -> {error, corrupt} end),
+        try
+            ?assertMatch({error, _}, pertisk_eproxy_config:reload())
+        after
+            meck:unload(pertisk_eproxy_db)
+        end
+    end).
+
+config_sync_ingress_empty_lists_test() ->
+    with_config(fun() ->
+        ok = pertisk_eproxy_config:sync_ingress([], []),
+        ?assertEqual([], pertisk_eproxy_config:get_sites()),
+        ?assertEqual([], pertisk_eproxy_config:get_backends())
+    end).
+
+config_backend_is_management_only_false_for_mixed_test() ->
+    with_config(fun() ->
+        Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+        Backends = [#{
+            name => <<"mixed">>,
+            algorithm => round_robin,
+            upstreams => [
+                #{addr => Mgmt, weight => 1},
+                #{addr => <<"127.0.0.1:8080">>, weight => 1}
+            ]
+        }],
+        ok = pertisk_eproxy_config:sync_ingress([], Backends),
+        ?assertNot(pertisk_eproxy_config:backend_is_management_only(<<"mixed">>))
+    end).

@@ -310,3 +310,97 @@ delete_ingress_test() ->
                 pertisk_eproxy_admin_kubernetes:delete_ingress(<<"default">>, <<"gone">>))
         end)
     end).
+
+namespaces_ekub_error_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(namespace, _) -> {error, #{<<"code">> => 500}} end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:namespaces())
+        end)
+    end).
+
+ekub_init_error_test() ->
+    with_ingress_mode(fun() ->
+        meck:new(pertisk_ingress_ekub, [unstick]),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {error, no_cluster} end),
+        try
+            ?assertMatch({error, no_cluster}, pertisk_eproxy_admin_kubernetes:namespaces())
+        after
+            meck:unload(pertisk_ingress_ekub)
+        end
+    end).
+
+tls_secrets_fallback_from_ingress_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun
+                (secret, _, _) ->
+                    {ok, #{<<"items">> => []}};
+                (ingress, _, _) ->
+                    {ok, #{<<"items">> => [sample_ingress(<<"app">>, <<"default">>, <<"app.example">>)]}}
+            end),
+            {ok, [Row | _]} = pertisk_eproxy_admin_kubernetes:tls_secrets(<<>>),
+            ?assertEqual(<<"tls-secret">>, maps:get(name, Row))
+        end)
+    end).
+
+create_ingress_missing_host_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            ?assertMatch({error, _},
+                pertisk_eproxy_admin_kubernetes:create_ingress(#{
+                    <<"name">> => <<"demo">>,
+                    <<"service_namespace">> => <<"default">>,
+                    <<"service_name">> => <<"web">>,
+                    <<"service_port">> => 80
+                }))
+        end)
+    end).
+
+get_ingress_not_found_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, _, _, _) -> {error, #{<<"code">> => 404}} end),
+            ?assertMatch({error, _},
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"missing">>))
+        end)
+    end).
+
+list_ingresses_error_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, _, _) -> {error, #{<<"message">> => <<"fail">>}} end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:list_ingresses())
+        end)
+    end).
+
+pods_endpoint_not_found_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub_api, endpoint, fun(_, _, _, _, _) -> <<>> end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:pods(<<"default">>))
+        end)
+    end).
+
+services_ekub_error_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(service, _, _, _) -> {error, #{<<"code">> => 503}} end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:services(<<"apps">>))
+        end)
+    end).
+
+update_ingress_missing_host_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, _) ->
+                {ok, sample_ingress(<<"app">>, <<"default">>, <<"app.example">>)}
+            end),
+            ?assertMatch({error, _},
+                pertisk_eproxy_admin_kubernetes:update_ingress(<<"default">>, <<"app">>, #{
+                    <<"service_namespace">> => <<"default">>,
+                    <<"service_name">> => <<"web">>,
+                    <<"service_port">> => 80
+                }))
+        end)
+    end).

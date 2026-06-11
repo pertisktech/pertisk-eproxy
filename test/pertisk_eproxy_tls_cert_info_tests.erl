@@ -49,28 +49,30 @@ with_config(Fun) ->
     try
         Fun()
     after
-        _ = catch pertisk_eproxy_config:put_config(BaseConfig),
+        _ = catch pertisk_eproxy_test_helpers:put_config_retry(BaseConfig),
         catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
         maybe_stop_config(Started)
     end.
 
 with_tmp_db_config(Fun) ->
-    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
-    file:delete(DbPath),
-    OldDb = application:get_env(pertisk_eproxy, db_file),
-    application:set_env(pertisk_eproxy, db_file, DbPath),
-    try
-        with_config(fun() ->
-            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
-            Fun()
-        end)
-    after
-        case OldDb of
-            {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
-            undefined -> application:unset_env(pertisk_eproxy, db_file)
-        end,
-        file:delete(DbPath)
-    end.
+    pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        try
+            with_config(fun() ->
+                ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+                Fun()
+            end)
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
 
 maybe_stop_config(true) ->
     case whereis(pertisk_eproxy_config) of
@@ -101,7 +103,7 @@ listener_cert_rows_with_listener_fixture_test() ->
             certificate => <<"listener-tls">>,
             routes => [#{path => <<"/">>, path_type => prefix}]
         }],
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual(<<"listener-tls">>, maps:get(<<"id">>, Row)),
@@ -120,7 +122,7 @@ listener_cert_rows_missing_paths_test() ->
     with_tmp_db_config(fun() ->
         BaseConfig = pertisk_eproxy_config:get_config(),
         Config = maps:without([tls_cert_file, tls_key_file], BaseConfig),
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
     end).
 
@@ -137,7 +139,7 @@ listener_cert_rows_unreadable_pem_test() ->
                 certificates => [],
                 dns_providers => []
             },
-            ok = pertisk_eproxy_config:put_config(Config),
+            ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
             ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
         end)
     after
@@ -165,7 +167,7 @@ listener_cert_rows_site_cert_list_id_test() ->
             certificate => "listener-tls",
             routes => [#{path => <<"/">>, path_type => prefix}]
         }],
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([SiteHost], maps:get(<<"sites">>, Row))
@@ -182,7 +184,7 @@ listener_cert_rows_empty_cert_paths_test() ->
             certificates => [],
             dns_providers => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
     end).
 
@@ -197,7 +199,7 @@ listener_cert_rows_empty_list_paths_test() ->
             certificates => [],
             dns_providers => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ?assertEqual([], pertisk_eproxy_tls_cert_info:listener_cert_rows())
     end).
 
@@ -217,7 +219,7 @@ listener_cert_rows_ignores_null_certificate_site_test() ->
         Sites = [
             #{host => <<"orphan.example">>, backend => <<"web">>, certificate => null, routes => []}
         ],
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([], maps:get(<<"sites">>, Row))
@@ -296,7 +298,7 @@ listener_cert_rows_site_list_host_test() ->
             certificate => <<"listener-tls">>,
             routes => []
         }],
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ok = pertisk_eproxy_config:sync_ingress(Sites, []),
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([SiteHost], maps:get(<<"sites">>, Row))

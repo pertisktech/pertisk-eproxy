@@ -36,7 +36,7 @@ header_value_contains_h3_port_test() ->
 header_value_custom_port_test() ->
     with_tmp_db(fun() ->
         Base = pertisk_eproxy_config:get_config(),
-        ok = pertisk_eproxy_config:put_config(Base#{alt_svc_port => 8443}),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{alt_svc_port => 8443}),
         Val = pertisk_eproxy_alt_svc:header_value(),
         ?assertNotEqual(nomatch, binary:match(Val, <<"8443">>))
     end).
@@ -148,7 +148,7 @@ merge_https_via_forwarded_proto_test() ->
 header_value_persist_test() ->
     with_tmp_db(fun() ->
         Base = pertisk_eproxy_config:get_config(),
-        ok = pertisk_eproxy_config:put_config(Base#{alt_svc_persist => true}),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{alt_svc_persist => true}),
         Val = pertisk_eproxy_alt_svc:header_value(),
         ?assertNotEqual(nomatch, binary:match(Val, <<"persist=1">>))
     end).
@@ -157,7 +157,7 @@ header_value_quic_port_fallback_test() ->
     with_tmp_db(fun() ->
         Base = pertisk_eproxy_config:get_config(),
         ok =
-            pertisk_eproxy_config:put_config(
+            pertisk_eproxy_test_helpers:put_config_retry(
                 Base#{alt_svc_port => undefined, quic_port => 9443, https_port => 443}
             ),
         Val = pertisk_eproxy_alt_svc:header_value(),

@@ -344,3 +344,117 @@ merge_update_new_algorithm_test() ->
     NewBackend = #{algorithm => least_conn, upstreams => []},
     NewState = pertisk_eproxy_backend:merge_update(OldState, NewBackend),
     ?assertEqual(least_conn, maps:get(algorithm, NewState)).
+
+%% ---------------------------------------------------------------------------
+%% Runtime gen_server API (start_link / pick / status / update)
+%% ---------------------------------------------------------------------------
+
+backend_runtime_name() ->
+    <<"brun_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>.
+
+with_runtime_backend(Fun) ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Name = backend_runtime_name(),
+    Upstreams = [
+        #{addr => <<"127.0.0.1:9">>, weight => 1},
+        #{addr => <<"127.0.0.1:10">>, weight => 1}
+    ],
+    {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(Name, Upstreams),
+    true = erlang:unlink(Pid),
+    try Fun(#{name => Name, pid => Pid, upstreams => Upstreams}) after
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    end.
+
+backend_start_link_whereis_test() ->
+    with_runtime_backend(fun(#{name := Name, pid := Pid}) ->
+        ?assert(is_pid(Pid)),
+        ?assertEqual(Pid, pertisk_eproxy_backend:whereis(Name))
+    end).
+
+backend_whereis_missing_test() ->
+    ?assertEqual(undefined, pertisk_eproxy_backend:whereis(<<"missing-backend">>)).
+
+backend_pick_upstream_roundtrip_test() ->
+    with_runtime_backend(fun(#{name := Name}) ->
+        ?assertMatch({ok, Addr} when is_binary(Addr),
+            pertisk_eproxy_backend:pick_upstream(Name, <<"203.0.113.1">>))
+    end).
+
+backend_pick_upstream_missing_backend_test() ->
+  ?assertEqual({error, no_healthy_upstream},
+      pertisk_eproxy_backend:pick_upstream(<<"missing-backend">>, undefined)).
+
+backend_status_binary_and_list_name_test() ->
+    with_runtime_backend(fun(#{name := Name}) ->
+        ?assertMatch({ok, #{name := Name, upstreams := [_ | _]}},
+            pertisk_eproxy_backend:status(Name)),
+        NameList = binary_to_list(Name),
+        ?assertMatch({ok, #{name := Name}}, pertisk_eproxy_backend:status(NameList))
+    end).
+
+backend_status_not_found_test() ->
+    ?assertEqual({error, not_found}, pertisk_eproxy_backend:status(<<"missing-backend">>)).
+
+backend_done_upstream_ok_and_error_test() ->
+    with_runtime_backend(fun(#{name := Name}) ->
+        {ok, Addr} = pertisk_eproxy_backend:pick_upstream(Name, undefined),
+        ok = pertisk_eproxy_backend:done_upstream(Name, Addr, ok),
+        ok = pertisk_eproxy_backend:done_upstream(Name, Addr, error),
+        {ok, #{upstreams := Ups}} = pertisk_eproxy_backend:status(Name),
+        Unhealthy = [U || U <- Ups, maps:get(addr, U) =:= Addr, maps:get(healthy, U) =:= false],
+        ?assertEqual(1, length(Unhealthy))
+    end).
+
+backend_done_upstream_noop_when_missing_test() ->
+    ?assertEqual(ok, pertisk_eproxy_backend:done_upstream(<<"missing">>, <<"a">>, ok)).
+
+backend_update_hot_reload_test() ->
+    with_runtime_backend(fun(#{name := Name}) ->
+        NewBackend = #{
+            name => Name,
+            algorithm => least_conn,
+            upstreams => [#{addr => <<"127.0.0.1:11">>, weight => 2}]
+        },
+        ok = pertisk_eproxy_backend:update(Name, NewBackend),
+        {ok, #{algorithm := least_conn, upstreams := [U]}} = pertisk_eproxy_backend:status(Name),
+        ?assertEqual(<<"127.0.0.1:11">>, maps:get(addr, U))
+    end).
+
+backend_update_noop_when_missing_test() ->
+    ?assertEqual(ok, pertisk_eproxy_backend:update(<<"missing">>, #{name => <<"missing">>, upstreams => []})).
+
+backend_health_check_message_test() ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Name = backend_runtime_name(),
+    Backend = #{
+        name => Name,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+    },
+    {ok, Pid} = pertisk_eproxy_backend:start_link(Backend),
+    true = erlang:unlink(Pid),
+    try
+        Pid ! health_check,
+        timer:sleep(100),
+        ?assertMatch({ok, _}, pertisk_eproxy_backend:status(Name))
+    after
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    end.
+
+backend_gen_server_callbacks_test() ->
+    with_runtime_backend(fun(#{pid := Pid}) ->
+        ?assertEqual({error, unknown}, gen_server:call(Pid, unknown, 5000)),
+        Pid ! other_info,
+        State = #{
+            name => <<"x">>,
+            algorithm => round_robin,
+            lb => #{algorithm => round_robin, upstreams => [], rr_index => 0},
+            health_tref => undefined,
+            health_path => undefined,
+            health_secs => 30
+        },
+        ?assertEqual(ok, pertisk_eproxy_backend:terminate(normal, State)),
+        ?assertMatch({ok, State}, pertisk_eproxy_backend:code_change(1, State, extra))
+    end).

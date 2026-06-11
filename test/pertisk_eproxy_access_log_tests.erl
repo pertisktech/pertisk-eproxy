@@ -36,6 +36,7 @@ log_proxy_and_list_test() ->
 log_proxy_skips_health_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
     with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
         Before = pertisk_eproxy_access_log:count(),
         ?assertEqual(ok,
             pertisk_eproxy_access_log:log_proxy(
@@ -92,6 +93,7 @@ log_proxy_with_site_and_host_filter_test() ->
 log_proxy_skips_readyz_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
     with_server(fun() ->
+        pertisk_eproxy_access_log:refresh_hot_path_flags(),
         Before = pertisk_eproxy_access_log:count(),
         ?assertEqual(ok,
             pertisk_eproxy_access_log:log_proxy(
@@ -194,7 +196,7 @@ health_access_log_enabled_logs_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
     Base = pertisk_eproxy_config:get_config(),
     Config = Base#{health_access_log => true},
-    ok = pertisk_eproxy_config:put_config(Config),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
     with_server(fun() ->
         pertisk_eproxy_access_log:refresh_hot_path_flags(),
         Before = pertisk_eproxy_access_log:count(),

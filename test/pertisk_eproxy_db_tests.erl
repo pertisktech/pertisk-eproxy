@@ -417,3 +417,69 @@ ensure_dns_providers_seeded_test() ->
         {ok, [Row | _]} = pertisk_eproxy_db:list_dns_providers(Path),
         ?assertEqual(<<"seed">>, maps:get(name, Row))
     end).
+
+%% ---------------------------------------------------------------------------
+%% Stubbed CRUD (SQLite CLI mode) and edge cases
+%% ---------------------------------------------------------------------------
+
+insert_backend_not_implemented_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_implemented},
+            pertisk_eproxy_db:insert_backend(Path, <<"web">>, <<"round_robin">>, <<"/">>, 30))
+    end).
+
+insert_upstream_not_implemented_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_implemented},
+            pertisk_eproxy_db:insert_upstream(Path, <<"web">>, <<"10.0.0.1:80">>, 1))
+    end).
+
+delete_backend_not_implemented_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_implemented}, pertisk_eproxy_db:delete_backend(Path, <<"web">>))
+    end).
+
+delete_site_not_implemented_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_implemented}, pertisk_eproxy_db:delete_site(Path, <<"example.com">>))
+    end).
+
+ensure_admin_users_idempotent_test() ->
+    with_db(fun(Path) ->
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(Path)),
+        ?assertEqual(ok, pertisk_eproxy_db:ensure_admin_users(Path)),
+        ?assertEqual(ok, pertisk_eproxy_db:verify_admin_login(Path, <<"admin">>, <<"admin">>))
+    end).
+
+get_dns_provider_by_name_not_found_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:get_dns_provider_by_name(Path, <<"missing">>))
+    end).
+
+get_dns_provider_by_id_not_found_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:get_dns_provider_by_id(Path, 99999))
+    end).
+
+insert_certificate_pem_with_source_type_test() ->
+    with_db(fun(Path) ->
+        {CertFile, KeyFile} = listener_pem_paths(),
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertMatch({ok, _Id},
+            pertisk_eproxy_db:insert_certificate_pem(
+                Path, <<"typed-import">>, CertFile, KeyFile, <<"custom">>)),
+        {ok, [Row | _]} = pertisk_eproxy_db:list_certificates(Path),
+        ?assertEqual(<<"custom">>, maps:get(source_type, Row))
+    end).
+
+delete_certificate_not_found_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:delete_certificate(Path, 99999))
+    end).

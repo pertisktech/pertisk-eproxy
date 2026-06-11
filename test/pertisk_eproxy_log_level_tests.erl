@@ -65,7 +65,7 @@ configured_defaults_when_unset_test() ->
             certificates => [],
             dns_providers => []
         }),
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
         ?assertEqual(info, pertisk_eproxy_log_level:configured())
     after
         case OldDb of
@@ -134,7 +134,7 @@ configured_from_config_log_level_test() ->
     Base = pertisk_eproxy_config:get_config(),
     Config = maps:merge(Base, #{log_level => notice}),
     try
-        case pertisk_eproxy_config:put_config(Config) of
+        case pertisk_eproxy_test_helpers:put_config_retry(Config) of
             ok ->
                 ?assertEqual(notice, pertisk_eproxy_log_level:configured());
             {error, _} ->

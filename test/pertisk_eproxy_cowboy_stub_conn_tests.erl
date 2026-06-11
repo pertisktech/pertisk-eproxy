@@ -38,3 +38,31 @@ ignores_unknown_message_test() ->
     Pid ! {{Pid, 1}, {headers, 200, #{}}},
     exit(Pid, shutdown),
     ok.
+
+handles_data_and_trailers_test() ->
+    Parent = self(),
+    Pid = pertisk_eproxy_cowboy_stub_conn:start(Parent, <<"chunk">>),
+    true = erlang:unlink(Pid),
+    Pid ! {{Pid, 1}, {data, <<"more">>, nofin}},
+    Pid ! {{Pid, 1}, {trailers, #{<<"x">> => <<"y">>}}},
+    Pid ! {{Pid, 1}, {read_body, self(), make_ref(), 8, 5000}},
+    receive
+        {request_body, _, fin, 5, <<"chunk">>} -> ok
+    after 1000 ->
+        ?assert(false)
+    end,
+    exit(Pid, shutdown).
+
+captures_response_after_headers_test() ->
+    Parent = self(),
+    Pid = pertisk_eproxy_cowboy_stub_conn:start(Parent, <<>>),
+    true = erlang:unlink(Pid),
+    Pid ! {{Pid, 1}, {headers, 200, #{<<"content-type">> => <<"application/json">>}}},
+    Body = <<"ok">>,
+    Pid ! {{Pid, 1}, {response, 200, #{}, Body}},
+    receive
+        {h3_admin_response, 200, _, Body} -> ok
+    after 1000 ->
+        ?assert(false)
+    end,
+    exit(Pid, shutdown).

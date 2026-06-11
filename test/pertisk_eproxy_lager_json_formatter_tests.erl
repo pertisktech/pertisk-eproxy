@@ -117,3 +117,51 @@ format_skips_sev_metadata_key_test() ->
     {ok, Map} = thoas:decode(Bin),
     ?assertEqual(false, maps:is_key(<<"sev">>, Map)),
     ?assertEqual(<<"y">>, maps:get(<<"site">>, Map)).
+
+format_escapes_backslash_and_cr_test() ->
+    Msg = lager_msg:new(<<"a\\b\rc">>, info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    ?assertNotEqual(nomatch, binary:match(Bin, <<"\\\\">>)),
+    ?assertNotEqual(nomatch, binary:match(Bin, <<"\\r">>)).
+
+format_list_message_metadata_test() ->
+    Msg = lager_msg:new([<<"list">>, <<"msg">>], info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"listmsg">>, maps:get(<<"message">>, Map)).
+
+format_atom_metadata_value_test() ->
+    Msg = lager_msg:new(<<"a">>, info, [{mode, ready}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"ready">>, maps:get(<<"mode">>, Map)).
+
+format_app_name_list_env_test() ->
+    Old = application:get_env(pertisk_eproxy, log_app_name),
+    persistent_term:erase({pertisk_eproxy_lager_json_formatter, app_name}),
+    application:set_env(pertisk_eproxy, log_app_name, "list-app"),
+    try
+        Msg = lager_msg:new(<<"app">>, info, [], []),
+        Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+        {ok, Map} = thoas:decode(Bin),
+        ?assertEqual(<<"list-app">>, maps:get(<<"app">>, Map))
+    after
+        persistent_term:erase({pertisk_eproxy_lager_json_formatter, app_name}),
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, log_app_name, V);
+            undefined -> application:unset_env(pertisk_eproxy, log_app_name)
+        end
+    end.
+
+format_includes_timestamp_test() ->
+    Msg = lager_msg:new(<<"ts">>, info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assert(is_binary(maps:get(<<"timestamp">>, Map))),
+    ?assertNotEqual(nomatch, binary:match(maps:get(<<"timestamp">>, Map), <<"T">>)).
+
+format_list_metadata_value_test() ->
+    Msg = lager_msg:new(<<"m">>, info, [{labels, [<<"a">>, <<"b">>]}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"ab">>, maps:get(<<"labels">>, Map)).

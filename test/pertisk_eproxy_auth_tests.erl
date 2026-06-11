@@ -190,3 +190,122 @@ logout_non_binary_ok_test() ->
 
 refresh_non_binary_error_test() ->
     ?assertMatch({error, unauthorized}, pertisk_eproxy_auth:refresh(123)).
+
+%% ---------------------------------------------------------------------------
+%% Ingress / env / SSO auth paths
+%% ---------------------------------------------------------------------------
+
+restore_env(Key, false) -> os:unsetenv(Key);
+restore_env(Key, Val) -> os:putenv(Key, Val).
+
+with_ingress_env(Fun) ->
+    OldMode = os:getenv("PERTISK_MODE"),
+    os:putenv("PERTISK_MODE", "ingress"),
+    try Fun() after restore_env("PERTISK_MODE", OldMode) end.
+
+with_ingress_creds(Fun) ->
+    OldAdmin = os:getenv("PERTISK_ADMIN"),
+    OldPass = os:getenv("PERTISK_PASSWORD"),
+    OldSecret = os:getenv("PERTISK_AUTH_SIGNING_SECRET"),
+    os:putenv("PERTISK_ADMIN", "admin"),
+    os:putenv("PERTISK_PASSWORD", "secret"),
+    os:putenv("PERTISK_AUTH_SIGNING_SECRET", "signing-secret"),
+    try Fun() after
+        restore_env("PERTISK_ADMIN", OldAdmin),
+        restore_env("PERTISK_PASSWORD", OldPass),
+        restore_env("PERTISK_AUTH_SIGNING_SECRET", OldSecret)
+    end.
+
+ingress_auth_config_map_test() ->
+    with_ingress_env(fun() ->
+        with_ingress_creds(fun() ->
+            pertisk_eproxy_test_helpers:ensure_config(),
+            ok = pertisk_eproxy_env_auth:configure(),
+            Map = pertisk_eproxy_auth:auth_config_map(),
+            ?assert(maps:get(<<"supports_local">>, Map)),
+            ?assert(lists:member(maps:get(<<"mode">>, Map), [<<"local">>, <<"both">>]))
+        end)
+    end).
+
+verify_token_stateless_bearer_test() ->
+    with_ingress_env(fun() ->
+        with_ingress_creds(fun() ->
+            with_auth_server(fun() ->
+                ok = pertisk_eproxy_env_auth:configure(),
+                application:set_env(pertisk_eproxy, admin_auth, local),
+                {ok, #{token := Token}} = pertisk_eproxy_env_auth:login(<<"admin">>, <<"secret">>),
+                ?assertMatch({ok, <<"admin">>}, pertisk_eproxy_auth:verify_token(Token))
+            end)
+        end)
+    end).
+
+verify_token_api_token_test() ->
+    OldApi = os:getenv("PERTISK_API_TOKEN"),
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    os:putenv("PERTISK_API_TOKEN", "api-secret"),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    with_auth_server(fun() ->
+        try
+            ?assertMatch({ok, <<"api">>}, pertisk_eproxy_auth:verify_token(<<"api-secret">>))
+        after
+            restore_env("PERTISK_API_TOKEN", OldApi),
+            case OldAuth of
+                {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+                undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+            end
+        end
+    end).
+
+refresh_stateless_bearer_test() ->
+    with_ingress_env(fun() ->
+        with_ingress_creds(fun() ->
+            with_auth_server(fun() ->
+                ok = pertisk_eproxy_env_auth:configure(),
+                application:set_env(pertisk_eproxy, admin_auth, local),
+                {ok, #{token := Token}} = pertisk_eproxy_env_auth:login(<<"admin">>, <<"secret">>),
+                ?assertMatch({ok, #{token := NewToken, username := <<"admin">>}}
+                    when NewToken =/= Token, pertisk_eproxy_auth:refresh(Token))
+            end)
+        end)
+    end).
+
+auth_config_map_local_with_sso_test() ->
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    meck:new(pertisk_eproxy_auth0, [unstick, passthrough]),
+    meck:expect(pertisk_eproxy_auth0, auth0_public_config, fun() ->
+        #{<<"supports_sso">> => true, <<"domain">> => <<"example.auth0.com">>}
+    end),
+    try
+        Map = pertisk_eproxy_auth:auth_config_map(),
+        ?assertEqual(<<"both">>, maps:get(<<"mode">>, Map)),
+        ?assertEqual(true, maps:get(<<"supports_sso">>, Map))
+    after
+        meck:unload(pertisk_eproxy_auth0),
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+            undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+        end
+    end.
+
+bearer_from_request_empty_authorization_test() ->
+    Req = #{headers => #{<<"authorization">> => <<>>}},
+    ?assertEqual(error, pertisk_eproxy_auth:bearer_from_request(Req)).
+
+verify_request_with_api_token_test() ->
+    OldApi = os:getenv("PERTISK_API_TOKEN"),
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    os:putenv("PERTISK_API_TOKEN", "api-secret"),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    with_auth_server(fun() ->
+        try
+            Req = #{headers => #{<<"authorization">> => <<"Bearer api-secret">>}},
+            ?assertEqual(ok, pertisk_eproxy_auth:verify_request(Req))
+        after
+            restore_env("PERTISK_API_TOKEN", OldApi),
+            case OldAuth of
+                {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+                undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+            end
+        end
+    end).

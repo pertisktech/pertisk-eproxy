@@ -53,11 +53,11 @@ with_fixture(Fun) ->
         h3_api_gateway_enabled => false,
         quic_enabled => false
     },
-    _ = catch pertisk_eproxy_config:put_config(TestConfig),
+    _ = catch pertisk_eproxy_test_helpers:put_config_retry(TestConfig),
     try
         with_ingress_env(Fun)
     after
-        _ = catch pertisk_eproxy_config:put_config(BaseConfig)
+        _ = catch pertisk_eproxy_test_helpers:put_config_retry(BaseConfig)
     end.
 
 listener_pems() ->

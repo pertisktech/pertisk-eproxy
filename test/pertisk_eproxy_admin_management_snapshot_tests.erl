@@ -42,7 +42,7 @@ snapshot_with_https_port_test() ->
     ensure_config(),
     C = pertisk_eproxy_config:get_config(),
     C2 = C#{https_port => 443, quic_enabled => true, quic_port => 4433},
-    ok = pertisk_eproxy_config:put_config(C2),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(C2),
     try
         S = pertisk_eproxy_admin_management_snapshot:snapshot(),
         ?assertNotEqual(<<>>, maps:get(<<"https_addr">>, S)),
@@ -54,7 +54,7 @@ snapshot_with_https_port_test() ->
             lists:any(fun(L) -> maps:get(<<"id">>, L) =:= <<"proxy_quic">> end, Listeners)
         )
     after
-        ok = pertisk_eproxy_config:put_config(C)
+        ok = pertisk_eproxy_test_helpers:put_config_retry(C)
     end.
 
 snapshot_cpu_after_init_sample_test() ->
@@ -96,7 +96,7 @@ snapshot_metrics_listener_when_enabled_test() ->
     ensure_config(),
     C = pertisk_eproxy_config:get_config(),
     C2 = maps:put(metrics_enabled, true, C),
-    ok = pertisk_eproxy_config:put_config(C2),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(C2),
     try
         S = pertisk_eproxy_admin_management_snapshot:snapshot(),
         Listeners = maps:get(<<"listeners">>, S),
@@ -104,14 +104,14 @@ snapshot_metrics_listener_when_enabled_test() ->
             lists:any(fun(L) -> maps:get(<<"id">>, L) =:= <<"metrics">> end, Listeners)
         )
     after
-        ok = pertisk_eproxy_config:put_config(C)
+        ok = pertisk_eproxy_test_helpers:put_config_retry(C)
     end.
 
 snapshot_h3_gateway_listener_test() ->
     ensure_config(),
     C = pertisk_eproxy_config:get_config(),
     C2 = C#{h3_api_gateway_enabled => true, https_port => 443},
-    ok = pertisk_eproxy_config:put_config(C2),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(C2),
     try
         S = pertisk_eproxy_admin_management_snapshot:snapshot(),
         Listeners = maps:get(<<"listeners">>, S),
@@ -121,7 +121,7 @@ snapshot_h3_gateway_listener_test() ->
         Vers = maps:get(<<"http_versions">>, S),
         ?assert(lists:member(<<"http/3">>, Vers))
     after
-        ok = pertisk_eproxy_config:put_config(C)
+        ok = pertisk_eproxy_test_helpers:put_config_retry(C)
     end.
 
 snapshot_proxy_access_log_env_test() ->
