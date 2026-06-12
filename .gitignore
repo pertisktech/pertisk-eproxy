@@ -29,6 +29,7 @@ data/
 
 # Admin UI
 admin/node_modules/
+admin/tsconfig.tsbuildinfo
 priv/admin/
 priv/tls/
 
