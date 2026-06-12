@@ -68,12 +68,16 @@ run_admin_handler_batches() {
   flush_batch
 }
 
+ADMIN_MOD="pertisk_eproxy_admin_handler_tests"
+
 while IFS= read -r mod; do
-  if [ "$mod" = "pertisk_eproxy_admin_handler_tests" ]; then
-    run_admin_handler_batches
-  else
-    run_module "$mod"
-  fi
+  [ "$mod" = "$ADMIN_MOD" ] && continue
+  run_module "$mod"
 done < <(find "$ROOT_DIR/test" -maxdepth 1 -name '*_tests.erl' -print \
   | sed 's|.*/||;s|\.erl||' \
-  | sort)
+  | sort \
+  | grep -v "^${ADMIN_MOD}$")
+
+# Largest module; batch to stay under the ~120s eunit runner limit. Run last so
+# earlier modules are not affected by accumulated SQLite/config state.
+run_admin_handler_batches

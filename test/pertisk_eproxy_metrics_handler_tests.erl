@@ -22,6 +22,7 @@ with_mock_req(Fun) ->
     try Fun(#{}) after unload_mocks([cowboy_req]) end.
 
 init_metrics_returns_200_test() ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
     with_mock_req(fun(Req) ->
         ?assertMatch({ok, #{reply := {200, _}}, undefined},
             pertisk_eproxy_metrics_handler:init(Req, metrics))
