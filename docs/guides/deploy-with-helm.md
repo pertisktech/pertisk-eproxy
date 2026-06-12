@@ -17,6 +17,25 @@ helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
   --set image.tag=0.1.0
 ```
 
+## Value profiles
+
+| File | Purpose |
+|------|---------|
+| `values.yaml` | Default (dev-friendly; weak password allowed) |
+| `values-production.yaml` | Strong password required, PDB, ServiceMonitor, Local LB policy |
+| `values-h3-single.yaml` | Single replica + Local policy for reliable HTTP/3 |
+
+Production example:
+
+```bash
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
+  -f deploy/helm/pertisk-eproxy/values-production.yaml \
+  --set auth.password="$(openssl rand -base64 24)" \
+  -n pertisk-eproxy --create-namespace
+```
+
+See [ROADMAP_PHASES.md](../ROADMAP_PHASES.md) for what each phase adds.
+
 ## Cluster scripts
 
 | Script | Default admin host |

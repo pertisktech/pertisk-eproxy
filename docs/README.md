@@ -56,6 +56,7 @@ Task-oriented recipes. Each guide is a specific problem and its solution.
 **Kubernetes**
 
 - [Ingress controller implementation notes](K8S_INGRESS_IMPLEMENTATION.md)
+- [Product roadmap — phases 0–4 (implemented vs planned)](ROADMAP_PHASES.md)
 
 ## Concepts
 
@@ -65,6 +66,7 @@ Explanation-oriented. Read these to understand why eproxy is shaped the way it i
 - [Proxy vs ingress mode](concepts/proxy-vs-ingress.md)
 - [Request lifecycle](concepts/request-lifecycle.md)
 - [Kubernetes reconciliation](concepts/kubernetes-ingress.md)
+- [Product roadmap phases](ROADMAP_PHASES.md) — trust, ingress parity, H3, operator UX, Gateway API
 
 ## Reference
 
