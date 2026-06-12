@@ -1960,11 +1960,15 @@ gateway_start_whitespace_site_host_sni_test() ->
 with_linux_os_mock(Fun) ->
     case lists:member(os, meck:mocked()) of
         true -> ok;
-        false ->
-            meck:new(os, [unstick, no_link, passthrough]),
-            meck:expect(os, type, fun() -> {unix, linux} end)
+        false -> meck:new(os, [unstick, no_link, passthrough])
     end,
-    Fun().
+    meck:expect(os, type, fun() -> {unix, linux} end),
+    try
+        Fun()
+    after
+        %% Drop the linux stub; keep passthrough mock so later tests do not crash on unload.
+        catch meck:delete(os, type, 0)
+    end.
 
 gateway_start_linux_dual_stack_udp_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),

@@ -63,13 +63,11 @@ test:
 cover:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) eunit --cover
-	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) cover -v -p 2 -m $(COVER_MIN)
 
 cover-local:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) eunit --cover
-	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) cover -v -p 2
  
 dialyzer:
