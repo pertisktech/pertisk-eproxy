@@ -31,6 +31,7 @@ stop_watcher() ->
     ensure_mocks_clean().
 
 with_watcher_env(Expects, Fun) ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
     meck:new(pertisk_ingress_env, [unstick, passthrough]),
     maps:fold(
         fun(K, V, _) -> meck:expect(pertisk_ingress_env, K, fun() -> V end) end,

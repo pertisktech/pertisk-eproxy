@@ -612,7 +612,7 @@ with_config(Fun) ->
     try
         Fun()
     after
-        _ = catch pertisk_eproxy_config:put_config(BaseConfig),
+        _ = catch put_config_retry(BaseConfig),
         catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
         maybe_stop_config(Started)
     end.
@@ -621,46 +621,7 @@ init_tmp_db(DbPath) ->
     init_tmp_db(DbPath, 12).
 
 put_config_retry(Config) ->
-    put_config_retry(Config, 12).
-
-put_config_retry(Config, 0) ->
-    pertisk_eproxy_config:put_config(Config);
-put_config_retry(Config, Retries) ->
-    case pertisk_eproxy_config:put_config(Config) of
-        ok ->
-            ok;
-        {error, Reason} when Retries > 0 ->
-            case config_locked_error(Reason) of
-                true ->
-                    timer:sleep(75),
-                    put_config_retry(Config, Retries - 1);
-                false ->
-                    {error, Reason}
-            end;
-        Other ->
-            Other
-    end.
-
-config_locked_error({persist_runtime_config, Inner}) ->
-    config_locked_error(Inner);
-config_locked_error({persist_dns_providers, Inner}) ->
-    config_locked_error(Inner);
-config_locked_error({tls_validation_cert_store_unavailable, Inner}) ->
-    config_locked_error(Inner);
-config_locked_error({sqlite_error, Msg, _}) ->
-    sqlite_locked_msg(Msg);
-config_locked_error({sqlite_error, Msg}) when is_list(Msg) ->
-    string:find(Msg, "locked") =/= nomatch;
-config_locked_error({sqlite3_cli, Msg}) when is_list(Msg) ->
-    string:find(Msg, "locked") =/= nomatch;
-config_locked_error({sqlite3_cli, Msg}) when is_binary(Msg) ->
-    sqlite_locked_msg(Msg);
-config_locked_error(Msg) when is_binary(Msg) ->
-    sqlite_locked_msg(Msg);
-config_locked_error(Msg) when is_list(Msg) ->
-    string:find(Msg, "locked") =/= nomatch;
-config_locked_error(_) ->
-    false.
+    pertisk_eproxy_test_helpers:put_config_retry(Config).
 
 sqlite_locked_msg(Msg) when is_binary(Msg) ->
     binary:match(Msg, <<"locked">>) =/= nomatch;
@@ -718,18 +679,29 @@ with_tmp_db_config(Fun) ->
         DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
         OldDb = application:get_env(pertisk_eproxy, db_file),
-        stop_config_if_running(),
+        ConfigWasUp = whereis(pertisk_eproxy_config) =/= undefined,
         application:set_env(pertisk_eproxy, db_file, DbPath),
         try
             ?assertMatch({ok, _}, init_tmp_db(DbPath)),
+            case ConfigWasUp of
+                true ->
+                    ok = pertisk_eproxy_config:reload();
+                false ->
+                    ok
+            end,
             with_config(Fun)
         after
-            stop_config_if_running(),
             case OldDb of
                 {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)
             end,
-            file:delete(DbPath)
+            file:delete(DbPath),
+            case ConfigWasUp of
+                true ->
+                    catch pertisk_eproxy_config:reload();
+                false ->
+                    stop_config_if_running()
+            end
         end
     end).
 
@@ -773,7 +745,7 @@ get_certificates_and_dns_providers_test() ->
             sites => [],
             backends => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = put_config_retry(Config),
         ?assertEqual([<<"cert-a">>], pertisk_eproxy_config:get_certificates()),
         ?assertEqual(["cf"], pertisk_eproxy_config:get_dns_providers())
     end).
@@ -788,7 +760,7 @@ management_upstream_bin_test() ->
             certificates => [],
             dns_providers => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = put_config_retry(Config),
         ?assertEqual(<<"127.0.0.1:19080">>, pertisk_eproxy_config:management_upstream_bin()),
         ?assertEqual(<<"127.0.0.1:19080">>, pertisk_eproxy_config:management_loopback_upstream_bin())
     end).
@@ -1028,7 +1000,7 @@ is_management_upstream_addr_ipv6_test() ->
             certificates => [],
             dns_providers => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = put_config_retry(Config),
         Upstream = iolist_to_binary(["[::1]:", integer_to_list(Port)]),
         ?assert(pertisk_eproxy_config:is_management_upstream_addr(Upstream))
     end).
@@ -1075,7 +1047,7 @@ config_metrics_listen_custom_test() ->
             certificates => [],
             dns_providers => []
         },
-        ok = pertisk_eproxy_config:put_config(Config),
+        ok = put_config_retry(Config),
         ?assertEqual(false, pertisk_eproxy_config:metrics_enabled()),
         ?assertEqual({{127, 0, 0, 1}, 9191}, pertisk_eproxy_config:metrics_listen())
     end).
