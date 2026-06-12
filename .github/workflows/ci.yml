@@ -27,7 +27,7 @@ jobs:
         run: rebar3 compile
 
       - name: Unit tests
-        run: rebar3 eunit
+        run: bash scripts/run-eunit.sh
 
       - name: Verify H3 param script (syntax)
         run: bash -n scripts/verify_h3_params.sh

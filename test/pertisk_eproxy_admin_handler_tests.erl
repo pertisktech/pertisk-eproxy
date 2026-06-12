@@ -224,20 +224,30 @@ with_tmp_db(Fun) ->
         DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
         OldDb = application:get_env(pertisk_eproxy, db_file),
-        stop_config_if_running(),
+        ConfigWasUp = whereis(pertisk_eproxy_config) =/= undefined,
         application:set_env(pertisk_eproxy, db_file, DbPath),
         try
             ?assertMatch({ok, _}, init_tmp_db(DbPath)),
-            ensure_env(),
+            case ConfigWasUp of
+                true ->
+                    ok = pertisk_eproxy_config:reload();
+                false ->
+                    ensure_env()
+            end,
             Fun(DbPath)
         after
-            stop_config_if_running(),
             case OldDb of
                 {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)
             end,
             file:delete(DbPath),
-            ensure_env()
+            case ConfigWasUp of
+                true ->
+                    catch pertisk_eproxy_config:reload();
+                false ->
+                    stop_config_if_running(),
+                    ensure_env()
+            end
         end
     end).
 
@@ -1699,6 +1709,7 @@ api_certificate_import_put_not_found_id_test() ->
 
 api_certificates_ingress_k8s_rows_test() ->
     with_ingress_authenticated(fun(Token) ->
+        ensure_ingress_status_env(),
         pertisk_eproxy_test_helpers:sync_router(
             [#{host => <<"k8s-cert.example">>, backend => <<"web">>,
               certificate => <<"k8s/default/tls-secret">>, routes => []}],

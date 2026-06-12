@@ -58,16 +58,16 @@ shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
 test:
-	$(REBAR) eunit --cover
+	bash scripts/run-eunit.sh --cover
 
 cover:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
-	$(REBAR) eunit --cover
+	bash scripts/run-eunit.sh --cover
 	$(REBAR) cover -v -p 2 -m $(COVER_MIN)
 
 cover-local:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
-	$(REBAR) eunit --cover
+	bash scripts/run-eunit.sh --cover
 	$(REBAR) cover -v -p 2
  
 dialyzer:
