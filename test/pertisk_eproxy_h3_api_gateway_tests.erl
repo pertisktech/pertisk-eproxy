@@ -2099,6 +2099,29 @@ gateway_start_linux_split_both_fail_test() ->
         unload_mocks([quic_h3])
     end.
 
+gateway_start_linux_split_v4_fail_v6_ok_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    OldCfg = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg#{h3_udp_bind => split}),
+    unload_mocks([quic_h3]),
+    meck:new(quic_h3, [unstick, no_link]),
+    meck:expect(quic_h3, start_server, fun(Name, _, _) ->
+        case Name of
+            pertisk_eproxy_h3_api_v4 -> {error, eaddrinuse};
+            _ -> {ok, self()}
+        end
+    end),
+    meck:expect(quic_h3, stop_server, fun(_) -> ok end),
+    try
+        with_linux_os_mock(fun() ->
+            ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
+        end)
+    after
+        catch pertisk_eproxy_h3_api_gateway:stop(),
+        ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
+        unload_mocks([quic_h3])
+    end.
+
 gateway_start_linux_split_v6_fail_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),
     OldCfg = pertisk_eproxy_config:get_config(),
@@ -2297,7 +2320,11 @@ h3_handle_request_exit_noproc_test() ->
 h3_management_only_backend_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),
     Host = <<"mgmt-only-h3.test">>,
-    pertisk_eproxy_test_helpers:sync_mgmt_site(Host),
+    Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+    pertisk_eproxy_test_helpers:sync_router(
+        [#{host => Host, backend => <<"mgmt">>, routes => [#{path => <<"/">>, path_type => prefix}]}],
+        [#{name => <<"mgmt">>, algorithm => round_robin, upstreams => [#{addr => Mgmt, weight => 1}]}]
+    ),
     try
         with_quic_h3_mock(fun() ->
             capture_h3_status(fun() ->
@@ -2335,6 +2362,32 @@ h3_loopback_upstream_dispatch_test() ->
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.
 
+termproxy_skips_x_forwarded_for_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        with_gun_h3_proxy_mock(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(
+                    ok,
+                    h3(self(), 1, <<"GET">>, <<"/termproxy">>, auth(H) ++ [{<<"x">>, <<"1">>}])
+                )
+            end)
+        end)
+    end).
+
+vncwebsocket_skips_x_forwarded_for_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_quic_h3_mock(fun() ->
+        with_gun_h3_proxy_mock(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(
+                    ok,
+                    h3(self(), 1, <<"GET">>, <<"/vncwebsocket">>, auth(H) ++ [{<<"x">>, <<"1">>}])
+                )
+            end)
+        end)
+    end).
+
 h3_mgmt_upstream_local_admin_error_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),
     Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
@@ -2362,51 +2415,6 @@ h3_mgmt_upstream_local_admin_error_test() ->
                     ?assertEqual(502, get(h3_sent_status))
                 after
                     unload_mocks([pertisk_eproxy_h3_local_admin])
-                end
-            end)
-        end)
-    after
-        pertisk_eproxy_test_helpers:sync_router([], [])
-    end.
-
-h3_loopback_unsupported_falls_back_to_gun_test() ->
-    pertisk_eproxy_test_helpers:ensure_h3_env(),
-    Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
-    Site = #{
-        host => <<"loop-gun.test">>,
-        backend => <<"loop">>,
-        routes => [#{path => <<"/">>, path_type => prefix}]
-    },
-    Backend = #{
-        name => <<"loop">>,
-        algorithm => round_robin,
-        upstreams => [#{addr => Mgmt, weight => 1}]
-    },
-    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
-    try
-        with_quic_h3_mock(fun() ->
-            capture_h3_status(fun() ->
-                unload_mocks([pertisk_eproxy_h3_local_admin, gun, pertisk_eproxy_upstream_pool]),
-                meck:new(pertisk_eproxy_h3_local_admin, [unstick, no_link]),
-                meck:new(gun, [unstick, no_link]),
-                meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
-                meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
-                    {error, unsupported}
-                end),
-                meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) ->
-                    {error, no_pool}
-                end),
-                meck:expect(gun, open, fun(_, _, _) -> {ok, ?GUN_MOCK_PID} end),
-                meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-                meck:expect(gun, request, fun(_, _, _, _, _) -> ?GUN_MOCK_STREAM end),
-                meck:expect(gun, await, fun(_, _, _) -> {response, fin, 200, []} end),
-                meck:expect(gun, await_body, fun(_, _, _) -> {ok, <<"ok">>} end),
-                meck:expect(gun, close, fun(_) -> ok end),
-                try
-                    ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/proxy">>, auth(<<"loop-gun.test">>))),
-                    ?assertEqual(200, get(h3_sent_status))
-                after
-                    unload_mocks([pertisk_eproxy_h3_local_admin, gun, pertisk_eproxy_upstream_pool])
                 end
             end)
         end)
