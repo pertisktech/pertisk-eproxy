@@ -1,13 +1,13 @@
-/* Redesigned application shell */
+/* Adminator-inspired application shell */
 
 .wrap {
   display: flex;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
-  --sidebar-width: 302px;
-  --sidebar-width-collapsed: 82px;
-  --header-h: 3.75rem;
+  --sidebar-width: 260px;
+  --sidebar-width-collapsed: 72px;
+  --header-h: 3.5rem;
   background: var(--color-bg);
 }
 
@@ -42,18 +42,18 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0 0.9rem 1rem;
+  gap: 0.25rem;
+  padding: 0 0.75rem 1rem;
   background: var(--color-sidebar);
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-right: 1px solid var(--color-border);
   overflow: hidden;
-  transition: width var(--transition-sidebar, 200ms) ease;
-  box-shadow: none;
+  transition: width var(--transition-sidebar) ease;
+  box-shadow: 1px 0 0 color-mix(in srgb, var(--color-border) 40%, transparent);
 }
 
 .sidebarResizeHandle {
-  width: 14px;
-  margin-left: -7px;
+  width: 12px;
+  margin-left: -6px;
   flex-shrink: 0;
   cursor: col-resize;
   position: relative;
@@ -70,14 +70,15 @@
   width: 2px;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
-  opacity: 0.25;
-  transition: opacity 0.15s ease;
+  background: var(--color-border);
+  opacity: 0.4;
+  transition: opacity var(--transition-fast);
 }
 
 .sidebarResizeHandle:hover::before,
 .wrapResizing .sidebarResizeHandle::before {
-  opacity: 0.9;
+  opacity: 1;
+  background: var(--color-primary);
 }
 
 .sidebarResizeHandleHidden {
@@ -92,9 +93,9 @@
   box-sizing: border-box;
   min-height: var(--header-h);
   height: var(--header-h);
-  padding: 0 1rem;
-  margin: 0 -0.9rem 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  padding: 0 0.5rem;
+  margin: 0 -0.75rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .sidebarBrandMain {
@@ -102,18 +103,19 @@
   width: 100%;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 
 .wrapCollapsed .sidebarBrand {
-  padding: 0 0.5rem;
+  padding: 0 0.35rem;
+  margin: 0 -0.75rem 0.5rem;
 }
 
 .wrapCollapsed .sidebarBrandMain {
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.35rem;
   width: 100%;
 }
 
@@ -125,7 +127,7 @@
 .sidebarLogo {
   display: flex;
   align-items: center;
-  gap: 0.85rem;
+  gap: 0.7rem;
   min-width: 0;
   text-decoration: none;
   color: var(--color-text);
@@ -141,28 +143,29 @@
 .logoImg {
   display: block;
   flex-shrink: 0;
-  width: 2.5rem;
-  height: 2.5rem;
-  padding: 0.45rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0.4rem;
   object-fit: contain;
-  border-radius: var(--radius-xl);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 30%, transparent), color-mix(in srgb, var(--color-blue-b1) 20%, transparent));
-  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--color-primary-soft);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
 
 .sidebarLogoText {
-  font-size: 1.15rem;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
   font-weight: 700;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.03em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .sidebarVersionInline {
-  color: var(--color-text-secondary);
-  font-size: 0.88rem;
-  font-weight: 600;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -174,34 +177,32 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   flex-shrink: 0;
-  color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
-  border-radius: var(--radius-lg);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .sidebarTopToggle:hover {
   color: var(--color-text);
   background: var(--color-hover);
+  border-color: var(--color-border-light);
 }
 
 .navSection {
   min-height: 0;
-  padding-top: 0.5rem;
-  margin-top: 0.25rem;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+  padding-top: 0.35rem;
+  margin-top: 0.15rem;
 }
 
-/* First nav block sits directly under the brand; do not use :first-of-type on .navSection
-   (the first sibling div is .sidebarBrand, so :first-of-type never matched). */
 .sidebarBrand + .navSection {
   padding-top: 0;
   margin-top: 0;
-  border-top: none;
 }
 
 .utilityBar {
@@ -213,19 +214,21 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.55rem;
-  padding: 0 1.25rem;
+  gap: 0.75rem;
+  padding: 0 var(--space-page-x);
   height: var(--header-h);
   min-height: var(--header-h);
   box-sizing: border-box;
-  background: var(--color-bg);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-border) 50%, transparent);
 }
 
 .utilityBarRight {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -237,7 +240,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.3rem;
   list-style: none;
   padding: 0;
   margin: 0;
@@ -246,19 +249,21 @@
 .breadcrumbItem {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.875rem;
+  gap: 0.3rem;
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
 }
 
 .breadcrumbSep {
   color: var(--color-muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+  margin: 0 0.1rem;
 }
 
 .breadcrumbIcon {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.65;
+  color: var(--color-primary);
 }
 
 .breadcrumbLink {
@@ -268,21 +273,22 @@
 }
 
 .breadcrumbLink:hover {
-  color: var(--color-text);
+  color: var(--color-primary);
 }
 
 .breadcrumbCurrent {
   color: var(--color-text);
-  font-weight: 500;
+  font-weight: 600;
+  font-family: var(--font-display);
 }
 
 .navSectionLabel {
   display: block;
-  margin: 0 0 0.4rem 1rem;
-  padding-top: 0.15rem;
-  font-size: 0.65rem;
+  margin: 0 0 0.3rem 0.65rem;
+  padding-top: 0.1rem;
+  font-size: var(--text-2xs);
   font-weight: 700;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--color-muted);
 }
@@ -295,7 +301,7 @@
 .sidebarNavBottom {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.15rem;
 }
 
 .sidebarNav {
@@ -304,7 +310,7 @@
 }
 
 .sidebarNavBottom {
-  margin-top: 0.2rem;
+  margin-top: 0.1rem;
 }
 
 .wrapCollapsed .sidebarNav,
@@ -316,20 +322,22 @@
   flex-shrink: 0;
   color: inherit;
   display: block;
+  width: 1.125rem;
+  text-align: center;
 }
 
 .sidebarLink {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   width: 100%;
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
+  padding: 0.5rem 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--color-text-secondary);
   text-decoration: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 
@@ -340,8 +348,8 @@
 
 .wrapCollapsed .sidebarLink {
   justify-content: center;
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
   padding: 0;
 }
 
@@ -349,25 +357,17 @@
 .sidebarLink.active {
   color: var(--color-primary);
   font-weight: 600;
-  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  background: var(--color-primary-dim);
 }
 
 .active:hover,
 .sidebarLink.active:hover {
-  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-hover));
 }
 
 .sidebarLink.active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 25%;
-  bottom: 25%;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--color-primary);
+  display: none;
 }
-
 
 .sidebarLinkText {
   min-width: 0;
@@ -390,15 +390,15 @@
 .modeBadge {
   display: inline-flex;
   align-items: center;
-  padding: 0.22rem 0.55rem;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
-  font-size: 0.68rem;
+  font-size: var(--text-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-hover) 80%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-primary);
+  background: var(--color-primary-dim);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
 .headerLink,
@@ -406,20 +406,22 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.45rem;
-  min-height: 2.35rem;
-  padding: 0 0.8rem;
+  gap: 0.4rem;
+  min-height: 2.25rem;
+  padding: 0 0.7rem;
   color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
-  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   text-decoration: none;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .headerLink:hover,
 .themeBtn:hover {
   color: var(--color-text);
   background: var(--color-hover);
+  border-color: var(--color-border-light);
 }
 
 .userMenuWrap {
@@ -430,16 +432,17 @@
 .userButton {
   display: inline-flex;
   align-items: center;
-  gap: 0.6rem;
-  min-height: 2.45rem;
-  padding: 0.35rem 0.75rem 0.35rem 0.45rem;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.3rem 0.65rem 0.3rem 0.35rem;
   font-weight: 600;
+  font-size: 0.8125rem;
   color: var(--color-text);
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
-  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .userButton:hover {
@@ -448,29 +451,29 @@
 
 .userButtonOpen,
 .userButton:focus-visible {
-  border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent);
   outline: none;
 }
 
 .userAvatar {
-  width: 1.8rem;
-  height: 1.8rem;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, var(--color-primary), color-mix(in srgb, var(--color-blue-b1) 50%, var(--color-primary)));
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.82rem;
+  font-size: 0.75rem;
   font-weight: 700;
   flex-shrink: 0;
 }
 
 .userAvatarImg {
-  width: 1.8rem;
-  height: 1.8rem;
-  border-radius: var(--radius-lg);
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: var(--radius-sm);
   object-fit: cover;
   flex-shrink: 0;
 }
@@ -483,7 +486,8 @@
 }
 
 .userChevron {
-  opacity: 0.7;
+  opacity: 0.6;
+  font-size: 0.7rem;
   transition: transform 0.2s ease;
   flex-shrink: 0;
 }
@@ -495,13 +499,13 @@
 .userDropdown {
   position: absolute;
   right: 0;
-  top: calc(100% + 0.45rem);
-  min-width: 13rem;
-  padding: 0.4rem;
-  background: color-mix(in srgb, var(--color-surface-elevated) 96%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
-  border-radius: var(--radius-2xl);
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.36);
+  top: calc(100% + 0.4rem);
+  min-width: 12.5rem;
+  padding: 0.35rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
@@ -519,14 +523,14 @@
 .userDropdownItem {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.65rem;
   width: 100%;
-  padding: 0.7rem 0.85rem;
-  font-size: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.8125rem;
   color: var(--color-text);
   background: transparent;
   border: none;
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-md);
   cursor: pointer;
   text-decoration: none;
 }
@@ -539,35 +543,35 @@
 
 .userDropdownDivider {
   height: 1px;
-  margin: 0.3rem 0;
+  margin: 0.25rem 0;
   background: var(--color-border);
 }
 
 .userDropdownProfile {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.65rem 0.85rem 0.55rem;
+  gap: 0.65rem;
+  padding: 0.55rem 0.75rem 0.45rem;
 }
 
 .userDropdownAvatar {
-  width: 2.4rem;
-  height: 2.4rem;
-  border-radius: var(--radius-lg);
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-md);
   object-fit: cover;
   flex-shrink: 0;
 }
 
 .userDropdownAvatarInitial {
-  width: 2.4rem;
-  height: 2.4rem;
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, var(--color-primary), color-mix(in srgb, var(--color-blue-b1) 50%, var(--color-primary)));
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -580,7 +584,7 @@
 }
 
 .userDropdownName {
-  font-size: 0.88rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text);
   overflow: hidden;
@@ -589,8 +593,8 @@
 }
 
 .userDropdownEmail {
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  color: var(--color-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -601,13 +605,12 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--header-h) 1.25rem 1.25rem;
+  padding: calc(var(--header-h) + var(--space-page-y)) var(--space-page-x) var(--space-page-x);
   background: var(--color-bg);
 }
 
-/* Settings: extra gap below utility bar; slightly tighter horizontal padding for wide API table */
 .mainSettings {
-  padding: calc(var(--header-h) + 1rem) 0.65rem 0.75rem;
+  padding: calc(var(--header-h) + var(--space-page-y)) 0.65rem 0.65rem;
 }
 
 .mainAmbient {
@@ -620,11 +623,14 @@
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .authGate {
   padding: 2rem 1.5rem;
-  color: var(--color-text-muted, var(--color-text-secondary, #64748b));
+  color: var(--color-muted);
   font-size: 0.95rem;
 }
 
@@ -636,7 +642,7 @@
 .modalBackdrop {
   position: fixed;
   inset: 0;
-  background: rgba(6, 8, 16, 0.6);
+  background: rgba(15, 23, 42, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -647,10 +653,10 @@
 .modal {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-2xl);
+  border-radius: var(--radius-xl);
   max-width: 24rem;
   width: 100%;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
 }
 
 .modalHeader {
@@ -663,9 +669,10 @@
 
 .modalTitle {
   margin: 0;
-  font-size: 1.125rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: var(--color-text);
+  font-family: var(--font-display);
 }
 
 .modalClose {
@@ -676,7 +683,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 }
 
 .modalClose:hover {
@@ -718,7 +725,7 @@
   width: 100%;
   padding: 0.65rem 0.8rem;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-text);
 }
@@ -752,9 +759,9 @@
 
 .modalCancel,
 .modalSubmit {
-  min-height: 2.6rem;
+  min-height: 2.5rem;
   padding: 0 1rem;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -786,7 +793,7 @@
 }
 
 @media (max-width: 960px) {
-  .headerLink span,
+  .headerLinkText,
   .userName {
     display: none;
   }
@@ -794,27 +801,27 @@
 
 @media (max-width: 720px) {
   .wrap {
-    --sidebar-width: 260px;
+    --sidebar-width: 240px;
   }
 
   .sidebar {
-    padding: 0 0.7rem 0.85rem;
+    padding: 0 0.5rem 0.85rem;
   }
 
   .sidebarBrand {
-    margin: 0 -0.7rem 0;
-    padding: 0 0.8rem;
+    margin: 0 -0.5rem 0.5rem;
+    padding: 0 0.5rem;
   }
 
   .utilityBar {
-    padding: 0 0.75rem;
+    padding: 0 var(--space-page-x);
   }
 
   .main {
-    padding: var(--header-h) 0.75rem 0.75rem;
+    padding: calc(var(--header-h) + var(--space-page-y)) var(--space-page-x) var(--space-page-x);
   }
 
   .mainSettings {
-    padding: calc(var(--header-h) + 0.85rem) 0.5rem 0.65rem;
+    padding: calc(var(--header-h) + var(--space-page-y)) 0.5rem 0.5rem;
   }
 }

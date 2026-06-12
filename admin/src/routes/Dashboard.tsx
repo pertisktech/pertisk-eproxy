@@ -1,24 +1,42 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   api,
   type BeamMemoryBreakdown,
+  type CertificateRow,
   type HealthReport,
   type ProxyConfig,
   type ManagementInfo,
   type Metrics,
   type K8sPodRow,
 } from '@/api/client';
+import { getUsername } from '@/auth';
 import { formatBeamCpuPct, formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
+import {
+  buildTlsSiteValidationRows,
+  tlsValidationDetail,
+  tlsValidationResultLabel,
+} from '@/utils/tlsSiteValidation';
 import PrometheusScrapePanel from '@/components/PrometheusScrapePanel';
 import HealthProbesPanel from '@/components/HealthProbesPanel';
 import styles from './Dashboard.module.css';
+
+type KpiTile = {
+  key: string;
+  value: string;
+  label: string;
+  sub?: string | null;
+  icon: string;
+  tone: 'blue' | 'teal' | 'purple' | 'green' | 'orange' | 'slate';
+  title?: string;
+};
 
 type DashboardCache = {
   config: ProxyConfig | null;
   health: HealthReport | null;
   management: ManagementInfo | null;
   stats: Metrics | null;
+  issuedTlsCerts: CertificateRow[];
 };
 
 let dashboardCache: DashboardCache | null = null;
@@ -77,6 +95,9 @@ export default function Dashboard() {
   const [management, setManagement] = useState<ManagementInfo | null>(() => dashboardCache?.management ?? null);
   const [stats, setStats] = useState<Metrics | null>(() => dashboardCache?.stats ?? null);
   const [k8sPods, setK8sPods] = useState<K8sPodRow[]>([]);
+  const [issuedTlsCerts, setIssuedTlsCerts] = useState<CertificateRow[]>(
+    () => dashboardCache?.issuedTlsCerts ?? [],
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(() => dashboardCache == null);
   const [k8sLoading, setK8sLoading] = useState(false);
@@ -87,17 +108,20 @@ export default function Dashboard() {
       setLoading(true);
     }
     try {
-      const [c, h, m, st] = await Promise.all([
+      const [c, h, m, st, certList] = await Promise.all([
         api.config(),
         api.health(),
         api.management(),
         api.metrics(),
+        api.certificates.list().catch(() => [] as CertificateRow[]),
       ]);
+      const certs = Array.isArray(certList) ? certList : [];
       setConfig(c);
       setHealth(h);
       setManagement(m);
       setStats(st);
-      dashboardCache = { config: c, health: h, management: m, stats: st };
+      setIssuedTlsCerts(certs);
+      dashboardCache = { config: c, health: h, management: m, stats: st, issuedTlsCerts: certs };
       setError(null);
     } catch (e: unknown) {
       setError(String(e));
@@ -110,6 +134,14 @@ export default function Dashboard() {
 
   useEffect(() => {
     void load({ silent: dashboardCache != null });
+  }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void load({ silent: true });
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   useEffect(() => {
@@ -193,7 +225,97 @@ export default function Dashboard() {
   const runtimePorts = listeners
     .filter((l) => Number.isFinite(l.port) && l.port > 0)
     .sort((a, b) => a.port - b.port);
-  const tlsSiteRows = Array.isArray(health?.tls_sites) ? health.tls_sites : [];
+  const tlsSiteRows = useMemo(
+    () => buildTlsSiteValidationRows(config?.sites ?? [], health, issuedTlsCerts),
+    [config?.sites, health, issuedTlsCerts],
+  );
+  const siteCount = config?.sites?.length ?? 0;
+  const displayName = getUsername() || 'operator';
+  const todayLine = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      }).format(new Date());
+    } catch {
+      return new Date().toLocaleDateString();
+    }
+  }, []);
+
+  const kpiTiles: KpiTile[] = useMemo(
+    () => [
+      {
+        key: 'cpu',
+        value: cpuSummary ?? '—',
+        label: 'CPU usage',
+        sub: cpuSummarySub,
+        icon: 'fa-microchip',
+        tone: 'blue',
+        title: cpuTileTitle,
+      },
+      {
+        key: 'mem',
+        value: memBytes != null ? formatBytes(memBytes) : '—',
+        label: 'Memory usage',
+        sub: codeMemBytes != null ? `code ${formatBytes(codeMemBytes)}` : null,
+        icon: 'fa-memory',
+        tone: 'teal',
+        title:
+          'erlang:memory(total) — VM allocated memory. Code is Erlang bytecode in RAM; release embedded mode preloads modules and can use more code memory than dev.',
+      },
+      {
+        key: 'sites',
+        value: String(config?.sites?.length ?? 0),
+        label: 'Total sites',
+        icon: 'fa-globe',
+        tone: 'purple',
+      },
+      {
+        key: 'backends',
+        value: String(config?.backends?.length ?? 0),
+        label: 'Total backends',
+        icon: 'fa-server',
+        tone: 'green',
+      },
+      {
+        key: 'visits',
+        value: (stats?.http_requests_total ?? 0).toLocaleString(),
+        label: 'Total visits',
+        icon: 'fa-chart-bar',
+        tone: 'orange',
+      },
+      {
+        key: 'active',
+        value: String(stats?.active_connections ?? 0),
+        label: 'Active upstreams',
+        icon: 'fa-bolt',
+        tone: 'slate',
+        title: 'In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle.',
+      },
+    ],
+    [
+      beamCpu,
+      codeMemBytes,
+      config?.backends?.length,
+      config?.sites?.length,
+      containerCpuSummary,
+      cpuSummary,
+      cpuSummarySub,
+      cpuTileTitle,
+      memBytes,
+      pi?.logical_processors,
+      stats?.active_connections,
+      stats?.http_requests_total,
+    ],
+  );
+
+  const healthOk = useMemo(() => {
+    const rows = health?.backends ?? [];
+    if (rows.length === 0) return true;
+    return rows.every((b) => b.total === 0 || b.healthy >= b.total);
+  }, [health?.backends]);
 
   return (
     <section className={styles.page}>
@@ -205,14 +327,23 @@ export default function Dashboard() {
       )}
 
       <div className={styles.hero}>
-        <div>
-          <h1 className={styles.heroTitle}>Dashboard</h1>
-          <p className={styles.heroSubtitle}>Operational snapshot of runtime health, traffic, and proxy readiness.</p>
+        <div className={styles.heroCopy}>
+          <p className={styles.heroEyebrow}>{todayLine}</p>
+          <h1 className={styles.heroTitle}>Welcome back, {displayName}</h1>
+          <p className={styles.heroSubtitle}>
+            Operational snapshot of runtime health, traffic, and proxy readiness.
+            {health ? (
+              <span className={`${styles.healthChip} ${healthOk ? styles.healthChipOk : styles.healthChipWarn}`}>
+                <i className={`fas ${healthOk ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} aria-hidden />
+                {healthOk ? 'All systems operational' : 'Needs attention'}
+              </span>
+            ) : null}
+          </p>
         </div>
         <div className={styles.heroMeta}>
           <button
             type="button"
-            className={styles.heroRefresh}
+            className={styles.heroBtnGhost}
             onClick={() => void load()}
             disabled={loading}
             aria-busy={loading}
@@ -220,8 +351,8 @@ export default function Dashboard() {
           >
             <i className={`fas fa-sync-alt ${loading ? styles.heroRefreshSpin : ''}`} aria-hidden /> Refresh
           </button>
-          <Link to="/metrics" className={styles.metricsLink}>
-            <i className="fas fa-chart-line" aria-hidden /> Metrics
+          <Link to="/metrics" className={styles.heroBtnPrimary}>
+            <i className="fas fa-chart-line" aria-hidden /> View metrics
           </Link>
         </div>
       </div>
@@ -234,45 +365,22 @@ export default function Dashboard() {
         <>
           <div className={styles.glance}>
             <div className={styles.glanceMetrics} role="group" aria-label="Dashboard summary">
-              <div
-                className={`${styles.metricTile} ${styles.metricTileResource}`}
-                title={cpuTileTitle}
-              >
-                <div className={styles.metricTileVal}>{cpuSummary ?? '—'}</div>
-                <div className={styles.metricTileLabel}>CPU usage</div>
-                {cpuSummarySub ? <div className={styles.metricTileSub}>{cpuSummarySub}</div> : null}
-              </div>
-              <div
-                className={`${styles.metricTile} ${styles.metricTileResource}`}
-                title={
-                  'erlang:memory(total) — VM allocated memory. Code is Erlang bytecode in RAM; release embedded mode preloads modules and can use more code memory than dev.'
-                }
-              >
-                <div className={styles.metricTileVal}>{memBytes != null ? formatBytes(memBytes) : '—'}</div>
-                <div className={styles.metricTileLabel}>Memory usage</div>
-                {codeMemBytes != null ? (
-                  <div className={styles.metricTileSub}>code {formatBytes(codeMemBytes)}</div>
-                ) : null}
-              </div>
-              <div className={styles.metricTile}>
-                <div className={styles.metricTileVal}>{config?.sites?.length ?? 0}</div>
-                <div className={styles.metricTileLabel}>Total sites</div>
-              </div>
-              <div className={styles.metricTile}>
-                <div className={styles.metricTileVal}>{config?.backends?.length ?? 0}</div>
-                <div className={styles.metricTileLabel}>Total backends</div>
-              </div>
-              <div className={styles.metricTile}>
-                <div className={styles.metricTileVal}>{(stats?.http_requests_total ?? 0).toLocaleString()}</div>
-                <div className={styles.metricTileLabel}>Total visits</div>
-              </div>
-              <div
-                className={`${styles.metricTile} ${styles.metricTileHint}`}
-                title="In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle."
-              >
-                <div className={styles.metricTileVal}>{stats?.active_connections ?? 0}</div>
-                <div className={styles.metricTileLabel}>Pageviews</div>
-              </div>
+              {kpiTiles.map((tile) => (
+                <article
+                  key={tile.key}
+                  className={`${styles.metricTile} ${styles[`metricTone${tile.tone.charAt(0).toUpperCase()}${tile.tone.slice(1)}`]}`}
+                  title={tile.title}
+                >
+                  <div className={styles.metricTileHead}>
+                    <span className={styles.metricTileIcon} aria-hidden>
+                      <i className={`fas ${tile.icon}`} />
+                    </span>
+                  </div>
+                  <div className={styles.metricTileVal}>{tile.value}</div>
+                  <div className={styles.metricTileLabel}>{tile.label}</div>
+                  {tile.sub ? <div className={styles.metricTileSub}>{tile.sub}</div> : null}
+                </article>
+              ))}
             </div>
 
             <div className={styles.glanceBottom}>
@@ -571,18 +679,14 @@ export default function Dashboard() {
                   {tlsSiteRows.length === 0 ? (
                     <tr>
                       <td colSpan={3} className={styles.emptyCell}>
-                        No site TLS validation data
+                        {siteCount === 0
+                          ? 'No sites configured — add a site under Sites to validate TLS coverage.'
+                          : 'No TLS validation rows for configured sites. Try Refresh or check Certificates.'}
                       </td>
                     </tr>
                   ) : (
                     tlsSiteRows.map((row) => {
-                      const certHosts = Array.isArray(row.presented_hosts) ? row.presented_hosts : [];
-                      const detail = certHosts.length > 0 ? certHosts.join(', ') : row.reason;
-                      const result = row.valid
-                        ? 'match'
-                        : row.status === 'mismatch'
-                          ? 'mismatch'
-                          : row.status;
+                      const result = tlsValidationResultLabel(row);
                       const resultClass =
                         result === 'match'
                           ? styles.statusOk
@@ -597,7 +701,7 @@ export default function Dashboard() {
                           <td>
                             <span className={`${styles.statusPill} ${resultClass}`}>{result}</span>
                           </td>
-                          <td className="mono">{detail}</td>
+                          <td className="mono">{tlsValidationDetail(row)}</td>
                         </tr>
                       );
                     })

@@ -7,6 +7,7 @@ import { api } from '@/api/client';
 import { isLoggedIn, setToken, setUsername } from '@/auth';
 import App from './App';
 import Toaster from '@/components/Toaster';
+import './styles/typography.css';
 import './index.css';
 import './styles/theme.css';
 

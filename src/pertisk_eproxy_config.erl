@@ -1208,6 +1208,8 @@ apply_config(Config) ->
     %% Sync backend worker processes
     sync_backend_workers(Backends),
 
+    _ = pertisk_eproxy_health_cache:invalidate(),
+
     %% Rebuild the router from sites
     Router = pertisk_eproxy_router:build(Sites),
     ets:insert(?TAB, {router, Router}),

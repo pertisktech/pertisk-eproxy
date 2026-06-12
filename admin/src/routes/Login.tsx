@@ -226,32 +226,60 @@ export default function Login() {
 
   return (
     <div className={styles.wrap}>
-      <header className={styles.topBar}>
-        <span className={styles.topBarSpacer} />
-        {theme && (
-          <button
-            type="button"
-            className={styles.themeToggle}
-            onClick={theme.toggleTheme}
-            title={theme.isDark ? 'Light mode' : 'Dark mode'}
-            aria-label={theme.isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-          >
-            <FaIcon className={theme.isDark ? 'fas fa-sun' : 'fas fa-moon'} aria-hidden />
-            <span className={styles.themeToggleLabel}>{theme.isDark ? 'Light' : 'Dark'}</span>
-          </button>
-        )}
-      </header>
-      <div className={styles.brand}>
-        <img src={brandMarkUrl} alt="" className={styles.brandLogo} width={48} height={48} />
-        <span className={styles.brandName}>eProxy</span>
-      </div>
-      <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <h1 className={styles.title}>
-            <FaIcon className="fas fa-shield-alt" aria-hidden /> eProxy
-          </h1>
+      <aside className={styles.brandPanel}>
+        <div className={styles.brandPanelInner}>
+          <div className={styles.brandMark}>
+            <img src={brandMarkUrl} alt="" className={styles.brandLogo} width={48} height={48} />
+            <span className={styles.brandName}>eProxy</span>
+          </div>
+          <h2 className={styles.brandHeadline}>Manage your edge proxy with confidence</h2>
+          <p className={styles.brandTagline}>
+            Monitor traffic, certificates, and runtime health from a single control plane.
+          </p>
+          <ul className={styles.brandFeatures}>
+            <li className={styles.brandFeature}>
+              <FaIcon className="fas fa-shield-alt" aria-hidden />
+              TLS and ACME certificate automation
+            </li>
+            <li className={styles.brandFeature}>
+              <FaIcon className="fas fa-chart-line" aria-hidden />
+              Real-time metrics and health probes
+            </li>
+            <li className={styles.brandFeature}>
+              <FaIcon className="fas fa-cog" aria-hidden />
+              Live config reload and backup
+            </li>
+          </ul>
         </div>
-        <form onSubmit={handleSubmit} className={styles.form}>
+        {version ? (
+          <p className={styles.brandPanelFooter}>
+            Pertisk eProxy {version.startsWith('v') ? version : `v${version}`}
+          </p>
+        ) : null}
+      </aside>
+
+      <div className={styles.formPanel}>
+        <header className={styles.topBar}>
+          {theme && (
+            <button
+              type="button"
+              className={styles.themeToggle}
+              onClick={theme.toggleTheme}
+              title={theme.isDark ? 'Light mode' : 'Dark mode'}
+              aria-label={theme.isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              <FaIcon className={theme.isDark ? 'fas fa-sun' : 'fas fa-moon'} aria-hidden />
+              {theme.isDark ? 'Light' : 'Dark'}
+            </button>
+          )}
+        </header>
+        <div className={styles.formCenter}>
+          <div className={styles.card}>
+            <div className={styles.cardHeader}>
+              <h1 className={styles.title}>Sign in</h1>
+              <p className={styles.subtitle}>Enter your credentials to access the admin dashboard.</p>
+            </div>
+            <form onSubmit={handleSubmit} className={styles.form}>
           {supportsLocal(authConfig) && (
             <>
               <label className={styles.label}>
@@ -305,10 +333,12 @@ export default function Login() {
           {authConfig && !supportsLocal(authConfig) && !supportsSso(authConfig) && !authConfig.guest_mode && (
             <p className={styles.hint}>No login method is enabled for this deployment.</p>
           )}
-        </form>
-        {version && (
-          <p className={styles.version}>v{version.startsWith('v') ? version.slice(1) : version}</p>
-        )}
+            </form>
+            {version && (
+              <p className={styles.version}>v{version.startsWith('v') ? version.slice(1) : version}</p>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

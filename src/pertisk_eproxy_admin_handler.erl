@@ -1982,7 +1982,7 @@ site_tls_health_rows(Sites) ->
         site_tls_health_row(S, Rows)
         || S <- safe_list(Sites),
            is_map(S),
-           site_health_host_bin(maps:get(host, S, undefined)) =/= undefined
+           site_health_host_bin(site_map_get(S, host)) =/= undefined
     ].
 
 all_certificate_rows_for_tls_health(Sites) ->
@@ -1995,8 +1995,8 @@ all_certificate_rows_for_tls_health(Sites) ->
     merge_certificate_rows(DbRows, IngressRows).
 
 site_tls_health_row(Site, CertRows) ->
-    Host = site_health_host_bin(maps:get(host, Site, undefined)),
-    CertRef = site_health_cert_ref_bin(maps:get(certificate, Site, undefined)),
+    Host = site_health_host_bin(site_map_get(Site, host)),
+    CertRef = site_health_cert_ref_bin(site_map_get(Site, certificate)),
     Base = #
     {
         <<"host">> => json_text(Host),
@@ -2112,6 +2112,17 @@ cert_row_id_json(Row) when is_map(Row) ->
     end;
 cert_row_id_json(_) ->
     null.
+
+site_map_get(Site, Key) when is_map(Site), is_atom(Key) ->
+    case maps:get(Key, Site, undefined) of
+        undefined ->
+            BinKey = atom_to_binary(Key, utf8),
+            maps:get(BinKey, Site, undefined);
+        V ->
+            V
+    end;
+site_map_get(_, _) ->
+    undefined.
 
 site_health_host_bin(undefined) -> undefined;
 site_health_host_bin(null) -> undefined;
