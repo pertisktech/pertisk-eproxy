@@ -1,0 +1,25 @@
+# HTTP/3 profile: single replica + Local external traffic policy so QUIC stays on one pod.
+# Use when you need reliable HTTP/3 behind a cloud load balancer.
+#
+#   helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
+#     -f deploy/helm/pertisk-eproxy/values-h3-single.yaml \
+#     -n pertisk-eproxy --create-namespace
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+controller:
+  config:
+    quic_enabled: true
+    h3_api_gateway_enabled: true
+    alt_svc_ma_secs: 300
+    alt_svc_persist: false
+
+service:
+  externalTrafficPolicy: Local
+  sessionAffinity: ClientIP
+
+podDisruptionBudget:
+  enabled: false

@@ -83,6 +83,10 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
     Vsn = cowboy_req:version(Req),
     Proto = request_proto_metric(Req),
     TrackingId = request_tracking_id(Req),
+    ClientIp = client_ip(Req),
+    handle_http_routed(Req, State, Method, Host, Path, Qs, T0, Vsn, Proto, TrackingId, ClientIp).
+
+handle_http_routed(Req, State, Method, Host, Path, Qs, T0, Vsn, Proto, TrackingId, ClientIp) ->
     case pertisk_eproxy_router:route(Host, Path) of
         {error, no_route} ->
             inc_request_metrics(Host, Host, <<"404">>, Proto),
@@ -98,7 +102,38 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
             log_access(Host, Host, Method, Path, 404, T0, Vsn, <<>>),
             {ok, Req2, State};
         {ok, #{upstream_path := UpstreamPath, backend := BackendName, site_host := SiteHost}} ->
-            ClientIp = client_ip(Req),
+            case pertisk_eproxy_rate_limit:check(ClientIp, Host, SiteHost) of
+                deny ->
+                    inc_request_metrics(Host, SiteHost, <<"429">>, Proto),
+                    H429 = with_tracking_id_header(TrackingId, #{<<"content-type">> => <<"text/plain">>}),
+                    Req2 = cowboy_req:reply(429, H429, <<"Too Many Requests">>, Req),
+                    log_access(Host, SiteHost, Method, Path, 429, T0, Vsn, <<>>),
+                    {ok, Req2, State};
+                allow ->
+                    case authorize_proxy_request(SiteHost, Method, Path, Qs, Req, ClientIp) of
+                        {error, {auth_denied, Status}} ->
+                            inc_request_metrics(Host, SiteHost, integer_to_binary(Status), Proto),
+                            Req2 = cowboy_req:reply(Status, #{}, <<>>, Req),
+                            log_access(Host, SiteHost, Method, Path, Status, T0, Vsn, <<>>),
+                            {ok, Req2, State};
+                        {error, auth_unreachable} ->
+                            inc_request_metrics(Host, SiteHost, <<"502">>, Proto),
+                            Req2 = cowboy_req:reply(502, #{}, <<"Auth service unreachable">>, Req),
+                            log_access(Host, SiteHost, Method, Path, 502, T0, Vsn, <<>>),
+                            {ok, Req2, State};
+                        ok ->
+                            proxy_matched_route(
+                                Req, State, Method, Host, Path, Qs, T0, Vsn, Proto, TrackingId,
+                                ClientIp, UpstreamPath, BackendName, SiteHost
+                            )
+                    end
+            end
+    end.
+
+proxy_matched_route(
+    Req, State, Method, Host, Path, Qs, T0, Vsn, Proto, TrackingId,
+    ClientIp, UpstreamPath, BackendName, SiteHost
+) when is_binary(UpstreamPath), is_binary(BackendName) ->
             case pertisk_eproxy_config:backend_is_management_only(BackendName) of
                 true ->
                     case proxy_local_management(
@@ -237,7 +272,6 @@ handle_http(Req, State, Method, Host, Path, Qs) ->
                                     log_access(Host, SiteHost, Method, Path, 502, T0, Vsn, UpstreamAddr),
                                     {ok, Req2, State}
                             end
-                    end
                     end
             end
     end.
@@ -1191,16 +1225,22 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
 
     %% Proxmox console ticket endpoints may validate source identity across
     %% termproxy/vncproxy and vncwebsocket calls; avoid XFF drift between H3 and TCP.
-    case skip_forwarded_for(OrigHost, FullPath) of
-        true ->
-            maps:remove(<<"x-forwarded-for">>, Base2);
-        false ->
-            XFF = case maps:find(<<"x-forwarded-for">>, Base2) of
-                {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
-                error          -> ClientIp
-            end,
-            Base2#{<<"x-forwarded-for">> => XFF}
-    end.
+    Headers1 =
+        case skip_forwarded_for(OrigHost, FullPath) of
+            true ->
+                maps:remove(<<"x-forwarded-for">>, Base2);
+            false ->
+                XFF = case maps:find(<<"x-forwarded-for">>, Base2) of
+                    {ok, Existing} -> <<Existing/binary, ", ", ClientIp/binary>>;
+                    error          -> ClientIp
+                end,
+                Base2#{<<"x-forwarded-for">> => XFF}
+        end,
+    pertisk_eproxy_tracing:inject_headers(Headers1).
+
+authorize_proxy_request(SiteHost, Method, Path, Qs, Req, ClientIp) ->
+    Headers = cowboy_req:headers(Req),
+    pertisk_eproxy_external_auth:authorize(SiteHost, Method, Path, Qs, Headers, ClientIp).
 
 maybe_add_eventstream_request_headers(eventstream, Headers) when is_map(Headers) ->
     Headers#{

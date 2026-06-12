@@ -1,3 +1,4 @@
+{{- include "pertisk-eproxy.validateAuth" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -102,6 +103,10 @@ spec:
               value: {{ .Values.persistence.mountPath }}/k8s-tls
             - name: PERTISK_K8S_CONTROLLER_NAME
               value: {{ include "pertisk-eproxy.fullname" . | quote }}
+            - name: PERTISK_K8S_PUBLISH_SERVICE
+              value: {{ default (include "pertisk-eproxy.fullname" .) .Values.ingress.publishService | quote }}
+            - name: PERTISK_GATEWAY_API_ENABLED
+              value: {{ .Values.ingress.gatewayApiEnabled | quote }}
             - name: PERTISK_K8S_POD_LABEL_SELECTOR
               value: {{ printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s" (include "pertisk-eproxy.name" .) .Release.Name | quote }}
             {{- if .Values.controller.configMap.enabled }}

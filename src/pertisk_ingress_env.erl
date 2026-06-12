@@ -16,7 +16,9 @@
     reconcile_interval_ms/0,
     k8s_tls_dir/0,
     controller_pod_label_selector/0,
-    controller_pod_name/0
+    controller_pod_name/0,
+    publish_service_name/0,
+    gateway_api_enabled/0
 ]).
 
 -define(DEFAULT_INGRESS_CLASS, <<"pertisk-eproxy">>).
@@ -111,6 +113,20 @@ controller_pod_name() ->
         {ok, N} -> N;
         error -> <<"pertisk-eproxy">>
     end.
+
+%% Service used to populate Ingress .status.loadBalancer (Helm: ingress.publishService).
+publish_service_name() ->
+    case env_nonempty(<<"PERTISK_K8S_PUBLISH_SERVICE">>) of
+        {ok, N} -> {ok, N};
+        error ->
+            case env_nonempty(<<"PERTISK_K8S_CONTROLLER_NAME">>) of
+                {ok, N} -> {ok, N};
+                error -> error
+            end
+    end.
+
+gateway_api_enabled() ->
+    env_flag(<<"PERTISK_GATEWAY_API_ENABLED">>, false).
 
 %% ---------------------------------------------------------------------------
 

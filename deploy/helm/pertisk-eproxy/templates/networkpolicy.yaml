@@ -1,0 +1,31 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pertisk-eproxy.fullname" . }}
+  labels:
+    {{- include "pertisk-eproxy.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pertisk-eproxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Proxy listeners (HTTP/TLS/QUIC) and management/metrics from anywhere by default.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.controller.config.http_port }}
+        - protocol: TCP
+          port: {{ .Values.controller.config.https_port }}
+        - protocol: TCP
+          port: {{ .Values.controller.config.management_port }}
+        {{- if .Values.metrics.enabled }}
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
+        {{- end }}
+        {{- if and .Values.controller.config.quic_enabled .Values.service.http3Port }}
+        - protocol: UDP
+          port: {{ .Values.controller.config.quic_port }}
+        {{- end }}
+{{- end }}

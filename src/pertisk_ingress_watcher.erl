@@ -149,14 +149,65 @@ full_reconcile(Conn) ->
         {ok, ListObj} ->
             Ingresses = items_from_list(ListObj),
             Secrets = list_tls_secrets(Conn),
-            case pertisk_ingress_reconciler:reconcile(Ingresses, Secrets) of
+            IngressResult = pertisk_ingress_reconciler:reconcile(Ingresses, Secrets),
+            MergedResult = merge_gateway_routes(Conn, IngressResult),
+            case MergedResult of
                 {ok, Result} ->
-                    pertisk_ingress_config_sync:apply_reconcile_result(Result);
+                    case pertisk_ingress_config_sync:apply_reconcile_result(Result) of
+                        ok ->
+                            pertisk_ingress_metrics:record_reconcile(ok, Result),
+                            pertisk_ingress_metrics:set_gauges(
+                                maps:get(sites, Result, []),
+                                maps:get(backends, Result, []),
+                                length(maps:get(tls, Result, []))
+                            ),
+                            pertisk_ingress_status_patcher:maybe_update(Ingresses, Conn),
+                            ok;
+                        {error, _} = ApplyErr ->
+                            pertisk_ingress_metrics:record_reconcile(ApplyErr, Result),
+                            ApplyErr
+                    end;
                 {error, _} = Err ->
+                    pertisk_ingress_metrics:record_reconcile(Err, #{}),
                     Err
             end;
         {error, Reason} ->
             {error, {list_ingress, Reason}}
+    end.
+
+merge_gateway_routes(_Conn, {error, _} = Err) ->
+    Err;
+merge_gateway_routes(_Conn, {ok, IngressResult}) ->
+    case pertisk_ingress_env:gateway_api_enabled() of
+        false ->
+            {ok, IngressResult};
+        true ->
+            case list_httproutes(_Conn, list_query()) of
+                {ok, Routes} ->
+                    case pertisk_gateway_reconciler:reconcile(Routes) of
+                        {ok, GatewayResult} ->
+                            {ok, pertisk_gateway_reconciler:merge_results(IngressResult, GatewayResult)};
+                        {error, _} = GErr ->
+                            GErr
+                    end;
+                {error, Reason} ->
+                    lager:warning("Gateway API HTTPRoute list failed: ~p", [Reason]),
+                    {ok, IngressResult}
+            end
+    end.
+
+list_httproutes(Conn, Query) ->
+    Api = {<<"gateway.networking.k8s.io">>, <<"v1">>},
+    Read = case pertisk_ingress_env:namespace() of
+        all_namespaces ->
+            read_cluster_resource(Conn, Api, <<"httproutes">>, Query);
+        Ns when is_binary(Ns) ->
+            read_cluster_resource(Conn, Api, <<"httproutes">>, [{namespace, Ns} | Query])
+    end,
+    case Read of
+        {ok, ListObj} -> {ok, items_from_list(ListObj)};
+        {error, #{<<"code">> := 404}} -> {ok, []};
+        {error, _} = Err -> Err
     end.
 
 list_ingresses(Conn, Query) ->

@@ -63,3 +63,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-auth" (include "pertisk-eproxy.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{- define "pertisk-eproxy.validateAuth" -}}
+{{- if and .Values.auth.enabled .Values.auth.createSecret .Values.auth.requireStrongPassword }}
+{{- $pw := .Values.auth.password | toString }}
+{{- if or (eq $pw "") (eq $pw "admin") (lt (len $pw) 12) }}
+{{- fail "auth.password must be at least 12 characters and not 'admin' (set --set auth.password=... or disable auth.requireStrongPassword)" }}
+{{- end }}
+{{- end }}
+{{- end }}

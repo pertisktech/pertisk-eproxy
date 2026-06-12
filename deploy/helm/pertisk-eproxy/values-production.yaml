@@ -1,0 +1,53 @@
+# Production profile: secure defaults for pertisk-eproxy ingress controller.
+# Install:
+#   helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
+#     -f deploy/helm/pertisk-eproxy/values-production.yaml \
+#     --set auth.password="$(openssl rand -base64 24)" \
+#     -n pertisk-eproxy --create-namespace
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+
+auth:
+  enabled: true
+  createSecret: true
+  requireStrongPassword: true
+  username: admin
+  # REQUIRED — chart fails install when empty or weak (see requireStrongPassword).
+  password: ""
+  apiToken: ""
+  signingSecret: ""
+
+ingress:
+  gatewayApiEnabled: false
+
+controller:
+  config:
+    quic_enabled: true
+    proxy_access_log: false
+    log_level: warn
+    otel_enabled: false
+    otel_service_name: pertisk-eproxy
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+
+service:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  allowMetricsFromMonitoring: true

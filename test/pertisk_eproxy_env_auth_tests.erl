@@ -52,10 +52,19 @@ verify_api_token_test() ->
     os:putenv("PERTISK_API_TOKEN", "api-secret"),
     try
         ?assertMatch({ok, <<"api">>, _}, pertisk_eproxy_env_auth:verify_api_token(<<"api-secret">>)),
-        ?assertEqual(error, pertisk_eproxy_env_auth:verify_api_token(<<"api-xecret">>))
+        ?assertEqual(error, pertisk_eproxy_env_auth:verify_api_token(<<"api-xecret">>)),
+        ?assert(pertisk_eproxy_env_auth:api_token_configured())
     after
+        application:unset_env(pertisk_eproxy, runtime_api_token),
         restore_env("PERTISK_API_TOKEN", Old)
     end.
+
+rotate_api_token_test() ->
+    with_creds(fun() ->
+        application:unset_env(pertisk_eproxy, runtime_api_token),
+        ?assertMatch({ok, Token} when is_binary(Token), pertisk_eproxy_env_auth:rotate_api_token(<<"secret">>)),
+        ?assert(pertisk_eproxy_env_auth:api_token_configured())
+    end).
 
 session_ttl_secs_test() ->
     Old = os:getenv("PERTISK_SESSION_TTL_SECS"),

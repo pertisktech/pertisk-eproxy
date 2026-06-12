@@ -22,7 +22,8 @@
          observe_duration/2, observe_duration/3,
          record_proxy_bytes/3, record_site_bytes/3,
          set_upstream_conn/3,
-         set_upstream_conns/2, set_upstream_healthy/2]).
+         set_upstream_conns/2, set_upstream_healthy/2,
+         inc_rate_limit_denied/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -33,6 +34,7 @@
 %% ---------------------------------------------------------------------------
 
 setup() ->
+    _ = pertisk_ingress_metrics:setup(),
     prometheus_counter:declare([
         {name,   pertisk_eproxy_requests_total},
         {help,   "Total proxy requests"},
@@ -79,6 +81,11 @@ setup() ->
         {help,   "Whether an upstream is healthy (1=healthy, 0=unhealthy)"},
         {labels, [backend, upstream]}
     ]),
+    prometheus_counter:declare([
+        {name, pertisk_eproxy_rate_limit_denied_total},
+        {help, "Requests rejected by rate limiter"},
+        {labels, [host, site]}
+    ]),
     ok.
 
 %% ---------------------------------------------------------------------------
@@ -107,6 +114,16 @@ record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Rec
         0 -> ok;
         _ -> prometheus_counter:inc(pertisk_eproxy_bytes_sent_total, [Host], Sent)
     end,
+    ok.
+
+-spec inc_rate_limit_denied(binary(), binary() | undefined) -> ok.
+inc_rate_limit_denied(Host, Site) ->
+    SiteLabel =
+        case Site of
+            S when is_binary(S), byte_size(S) > 0 -> S;
+            _ -> <<"-">>
+        end,
+    _ = catch prometheus_counter:inc(pertisk_eproxy_rate_limit_denied_total, [Host, SiteLabel]),
     ok.
 
 -spec record_site_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.

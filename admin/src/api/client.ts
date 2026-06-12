@@ -964,9 +964,21 @@ export const api = {
     },
     upload: (_body: { hosts: string[]; cert_pem: string; key_pem: string }) =>
       Promise.reject(new Error('Use certificates.importListenerPem for the listener TLS PEM.')),
-    delete: (_id: string) => Promise.reject(new Error('Certificate delete is not implemented for eProxy')),
-    renew: (_id: string) => Promise.reject(new Error('Certificate renew is not implemented for eProxy')),
-    renewStatus: (_id: string) => Promise.reject(new Error('Certificate renew is not implemented for eProxy')),
+    delete: async (id: string) => {
+      await del<{ status: string }>(`/certificates/${encodeURIComponent(id)}`);
+    },
+    renew: async (id: string) => {
+      await post<{ status: string; sites?: string[]; notice?: string }>(
+        `/certificates/${encodeURIComponent(id)}/renew`,
+        {}
+      );
+    },
+    renewStatus: async (id: string) => {
+      const rows = await api.certificates.list();
+      const row = rows.find((r) => r.id === id);
+      if (!row) throw new Error('Certificate not found');
+      return row;
+    },
   },
 
   dnsProviders: {

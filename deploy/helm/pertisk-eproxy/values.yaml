@@ -52,6 +52,14 @@ ingress:
   className: pertisk-eproxy
   # Empty = all namespaces; set to watch a single namespace
   watchNamespace: ""
+  # Service whose loadBalancer status is copied into Ingress .status (defaults to release fullname).
+  publishService: ""
+  # When true, also reconcile Gateway API HTTPRoute resources (annotation pertisk.io/gateway-class).
+  gatewayApiEnabled: false
+
+networkPolicy:
+  enabled: false
+  allowMetricsFromMonitoring: false
 
 podSecurityContext:
   runAsNonRoot: true
@@ -136,6 +144,9 @@ auth:
   mode: both
   enabled: true
   createSecret: true
+  # When true, helm install fails unless auth.password is >= 12 chars and not "admin".
+  # Use values-production.yaml or --set auth.password="$(openssl rand -base64 24)" in prod.
+  requireStrongPassword: false
   secretName: ""
   usernameKey: "PERTISK_ADMIN"
   passwordKey: "PERTISK_PASSWORD"

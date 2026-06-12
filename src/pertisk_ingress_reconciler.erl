@@ -15,6 +15,16 @@
 -define(SSE_EARLY_FLUSH_ANNOTATION_LEGACY, <<"pertisk.tech/sse-early-flush">>).
 -define(SSE_EARLY_FLUSH_PATHS_ANNOTATION, <<"pertisk.io/sse-early-flush-paths">>).
 -define(SSE_EARLY_FLUSH_PATHS_ANNOTATION_LEGACY, <<"pertisk.tech/sse-early-flush-paths">>).
+-define(REWRITE_TARGET_ANNOTATION, <<"pertisk.io/rewrite-target">>).
+-define(REWRITE_TARGET_ANNOTATION_NGINX, <<"nginx.ingress.kubernetes.io/rewrite-target">>).
+-define(LOAD_BALANCER_ANNOTATION, <<"pertisk.io/load-balancer">>).
+-define(LOAD_BALANCER_ANNOTATION_LEGACY, <<"pertisk.io/backend-algorithm">>).
+-define(HEALTH_PATH_ANNOTATION, <<"pertisk.io/health-path">>).
+-define(RESOURCE_UPSTREAMS_ANNOTATION, <<"pertisk.io/resource-upstreams">>).
+-define(AUTH_URL_ANNOTATION, <<"pertisk.io/auth-url">>).
+-define(AUTH_URL_ANNOTATION_NGINX, <<"nginx.ingress.kubernetes.io/auth-url">>).
+-define(RATE_LIMIT_RPS_ANNOTATION, <<"pertisk.io/rate-limit-rps">>).
+-define(RATE_LIMIT_BURST_ANNOTATION, <<"pertisk.io/rate-limit-burst">>).
 
 %% @doc Full reconcile from listed Ingress and Secret maps (ekub JSON objects).
 -spec reconcile([map()], [map()]) ->
@@ -55,6 +65,13 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
     AdvertiseHttp3 = advertise_http3_of(Meta),
     SseEarlyFlush = sse_early_flush_of(Meta),
     SseEarlyFlushPaths = sse_early_flush_paths_of(Meta),
+    RewriteTarget = rewrite_target_of(Meta),
+    BackendAlgorithm = backend_algorithm_of(Meta),
+    BackendHealthPath = backend_health_path_of(Meta),
+    ResourceUpstreams = resource_upstreams_of(Meta),
+    AuthUrl = auth_url_of(Meta),
+    RateLimitRps = rate_limit_rps_of(Meta),
+    RateLimitBurst = rate_limit_burst_of(Meta),
     IngressName = name_of(Meta),
     Rules = maps:get(<<"rules">>, Spec, []),
     RuleHosts = [H || #{<<"host">> := H} <- Rules, is_binary(H)],
@@ -76,6 +93,13 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
                                 AdvertiseHttp3,
                                 SseEarlyFlush,
                                 SseEarlyFlushPaths,
+                                RewriteTarget,
+                                BackendAlgorithm,
+                                BackendHealthPath,
+                                ResourceUpstreams,
+                                AuthUrl,
+                                RateLimitRps,
+                                RateLimitBurst,
                                 IngressName,
                                 Bs2,
                                 Ss2,
@@ -103,6 +127,13 @@ reconcile_path(
     AdvertiseHttp3,
     SseEarlyFlush,
     SseEarlyFlushPaths,
+    RewriteTarget,
+    BackendAlgorithm,
+    BackendHealthPath,
+    ResourceUpstreams,
+    AuthUrl,
+    RateLimitRps,
+    RateLimitBurst,
     IngressName,
     Backends,
     Sites,
@@ -111,16 +142,16 @@ reconcile_path(
     BackendSpec = maps:get(<<"backend">>, Path, #{}),
     BackendNs = backend_namespace_for(BackendSpec, BackendNsDefault, BackendNsByService),
     BackendName = backend_name_for(BackendSpec, IngressName, BackendNs),
-    Upstreams = upstreams_from_backend(BackendSpec, BackendNs),
+    Upstreams = upstreams_from_backend(BackendSpec, BackendNs, ResourceUpstreams),
     Backends1 = case lists:any(fun(#{name := N}) -> N =:= BackendName end, Backends) of
         true -> Backends;
         false ->
             [
                 #{
                     name => BackendName,
-                    algorithm => round_robin,
+                    algorithm => BackendAlgorithm,
                     upstreams => Upstreams,
-                    health_path => undefined,
+                    health_path => BackendHealthPath,
                     health_interval_secs => 10
                 }
                 | Backends
@@ -132,7 +163,7 @@ reconcile_path(
     Route = #{
         path => PathBin,
         path_type => PathType,
-        rewrite => undefined,
+        rewrite => RewriteTarget,
         sse_early_flush => RouteSseEarlyFlush
     },
     Site = #{
@@ -146,6 +177,9 @@ reconcile_path(
         acme_contact_email => undefined,
         advertise_http3 => AdvertiseHttp3,
         sse_early_flush => SseEarlyFlush,
+        auth_url => AuthUrl,
+        rate_limit_rps => RateLimitRps,
+        rate_limit_burst => RateLimitBurst,
         routes => [Route],
         ingress_namespace => Ns,
         ingress_name => IngressName
@@ -205,11 +239,18 @@ backend_name_for(_, IngressName, BackendNs) ->
 backend_port_number(#{<<"number">> := N}) when is_integer(N) -> N;
 backend_port_number(_) -> ?DEFAULT_BACKEND_PORT.
 
-upstreams_from_backend(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> := Port}}, Ns) ->
+upstreams_from_backend(#{<<"service">> := #{<<"name">> := SvcName, <<"port">> := Port}}, Ns, _ResourceUpstreams) ->
     PortNum = backend_port_number(Port),
     Addr = upstream_service_addr(SvcName, Ns, PortNum),
     [#{addr => Addr, weight => 1}];
-upstreams_from_backend(_, _) ->
+upstreams_from_backend(#{<<"resource">> := #{<<"name">> := ResName}}, _Ns, ResourceUpstreams) ->
+    case maps:get(ResName, ResourceUpstreams, undefined) of
+        Addr when is_binary(Addr), byte_size(Addr) > 0 ->
+            [#{addr => Addr, weight => 1}];
+        _ ->
+            []
+    end;
+upstreams_from_backend(_, _, _) ->
     [].
 
 backend_namespace_of(Meta, DefaultNs) ->
@@ -286,6 +327,114 @@ sse_early_flush_paths_of(Meta) ->
         _ -> maps:get(?SSE_EARLY_FLUSH_PATHS_ANNOTATION_LEGACY, Annotations, <<>>)
     end,
     decode_sse_early_flush_paths(Json).
+
+rewrite_target_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case annotation_nonempty(Annotations, [
+        ?REWRITE_TARGET_ANNOTATION,
+        ?REWRITE_TARGET_ANNOTATION_NGINX
+    ]) of
+        {ok, V} -> V;
+        error -> undefined
+    end.
+
+backend_algorithm_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case annotation_nonempty(Annotations, [
+        ?LOAD_BALANCER_ANNOTATION,
+        ?LOAD_BALANCER_ANNOTATION_LEGACY
+    ]) of
+        {ok, V} -> parse_backend_algorithm(V);
+        error -> round_robin
+    end.
+
+backend_health_path_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case maps:get(?HEALTH_PATH_ANNOTATION, Annotations, undefined) of
+        V when is_binary(V), byte_size(V) > 0 -> V;
+        _ -> undefined
+    end.
+
+resource_upstreams_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    Json = maps:get(?RESOURCE_UPSTREAMS_ANNOTATION, Annotations, <<>>),
+    decode_resource_upstreams(Json).
+
+auth_url_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    case annotation_nonempty(Annotations, [?AUTH_URL_ANNOTATION, ?AUTH_URL_ANNOTATION_NGINX]) of
+        {ok, V} -> V;
+        error -> undefined
+    end.
+
+rate_limit_rps_of(Meta) ->
+    annotation_pos_int(maps:get(<<"annotations">>, Meta, #{}), ?RATE_LIMIT_RPS_ANNOTATION).
+
+rate_limit_burst_of(Meta) ->
+    annotation_pos_int(maps:get(<<"annotations">>, Meta, #{}), ?RATE_LIMIT_BURST_ANNOTATION).
+
+annotation_pos_int(Annotations, Key) ->
+    case maps:get(Key, Annotations, undefined) of
+        V when is_binary(V) ->
+            try
+                N = list_to_integer(string:trim(binary_to_list(V))),
+                if N > 0 -> N; true -> undefined end
+            catch
+                _:_ -> undefined
+            end;
+        V when is_integer(V), V > 0 ->
+            V;
+        _ ->
+            undefined
+    end.
+
+decode_resource_upstreams(Json) when is_binary(Json), Json =/= <<>> ->
+    case thoas:decode(Json) of
+        {ok, Map} when is_map(Map) ->
+            maps:fold(
+                fun(K, V, Acc) ->
+                    case {coerce_bin(K), coerce_nonempty_bin(V)} of
+                        {<<>>, _} -> Acc;
+                        {_, <<>>} -> Acc;
+                        {Key, Addr} -> maps:put(Key, Addr, Acc)
+                    end
+                end,
+                #{},
+                Map
+            );
+        _ ->
+            #{}
+    end;
+decode_resource_upstreams(_) ->
+    #{}.
+
+annotation_nonempty(Annotations, Keys) ->
+    lists:foldl(
+        fun
+            (_, {ok, _} = Acc) -> Acc;
+            (Key, _) ->
+                case maps:get(Key, Annotations, undefined) of
+                    V when is_binary(V), byte_size(V) > 0 -> {ok, V};
+                    _ -> error
+                end
+        end,
+        error,
+        Keys
+    ).
+
+parse_backend_algorithm(V) when is_binary(V) ->
+    L = list_to_binary(string:lowercase(string:trim(binary_to_list(V)))),
+    case L of
+        <<"round_robin">> -> round_robin;
+        <<"round-robin">> -> round_robin;
+        <<"least_connections">> -> least_connections;
+        <<"least-connections">> -> least_connections;
+        <<"ip_hash">> -> ip_hash;
+        <<"ip-hash">> -> ip_hash;
+        _ -> round_robin
+    end;
+parse_backend_algorithm(_) ->
+    round_robin.
 
 decode_sse_early_flush_paths(Json) when is_binary(Json), Json =/= <<>> ->
     case thoas:decode(Json) of

@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  erlang:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          rebar3-version: "3.24"
+
+      - name: Patch dependencies
+        run: make patch-ekub patch-quic patch-hackney
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Unit tests
+        run: rebar3 eunit
+
+      - name: Verify H3 param script (syntax)
+        run: bash -n scripts/verify_h3_params.sh
+
+  admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - name: Build admin UI
+        working-directory: admin
+        run: npm ci && npm run build
+
+      - name: Install Playwright
+        working-directory: admin
+        run: npx playwright install chromium
+
+      - name: Admin UI smoke tests
+        working-directory: admin
+        run: npm run test:e2e
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Lint chart
+        run: helm lint deploy/helm/pertisk-eproxy
+
+      - name: Render production profile
+        run: |
+          helm template pertisk-eproxy deploy/helm/pertisk-eproxy \
+            -f deploy/helm/pertisk-eproxy/values-production.yaml \
+            --set auth.password=production-secret-min-12 \
+            > /dev/null

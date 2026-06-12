@@ -384,7 +384,7 @@ export default function Dashboard() {
             </div>
 
             <div className={styles.glanceBottom}>
-              <div className={`card ${styles.panel}`}>
+              <div className={styles.panel}>
                 <h2 className={styles.panelTitle}>
                   <i className="fas fa-memory" aria-hidden /> VM resources
                 </h2>
@@ -428,7 +428,7 @@ export default function Dashboard() {
                 </dl>
               </div>
 
-              <div className={`card ${styles.panel}`}>
+              <div className={styles.panel}>
                 <h2 className={styles.panelTitle}>
                   <i className="fas fa-plug" aria-hidden /> Runtime
                 </h2>
@@ -482,7 +482,7 @@ export default function Dashboard() {
           </div>
 
           <div className={styles.twoCol}>
-            <div className={`card ${styles.panel}`}>
+            <div className={styles.panel}>
               <h2 className={styles.panelTitle}>
                 <i className="fas fa-microchip" aria-hidden /> System
               </h2>
@@ -512,7 +512,7 @@ export default function Dashboard() {
               </dl>
             </div>
 
-            <div className={`card ${styles.panel}`}>
+            <div className={styles.panel}>
               <h2 className={styles.panelTitle}>
                 <i className="fas fa-project-diagram" aria-hidden /> Process (BEAM)
               </h2>
@@ -545,7 +545,7 @@ export default function Dashboard() {
           </div>
 
           {isIngressMode ? (
-            <div className={`card ${styles.panel}`}>
+            <div className={styles.panel}>
               <h2 className={styles.panelTitle}>
                 <i className="fas fa-diagram-project" aria-hidden /> Kubernetes runtime
               </h2>
@@ -610,7 +610,7 @@ export default function Dashboard() {
             </div>
           ) : null}
 
-          <div className={`card ${styles.panel} ${styles.listenersPortsCard}`}>
+          <div className={`${styles.panel} ${styles.listenersPortsCard}`}>
             <h2 className={styles.panelTitle}>
               <i className="fas fa-plug" aria-hidden /> Listeners & ports
             </h2>
@@ -653,15 +653,15 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className={`card ${styles.panel}`}>
+          <div className={styles.panel}>
             <PrometheusScrapePanel management={management} />
           </div>
 
-          <div className={`card ${styles.panel}`}>
+          <div className={styles.panel}>
             <HealthProbesPanel />
           </div>
 
-          <div className={`card ${styles.panel} ${styles.tlsValidationCard}`}>
+          <div className={`${styles.panel} ${styles.tlsValidationCard}`}>
             <h2 className={styles.panelTitle}>
               <i className="fas fa-shield-halved" aria-hidden /> Site TLS validation
             </h2>

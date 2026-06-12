@@ -281,6 +281,7 @@
   border: 1px solid var(--color-border);
   background: var(--color-card);
   box-shadow: var(--shadow-card);
+  min-width: 0;
 }
 
 .listenersPortsCard,
@@ -310,8 +311,8 @@
 
 .panelTitle {
   margin: 0 0 0.65rem;
-  padding-bottom: 0.55rem;
-  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0;
+  border-bottom: none;
   font-family: var(--font-display);
   font-size: var(--text-sm);
   font-weight: 700;
@@ -397,7 +398,7 @@
 .table td {
   padding: 0.5rem 0.65rem;
   text-align: left;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
 .table th {
@@ -406,7 +407,12 @@
   font-size: var(--text-2xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  background: color-mix(in srgb, var(--color-hover) 60%, transparent);
+  background: color-mix(in srgb, var(--color-hover) 50%, transparent);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .emptyCell {
@@ -512,8 +518,8 @@ html.dark .statusUnknown {
 .k8sTableWrap {
   width: 100%;
   overflow-x: auto;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--color-border);
 }
 
 .k8sTable {

@@ -187,10 +187,38 @@ handle(<<"POST">>, admin_change_password, Req) ->
     end;
 
 handle(<<"GET">>, admin_api_token, Req) ->
-    json_reply(200, #{<<"has_token">> => false}, Req);
+    case ingress_api_token_supported() of
+        true ->
+            json_reply(200, #{<<"has_token">> => pertisk_eproxy_env_auth:api_token_configured()}, Req);
+        false ->
+            json_reply(200, #{<<"has_token">> => false}, Req)
+    end;
 
 handle(<<"POST">>, admin_api_token, Req) ->
-    json_reply(501, #{<<"error">> => <<"API tokens are not implemented for eProxy">>}, Req);
+    case ingress_api_token_supported() of
+        false ->
+            json_reply(501, #{<<"error">> => <<"API tokens are not implemented for eProxy">>}, Req);
+        true ->
+            with_json_body(Req, fun(Body, Req2) ->
+                Pass = maps:get(<<"password">>, Body, <<>>),
+                case pertisk_eproxy_env_auth:rotate_api_token(Pass) of
+                    {ok, Token} ->
+                        json_reply(200, #{
+                            <<"token">> => Token,
+                            <<"notice">> => <<
+                                "Token is active until pod restart. "
+                                "Persist by updating PERTISK_API_TOKEN in the auth Secret."
+                            >>
+                        }, Req2);
+                    {error, invalid_credentials} ->
+                        json_reply(401, #{<<"error">> => <<"invalid password">>}, Req2);
+                    {error, env_not_configured} ->
+                        json_reply(503, #{<<"error">> => <<"admin credentials not configured">>}, Req2);
+                    {error, Reason} ->
+                        error_reply(400, Reason, Req2)
+                end
+            end)
+    end;
 
 handle(<<"GET">>, backup_export, Req) ->
     Config = backup_export_config(),
@@ -437,6 +465,33 @@ handle(<<"DELETE">>, certificate, Req) ->
                                 {error, not_found} -> not_found_reply(Req);
                                 {error, Reason} -> error_reply(400, Reason, Req)
                             end
+                    end;
+                {error, not_found} ->
+                    not_found_reply(Req);
+                {error, Reason} ->
+                    error_reply(400, Reason, Req)
+            end
+    end;
+
+handle(<<"POST">>, certificate_renew, Req) ->
+    IdBin = cowboy_req:binding(id, Req),
+    case parse_int_param(IdBin) of
+        {error, bad_id} ->
+            json_reply(400, #{<<"error">> => <<"invalid certificate id">>}, Req);
+        {ok, Id} ->
+            case certificate_name_by_id(Id) of
+                {ok, Name} ->
+                    Sites = sites_for_certificate(Name),
+                    case Sites of
+                        [] ->
+                            json_reply(400, #{<<"error">> => <<"certificate is not assigned to any site">>}, Req);
+                        _ ->
+                            _ = pertisk_eproxy_acme_dns:schedule_scan(),
+                            json_reply(202, #{
+                                <<"status">> => <<"scheduled">>,
+                                <<"sites">> => [json_text(H) || H <- Sites],
+                                <<"notice">> => <<"ACME renewal scan queued for assigned sites">>
+                            }, Req)
                     end;
                 {error, not_found} ->
                     not_found_reply(Req);
@@ -2285,6 +2340,9 @@ certificate_name_by_id(Id) ->
     end.
 
 certificate_in_use(Name) ->
+    sites_for_certificate(Name) =/= [].
+
+sites_for_certificate(Name) ->
     NameBin = json_text(Name),
     IdBin =
         case certificate_id_by_name(NameBin) of
@@ -2292,13 +2350,15 @@ certificate_in_use(Name) ->
             _ -> <<>>
         end,
     Sites = pertisk_eproxy_config:get_sites(),
-    lists:any(
-        fun(S) ->
-            Ref = maps:get(certificate, S, undefined),
-            cert_field_matches(Ref, NameBin) orelse (IdBin =/= <<>> andalso cert_field_matches(Ref, IdBin))
-        end,
-        Sites
-    ).
+    [maps:get(host, S) || S <- Sites, site_uses_certificate(S, NameBin, IdBin)].
+
+site_uses_certificate(S, NameBin, IdBin) ->
+    Ref = maps:get(certificate, S, undefined),
+    cert_field_matches(Ref, NameBin)
+        orelse (IdBin =/= <<>> andalso cert_field_matches(Ref, IdBin)).
+
+ingress_api_token_supported() ->
+    pertisk_eproxy_config:ingress_mode() andalso pertisk_eproxy_env_auth:supports_local().
 
 certificate_id_by_name(NameBin) ->
     case pertisk_eproxy_db:list_certificates(db_file_path()) of

@@ -231,6 +231,87 @@ h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, Pa
                 ok;
             {ok, #{upstream_path := UpPath, backend := BackendName, site_host := SiteHost}} ->
                 ClientIp = client_ip_h3(H3Conn, Headers),
+                case pertisk_eproxy_rate_limit:check(ClientIp, LogHost, SiteHost) of
+                    deny ->
+                        _ = h3_reply_status(
+                            H3Conn, StreamId, 429,
+                            [{<<"content-type">>, <<"text/plain">>}],
+                            <<"Too Many Requests">>
+                        ),
+                        inc_h3_metrics(LogHost, SiteHost, <<"429">>),
+                        log_h3_access(LogHost, SiteHost, Method, PathOnly, 429, T0, <<>>),
+                        ok;
+                    allow ->
+                        case h3_authorize_request(SiteHost, Method, PathOnly, Qs, Headers, ClientIp) of
+                            {error, {auth_denied, Status}} ->
+                                _ = h3_reply_status(H3Conn, StreamId, Status, [], <<>>),
+                                inc_h3_metrics(LogHost, SiteHost, integer_to_binary(Status)),
+                                log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, <<>>),
+                                ok;
+                            {error, auth_unreachable} ->
+                                _ = h3_reply_status(
+                                    H3Conn, StreamId, 502,
+                                    [{<<"content-type">>, <<"text/plain">>}],
+                                    <<"Auth service unreachable">>
+                                ),
+                                inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+                                log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
+                                ok;
+                            ok ->
+                                h3_route_after_auth(
+                                    H3Conn, StreamId, Method, Path, Headers, T0, LogHost,
+                                    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+                                )
+                        end
+                end
+                end
+        end
+    catch
+        Class:Reason:Stack ->
+            case h3_send_failed_reason(Reason) of
+                connection_gone ->
+                    log_h3_access(LogHost, LogHost, Method, PathOnly, 0, T0, <<>>),
+                    ok;
+                _ ->
+                    lager:error(
+                        "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
+                        [Class, Reason, LogHost, Path, Stack]
+                    ),
+                    _ = h3_reply_status(
+                        H3Conn,
+                        StreamId,
+                        500,
+                        [{<<"content-type">>, <<"text/plain">>}],
+                        <<"Internal Server Error">>
+                    ),
+                    log_h3_access(LogHost, LogHost, Method, PathOnly, 500, T0, <<>>),
+                    ok
+            end
+    end.
+
+h3_authorize_request(SiteHost, Method, PathOnly, Qs, Headers, ClientIp) ->
+    pertisk_eproxy_external_auth:authorize(
+        SiteHost,
+        Method,
+        PathOnly,
+        Qs,
+        h3_req_headers_map(Headers),
+        ClientIp
+    ).
+
+h3_route_after_auth(
+    H3Conn, StreamId, Method, _Path, Headers, T0, LogHost,
+    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+) ->
+    h3_route_after_auth_body(
+        H3Conn, StreamId, Method, Headers, T0, LogHost,
+        PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+    ).
+
+h3_route_after_auth_body(
+    H3Conn, StreamId, Method, Headers, T0, LogHost,
+    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+) ->
                 case pertisk_eproxy_handler:is_sse_proxy_request(
                     PathOnly, h3_req_headers_map(Headers)
                 ) of
@@ -275,31 +356,8 @@ h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, Pa
                             Headers,
                             T0
                         )
-                end
-                end
-        end
-    catch
-        Class:Reason:Stack ->
-            case h3_send_failed_reason(Reason) of
-                connection_gone ->
-                    log_h3_access(LogHost, LogHost, Method, PathOnly, 0, T0, <<>>),
-                    ok;
-                _ ->
-                    lager:error(
-                        "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
-                        [Class, Reason, LogHost, Path, Stack]
-                    ),
-                    _ = h3_reply_status(
-                        H3Conn,
-                        StreamId,
-                        500,
-                        [{<<"content-type">>, <<"text/plain">>}],
-                        <<"Internal Server Error">>
-                    ),
-                    log_h3_access(LogHost, LogHost, Method, PathOnly, 500, T0, <<>>),
-                    ok
-            end
-    end.
+                end,
+    ok.
 
 %% Client reset or QUIC connection closed before we finish the response.
 h3_send_response(H3Conn, StreamId, Status, Headers) ->

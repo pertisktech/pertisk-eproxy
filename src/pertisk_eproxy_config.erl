@@ -23,7 +23,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([get_config/0, get_sites/0, get_backends/0,
+-export([get_config/0, get_sites/0, get_backends/0, site_auth_url/1, site_rate_limit/1,
          get_certificates/0, get_dns_providers/0,
          get_backend/1, get_router/0,
          management_upstream_bin/0,
@@ -141,6 +141,34 @@ get_sites() ->
     case safe_lookup(sites) of
         [{sites, S}] -> S;
         []           -> []
+    end.
+
+-spec site_auth_url(binary()) -> binary() | undefined.
+site_auth_url(SiteHost) when is_binary(SiteHost) ->
+    case find_site_by_host(SiteHost, get_sites()) of
+        {ok, Site} -> maps:get(auth_url, Site, undefined);
+        error -> undefined
+    end.
+
+-spec site_rate_limit(binary()) -> {ok, pos_integer(), pos_integer()} | error.
+site_rate_limit(SiteHost) when is_binary(SiteHost) ->
+    case find_site_by_host(SiteHost, get_sites()) of
+        {ok, Site} ->
+            case {maps:get(rate_limit_rps, Site, undefined),
+                  maps:get(rate_limit_burst, Site, undefined)} of
+                {Rps, Burst} when is_integer(Rps), Rps > 0, is_integer(Burst), Burst > 0 ->
+                    {ok, Rps, Burst};
+                _ ->
+                    error
+            end;
+        error ->
+            error
+    end.
+
+find_site_by_host(Host, Sites) ->
+    case lists:dropwhile(fun(S) -> maps:get(host, S, <<>>) =/= Host end, Sites) of
+        [Site | _] -> {ok, Site};
+        [] -> error
     end.
 
 %% Return list of backend maps.
@@ -921,6 +949,22 @@ json_to_config(Json) ->
             parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
         health_cache_refresh_ms =>
             parse_opt_int(maps:get(<<"health_cache_refresh_ms">>, Json, null)),
+        rate_limit_enabled =>
+            case maps:get(<<"rate_limit_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        rate_limit_rps =>
+            parse_opt_int(maps:get(<<"rate_limit_rps">>, Json, null)),
+        rate_limit_burst =>
+            parse_opt_int(maps:get(<<"rate_limit_burst">>, Json, null)),
+        otel_enabled =>
+            case maps:get(<<"otel_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
+        otel_service_name =>
+            parse_opt_str(maps:get(<<"otel_service_name">>, Json, null)),
         health_access_log =>
             case maps:get(<<"health_access_log">>, Json, undefined) of
                 undefined -> undefined;
@@ -977,6 +1021,9 @@ parse_site(S) ->
         acme_contact_email => parse_opt_str(maps:get(<<"acme_contact_email">>, S, null)),
         advertise_http3 => parse_opt_bool(maps:get(<<"advertise_http3">>, S, true)),
         sse_early_flush => parse_opt_bool(maps:get(<<"sse_early_flush">>, S, null)),
+        auth_url => parse_opt_str(maps:get(<<"auth_url">>, S, null)),
+        rate_limit_rps => parse_opt_int(maps:get(<<"rate_limit_rps">>, S, null)),
+        rate_limit_burst => parse_opt_int(maps:get(<<"rate_limit_burst">>, S, null)),
         routes  => parse_routes(maps:get(<<"routes">>, S, undefined))
     }.
 

@@ -20,7 +20,7 @@
     | {error, unsupported}
     | {error, term()}.
 try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
-    case try_fast_api_h3(Method, Path) of
+    case try_fast_api_h3(Method, Path, H3Headers) of
         {ok, Status, Headers, RespBody} ->
             {ok, Status, Headers, RespBody};
         not_fast ->
@@ -43,19 +43,66 @@ try_dispatch(Method, Host, Path, Qs, H3Headers, Body, ClientIp) ->
     end.
 
 %% Lightweight API responses without Cowboy stub overhead (benchmark / hot path).
-try_fast_api_h3(<<"GET">>, <<"/api/ingress/live">>) ->
+try_fast_api_h3(<<"GET">>, <<"/api/ingress/live">>, _Headers) ->
     {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<"{\"status\":\"ok\"}">>};
-try_fast_api_h3(<<"HEAD">>, <<"/api/ingress/live">>) ->
+try_fast_api_h3(<<"HEAD">>, <<"/api/ingress/live">>, _Headers) ->
     {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
-try_fast_api_h3(<<"GET">>, <<"/api/health">>) ->
-    %% H3 benchmark/admin probe path: always minimal JSON (~20 bytes).
-    %% Full health (backends/TLS rows) is on :9080 /api/health via health_cache.
-    {ok, 200, [{<<"content-type">>, <<"application/json">>}],
-     pertisk_eproxy_admin_handler:h3_light_health_json()};
-try_fast_api_h3(<<"HEAD">>, <<"/api/health">>) ->
+try_fast_api_h3(<<"GET">>, <<"/api/health">>, Headers) ->
+    case h3_health_detail_authorized(Headers) of
+        true ->
+            case pertisk_eproxy_health_cache:get() of
+                {ok, Body} ->
+                    {ok, 200, [{<<"content-type">>, <<"application/json">>}], Body};
+                {error, _} ->
+                    {ok, 200, [{<<"content-type">>, <<"application/json">>}],
+                     pertisk_eproxy_admin_handler:build_health_json()}
+            end;
+        false ->
+            %% Unauthenticated H3 probe: minimal JSON (~20 bytes).
+            {ok, 200, [{<<"content-type">>, <<"application/json">>}],
+             pertisk_eproxy_admin_handler:h3_light_health_json()}
+    end;
+try_fast_api_h3(<<"HEAD">>, <<"/api/health">>, _Headers) ->
     {ok, 200, [{<<"content-type">>, <<"application/json">>}], <<>>};
-try_fast_api_h3(_, _) ->
+try_fast_api_h3(_, _, _) ->
     not_fast.
+
+h3_health_detail_authorized(Headers) when is_list(Headers) ->
+    case bearer_from_h3_headers(Headers) of
+        {ok, Token} ->
+            case pertisk_eproxy_auth:verify_token(Token) of
+                {ok, _} -> true;
+                _ -> false
+            end;
+        error ->
+            false
+    end;
+h3_health_detail_authorized(_) ->
+    false.
+
+bearer_from_h3_headers(Headers) ->
+    case header_value(<<"authorization">>, Headers) of
+        <<"Bearer ", Token/binary>> when byte_size(Token) > 0 ->
+            {ok, Token};
+        <<"bearer ", Token/binary>> when byte_size(Token) > 0 ->
+            {ok, Token};
+        _ ->
+            case header_value(<<"x-eproxy-bearer">>, Headers) of
+                <<"Bearer ", Token/binary>> when byte_size(Token) > 0 -> {ok, Token};
+                T when is_binary(T), byte_size(T) > 0 -> {ok, T};
+                _ -> error
+            end
+    end.
+
+header_value(Name, Headers) ->
+    lists:foldl(
+        fun
+            ({K, V}, undefined) when K =:= Name -> V;
+            (_, Acc) -> Acc
+        end,
+        undefined,
+        Headers
+    ).
 
 %% WebSocket realtime stays on the TCP management listener only.
 h3_local_management_path(<<"/api/realtime", _/binary>>) ->

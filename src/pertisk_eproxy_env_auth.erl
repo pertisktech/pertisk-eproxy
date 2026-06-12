@@ -13,6 +13,8 @@
     issue_bearer_token/1,
     verify_bearer_token/1,
     verify_api_token/1,
+    api_token_configured/0,
+    rotate_api_token/1,
     session_ttl_secs/0
 ]).
 
@@ -129,9 +131,33 @@ verify_bearer_token(<<"ptskv1.", Rest/binary>>) ->
 verify_bearer_token(_) ->
     {error, unauthorized}.
 
+-spec api_token_configured() -> boolean().
+api_token_configured() ->
+    case active_api_token() of
+        T when is_binary(T), byte_size(T) > 0 -> true;
+        _ -> false
+    end.
+
+-spec rotate_api_token(term()) -> {ok, binary()} | {error, term()}.
+rotate_api_token(Password) ->
+    case env_credentials_configured() of
+        false ->
+            {error, env_not_configured};
+        true ->
+            PBin = as_bin(Password),
+            case env_trimmed("PERTISK_PASSWORD") of
+                PBin ->
+                    Token = generate_api_token(),
+                    ok = put_runtime_api_token(Token),
+                    {ok, Token};
+                _ ->
+                    {error, invalid_credentials}
+            end
+    end.
+
 -spec verify_api_token(binary()) -> {ok, binary(), non_neg_integer()} | error.
 verify_api_token(Token) when is_binary(Token) ->
-    case env_trimmed("PERTISK_API_TOKEN") of
+    case active_api_token() of
         Api when is_binary(Api), byte_size(Api) > 0 ->
             case crypto:hash_equals(Api, Token) of
                 true -> {ok, <<"api">>, session_ttl_secs()};
@@ -142,6 +168,19 @@ verify_api_token(Token) when is_binary(Token) ->
     end;
 verify_api_token(_) ->
     error.
+
+active_api_token() ->
+    case application:get_env(pertisk_eproxy, runtime_api_token) of
+        {ok, T} when is_binary(T), byte_size(T) > 0 -> T;
+        _ -> env_trimmed("PERTISK_API_TOKEN")
+    end.
+
+put_runtime_api_token(Token) when is_binary(Token) ->
+    application:set_env(pertisk_eproxy, runtime_api_token, Token).
+
+generate_api_token() ->
+    Bytes = crypto:strong_rand_bytes(24),
+    binary:encode_hex(Bytes, lowercase).
 
 session_ttl_secs() ->
     case os:getenv("PERTISK_SESSION_TTL_SECS") of

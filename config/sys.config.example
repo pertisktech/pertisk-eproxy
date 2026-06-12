@@ -1,0 +1,43 @@
+[
+  {pertisk_eproxy, [
+    {log_app_name, <<"pertisk-eproxy">>},
+    {config_file, "config/proxy.json"},
+    {sqlite3_executable, "/usr/bin/sqlite3"},
+    {db_file, "data/proxy.db"},
+  %% Standalone mode: use SQLite admin users (default admin/admin on first DB init).
+  %% Ingress/Kubernetes mode: use PERTISK_ADMIN / PERTISK_PASSWORD env vars instead.
+    {admin_auth, local},
+
+  %% Auth0 SPA (optional). Set via env in production; do not commit real tenant values.
+    {admin_auth0_domain, ""},
+    {admin_auth0_client_id, ""},
+    {admin_auth0_audience, <<"">>},
+
+    {acme_terms_agreed, false},
+    {acme_directory_url, "https://acme-staging-v02.api.letsencrypt.org/directory"},
+    {acme_data_dir, "data/acme"},
+    {acme_dns_propagation_delay_ms, 15000},
+
+  %% Optional CouchDB sink — disable or inject credentials via env/secrets manager.
+    {couchdb_log, #{
+      enabled => false,
+      url => "",
+      db => "pertisk-eproxy",
+      username => "",
+      password => "",
+      create_db => false
+    }}
+  ]},
+
+  {lager, [
+    {handlers, [
+      {lager_console_backend, [
+        {level, info},
+        {use_stderr, true},
+        {formatter, pertisk_eproxy_lager_json_formatter},
+        {formatter_config, []}
+      ]}
+    ]},
+    {suppress_supervisor_start_stop, true}
+  ]}
+].

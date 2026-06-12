@@ -165,6 +165,39 @@ reconcile_resource_backend_test() ->
     ?assertEqual(<<"resource.my-resource.default.test-ing">>, maps:get(name, Backend)),
     ?assertEqual([], maps:get(upstreams, Backend)).
 
+reconcile_resource_backend_with_upstream_annotation_test() ->
+    Ingress = sample_ingress(#{
+        annotations => #{
+            <<"pertisk.io/resource-upstreams">> =>
+                <<"{\"my-resource\":\"external.example.com:443\"}">>
+        },
+        paths => [
+            sample_path(#{
+                backend => #{<<"resource">> => #{<<"name">> => <<"my-resource">>}}
+            })
+        ]
+    }),
+    {ok, Result} = pertisk_ingress_reconciler:reconcile([Ingress], []),
+    [Backend] = maps:get(backends, Result),
+    Addr = maps:get(addr, hd(maps:get(upstreams, Backend))),
+    ?assertEqual(<<"external.example.com:443">>, Addr).
+
+reconcile_ingress_lb_and_rewrite_annotations_test() ->
+    Ingress = sample_ingress(#{
+        annotations => #{
+            <<"pertisk.io/rewrite-target">> => <<"/v1">>,
+            <<"pertisk.io/load-balancer">> => <<"least_connections">>,
+            <<"pertisk.io/health-path">> => <<"/healthz">>
+        }
+    }),
+    {ok, Result} = pertisk_ingress_reconciler:reconcile([Ingress], []),
+    [Site] = maps:get(sites, Result),
+    [Route] = maps:get(routes, Site),
+    ?assertEqual(<<"/v1">>, maps:get(rewrite, Route)),
+    [Backend] = maps:get(backends, Result),
+    ?assertEqual(least_connections, maps:get(algorithm, Backend)),
+    ?assertEqual(<<"/healthz">>, maps:get(health_path, Backend)).
+
 reconcile_dedupes_backends_test() ->
     Ingress = sample_ingress(#{
         rules => [
