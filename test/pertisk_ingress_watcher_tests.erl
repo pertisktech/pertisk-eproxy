@@ -113,6 +113,7 @@ watcher_all_namespaces_test() ->
         end),
         meck:new(ekub, [unstick]),
         meck:expect(ekub, watch, fun(_, _, _) -> {error, refused} end),
+        meck:expect(ekub, patch, fun(_, _, _, _, _) -> {ok, #{}} end),
         {ok, Pid} = pertisk_ingress_watcher:start_link(),
         ?assertEqual(ok, pertisk_ingress_watcher:reconcile_now()),
         ok = gen_server:stop(Pid),
@@ -142,6 +143,7 @@ watcher_lifecycle_test() ->
                 {ok, [#{<<"type">> => <<"MODIFIED">>, <<"object">> => Ingress}]}
         end),
         meck:expect(ekub, watch_close, fun(_) -> ok end),
+        meck:expect(ekub, patch, fun(_, _, _, _, _) -> {ok, #{}} end),
         {ok, Pid} = pertisk_ingress_watcher:start_link(),
         ?assertEqual(ok, pertisk_ingress_watcher:reconcile_now()),
         pertisk_ingress_watcher:trigger_reconcile(),
