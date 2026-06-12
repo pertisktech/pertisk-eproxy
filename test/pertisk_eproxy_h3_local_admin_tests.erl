@@ -194,3 +194,190 @@ h3_client_ipv6_peer_test() ->
     ensure_env(),
     {ok, 200, _, _} =
         dispatch([<<"GET">>, <<"localhost">>, <<"/api/version">>, <<>>, [], <<>>, <<"::1">>]).
+
+
+h3_static_post_method_not_allowed_test() ->
+    ensure_env(),
+    case filelib:wildcard(filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets", "*.js"])) of
+        [Js | _] ->
+            Base = filename:basename(Js),
+            Path = <<"/assets/", (list_to_binary(Base))/binary>>,
+            {ok, 405, Hdrs, <<>>} =
+                dispatch([<<"POST">>, <<"example.com">>, Path, <<>>, [], <<>>, <<"127.0.0.1">>]),
+            ?assertEqual(<<"GET, HEAD">>, proplists:get_value(<<"allow">>, Hdrs));
+        [] ->
+            ok
+    end.
+
+h3_static_reserved_char_in_asset_test() ->
+    ensure_env(),
+    with_spa_index(fun() ->
+        {ok, 200, Hdrs, _} =
+            dispatch([<<"GET">>, <<"example.com">>, <<"/assets/bad\\seg">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs))
+    end).
+
+h3_api_post_dispatch_test() ->
+    ensure_env(),
+    {ok, _, _, _} =
+        dispatch([<<"POST">>, <<"localhost">>, <<"/api/auth/login">>, <<>>, [], <<"{\"u\":\"a\"}">>, <<"127.0.0.1">>]).
+
+
+h3_invalid_client_ip_fallback_test() ->
+    ensure_env(),
+    {ok, 200, _, _} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/version">>, <<>>, [], <<>>, <<"not-an-ip">>]).
+
+
+h3_realtime_ws_path_unsupported_test() ->
+    ensure_env(),
+    ?assertEqual(
+        {error, unsupported},
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/realtime">>, <<>>, [], <<>>, <<"127.0.0.1">>])
+    ).
+
+h3_favicon_head_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, <<>>} =
+        dispatch([<<"HEAD">>, <<"example.com">>, <<"/favicon.svg">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"image/svg+xml">>, proplists:get_value(<<"content-type">>, Hdrs)).
+
+h3_api_get_with_query_test() ->
+    ensure_env(),
+    {ok, 200, _, Body} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/version">>, <<"?x=1">>, [], <<>>, <<"127.0.0.1">>]),
+    ?assert(byte_size(Body) > 0).
+
+h3_spa_get_with_query_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, _} =
+        dispatch([<<"GET">>, <<"example.com">>, <<"/sites">>, <<"?tab=1">>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs)).
+
+h3_api_post_unsupported_method_test() ->
+    ensure_env(),
+    Result = dispatch([<<"PUT">>, <<"localhost">>, <<"/api/version">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertMatch({ok, Status, _, _} when Status >= 400; Status =:= 405, Result).
+
+h3_static_png_content_type_test() ->
+    ensure_env(),
+    AssetDir = filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets"]),
+    ok = filelib:ensure_dir(filename:join([AssetDir, "probe"])),
+    Path = filename:join([AssetDir, "probe.png"]),
+    ok = file:write_file(Path, <<"png">>),
+    try
+        {ok, 200, Hdrs, _} =
+            dispatch([<<"GET">>, <<"example.com">>, <<"/assets/probe.png">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assertEqual(<<"image/png">>, proplists:get_value(<<"content-type">>, Hdrs))
+    after
+        ok = file:delete(Path)
+    end.
+
+h3_static_with_advertise_http3_test() ->
+    ensure_env(),
+    Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+    Site = #{
+        host => <<"h3-static.test">>,
+        backend => <<"mgmt">>,
+        advertise_http3 => true,
+        routes => [#{path => <<"/">>, path_type => prefix}]
+    },
+    Backend = #{
+        name => <<"mgmt">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => Mgmt, weight => 1}]
+    },
+    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    try
+        {ok, 200, Hdrs, _} =
+            dispatch([<<"GET">>, <<"h3-static.test">>, <<"/favicon.svg">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assert(lists:keymember(<<"alt-svc">>, 1, Hdrs))
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+h3_spa_patch_serves_index_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, _} =
+        dispatch([<<"PATCH">>, <<"example.com">>, <<"/sites">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs)).
+
+h3_static_png_head_test() ->
+    ensure_env(),
+    AssetDir = filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets"]),
+    Path = filename:join([AssetDir, "probe-head.png"]),
+    ok = filelib:ensure_dir(filename:join([AssetDir, "probe"])),
+    ok = file:write_file(Path, <<"png">>),
+    try
+        {ok, 200, Hdrs, <<>>} =
+            dispatch([<<"HEAD">>, <<"example.com">>, <<"/assets/probe-head.png">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assertEqual(<<"image/png">>, proplists:get_value(<<"content-type">>, Hdrs))
+    after
+        ok = file:delete(Path)
+    end.
+
+h3_static_extra_content_types_test() ->
+    ensure_env(),
+    AssetDir = filename:join([code:priv_dir(pertisk_eproxy), "admin", "assets"]),
+    ok = filelib:ensure_dir(filename:join([AssetDir, "ct"])),
+    Files = [
+        {<<"probe.mjs">>, <<"application/javascript">>},
+        {<<"probe.jpg">>, <<"image/jpeg">>},
+        {<<"probe.webp">>, <<"image/webp">>},
+        {<<"probe.woff2">>, <<"font/woff2">>},
+        {<<"probe.woff">>, <<"font/woff">>},
+        {<<"probe.json">>, <<"application/json">>},
+        {<<"probe.map">>, <<"application/json">>},
+        {<<"probe.bin">>, <<"application/octet-stream">>}
+    ],
+    lists:foreach(
+        fun({Name, CT}) ->
+            Path = filename:join([AssetDir, Name]),
+            ok = file:write_file(Path, <<"x">>),
+            AssetPath = <<"/assets/", Name/binary>>,
+            {ok, 200, Hdrs, _} =
+                dispatch([<<"GET">>, <<"example.com">>, AssetPath, <<>>, [], <<>>, <<"127.0.0.1">>]),
+            ?assertEqual(CT, proplists:get_value(<<"content-type">>, Hdrs)),
+            ok = file:delete(Path)
+        end,
+        Files
+    ).
+
+h3_spa_advertise_http3_test() ->
+    ensure_env(),
+    Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+    Site = #{
+        host => <<"h3-spa.test">>,
+        backend => <<"mgmt">>,
+        advertise_http3 => true,
+        routes => [#{path => <<"/">>, path_type => prefix}]
+    },
+    Backend = #{
+        name => <<"mgmt">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => Mgmt, weight => 1}]
+    },
+    pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    try
+        {ok, 200, Hdrs, _} =
+            dispatch([<<"GET">>, <<"h3-spa.test">>, <<"/sites">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+        ?assert(lists:keymember(<<"alt-svc">>, 1, Hdrs))
+    after
+        pertisk_eproxy_test_helpers:sync_router([], [])
+    end.
+
+h3_static_post_unknown_asset_not_found_test() ->
+    ensure_env(),
+    {ok, 405, Hdrs, <<>>} =
+        dispatch([<<"POST">>, <<"example.com">>, <<"/assets/missing.js">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"GET, HEAD">>, proplists:get_value(<<"allow">>, Hdrs)).
+
+h3_null_byte_in_asset_path_test() ->
+    ensure_env(),
+    with_spa_index(fun() ->
+        {ok, 200, Hdrs, _} =
+            dispatch([
+                <<"GET">>, <<"example.com">>, <<"/assets/bad", 0, "seg">>, <<>>, [], <<>>, <<"127.0.0.1">>
+            ]),
+        ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs))
+    end).
