@@ -18,18 +18,22 @@ function hostForTlsValidation(host: string): string {
   return trimmed;
 }
 
+/** Mirror pertisk_eproxy_admin_handler:cert_pattern_matches_host/3 (single-label wildcard). */
 function certHostMatchesTarget(certHost: string, targetHost: string): boolean {
-  const cert = certHost.trim().toLowerCase();
-  const target = targetHost.trim().toLowerCase();
-  if (!cert || !target) return false;
-  if (cert === target) return true;
-  if (!cert.startsWith('*.')) return false;
+  const host = targetHost.trim().toLowerCase();
+  const pattern = certHost.trim().toLowerCase();
+  if (!host || !pattern) return false;
+  if (host === pattern) return true;
+  if (!pattern.startsWith('*.')) return false;
 
-  const suffix = cert.slice(2);
-  if (!suffix || !target.endsWith(`.${suffix}`)) return false;
+  const suffix = pattern.slice(2);
+  if (!suffix) return false;
 
-  const left = target.slice(0, -(suffix.length + 1));
-  return left.length > 0 && !left.includes('.');
+  const hostParts = host.split('.');
+  const suffixParts = suffix.split('.');
+  if (hostParts.length !== suffixParts.length + 1) return false;
+
+  return hostParts.slice(1).join('.') === suffixParts.join('.');
 }
 
 function certificateCoversHost(cert: CertificateRow, host: string): boolean {
@@ -37,6 +41,39 @@ function certificateCoversHost(cert: CertificateRow, host: string): boolean {
   if (certHosts.length === 0) return true;
   const target = hostForTlsValidation(host);
   return certHosts.some((h) => certHostMatchesTarget(h, target));
+}
+
+function hostsEqual(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Resolve the certificate row for a site — matches backend find_certificate_row_for_ref
+ * plus API `sites` membership (needed when site.certificate is acme/… but DB id is numeric).
+ */
+function findCertForSite(host: string, certRef: string, certs: CertificateRow[]): CertificateRow | undefined {
+  const ref = certRef.trim();
+  if (!ref) return undefined;
+
+  const byId = certs.find((c) => c.id === ref || String(c.id) === ref);
+  if (byId) return byId;
+
+  const byAssignedSite = certs.find((c) => (c.sites ?? []).some((s) => hostsEqual(s, host)));
+  if (byAssignedSite) return byAssignedSite;
+
+  if (ref.startsWith('acme/')) {
+    const slug = ref.slice(5);
+    const byAcmeRef = certs.find((c) => c.id === ref || hostsEqual(c.domain ?? '', slug));
+    if (byAcmeRef) return byAcmeRef;
+
+    const bySlugSan = certs.find((c) => (c.hosts ?? []).some((h) => hostsEqual(h, slug)));
+    if (bySlugSan) return bySlugSan;
+  }
+
+  const byDomain = certs.find((c) => c.domain === ref);
+  if (byDomain) return byDomain;
+
+  return certs.find((c) => certificateCoversHost(c, host));
 }
 
 function normalizeHealthRow(row: NonNullable<HealthReport['tls_sites']>[number]): TlsSiteValidationRow | null {
@@ -67,7 +104,7 @@ function buildRowFromSite(site: Site, certs: CertificateRow[]): TlsSiteValidatio
     };
   }
 
-  const cert = certs.find((c) => c.id === certRef);
+  const cert = findCertForSite(host, certRef, certs);
   if (!cert) {
     return {
       host,
@@ -102,17 +139,25 @@ function buildRowFromSite(site: Site, certs: CertificateRow[]): TlsSiteValidatio
   };
 }
 
-/** Prefer /api/health tls_sites; fill gaps from config sites + certificate list. */
+function isFullHealthReport(health: HealthReport | null | undefined): boolean {
+  return Array.isArray(health?.tls_sites) || Array.isArray(health?.backends);
+}
+
+/** Prefer /api/health tls_sites when the full report is available; otherwise derive from sites + certs. */
 export function buildTlsSiteValidationRows(
   sites: Site[],
   health: HealthReport | null | undefined,
   certs: CertificateRow[],
 ): TlsSiteValidationRow[] {
+  const useHealthRows = isFullHealthReport(health);
   const healthByHost = new Map<string, TlsSiteValidationRow>();
-  for (const row of health?.tls_sites ?? []) {
-    const normalized = normalizeHealthRow(row);
-    if (normalized) {
-      healthByHost.set(normalized.host.toLowerCase(), normalized);
+
+  if (useHealthRows) {
+    for (const row of health?.tls_sites ?? []) {
+      const normalized = normalizeHealthRow(row);
+      if (normalized) {
+        healthByHost.set(normalized.host.toLowerCase(), normalized);
+      }
     }
   }
 
@@ -126,7 +171,13 @@ export function buildTlsSiteValidationRows(
     if (seen.has(key)) continue;
     seen.add(key);
 
-    rows.push(healthByHost.get(key) ?? buildRowFromSite(site, certs));
+    const fromHealth = healthByHost.get(key);
+    if (fromHealth) {
+      rows.push(fromHealth);
+      continue;
+    }
+
+    rows.push(buildRowFromSite(site, certs));
   }
 
   rows.sort((a, b) => a.host.localeCompare(b.host, undefined, { sensitivity: 'base' }));
