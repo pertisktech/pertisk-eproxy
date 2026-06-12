@@ -358,7 +358,9 @@ with_mock_k8s(Fun) ->
 ensure_backend_sup() ->
     case whereis(pertisk_eproxy_backend_sup) of
         undefined ->
-            {ok, _} = pertisk_eproxy_backend_sup:start_link();
+            {ok, Pid} = pertisk_eproxy_backend_sup:start_link(),
+            true = erlang:unlink(Pid),
+            ok;
         _ ->
             ok
     end.
