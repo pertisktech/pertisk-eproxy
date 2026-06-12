@@ -154,15 +154,7 @@ should_sse_early_flush_test() ->
     ?assertNot(pertisk_eproxy_handler:should_sse_early_flush(<<"host">>, <<"/">>, #{})).
 
 unload_mocks(Mods) ->
-    lists:foreach(
-        fun(Mod) ->
-            case lists:member(Mod, meck:mocked()) of
-                true -> meck:unload(Mod);
-                false -> ok
-            end
-        end,
-        Mods
-    ).
+    pertisk_eproxy_test_helpers:unload_mocks(Mods).
 
 with_handler_req(Opts, Fun) ->
     unload_mocks([
@@ -171,15 +163,15 @@ with_handler_req(Opts, Fun) ->
         pertisk_eproxy_alt_svc, pertisk_eproxy_response_headers
     ]),
     pertisk_eproxy_test_helpers:ensure_metrics(),
-    meck:new(cowboy_req, [unstick]),
-    meck:new(pertisk_eproxy_router, [unstick]),
-    meck:new(pertisk_eproxy_backend, [unstick, passthrough]),
-    meck:new(pertisk_eproxy_config, [unstick, passthrough]),
-    meck:new(pertisk_eproxy_compression, [unstick]),
-    meck:new(pertisk_eproxy_metrics, [unstick]),
-    meck:new(pertisk_eproxy_access_log, [unstick]),
-    meck:new(pertisk_eproxy_alt_svc, [unstick]),
-    meck:new(pertisk_eproxy_response_headers, [unstick]),
+    meck:new(cowboy_req, [unstick, no_link]),
+    meck:new(pertisk_eproxy_router, [unstick, no_link]),
+    meck:new(pertisk_eproxy_backend, [unstick, no_link, passthrough]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link, passthrough]),
+    meck:new(pertisk_eproxy_compression, [unstick, no_link]),
+    meck:new(pertisk_eproxy_metrics, [unstick, no_link]),
+    meck:new(pertisk_eproxy_access_log, [unstick, no_link]),
+    meck:new(pertisk_eproxy_alt_svc, [unstick, no_link]),
+    meck:new(pertisk_eproxy_response_headers, [unstick, no_link]),
     meck:expect(pertisk_eproxy_response_headers, merge, fun(H) -> H end),
     meck:expect(pertisk_eproxy_alt_svc, merge_response_headers, fun(_Req, _Host, H) -> H end),
     meck:expect(pertisk_eproxy_compression, maybe_compress_cowboy, fun(_, _, H, B) -> {H, B} end),
@@ -237,8 +229,8 @@ init_no_healthy_upstream_502_test() ->
 
 init_websocket_upgrade_delegates_test() ->
     unload_mocks([cowboy_req, pertisk_eproxy_ws_handler]),
-    meck:new(cowboy_req, [unstick]),
-    meck:new(pertisk_eproxy_ws_handler, [unstick]),
+    meck:new(cowboy_req, [unstick, no_link]),
+    meck:new(pertisk_eproxy_ws_handler, [unstick, no_link]),
     meck:expect(cowboy_req, method, fun(_) -> <<"GET">> end),
     meck:expect(cowboy_req, host, fun(_) -> <<"ws.example">> end),
     meck:expect(cowboy_req, path, fun(_) -> <<"/ws">> end),
@@ -267,7 +259,7 @@ init_proxy_gun_connect_error_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         unload_mocks([gun]),
-        meck:new(gun, [unstick]),
+        meck:new(gun, [unstick, no_link]),
         meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
         try
             ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
@@ -287,7 +279,7 @@ init_proxy_gun_await_up_error_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         unload_mocks([gun]),
-        meck:new(gun, [unstick]),
+        meck:new(gun, [unstick, no_link]),
         meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
         meck:expect(gun, await_up, fun(_, _) -> {error, timeout} end),
         meck:expect(gun, close, fun(_) -> ok end),
@@ -316,7 +308,7 @@ init_https_scheme_proto_test() ->
 
 with_eventstream_upstream_ok_test() ->
     unload_mocks([gun]),
-    meck:new(gun, [unstick]),
+    meck:new(gun, [unstick, no_link]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
     meck:expect(gun, close, fun(_) -> ok end),
@@ -335,7 +327,7 @@ with_eventstream_upstream_ok_test() ->
 
 with_eventstream_upstream_connect_error_test() ->
     unload_mocks([gun]),
-    meck:new(gun, [unstick]),
+    meck:new(gun, [unstick, no_link]),
     meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
     try
         Result = pertisk_eproxy_handler:with_eventstream_upstream(
@@ -352,7 +344,7 @@ with_eventstream_upstream_connect_error_test() ->
 
 with_eventstream_upstream_await_up_error_test() ->
     unload_mocks([gun]),
-    meck:new(gun, [unstick]),
+    meck:new(gun, [unstick, no_link]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
     meck:expect(gun, await_up, fun(_, _) -> {error, timeout} end),
     meck:expect(gun, close, fun(_) -> ok end),
@@ -371,7 +363,7 @@ with_eventstream_upstream_await_up_error_test() ->
 
 with_eventstream_upstream_fun_error_test() ->
     unload_mocks([gun]),
-    meck:new(gun, [unstick]),
+    meck:new(gun, [unstick, no_link]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
     meck:expect(gun, close, fun(_) -> ok end),
@@ -390,7 +382,7 @@ with_eventstream_upstream_fun_error_test() ->
 
 websocket_callbacks_delegate_test() ->
     unload_mocks([pertisk_eproxy_ws_handler]),
-    meck:new(pertisk_eproxy_ws_handler, [unstick]),
+    meck:new(pertisk_eproxy_ws_handler, [unstick, no_link]),
     meck:expect(pertisk_eproxy_ws_handler, websocket_init, fun(S) -> {ok, ws_init, S} end),
     meck:expect(pertisk_eproxy_ws_handler, websocket_handle, fun(F, S) -> {ok, ws_handle, F, S} end),
     meck:expect(pertisk_eproxy_ws_handler, websocket_info, fun(I, S) -> {ok, ws_info, I, S} end),
@@ -404,8 +396,8 @@ websocket_callbacks_delegate_test() ->
 
 init_websocket_sec_key_upgrade_test() ->
     unload_mocks([cowboy_req, pertisk_eproxy_ws_handler]),
-    meck:new(cowboy_req, [unstick]),
-    meck:new(pertisk_eproxy_ws_handler, [unstick]),
+    meck:new(cowboy_req, [unstick, no_link]),
+    meck:new(pertisk_eproxy_ws_handler, [unstick, no_link]),
     meck:expect(cowboy_req, method, fun(_) -> <<"GET">> end),
     meck:expect(cowboy_req, host, fun(_) -> <<"ws.example">> end),
     meck:expect(cowboy_req, path, fun(_) -> <<"/ws">> end),
@@ -433,7 +425,7 @@ init_management_only_backend_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         unload_mocks([pertisk_eproxy_h3_local_admin]),
-        meck:new(pertisk_eproxy_h3_local_admin, [unstick]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick, no_link]),
         meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
             {ok, 200, [], <<"ok">>}
         end),
@@ -456,7 +448,7 @@ init_admin_fallback_no_upstream_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         unload_mocks([pertisk_eproxy_h3_local_admin]),
-        meck:new(pertisk_eproxy_h3_local_admin, [unstick]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick, no_link]),
         meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
             {ok, 204, [], <<>>}
         end),
@@ -479,7 +471,7 @@ init_eventstream_gun_connect_error_test() ->
     }, fun(Req) ->
         add_body_mocks(Req),
         unload_mocks([gun]),
-        meck:new(gun, [unstick]),
+        meck:new(gun, [unstick, no_link]),
         meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
         try
             ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
@@ -513,8 +505,8 @@ init_proxy_gun_success_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun, pertisk_eproxy_upstream_pool]),
-        meck:new(gun, [unstick]),
-        meck:new(pertisk_eproxy_upstream_pool, [unstick]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
         meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
         meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
         meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
@@ -542,8 +534,8 @@ init_proxy_gun_retry_after_down_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun, pertisk_eproxy_upstream_pool]),
-        meck:new(gun, [unstick]),
-        meck:new(pertisk_eproxy_upstream_pool, [unstick]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
         CRef = make_ref(),
         put({checkout_count, CRef}, 0),
         meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) ->
@@ -552,6 +544,10 @@ init_proxy_gun_retry_after_down_test() ->
             {ok, gun_pid}
         end),
         meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+        meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+        meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+        meck:expect(gun, close, fun(_) -> ok end),
+        meck:expect(gun, await_body, fun(_, _, _) -> {ok, <<"ok">>} end),
         ARef = make_ref(),
         put({gun_await_queue, ARef}, [{error, {down, normal}}, {response, fin, 200, []}]),
         meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
@@ -586,8 +582,8 @@ init_head_upstream_content_length_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun, pertisk_eproxy_upstream_pool]),
-        meck:new(gun, [unstick]),
-        meck:new(pertisk_eproxy_upstream_pool, [unstick]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
         meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
         meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
         meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
@@ -616,8 +612,8 @@ init_grpc_fin_response_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun, pertisk_eproxy_upstream_pool]),
-        meck:new(gun, [unstick]),
-        meck:new(pertisk_eproxy_upstream_pool, [unstick]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
         meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
         meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
         meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
@@ -643,7 +639,7 @@ init_loopback_gun_success_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun]),
-        meck:new(gun, [unstick]),
+        meck:new(gun, [unstick, no_link]),
         meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
         meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
         meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
@@ -668,7 +664,7 @@ init_management_upstream_local_admin_test() ->
         add_body_mocks(Req),
         meck:expect(pertisk_eproxy_config, is_management_upstream_addr, fun(_) -> true end),
         unload_mocks([pertisk_eproxy_h3_local_admin]),
-        meck:new(pertisk_eproxy_h3_local_admin, [unstick]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick, no_link]),
         meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
             {ok, 200, [], <<"local">>}
         end),
@@ -695,8 +691,8 @@ init_proxy_streaming_nofin_test() ->
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
         unload_mocks([gun, pertisk_eproxy_upstream_pool]),
-        meck:new(gun, [unstick]),
-        meck:new(pertisk_eproxy_upstream_pool, [unstick]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
         meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
         meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
         ARef = make_ref(),

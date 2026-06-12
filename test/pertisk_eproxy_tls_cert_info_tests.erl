@@ -54,18 +54,38 @@ with_config(Fun) ->
         maybe_stop_config(Started)
     end.
 
+stop_config_if_running() ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        Pid ->
+            catch gen_server:stop(Pid, normal, 5000),
+            wait_config_stopped(30)
+    end.
+
+wait_config_stopped(0) ->
+    ok;
+wait_config_stopped(N) ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        _ ->
+            timer:sleep(50),
+            wait_config_stopped(N - 1)
+    end.
+
 with_tmp_db_config(Fun) ->
     pertisk_eproxy_test_helpers:with_db_lock(fun() ->
         DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
         OldDb = application:get_env(pertisk_eproxy, db_file),
+        stop_config_if_running(),
         application:set_env(pertisk_eproxy, db_file, DbPath),
         try
-            with_config(fun() ->
-                ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
-                Fun()
-            end)
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            with_config(Fun)
         after
+            stop_config_if_running(),
             case OldDb of
                 {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)

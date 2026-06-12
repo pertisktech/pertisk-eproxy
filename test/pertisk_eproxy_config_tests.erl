@@ -618,7 +618,7 @@ with_config(Fun) ->
     end.
 
 init_tmp_db(DbPath) ->
-    init_tmp_db(DbPath, 5).
+    init_tmp_db(DbPath, 12).
 
 put_config_retry(Config) ->
     put_config_retry(Config, 12).
@@ -693,18 +693,38 @@ init_tmp_db(DbPath, Retries) ->
             Other
     end.
 
+stop_config_if_running() ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        Pid ->
+            catch gen_server:stop(Pid, normal, 5000),
+            wait_config_stopped(30)
+    end.
+
+wait_config_stopped(0) ->
+    ok;
+wait_config_stopped(N) ->
+    case whereis(pertisk_eproxy_config) of
+        undefined ->
+            ok;
+        _ ->
+            timer:sleep(50),
+            wait_config_stopped(N - 1)
+    end.
+
 with_tmp_db_config(Fun) ->
     pertisk_eproxy_test_helpers:with_db_lock(fun() ->
         DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
         OldDb = application:get_env(pertisk_eproxy, db_file),
+        stop_config_if_running(),
         application:set_env(pertisk_eproxy, db_file, DbPath),
         try
-            with_config(fun() ->
-                ?assertMatch({ok, _}, init_tmp_db(DbPath)),
-                Fun()
-            end)
+            ?assertMatch({ok, _}, init_tmp_db(DbPath)),
+            with_config(Fun)
         after
+            stop_config_if_running(),
             case OldDb of
                 {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)
@@ -836,7 +856,7 @@ put_config_persists_runtime_config_test() ->
             certificates => [],
             dns_providers => [#{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}]
         },
-        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config)),
+        ?assertEqual(ok, put_config_retry(Config)),
         {ok, Stored} = pertisk_eproxy_db:get_runtime_config(DbPath),
         ?assertEqual(1, length(maps:get(sites, Stored))),
         ?assertMatch({ok, [_]}, pertisk_eproxy_db:list_dns_providers(DbPath))

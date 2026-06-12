@@ -14,10 +14,13 @@
     tmp_db/0,
     with_db_lock/1,
     put_config_retry/1,
-    put_config_retry/2
+    put_config_retry/2,
+    unload_mocks/1,
+    unload_mocks/2
 ]).
 
 -define(DB_LOCK_KEY, pertisk_db_lock_depth).
+-define(MECK_UNLOAD_TIMEOUT_MS, 5000).
 
 ensure_lager() ->
     application:ensure_all_started(lager).
@@ -149,3 +152,41 @@ sqlite_locked_msg(Msg) when is_list(Msg) ->
     string:find(Msg, "locked") =/= nomatch;
 sqlite_locked_msg(_) ->
     false.
+
+unload_mocks(Mods) ->
+    unload_mocks(Mods, ?MECK_UNLOAD_TIMEOUT_MS).
+
+unload_mocks(Mods, TimeoutMs) when is_integer(TimeoutMs), TimeoutMs > 0 ->
+    lists:foreach(fun(Mod) -> unload_mock(Mod, TimeoutMs) end, Mods).
+
+unload_mock(Mod, TimeoutMs) ->
+    case lists:member(Mod, meck:mocked()) of
+        false ->
+            ok;
+        true ->
+            Parent = self(),
+            Worker = spawn(fun() ->
+                Parent ! {meck_unload_done, Mod, catch meck:unload(Mod)}
+            end),
+            receive
+                {meck_unload_done, Mod, _} ->
+                    ok
+            after TimeoutMs ->
+                exit(Worker, kill),
+                force_stop_meck(Mod),
+                ok
+            end
+    end.
+
+force_stop_meck(Mod) ->
+    Name = meck_proc_name(Mod),
+    case whereis(Name) of
+        undefined ->
+            ok;
+        Pid when is_pid(Pid) ->
+            catch exit(Pid, kill),
+            ok
+    end.
+
+meck_proc_name(Mod) ->
+    list_to_atom(atom_to_list(Mod) ++ "_meck").
