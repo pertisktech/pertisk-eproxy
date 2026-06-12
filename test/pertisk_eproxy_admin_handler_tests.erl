@@ -173,7 +173,7 @@ wait_config_stopped(N) ->
     end.
 
 init_tmp_db(DbPath) ->
-    init_tmp_db(DbPath, 8).
+    init_tmp_db(DbPath, 12).
 
 init_tmp_db(DbPath, 0) ->
     pertisk_eproxy_db:init(DbPath);

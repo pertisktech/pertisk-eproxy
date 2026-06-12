@@ -156,22 +156,26 @@ should_sse_early_flush_test() ->
 unload_mocks(Mods) ->
     pertisk_eproxy_test_helpers:unload_mocks(Mods).
 
+ensure_mock(Mod, Opts) ->
+    case lists:member(Mod, meck:mocked()) of
+        true ->
+            pertisk_eproxy_test_helpers:unload_mock(Mod, 250);
+        false ->
+            ok
+    end,
+    meck:new(Mod, Opts).
+
 with_handler_req(Opts, Fun) ->
-    unload_mocks([
-        cowboy_req, pertisk_eproxy_router, pertisk_eproxy_backend, pertisk_eproxy_config,
-        pertisk_eproxy_compression, pertisk_eproxy_metrics, pertisk_eproxy_access_log,
-        pertisk_eproxy_alt_svc, pertisk_eproxy_response_headers
-    ]),
     pertisk_eproxy_test_helpers:ensure_metrics(),
-    meck:new(cowboy_req, [unstick, no_link]),
-    meck:new(pertisk_eproxy_router, [unstick, no_link]),
-    meck:new(pertisk_eproxy_backend, [unstick, no_link, passthrough]),
-    meck:new(pertisk_eproxy_config, [unstick, no_link, passthrough]),
-    meck:new(pertisk_eproxy_compression, [unstick, no_link]),
-    meck:new(pertisk_eproxy_metrics, [unstick, no_link]),
-    meck:new(pertisk_eproxy_access_log, [unstick, no_link]),
-    meck:new(pertisk_eproxy_alt_svc, [unstick, no_link]),
-    meck:new(pertisk_eproxy_response_headers, [unstick, no_link]),
+    ensure_mock(cowboy_req, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_router, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_backend, [unstick, no_link, passthrough]),
+    ensure_mock(pertisk_eproxy_config, [unstick, no_link, passthrough]),
+    ensure_mock(pertisk_eproxy_compression, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_metrics, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_access_log, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_alt_svc, [unstick, no_link]),
+    ensure_mock(pertisk_eproxy_response_headers, [unstick, no_link]),
     meck:expect(pertisk_eproxy_response_headers, merge, fun(H) -> H end),
     meck:expect(pertisk_eproxy_alt_svc, merge_response_headers, fun(_Req, _Host, H) -> H end),
     meck:expect(pertisk_eproxy_compression, maybe_compress_cowboy, fun(_, _, H, B) -> {H, B} end),

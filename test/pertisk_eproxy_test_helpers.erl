@@ -20,7 +20,7 @@
 ]).
 
 -define(DB_LOCK_KEY, pertisk_db_lock_depth).
--define(MECK_UNLOAD_TIMEOUT_MS, 5000).
+-define(MECK_UNLOAD_TIMEOUT_MS, 250).
 
 ensure_lager() ->
     application:ensure_all_started(lager).
