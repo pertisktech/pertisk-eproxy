@@ -61,7 +61,8 @@ Global rate limits are also available via proxy config:
 
 Enable with Helm `ingress.gatewayApiEnabled: true`. This installs a
 `GatewayClass` named like `ingress.className` (default `pertisk-eproxy`) so
-`kubectl get gatewayclass` lists the controller. HTTPRoutes must include:
+`kubectl get gatewayclass` lists the controller. The ingress leader patches
+`status.conditions[Accepted]=True` after reconcile. HTTPRoutes must include:
 
 ```yaml
 metadata:

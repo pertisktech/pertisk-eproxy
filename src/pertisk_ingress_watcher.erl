@@ -122,7 +122,9 @@ maybe_reconcile(State = #{conn := undefined}) ->
 maybe_reconcile(State = #{conn := Conn}) ->
     %% Every replica lists Ingress/Secrets and applies config (read-only K8s API).
     %% Leader election only coordinates lease writes, not config fan-out.
-    case full_reconcile(Conn) of
+    ReconcileResult = full_reconcile(Conn),
+    _ = pertisk_gateway_class_status:maybe_update(Conn),
+    case ReconcileResult of
         ok ->
             State;
         {error, Err} ->

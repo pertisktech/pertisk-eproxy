@@ -1,9 +1,10 @@
 %% @doc In-cluster ekub init (fixes ekub default server "https://kubernetes" → nxdomain).
 -module(pertisk_ingress_ekub).
 
--export([init/0]).
+-export([init/0, merge_patch/3]).
 
 -define(SA_DIR, "/var/run/secrets/kubernetes.io/serviceaccount").
+-define(RecvTimeout, 60 * 1000).
 
 -spec init() -> {ok, {term(), map()}} | {error, term()}.
 init() ->
@@ -12,6 +13,28 @@ init() ->
             init_in_cluster();
         false ->
             ekub:init()
+    end.
+
+%% @doc JSON merge patch for CRD status subresources (ekub uses strategic merge).
+-spec merge_patch(iolist() | binary(), map(), {term(), map()}) ->
+    {ok, map()} | {error, term()}.
+merge_patch(Path, Body, {_Api, Access}) when is_map(Body) ->
+    Url = iolist_to_binary([maps:get(server, Access, ""), Path]),
+    Headers = [
+        {<<"Content-Type">>, <<"application/merge-patch+json">>},
+        auth_header(Access)
+    ],
+    Opts = [{ssl_options, ssl_options(Access)}, {recv_timeout, ?RecvTimeout}],
+    case hackney:request(patch, Url, Headers, jsx:encode(Body), Opts) of
+        {ok, Code, RespHdrs, Ref} when Code >= 200, Code =< 299 ->
+            case hackney:body(Ref) of
+                {ok, RespBody} -> {ok, decode_json(RespHdrs, RespBody)};
+                {error, Reason} -> {error, Reason}
+            end;
+        {ok, _Code, RespHdrs, Ref} ->
+            {error, decode_json(RespHdrs, hackney_body(Ref))};
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 init_in_cluster() ->
@@ -55,3 +78,43 @@ coalesce_port(P) when is_list(P) -> P.
 in_cluster_service_account() ->
     filelib:is_regular(?SA_DIR ++ "/token")
         andalso filelib:is_regular(?SA_DIR ++ "/ca.crt").
+
+auth_header(#{token := Token}) ->
+    {<<"Authorization">>, iolist_to_binary(["Bearer ", Token])};
+auth_header(#{username := UserName, password := Password}) ->
+    {<<"Authorization">>, base64:encode(iolist_to_binary([UserName, $:, Password]))};
+auth_header(_) ->
+    {<<"Authorization">>, <<>>}.
+
+ssl_options(Access) ->
+    Verify =
+        case maps:get(insecure_skip_tls_verify, Access, false) of
+            true -> verify_none;
+            false -> verify_peer
+        end,
+    Base = [{verify, Verify}],
+    Ca = case maps:get(ca_cert, Access, false) of
+        false -> [];
+        Cert -> [{cacerts, [Cert]}]
+    end,
+    Client =
+        case {maps:get(client_cert, Access, false), maps:get(client_key, Access, false)} of
+            {false, _} -> [];
+            {ClientCert, ClientKey} -> [{cert, ClientCert}, {key, ClientKey}]
+        end,
+    Base ++ Ca ++ Client.
+
+decode_json(_Headers, Body) when is_binary(Body) ->
+    try jsx:decode(Body, [return_maps]) of
+        Decoded -> Decoded
+    catch
+        _:_ -> Body
+    end;
+decode_json(_, Body) ->
+    Body.
+
+hackney_body(Ref) ->
+    case hackney:body(Ref) of
+        {ok, B} -> B;
+        {error, _} -> <<>>
+    end.
