@@ -1,7 +1,7 @@
 %% @doc Transform Kubernetes Ingress + Secret objects into eproxy sites/backends/TLS.
 -module(pertisk_ingress_reconciler).
 
--export([reconcile/2, ingress_matches_class/2]).
+-export([reconcile/2, ingress_matches_class/2, load_tls_from_refs/2]).
 
 -define(DEFAULT_BACKEND_PORT, 80).
 -define(INGRESS_CLASS_ANNOTATION, <<"kubernetes.io/ingress.class">>).
@@ -51,6 +51,10 @@ reconcile(Ingresses, Secrets) ->
         C:R:St ->
             {error, {reconcile_failed, C, R, St}}
     end.
+
+-spec load_tls_from_refs([{binary(), binary(), [binary()]}], [map()]) -> [map()].
+load_tls_from_refs(TlsRefs, Secrets) ->
+    load_tls_entries(TlsRefs, secrets_index(Secrets)).
 
 %% ---------------------------------------------------------------------------
 %% Ingress → sites/backends

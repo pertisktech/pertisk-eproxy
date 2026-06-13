@@ -1,0 +1,53 @@
+# Example Gateway API Gateway + HTTPRoute for pertisk-eproxy.
+#
+# Prerequisites:
+# - Gateway API CRDs installed in the cluster.
+# - Helm value ingress.gatewayApiEnabled=true for this chart.
+# - Annotation pertisk.io/gateway-class matches values.ingress.className
+#   (default: pertisk-eproxy).
+#
+# TLS: the Gateway listener certificateRefs are used for matching HTTPRoute
+# hostnames (wildcard listeners supported). You can override per route with:
+#   pertisk.io/tls-secret: my-tls-secret
+#   pertisk.io/tls-secret-namespace: my-namespace   # optional
+#
+# Routing: HTTPRoute is reconciled via pertisk.io/gateway-class (no parentRefs
+# required). Traffic enters the pertisk-eproxy LoadBalancer on 443/80.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: pertisk-gateway
+  namespace: pertisk-eproxy
+spec:
+  gatewayClassName: pertisk-eproxy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.gateway.pertisk.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: admin-gateway-pertisk-tls
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: admin-gateway-httproute
+  namespace: pertisk-eproxy
+  annotations:
+    pertisk.io/gateway-class: pertisk-eproxy
+spec:
+  hostnames:
+    - admin.gateway.pertisk.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: pertisk-eproxy
+          port: 9080

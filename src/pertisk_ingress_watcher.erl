@@ -124,6 +124,7 @@ maybe_reconcile(State = #{conn := Conn}) ->
     %% Leader election only coordinates lease writes, not config fan-out.
     ReconcileResult = full_reconcile(Conn),
     _ = pertisk_gateway_class_status:maybe_update(Conn),
+    _ = pertisk_gateway_status:maybe_update(Conn),
     case ReconcileResult of
         ok ->
             State;
@@ -184,18 +185,43 @@ merge_gateway_routes(_Conn, {ok, IngressResult}) ->
         false ->
             {ok, IngressResult};
         true ->
-            case list_httproutes(_Conn, list_query()) of
+            Query = list_query(),
+            RoutesRead = list_httproutes(_Conn, Query),
+            GatewaysRead = list_gateways(_Conn, Query),
+            case RoutesRead of
+                {error, Reason} ->
+                    lager:warning("Gateway API HTTPRoute list failed: ~p", [Reason]),
+                    {ok, IngressResult};
                 {ok, Routes} ->
-                    case pertisk_gateway_reconciler:reconcile(Routes) of
+                    Gateways =
+                        case GatewaysRead of
+                            {ok, Gws} -> Gws;
+                            {error, GwReason} ->
+                                lager:warning("Gateway API Gateway list failed: ~p", [GwReason]),
+                                []
+                        end,
+                    Secrets = list_tls_secrets(_Conn),
+                    case pertisk_gateway_reconciler:reconcile(Routes, Gateways, Secrets) of
                         {ok, GatewayResult} ->
                             {ok, pertisk_gateway_reconciler:merge_results(IngressResult, GatewayResult)};
                         {error, _} = GErr ->
                             GErr
-                    end;
-                {error, Reason} ->
-                    lager:warning("Gateway API HTTPRoute list failed: ~p", [Reason]),
-                    {ok, IngressResult}
+                    end
             end
+    end.
+
+list_gateways(Conn, Query) ->
+    Api = {<<"gateway.networking.k8s.io">>, <<"v1">>},
+    Read = case pertisk_ingress_env:namespace() of
+        all_namespaces ->
+            read_cluster_resource(Conn, Api, <<"gateways">>, Query);
+        Ns when is_binary(Ns) ->
+            read_cluster_resource(Conn, Api, <<"gateways">>, [{namespace, Ns} | Query])
+    end,
+    case Read of
+        {ok, ListObj} -> {ok, items_from_list(ListObj)};
+        {error, #{<<"code">> := 404}} -> {ok, []};
+        {error, _} = Err -> Err
     end.
 
 list_httproutes(Conn, Query) ->

@@ -110,6 +110,40 @@ To route to a Service in a different namespace than the Ingress object:
 
 The controller resolves upstreams as `<service>.<backend-namespace>.svc.cluster.local:<port>`.
 
+## Example Gateway API Gateway + HTTPRoute
+
+Enable Gateway API reconciliation first:
+
+```bash
+helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy -n pertisk-eproxy \
+  --set ingress.gatewayApiEnabled=true
+```
+
+Then apply the example Gateway + route:
+
+```bash
+kubectl apply -f examples/gateway-api-httproute.yaml
+```
+
+The route annotation `pertisk.io/gateway-class` must match your
+`ingress.className` (default `pertisk-eproxy`).
+
+**How routing works:** pertisk-eproxy does not attach HTTPRoutes via `parentRefs`.
+It lists HTTPRoutes with the annotation above and programs the proxy LoadBalancer
+(443/80). Optional `Gateway` resources supply TLS via listener `certificateRefs`
+(matched to HTTPRoute hostnames, including wildcards like `*.example.com`).
+
+**Verify after apply:**
+
+```bash
+kubectl get gatewayclass,gateway,httproute -n pertisk-eproxy
+# GatewayClass ACCEPTED=True, Gateway Programmed=True (ingress image >= 0.5.48)
+
+# Site should include certificate for your hostname (management API, auth required):
+kubectl run gw-debug --rm -it -n pertisk-eproxy --image=curlimages/curl -- \
+  sh -c 'TOKEN=$(curl -s -X POST http://pertisk-eproxy:9080/api/auth/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"admin\"}" | sed -n "s/.*\"token\":\"\\([^\"]*\\)\".*/\\1/p"); curl -s http://pertisk-eproxy:9080/api/sites -H "Authorization: Bearer $TOKEN" | grep admin.gateway'
+```
+
 ### Dashboard `GET /api/kubernetes/pods` returns 403
 
 The ServiceAccount needs `pods` **list** in the release namespace. Helm installs a namespaced **Role** (`*-dashboard`) plus ClusterRole rules.
@@ -126,7 +160,7 @@ If `can-i` is `no`, apply the chart again or check `rbac.create: true` in values
 
 | Feature | pertisk-eproxy |
 |---------|----------------|
-| CRDs | Not included (standard Ingress only; CRD examples in `examples/`) |
+| CRDs | Not installed by chart; optional Gateway API HTTPRoute reconcile when `ingress.gatewayApiEnabled=true` |
 | Metrics | Dedicated `:9090` (`GET /metrics`; legacy `GET /api/metrics` on management) |
 | Probes | `/api/ingress/live`, `/api/ingress/ready` (no auth; also `/api/ingress/status`) |
 | Auth secret | `PERTISK_ADMIN` / `PERTISK_PASSWORD` (+ optional Auth0); stateless `ptskv1` bearer tokens across replicas |
