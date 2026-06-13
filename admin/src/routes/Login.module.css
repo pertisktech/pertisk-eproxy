@@ -19,6 +19,11 @@
 }
 
 .brandPanel {
+  --brand-fg: #f8f6ff;
+  --brand-muted: rgba(248, 246, 255, 0.8);
+  --brand-soft: rgba(248, 246, 255, 0.68);
+  --brand-logo-bg: rgba(255, 255, 255, 0.14);
+  --brand-logo-border: rgba(255, 255, 255, 0.22);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -26,12 +31,26 @@
   padding: 2rem 2.5rem;
   overflow: hidden;
   background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--color-primary) 88%, #0f172a) 0%,
-    color-mix(in srgb, var(--color-primary) 55%, #1e293b) 45%,
-    #0f172a 100%
+    152deg,
+    color-mix(in srgb, var(--color-primary) 84%, #1f1d2c) 0%,
+    color-mix(in srgb, var(--color-primary-hover) 58%, #262837) 50%,
+    #1f1d2c 100%
   );
-  color: #f8fafc;
+  color: var(--brand-fg);
+}
+
+html.light .brandPanel {
+  --brand-fg: #2f2660;
+  --brand-muted: rgba(47, 38, 96, 0.84);
+  --brand-soft: rgba(47, 38, 96, 0.68);
+  --brand-logo-bg: rgba(255, 255, 255, 0.46);
+  --brand-logo-border: rgba(111, 88, 255, 0.22);
+  background: linear-gradient(
+    152deg,
+    color-mix(in srgb, var(--color-primary) 20%, #ffffff) 0%,
+    color-mix(in srgb, var(--color-primary-hover) 18%, #f7f3ff) 55%,
+    #f4efff 100%
+  );
 }
 
 .brandPanel::before {
@@ -39,9 +58,15 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(255, 255, 255, 0.12), transparent 55%),
-    radial-gradient(ellipse 50% 50% at 90% 90%, rgba(255, 255, 255, 0.06), transparent 50%);
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(255, 255, 255, 0.14), transparent 55%),
+    radial-gradient(ellipse 50% 50% at 90% 90%, rgba(255, 255, 255, 0.08), transparent 50%);
   pointer-events: none;
+}
+
+html.light .brandPanel::before {
+  background:
+    radial-gradient(ellipse 82% 60% at 20% 10%, rgba(255, 255, 255, 0.62), transparent 58%),
+    radial-gradient(ellipse 52% 50% at 90% 90%, rgba(111, 88, 255, 0.08), transparent 52%);
 }
 
 .brandPanelInner {
@@ -53,7 +78,7 @@
   position: relative;
   z-index: 1;
   font-size: 0.8125rem;
-  color: rgba(248, 250, 252, 0.65);
+  color: var(--brand-soft);
 }
 
 .brandMark {
@@ -70,8 +95,8 @@
   padding: 0.5rem;
   object-fit: contain;
   border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--brand-logo-bg);
+  border: 1px solid var(--brand-logo-border);
 }
 
 .brandName {
@@ -95,7 +120,7 @@
   margin: 0;
   font-size: 1rem;
   line-height: 1.6;
-  color: rgba(248, 250, 252, 0.78);
+  color: var(--brand-muted);
   max-width: 36ch;
 }
 
@@ -113,7 +138,7 @@
   align-items: center;
   gap: 0.65rem;
   font-size: 0.875rem;
-  color: rgba(248, 250, 252, 0.85);
+  color: var(--brand-muted);
 }
 
 .brandFeature i {
@@ -127,7 +152,15 @@
   flex-direction: column;
   min-height: 100vh;
   min-height: 100dvh;
-  background: var(--color-bg);
+  background:
+    radial-gradient(90rem 40rem at 10% -10%, var(--color-primary-soft), transparent 45%),
+    var(--color-bg);
+}
+
+html.light .formPanel {
+  background:
+    radial-gradient(80rem 36rem at 20% -20%, color-mix(in srgb, var(--color-primary) 12%, white), transparent 44%),
+    linear-gradient(180deg, #fbfaff 0%, var(--color-bg) 40%, var(--color-bg) 100%);
 }
 
 .topBar {
@@ -174,6 +207,10 @@
   border-radius: var(--radius-xl);
   padding: 2rem 2rem 1.75rem;
   box-shadow: var(--shadow-lg);
+}
+
+html.light .card {
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
 }
 
 .cardHeader {
@@ -234,9 +271,11 @@
 
 .button {
   margin-top: 0.25rem;
-  padding: 0.7rem 1.25rem;
-  font-size: 0.9375rem;
-  font-weight: 600;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px-lg);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
   font-family: inherit;
   color: white;
   background: var(--color-primary);
@@ -259,9 +298,11 @@
 
 .buttonSecondary {
   margin-top: 0.25rem;
-  padding: 0.7rem 1.25rem;
-  font-size: 0.9375rem;
-  font-weight: 600;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px-lg);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
   font-family: inherit;
   color: var(--color-primary);
   background: var(--color-primary-dim);

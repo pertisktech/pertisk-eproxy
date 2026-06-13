@@ -1,4 +1,4 @@
-/* Adminator-inspired application shell */
+/* FD-inspired application shell */
 
 .wrap {
   display: flex;
@@ -44,7 +44,8 @@
   flex-direction: column;
   gap: 0.25rem;
   padding: 0 0.75rem 1rem;
-  background: var(--color-sidebar);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-sidebar) 92%, var(--color-primary-soft)) 0%, var(--color-sidebar) 100%);
   border-right: 1px solid var(--color-border);
   overflow: hidden;
   transition: width var(--transition-sidebar) ease;
@@ -94,7 +95,7 @@
   height: var(--header-h);
   padding: 0 0.5rem;
   margin: 0 -0.75rem 0.5rem;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 14%, var(--color-border));
 }
 
 .sidebarBrandMain {
@@ -147,8 +148,9 @@
   padding: 0.4rem;
   object-fit: contain;
   border-radius: var(--radius-md);
-  background: var(--color-primary-soft);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--color-primary) 24%, transparent);
 }
 
 .sidebarLogoText {
@@ -179,8 +181,8 @@
   width: 2rem;
   height: 2rem;
   flex-shrink: 0;
-  color: var(--color-muted);
-  background: transparent;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -188,9 +190,9 @@
 }
 
 .sidebarTopToggle:hover {
-  color: var(--color-text);
-  background: var(--color-hover);
-  border-color: var(--color-border-light);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border-light));
 }
 
 .navSection {
@@ -218,9 +220,9 @@
   height: var(--header-h);
   min-height: var(--header-h);
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 86%, transparent);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 12%, var(--color-border));
 }
 
 .utilityBarRight {
@@ -332,16 +334,18 @@
   width: 100%;
   padding: 0.5rem 0.7rem;
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--color-text-secondary);
   text-decoration: none;
   border-radius: var(--radius-md);
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  border: 1px solid transparent;
 }
 
 .sidebarLink:hover {
   color: var(--color-text);
-  background: var(--color-hover);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-hover));
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
 }
 
 .wrapCollapsed .sidebarLink {
@@ -353,14 +357,16 @@
 
 .active,
 .sidebarLink.active {
-  color: var(--color-primary);
-  font-weight: 600;
-  background: var(--color-primary-dim);
+  color: color-mix(in srgb, var(--color-primary) 90%, #ffffff);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--color-primary) 20%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--color-primary) 24%, transparent);
 }
 
 .active:hover,
 .sidebarLink.active:hover {
-  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-hover));
+  background: color-mix(in srgb, var(--color-primary) 24%, var(--color-hover));
 }
 
 .sidebarLink.active::before {
@@ -394,9 +400,9 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--color-primary);
-  background: var(--color-primary-dim);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+  color: color-mix(in srgb, var(--color-primary) 90%, #fff);
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
 .headerLink,
@@ -405,10 +411,10 @@
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
-  min-height: 2.25rem;
-  padding: 0 0.7rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px);
   color: var(--color-text-secondary);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   text-decoration: none;
@@ -417,9 +423,9 @@
 
 .headerLink:hover,
 .themeBtn:hover {
-  color: var(--color-text);
-  background: var(--color-hover);
-  border-color: var(--color-border-light);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-hover));
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border-light));
 }
 
 .userMenuWrap {
@@ -431,12 +437,12 @@
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 2.25rem;
-  padding: 0.3rem 0.65rem 0.3rem 0.35rem;
+  min-height: var(--control-h);
+  padding: 0 0.65rem 0 0.35rem;
   font-weight: 600;
   font-size: 0.8125rem;
   color: var(--color-text);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -444,7 +450,7 @@
 }
 
 .userButton:hover {
-  background: var(--color-hover);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-hover));
 }
 
 .userButtonOpen,
@@ -458,7 +464,7 @@
   width: 1.65rem;
   height: 1.65rem;
   border-radius: var(--radius-sm);
-  background: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
   color: #fff;
   display: flex;
   align-items: center;
@@ -500,7 +506,7 @@
   top: calc(100% + 0.4rem);
   min-width: 12.5rem;
   padding: 0.35rem;
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 96%, transparent);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -523,7 +529,8 @@
   align-items: center;
   gap: 0.65rem;
   width: 100%;
-  padding: 0.6rem 0.75rem;
+  min-height: var(--control-h);
+  padding: 0 0.75rem;
   font-size: 0.8125rem;
   color: var(--color-text);
   background: transparent;
@@ -535,7 +542,7 @@
 
 .userDropdownItem:hover,
 .userDropdownItem:focus {
-  background: var(--color-hover);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-hover));
   outline: none;
 }
 
@@ -757,8 +764,8 @@
 
 .modalCancel,
 .modalSubmit {
-  min-height: 2.5rem;
-  padding: 0 1rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px-lg);
   border-radius: var(--radius-md);
   cursor: pointer;
 }

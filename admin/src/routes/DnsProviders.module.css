@@ -31,12 +31,18 @@
 
 .viewBtn,
 .viewBtnActive {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1;
   font-family: inherit;
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
   background: transparent;
   color: var(--text-muted);
@@ -55,7 +61,7 @@
 
 .viewBtnActive i,
 .viewBtn i {
-  margin-right: 0.35rem;
+  margin-right: 0;
 }
 
 .title {
@@ -178,14 +184,20 @@
 }
 
 .btnPrimary {
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px-lg);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
   font-family: inherit;
   color: white;
   background: var(--accent);
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -199,13 +211,19 @@
 }
 
 .btnSecondary {
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px-lg);
+  font-size: var(--text-sm);
+  line-height: 1;
   font-family: inherit;
   color: var(--text);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -214,13 +232,19 @@
 }
 
 .btnDanger {
-  padding: 0.35rem 0.75rem;
-  font-size: 0.8125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px);
+  font-size: var(--text-sm);
+  line-height: 1;
   font-family: inherit;
   color: var(--error);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 

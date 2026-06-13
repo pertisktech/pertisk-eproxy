@@ -38,7 +38,9 @@
   background: var(--bg);
   color: var(--text);
   border-radius: 10px;
-  padding: 0.4rem 0.75rem;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--control-px-sm);
+  line-height: 1;
   cursor: pointer;
   transition: background var(--transition-fast);
 }

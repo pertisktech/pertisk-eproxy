@@ -22,11 +22,13 @@
   padding: var(--space-card) calc(var(--space-card) + 0.15rem);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--color-primary) 6%, var(--color-card)),
-    var(--color-card)
-  );
+  background:
+    radial-gradient(120% 180% at 90% -20%, color-mix(in srgb, var(--color-primary) 20%, transparent), transparent 48%),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-primary) 12%, var(--color-card)),
+      var(--color-card)
+    );
   box-shadow: var(--shadow-card);
 }
 
@@ -69,7 +71,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.18rem 0.5rem;
+  padding: 0.2rem 0.56rem;
   border-radius: 999px;
   font-size: var(--text-xs);
   font-weight: 600;
@@ -79,14 +81,14 @@
 
 .healthChipOk {
   color: var(--color-green);
-  background: var(--color-green-dim);
-  border: 1px solid color-mix(in srgb, var(--color-green) 25%, transparent);
+  background: color-mix(in srgb, var(--color-green) 18%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-green) 30%, transparent);
 }
 
 .healthChipWarn {
   color: var(--color-yellow);
-  background: var(--color-yellow-dim);
-  border: 1px solid color-mix(in srgb, var(--color-yellow) 25%, transparent);
+  background: color-mix(in srgb, var(--color-yellow) 16%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-yellow) 30%, transparent);
 }
 
 .heroMeta {
@@ -101,12 +103,15 @@
 .heroBtnPrimary {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4rem;
-  padding: 0.45rem 0.8rem;
+  min-height: var(--control-h);
+  padding: 0 var(--control-px);
   border-radius: var(--radius-md);
   font-family: inherit;
   font-size: var(--text-sm);
   font-weight: 600;
+  line-height: 1;
   cursor: pointer;
   text-decoration: none;
   transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
@@ -114,14 +119,14 @@
 
 .heroBtnGhost {
   color: var(--color-text-secondary);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
   border: 1px solid var(--color-border);
 }
 
 .heroBtnGhost:hover:not(:disabled) {
-  color: var(--color-text);
-  background: var(--color-hover);
-  border-color: var(--color-border-light);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-hover));
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border-light));
 }
 
 .heroBtnGhost:disabled {
@@ -133,12 +138,12 @@
   color: #fff;
   background: var(--color-primary);
   border: 1px solid transparent;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--color-primary) 34%, transparent);
 }
 
 .heroBtnPrimary:hover {
   background: var(--color-primary-hover);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 35%, transparent);
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--color-primary) 38%, transparent);
 }
 
 .heroRefreshSpin {
@@ -167,7 +172,8 @@
   min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-card);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--metric-accent, var(--color-primary)) 6%, var(--color-card)) 0%, var(--color-card) 72%);
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -178,9 +184,9 @@
   top: 0;
   left: 0;
   right: 0;
-  height: 3px;
+  height: 4px;
   background: var(--metric-accent, var(--color-primary));
-  opacity: 0.85;
+  opacity: 0.95;
 }
 
 .metricTileHead {
@@ -198,8 +204,9 @@
   height: 1.75rem;
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
-  color: var(--metric-accent, var(--color-primary));
-  background: color-mix(in srgb, var(--metric-accent, var(--color-primary)) 14%, transparent);
+  color: color-mix(in srgb, var(--metric-accent, var(--color-primary)) 94%, #fff);
+  background: color-mix(in srgb, var(--metric-accent, var(--color-primary)) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--metric-accent, var(--color-primary)) 28%, transparent);
 }
 
 .metricTileVal {
@@ -279,7 +286,8 @@
   padding: var(--space-card);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
-  background: var(--color-card);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 4%, var(--color-card)) 0%, var(--color-card) 100%);
   box-shadow: var(--shadow-card);
   min-width: 0;
 }
@@ -370,8 +378,8 @@
   gap: 0.3rem;
   padding: 0.15rem 0.45rem;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 25%, var(--color-border));
-  background: var(--color-primary-dim);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-surface));
   font-size: var(--text-xs);
   line-height: 1.2;
 }
