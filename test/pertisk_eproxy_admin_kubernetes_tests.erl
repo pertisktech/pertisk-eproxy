@@ -500,3 +500,165 @@ tls_secrets_in_namespace_test() ->
             ?assertEqual(<<"apps">>, maps:get(namespace, Row))
         end)
     end).
+
+pods_label_selector_match_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_POD_LABEL_SELECTOR", {set, "app.kubernetes.io/name=pertisk-eproxy"}, fun() ->
+            with_env("PERTISK_K8S_CONTROLLER_NAME", {set, "other-controller"}, fun() ->
+                with_mock_k8s(fun(_Conn) ->
+                    Pod = #{
+                        <<"metadata">> => #{
+                            <<"name">> => <<"unrelated-pod-name">>,
+                            <<"namespace">> => <<"default">>,
+                            <<"labels">> => #{<<"app.kubernetes.io/name">> => <<"pertisk-eproxy">>},
+                            <<"creationTimestamp">> => <<"2020-01-01T00:00:00Z">>
+                        },
+                        <<"spec">> => #{<<"containers">> => []},
+                        <<"status">> => #{<<"phase">> => <<"Running">>, <<"containerStatuses">> => []}
+                    },
+                    meck:expect(ekub_api, endpoint, fun
+                        ({<<"">>, <<"v1">>}, pod, <<"default">>, "", _) ->
+                            <<"/api/v1/namespaces/default/pods">>;
+                        (_, _, _, _, _) ->
+                            <<>>
+                    end),
+                    meck:expect(ekub_core, http_request, fun
+                        (<<"/api/v1/namespaces/default/pods">>, _, _) ->
+                            {ok, #{<<"items">> => [Pod]}};
+                        (_, _, _) ->
+                            {error, #{<<"code">> => 404}}
+                    end),
+                    {ok, [Row | _]} = pertisk_eproxy_admin_kubernetes:pods(<<"default">>),
+                    ?assertEqual(<<"unrelated-pod-name">>, maps:get(<<"name">>, Row))
+                end)
+            end)
+        end)
+    end).
+
+pods_cpu_memory_metrics_parsing_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_POD_NAME", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_k8s(fun(_Conn) ->
+                meck:expect(ekub_api, endpoint, fun
+                    ({<<"">>, <<"v1">>}, pod, <<"default">>, "", _) ->
+                        <<"/api/v1/namespaces/default/pods">>;
+                    ({<<"metrics.k8s.io">>, _}, pod, <<"default">>, "", _) ->
+                        <<"/apis/metrics.k8s.io/v1beta1/namespaces/default/pods">>;
+                    (_, _, _, _, _) ->
+                        <<>>
+                end),
+                meck:expect(ekub_core, http_request, fun
+                    (<<"/api/v1/namespaces/default/pods">>, _, _) ->
+                        {ok, #{<<"items">> => [sample_pod(<<"pertisk-eproxy-abc">>, <<"default">>)]}};
+                    (<<"/apis/metrics.k8s.io/v1beta1/namespaces/default/pods">>, _, _) ->
+                        {ok, #{
+                            <<"items">> => [
+                                #{
+                                    <<"metadata">> => #{
+                                        <<"name">> => <<"pertisk-eproxy-abc">>,
+                                        <<"namespace">> => <<"default">>
+                                    },
+                                    <<"containers">> => [
+                                        #{
+                                            <<"usage">> => #{
+                                                <<"cpu">> => <<"18273417n">>,
+                                                <<"memory">> => <<"256Ki">>
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }}
+                end),
+                {ok, [Row | _]} = pertisk_eproxy_admin_kubernetes:pods(<<"default">>),
+                ?assertEqual(18, maps:get(<<"cpu_usage_millicores">>, Row)),
+                ?assertEqual(256 * 1024, maps:get(<<"memory_usage_bytes">>, Row))
+            end)
+        end)
+    end).
+
+get_ingress_no_rules_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            NoRules = #{
+                <<"metadata">> => #{
+                    <<"name">> => <<"empty">>,
+                    <<"namespace">> => <<"default">>
+                },
+                <<"spec">> => #{
+                    <<"ingressClassName">> => <<"pertisk-eproxy">>,
+                    <<"rules">> => []
+                }
+            },
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"empty">>, _) ->
+                {ok, NoRules}
+            end),
+            ?assertMatch(
+                {error, <<"Ingress has no rules">>},
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"empty">>)
+            )
+        end)
+    end).
+
+create_ingress_triggers_reconcile_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:new(pertisk_ingress_watcher, [unstick, no_link]),
+            meck:expect(pertisk_ingress_watcher, trigger_reconcile, fun() -> ok end),
+            meck:expect(ekub, create, fun(Resource, Ns, _) ->
+                ?assertEqual(<<"default">>, Ns),
+                {ok, Resource}
+            end),
+            try
+                Body = #{
+                    <<"name">> => <<"demo">>,
+                    <<"host">> => <<"demo.example">>,
+                    <<"service_namespace">> => <<"default">>,
+                    <<"service_name">> => <<"web">>,
+                    <<"service_port">> => 80,
+                    <<"routes">> => [
+                        #{
+                            <<"path">> => <<"/">>,
+                            <<"path_type">> => <<"Prefix">>,
+                            <<"service_name">> => <<"web">>,
+                            <<"service_port">> => 80
+                        }
+                    ]
+                },
+                ?assertMatch({ok, #{message := <<"Ingress created">>}},
+                    pertisk_eproxy_admin_kubernetes:create_ingress(Body)),
+                ?assertEqual(1, meck:num_calls(pertisk_ingress_watcher, trigger_reconcile, '_'))
+            after
+                pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_watcher])
+            end
+        end)
+    end).
+
+update_ingress_replace_error_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, _) ->
+                {ok, sample_ingress(<<"app">>, <<"default">>, <<"app.example">>)}
+            end),
+            meck:expect(ekub, replace, fun(_, _, _) ->
+                {error, #{<<"code">> => 409, <<"message">> => <<"conflict">>}}
+            end),
+            Body = #{
+                <<"name">> => <<"app">>,
+                <<"host">> => <<"updated.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80,
+                <<"routes">> => [
+                    #{
+                        <<"path">> => <<"/">>,
+                        <<"path_type">> => <<"Prefix">>,
+                        <<"service_name">> => <<"web">>,
+                        <<"service_port">> => 80
+                    }
+                ]
+            },
+            ?assertMatch({error, _},
+                pertisk_eproxy_admin_kubernetes:update_ingress(<<"default">>, <<"app">>, Body))
+        end)
+    end).

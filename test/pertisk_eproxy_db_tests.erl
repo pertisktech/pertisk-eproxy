@@ -594,3 +594,72 @@ list_sites_exact_path_type_test() ->
         [Route | _] = maps:get(routes, Site),
         ?assertEqual(exact, maps:get(path_type, Route))
     end).
+
+list_sites_empty_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertMatch({ok, []}, pertisk_eproxy_db:list_sites(Path))
+    end).
+
+routes_json_invalid_fallback_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ok = seed_path_rewrites_table(Path),
+        _ = sqlite3_exec(Path, "\"INSERT INTO sites(host, backend, routes_json) "
+            "VALUES('example.com', 'web', 'not-json');\""),
+        {ok, [Site | _]} = pertisk_eproxy_db:list_sites(Path),
+        Routes = maps:get(routes, Site),
+        ?assertEqual(1, length(Routes)),
+        ?assertEqual(<<"/api">>, maps:get(path, hd(Routes)))
+    end).
+
+get_backend_after_drop_upstreams_table_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ok = seed_backends_table(Path),
+        _ = sqlite3_exec(Path, "\"DROP TABLE upstreams;\""),
+        ?assertMatch({error, _}, pertisk_eproxy_db:get_backend(Path, <<"web">>))
+    end).
+
+upsert_certificate_record_quote_in_pem_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Cert = "-----BEGIN CERTIFICATE-----\nO'Hara\n-----END CERTIFICATE-----\n",
+        Key = "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n",
+        ?assertMatch({ok, _Id},
+            pertisk_eproxy_db:upsert_certificate_record(Path, <<"quoted">>, Cert, Key, <<"imported_pem">>)),
+        {ok, [Row | _]} = pertisk_eproxy_db:list_certificates(Path),
+        Stored = maps:get(cert_pem, Row),
+        StoredBin =
+            case Stored of
+                B when is_binary(B) -> B;
+                L when is_list(L) -> list_to_binary(L)
+            end,
+        ?assertNotEqual(nomatch, binary:match(StoredBin, <<"O'Hara">>))
+    end).
+
+insert_certificate_pem_missing_file_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        MissingCert = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "missing-cert-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".pem"
+        ]),
+        MissingKey = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "missing-key-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".pem"
+        ]),
+        ?assertMatch({ok, _Id},
+            pertisk_eproxy_db:insert_certificate_pem(Path, <<"missing-files">>, MissingCert, MissingKey)),
+        {ok, [Row | _]} = pertisk_eproxy_db:list_certificates(Path),
+        ?assertEqual(<<>>, maps:get(cert_pem, Row, <<>>))
+    end).
+
+put_runtime_config_after_drop_runtime_state_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        _ = sqlite3_exec(Path, "\"DROP TABLE runtime_state;\""),
+        Cfg = #{mode => proxy, sites => [], backends => []},
+        ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(Path, Cfg)),
+        ?assertMatch({ok, #{mode := proxy}}, pertisk_eproxy_db:get_runtime_config(Path))
+    end).

@@ -97,10 +97,7 @@ fallback_line(Msg, Reason) ->
     ].
 
 json_escape(Bin) when is_binary(Bin) ->
-    << <<
-        (escape_char(C))
-     || <<C>> <= Bin
-    >> >>;
+    iolist_to_binary([escape_char(C) || <<C>> <= Bin]);
 json_escape(V) ->
     json_escape(encode_value(V)).
 

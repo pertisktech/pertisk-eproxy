@@ -830,3 +830,179 @@ init_loopback_uses_ephemeral_connection_test() ->
             unload_mocks([gun, pertisk_eproxy_upstream_pool])
         end
     end).
+
+init_eventstream_upstream_success_test() ->
+    with_handler_req(#{
+        headers => #{<<"accept">> => <<"text/event-stream">>},
+        route => {ok, #{
+            upstream_path => <<"/api/v1/stream">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        meck:expect(cowboy_req, stream_reply, fun(S, H, R) -> R#{stream_reply => {S, H}} end),
+        meck:expect(cowboy_req, stream_body, fun(_, fin, _R) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun]),
+        meck:new(gun, [unstick, no_link]),
+        meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+        meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) ->
+            {response, fin, 200, [{<<"content-type">>, <<"text/event-stream">>}]}
+        end),
+        meck:expect(gun, close, fun(_) -> ok end),
+        try
+            ?assertMatch({ok, #{reply := {200, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([gun])
+        end
+    end).
+
+init_proxy_set_cookie_response_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"backend.example.com:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        meck:expect(cowboy_req, set_resp_cookie, fun(Name, Value, R, _Opts) ->
+            put(handler_set_cookie, {Name, Value}),
+            R
+        end),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun, pertisk_eproxy_upstream_pool]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
+        meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) ->
+            {response, fin, 200, [{<<"set-cookie">>, <<"session=abc; Path=/; HttpOnly">>}]}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {200, _}}, _}, pertisk_eproxy_handler:init(Req, #{})),
+            ?assertEqual({<<"session">>, <<"abc">>}, get(handler_set_cookie))
+        after
+            erase(handler_set_cookie),
+            unload_mocks([gun, pertisk_eproxy_upstream_pool])
+        end
+    end).
+
+init_loopback_location_rewrite_test() ->
+    with_handler_req(#{
+        host => <<"registry.example.com">>,
+        route => {ok, #{
+            upstream_path => <<"/v2/">>,
+            backend => <<"web">>,
+            site_host => <<"registry.example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        meck:expect(cowboy_req, reply, fun(Status, Hdrs, Body, R) ->
+            put(handler_reply_hdrs, Hdrs),
+            R#{reply => {Status, Body}}
+        end),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun]),
+        meck:new(gun, [unstick, no_link]),
+        meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+        meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) ->
+            {response, fin, 302, [{<<"location">>, <<"http://127.0.0.1:8099/v2/upload">>}]}
+        end),
+        meck:expect(gun, close, fun(_) -> ok end),
+        try
+            ?assertMatch({ok, #{reply := {302, _}}, _}, pertisk_eproxy_handler:init(Req, #{})),
+            Hdrs = get(handler_reply_hdrs),
+            ?assertEqual(
+                <<"https://registry.example.com/v2/upload">>,
+                maps:get(<<"location">>, Hdrs, undefined)
+            )
+        after
+            erase(handler_reply_hdrs),
+            unload_mocks([gun])
+        end
+    end).
+
+init_management_only_local_admin_error_502_test() ->
+    with_handler_req(#{
+        mgmt_only => true,
+        route => {ok, #{
+            upstream_path => <<"/api/status">>,
+            backend => <<"mgmt">>,
+            site_host => <<"admin.example.com">>
+        }}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        unload_mocks([pertisk_eproxy_h3_local_admin]),
+        meck:new(pertisk_eproxy_h3_local_admin, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_h3_local_admin, try_dispatch, fun(_, _, _, _, _, _, _) ->
+            {error, refused}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_h3_local_admin])
+        end
+    end).
+
+init_grpc_nofin_trailers_test() ->
+    with_handler_req(#{
+        headers => #{<<"content-type">> => <<"application/grpc">>},
+        route => {ok, #{
+            upstream_path => <<"/pkg.Service/Method">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"backend.example.com:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        meck:expect(cowboy_req, stream_reply, fun(S, H, R) -> R#{stream_reply => {S, H}} end),
+        meck:expect(cowboy_req, stream_trailers, fun(_T, R) -> put(handler_stream_trailers, true), R end),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun, pertisk_eproxy_upstream_pool]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) -> {ok, gun_pid} end),
+        meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+        ARef = make_ref(),
+        put({gun_await_queue, ARef}, [
+            {response, nofin, 200, [{<<"content-type">>, <<"application/grpc">>}]},
+            {trailers, [{<<"grpc-status">>, <<"0">>}]}
+        ]),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) ->
+            case get({gun_await_queue, ARef}) of
+                [N | R] -> put({gun_await_queue, ARef}, R), N;
+                [] -> {error, unexpected}
+            end
+        end),
+        try
+            ?assertMatch({ok, #{stream_reply := {200, _}}, _}, pertisk_eproxy_handler:init(Req, #{})),
+            ?assertEqual(true, get(handler_stream_trailers))
+        after
+            erase({gun_await_queue, ARef}),
+            erase(handler_stream_trailers),
+            unload_mocks([gun, pertisk_eproxy_upstream_pool])
+        end
+    end).
+
+proxmox_port_8006_http1_only_test() ->
+    Opts = pertisk_eproxy_handler:upstream_gun_opts_with_port("pve.local", 8006, tls, http),
+    ?assertEqual([http], maps:get(protocols, Opts)).

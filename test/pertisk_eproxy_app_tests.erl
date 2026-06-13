@@ -204,3 +204,91 @@ start_proxy_mode_mocked_test() ->
         ?assert(meck:num_calls(cowboy, start_clear, '_') >= 3),
         ?assertEqual(1, meck:num_calls(pertisk_eproxy_db, ensure_ready, '_'))
     end).
+
+start_ingress_mode_skips_db_ensure_ready_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_ingress_env, ingress_mode, fun() -> true end),
+        meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
+        meck:new(pertisk_eproxy_env_auth, [unstick]),
+        meck:expect(pertisk_eproxy_env_auth, configure, fun() -> ok end),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+            ?assertEqual(0, meck:num_calls(pertisk_eproxy_db, ensure_ready, '_')),
+            ?assertEqual({ok, ingress}, application:get_env(pertisk_eproxy, mode))
+        after
+            application:unset_env(pertisk_eproxy, mode),
+            unload_mocks([pertisk_eproxy_env_auth])
+        end
+    end).
+
+start_with_metrics_enabled_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                metrics_enabled => true,
+                metrics_addr => {127, 0, 0, 1},
+                metrics_port => 9190
+            }
+        end),
+        meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> true end),
+        meck:expect(pertisk_eproxy_config, metrics_listen, fun() -> {{127, 0, 0, 1}, 9190} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(cowboy, start_clear, [metrics, '_', '_']))
+    end).
+
+reload_ipv6_partial_failure_test() ->
+    with_app_reload_mocks(fun() ->
+        meck:expect(cowboy, start_clear, fun(Name, _TransOpts, _ProtoOpts) ->
+            case Name of
+                http6 -> {error, eacces};
+                _ -> {ok, self()}
+            end
+        end),
+        ?assertEqual(ok, pertisk_eproxy_app:reload_tls_listeners()),
+        ?assertEqual(1, meck:num_calls(cowboy, start_clear, [http6, '_', '_']))
+    end).
+
+start_h3_gateway_already_started_test() ->
+    with_app_start_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                h3_api_gateway_enabled => true
+            }
+        end),
+        meck:expect(pertisk_eproxy_h3_api_gateway, start, fun(_) ->
+            {error, {already_started, self()}}
+        end),
+        meck:expect(pertisk_eproxy_h3_api_gateway, start_probe, fun(_) ->
+            {error, {already_started, self()}}
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_h3_api_gateway, start, '_'))
+    end).
+
+downstream_idle_timeout_clamp_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                downstream_idle_timeout_ms => 1000,
+                upstream_request_timeout_ms => 180000
+            }
+        end),
+        meck:expect(cowboy, start_clear, fun(Name, _TransOpts, ProtoOpts) ->
+            case Name of
+                http4 -> self() ! {clamped_idle, maps:get(idle_timeout, ProtoOpts)};
+                _ -> ok
+            end,
+            {ok, self()}
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        receive
+            {clamped_idle, 185000} -> ok
+        after 1000 ->
+            ?assert(false)
+        end
+    end).

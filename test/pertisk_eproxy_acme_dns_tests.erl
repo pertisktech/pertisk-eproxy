@@ -1399,3 +1399,93 @@ scan_acme_client_csr_failure_test() ->
             pertisk_eproxy_test_helpers:sync_router([], [])
         end
     end).
+
+handle_info_unknown_ignored_test() ->
+    ?assertEqual({noreply, #{x => 1}}, pertisk_eproxy_acme_dns:handle_info(unknown, #{x => 1})).
+
+scan_skips_site_with_production_cert_test() ->
+    with_scan_env(fun(#{db := DbPath, acme_dir := AcmeDir}) ->
+        Host = <<"skip-cert.example">>,
+        CertName = <<"acme/skip-cert.example">>,
+        SlugDir = filename:join([AcmeDir, "certs", "skip-cert.example"]),
+        ok = file:make_dir(filename:join([AcmeDir, "certs"])),
+        ok = file:make_dir(SlugDir),
+        ok = file:write_file(filename:join([SlugDir, "fullchain.pem"]), <<"pem">>),
+        pertisk_eproxy_test_helpers:sync_router(
+            [maps:merge(site(Host, <<"cf-skip">>), #{certificate => CertName})],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        meck:new(pertisk_eproxy_tls_cert_info, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_tls_cert_info, describe_listener_pem, fun(_) ->
+            {ok, #{issuer => <<"CN=R3, O=Let's Encrypt">>}}
+        end),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath, <<"cf-skip">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                ?assertEqual(0, meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_'))
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([
+                pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare, pertisk_eproxy_tls_cert_info
+            ]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_reissues_staging_cert_test() ->
+    with_scan_env(fun(#{db := DbPath, acme_dir := AcmeDir}) ->
+        Host = <<"staging-cert.example">>,
+        CertName = <<"acme/staging-cert.example">>,
+        SlugDir = filename:join([AcmeDir, "certs", "staging-cert.example"]),
+        ok = file:make_dir(filename:join([AcmeDir, "certs"])),
+        ok = file:make_dir(SlugDir),
+        ok = file:write_file(filename:join([SlugDir, "fullchain.pem"]), <<"staging-pem">>),
+        pertisk_eproxy_test_helpers:sync_router(
+            [maps:merge(site(Host, <<"cf-staging">>), #{certificate => CertName})],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        meck:new(pertisk_eproxy_tls_cert_info, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_tls_cert_info, describe_listener_pem, fun(_) ->
+            {ok, #{issuer => <<"(STAGING) Fake LE Intermediate X1">>}}
+        end),
+        meck:new(pertisk_eproxy_acme_csr, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_acme_csr, generate_rsa_csr, fun(_) ->
+            {ok, #{csr_der => <<>>, key_pem => <<"key">>}}
+        end),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath, <<"cf-staging">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(2000),
+                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([
+                pertisk_eproxy_acme_client,
+                pertisk_eproxy_dns_cloudflare,
+                pertisk_eproxy_tls_cert_info,
+                pertisk_eproxy_acme_csr
+            ]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).

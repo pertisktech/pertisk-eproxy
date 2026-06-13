@@ -2884,3 +2884,71 @@ gateway_authority_without_port_test() ->
             end)
         end)
     end).
+
+rate_limit_deny_429_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    unload_mocks([quic_h3, pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth]),
+    meck:new(quic_h3, [unstick, no_link]),
+    meck:expect(quic_h3, send_response, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, send_data, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, set_stream_handler, fun(_, _, _) -> {ok, []} end),
+    meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> deny end),
+    try
+        capture_h3_status(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, auth(H))),
+                ?assertEqual(429, get(h3_sent_status))
+            end)
+        end)
+    after
+        unload_mocks([quic_h3, pertisk_eproxy_rate_limit])
+    end.
+
+external_auth_denied_403_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    unload_mocks([quic_h3, pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth]),
+    meck:new(quic_h3, [unstick, no_link]),
+    meck:expect(quic_h3, send_response, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, send_data, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, set_stream_handler, fun(_, _, _) -> {ok, []} end),
+    meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> allow end),
+    meck:new(pertisk_eproxy_external_auth, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_external_auth, authorize, fun(_, _, _, _, _, _) ->
+        {error, {auth_denied, 403}}
+    end),
+    try
+        capture_h3_status(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, auth(H))),
+                ?assertEqual(403, get(h3_sent_status))
+            end)
+        end)
+    after
+        unload_mocks([quic_h3, pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth])
+    end.
+
+external_auth_unreachable_502_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    unload_mocks([quic_h3, pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth]),
+    meck:new(quic_h3, [unstick, no_link]),
+    meck:expect(quic_h3, send_response, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, send_data, fun(_, _, _, _) -> ok end),
+    meck:expect(quic_h3, set_stream_handler, fun(_, _, _) -> {ok, []} end),
+    meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> allow end),
+    meck:new(pertisk_eproxy_external_auth, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_external_auth, authorize, fun(_, _, _, _, _, _) ->
+        {error, auth_unreachable}
+    end),
+    try
+        capture_h3_status(fun() ->
+            with_proxied_site(fun(#{host := H}) ->
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, auth(H))),
+                ?assertEqual(502, get(h3_sent_status))
+            end)
+        end)
+    after
+        unload_mocks([quic_h3, pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth])
+    end.

@@ -1761,3 +1761,205 @@ vultr_create_txt_unexpected_response_test() ->
 
 vultr_txt_record_name_short_fqdn_test() ->
     ?assertEqual(<<"x">>, pertisk_eproxy_dns_vultr:txt_record_name(<<"x">>, ?ZONE)).
+
+%% ---------------------------------------------------------------------------
+%% Cloudflare / deSEC / DigitalOcean coverage (80%+)
+%% ---------------------------------------------------------------------------
+
+cloudflare_global_key_auth_success_test() ->
+    Auth = {global_key, ?TOKEN, <<"a@b.com">>},
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Auth, <<"www.", ?ZONE/binary>>))
+    end).
+
+cloudflare_bearer_prefix_normalization_test() ->
+    Token = <<"Bearer ", ?TOKEN/binary>>,
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Token, <<"www.", ?ZONE/binary>>))
+    end).
+
+cloudflare_find_zone_unexpected_shape_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"api.cloudflare.com/client/v4/zones">>) of
+            nomatch -> {error, not_found};
+            _ -> json_ok(#{<<"success">> => true, <<"result">> => #{<<"unexpected">> => true}})
+        end
+    end),
+    try
+        ?assertMatch({error, {zone_lookup, _}},
+            pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_get_json_decode_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"zones/z1">>) of
+            nomatch -> {error, not_found};
+            _ -> {ok, {{'HTTP/1.1', 200, 'OK'}, [], "not-json"}}
+        end
+    end),
+    try
+        ?assertMatch({error, {zone_lookup, {error, {json, _}}}},
+            pertisk_eproxy_dns_cloudflare:get_zone(?TOKEN, <<"z1">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_create_txt_non_81058_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        json_ok(#{
+            <<"success">> => false,
+            <<"errors">> => [#{<<"code">> => 1001}]
+        })
+    end),
+    try
+        ?assertMatch({error, {cloudflare, _}},
+            pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_auth_diag_empty_email_test() ->
+    ?assertMatch(#{mode := global_key, email_present := false},
+        pertisk_eproxy_dns_cloudflare:auth_diag({global_key, ?TOKEN, <<>>})).
+
+desec_resolve_domain_explicit_failure_test() ->
+    with_httpc_status_error(get, 404, fun() ->
+        ?assertMatch({error, {domain_lookup_failed, ?ZONE, _}},
+            pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
+    end).
+
+desec_resolve_domain_fatal_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"desec.io">>) of
+            nomatch -> {error, not_found};
+            _ -> {ok, {{'HTTP/1.1', 500, 'Error'}, [], <<"fail">>}}
+        end
+    end),
+    try
+        ?assertMatch({error, {domain_lookup_failed, _, {http, 500, _}}},
+            pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+desec_create_txt_patch_204_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun("PATCH", _, _, _) -> json_204() end),
+    try
+        ?assertMatch({ok, {desec, ?TOKEN, ?ZONE, ?RECORD}},
+            pertisk_eproxy_dns_desec:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+desec_get_json_decode_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"desec.io">>) of
+            nomatch -> {error, not_found};
+            _ -> {ok, {{'HTTP/1.1', 200, 'OK'}, [], "not-json"}}
+        end
+    end),
+    try
+        ?assertMatch({error, {domain_lookup_failed, ?ZONE, {error, {json, _}}}},
+            pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+desec_resolve_domain_trim_spaces_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"/domains/example.com/">>) of
+            nomatch -> {error, not_found};
+            _ -> json_ok(#{<<"name">> => ?ZONE})
+        end
+    end),
+    try
+        ?assertMatch({ok, ?ZONE},
+            pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, <<"  ", ?ZONE/binary, "  ">>, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+desec_txt_record_name_short_fqdn_test() ->
+    ?assertEqual(<<"x">>, pertisk_eproxy_dns_desec:txt_record_name(<<"x">>, ?ZONE)).
+
+digitalocean_resolve_domain_explicit_failure_test() ->
+    with_httpc_status_error(get, 404, fun() ->
+        ?assertMatch({error, {domain_lookup_failed, ?ZONE, _}},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
+    end).
+
+digitalocean_resolve_domain_fatal_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"api.digitalocean.com">>) of
+            nomatch -> {error, not_found};
+            _ -> {ok, {{'HTTP/1.1', 500, 'Error'}, [], <<"fail">>}}
+        end
+    end),
+    try
+        ?assertMatch({error, {domain_lookup_failed, _, {domain_lookup, {error, {http, 500, _}}}}},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_create_txt_top_level_id_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        json_201(#{<<"id">> => 77})
+    end),
+    try
+        ?assertEqual({ok, 77},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_create_txt_200_response_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        json_ok(#{<<"domain_record">> => #{<<"id">> => 88}})
+    end),
+    try
+        ?assertEqual({ok, 88},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_create_txt_unexpected_response_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        json_ok(#{<<"unexpected">> => true})
+    end),
+    try
+        ?assertMatch({error, {unexpected, _}},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_delete_txt_200_invalid_json_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(delete, _, _, _) ->
+        {ok, {{'HTTP/1.1', 200, 'OK'}, [], "not-json"}}
+    end),
+    try
+        ?assertEqual(ok, pertisk_eproxy_dns_digitalocean:delete_txt(?TOKEN, ?ZONE, 42))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_txt_record_name_no_suffix_test() ->
+    ?assertEqual(<<"other">>, pertisk_eproxy_dns_digitalocean:txt_record_name(<<"other">>, ?ZONE)).

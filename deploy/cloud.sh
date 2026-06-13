@@ -57,7 +57,9 @@ run_helm_upgrade() {
     --set resources.limits.memory="$MEMORY_LIMIT" \
     --set-string service.annotations."pertisk\.tech/floating-ip-enabled"=true \
     --set-string service.annotations."pertisk\.tech/floating-ip-family"=dual-stack \
-    --set-string service.annotations."pertisk\.tech/floating-ip-home-location"=nbg1
+    --set-string service.annotations."pertisk\.tech/floating-ip-home-location"=nbg1 \
+    --set ingress.gatewayApiEnabled=true \
+    --set gatewayClassResource.enabled=true
 }
 
 HELM_LOG="$(mktemp)"

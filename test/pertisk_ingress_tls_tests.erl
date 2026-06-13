@@ -171,3 +171,76 @@ set_hosts_list_host_key_test() ->
         ok = pertisk_ingress_tls:set_hosts(["List.Host"], {CertPem, KeyPem}),
         ?assert(lists:member("list.host", pertisk_ingress_tls:all_hosts()))
     end).
+
+restore_from_disk_san_mismatch_test() ->
+    TmpDir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk_tls_san_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    _ = file:del_dir_r(TmpDir),
+    WrongHost = "wrong-host.test",
+    CertPath = filename:join([TmpDir, "default", "disk", "tls.crt"]),
+    KeyPath = filename:join([TmpDir, "default", "disk", "tls.key"]),
+    ok = filelib:ensure_dir(CertPath),
+    Cmd = io_lib:format(
+        "openssl req -x509 -newkey rsa:2048 -keyout ~s -out ~s -days 1 -nodes "
+        "-subj \"/CN=other.test\" -addext \"subjectAltName=DNS:other.test\" 2>/dev/null",
+        [KeyPath, CertPath]
+    ),
+    _ = os:cmd(lists:flatten(Cmd)),
+    with_tls(fun() ->
+        with_env("PERTISK_K8S_TLS_DIR", {set, TmpDir}, fun() ->
+            Site = #{
+                host => list_to_binary(WrongHost),
+                backend => <<"web">>,
+                ingress_namespace => <<"default">>
+            },
+            ok = pertisk_ingress_tls:restore_from_disk_sites([Site]),
+            ?assertEqual([], pertisk_ingress_tls:all_hosts())
+        end)
+    end),
+    _ = file:del_dir_r(TmpDir).
+
+restore_from_disk_missing_key_file_test() ->
+    TmpDir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk_tls_nokey_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    _ = file:del_dir_r(TmpDir),
+    Host = "missing-key.test",
+    CertPath = filename:join([TmpDir, "default", "disk", "tls.crt"]),
+    KeyPath = filename:join([TmpDir, "default", "disk", "tls.key"]),
+    ok = filelib:ensure_dir(CertPath),
+    Cmd = io_lib:format(
+        "openssl req -x509 -newkey rsa:2048 -keyout ~s -out ~s -days 1 -nodes "
+        "-subj \"/CN=~s\" -addext \"subjectAltName=DNS:~s\" 2>/dev/null",
+        [KeyPath, CertPath, Host, Host]
+    ),
+    _ = os:cmd(lists:flatten(Cmd)),
+    ok = file:delete(KeyPath),
+    with_tls(fun() ->
+        with_env("PERTISK_K8S_TLS_DIR", {set, TmpDir}, fun() ->
+            Site = #{
+                host => list_to_binary(Host),
+                backend => <<"web">>,
+                ingress_namespace => <<"default">>
+            },
+            ok = pertisk_ingress_tls:restore_from_disk_sites([Site]),
+            ?assertEqual([], pertisk_ingress_tls:all_hosts())
+        end)
+    end),
+    _ = file:del_dir_r(TmpDir).
+
+set_hosts_whitespace_host_skipped_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts([<<"   ">>, <<"\t\n">>], {CertPem, KeyPem}),
+        ?assertEqual([], pertisk_ingress_tls:all_hosts())
+    end).
+
+lookup_single_label_no_wildcard_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts([<<"*.multi.example">>], {CertPem, KeyPem}),
+        ?assertEqual(error, pertisk_ingress_tls:lookup(<<"localhost">>))
+    end).

@@ -124,8 +124,9 @@ watcher_lifecycle_test() ->
     Ingress = sample_ingress(),
     WatchRef = make_ref(),
     with_watcher_env(#{}, fun() ->
+        Conn = {mock_api, mock_access},
         meck:new(pertisk_ingress_ekub, [unstick]),
-        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, mock_conn} end),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
         meck:new(ekub, [unstick]),
         meck:expect(ekub, read, fun
             (ingress, _, _) -> {ok, #{<<"items">> => [Ingress]}};
@@ -206,3 +207,172 @@ watcher_start_watch_failure_backoff_test() ->
         ok = gen_server:stop(Pid),
         wait_down(Pid, 20)
     end).
+
+watcher_gateway_api_merge_success_test() ->
+    stop_watcher(),
+    ensure_mocks_clean(),
+    ensure_tls(),
+    ok = pertisk_ingress_status:init(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Ingress = sample_ingress(),
+    with_watcher_env(#{gateway_api_enabled => true}, fun() ->
+        Conn = {mock_api, mock_access},
+        meck:new(pertisk_ingress_ekub, [unstick]),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+        meck:new(ekub, [unstick]),
+        meck:expect(ekub, read, fun
+            (ingress, _, _) -> {ok, #{<<"items">> => [Ingress]}};
+            (secret, _, _) -> {ok, #{<<"items">> => [tls_secret()]}};
+            (_, _, _) -> {error, denied}
+        end),
+        meck:expect(ekub, patch, fun(_, _, _, _, _) -> {ok, #{}} end),
+        meck:expect(ekub, watch, fun(_, _, _) -> {error, refused} end),
+        meck:new(ekub_api, [unstick]),
+        meck:expect(ekub_api, endpoint, fun
+            (<<"gateway.networking.k8s.io">>, <<"v1">>, <<"httproutes">>, <<>>, <<>>, <<>>) ->
+                <<"/apis/gateway.networking.k8s.io/v1/httproutes">>;
+            (<<"gateway.networking.k8s.io">>, <<"v1">>, <<"gateways">>, <<>>, <<>>, <<>>) ->
+                <<"/apis/gateway.networking.k8s.io/v1/gateways">>;
+            (_, _, _, _, _, _) ->
+                <<>>
+        end),
+        meck:new(ekub_core, [unstick]),
+        meck:expect(ekub_core, http_request, fun
+            (<<"/apis/gateway.networking.k8s.io/v1/httproutes">>, _, _) ->
+                {ok, #{<<"items">> => []}};
+            (<<"/apis/gateway.networking.k8s.io/v1/gateways">>, _, _) ->
+                {ok, #{<<"items">> => []}};
+            (_, _, _) ->
+                {error, not_used}
+        end),
+        meck:new(pertisk_gateway_reconciler, [unstick]),
+        meck:expect(pertisk_gateway_reconciler, reconcile, fun(_, _, _) ->
+            {ok, #{sites => [], backends => [], tls => []}}
+        end),
+        meck:expect(pertisk_gateway_reconciler, merge_results, fun(IngressResult, GatewayResult) ->
+            maps:merge(IngressResult, GatewayResult)
+        end),
+        meck:new(pertisk_gateway_class_status, [unstick, no_link]),
+        meck:expect(pertisk_gateway_class_status, maybe_update, fun(_) -> ok end),
+        meck:new(pertisk_gateway_status, [unstick, no_link]),
+        meck:expect(pertisk_gateway_status, maybe_update, fun(_) -> ok end),
+        meck:new(pertisk_ingress_status_patcher, [unstick, no_link]),
+        meck:expect(pertisk_ingress_status_patcher, maybe_update, fun(_, _) -> ok end),
+        try
+            {ok, Pid} = pertisk_ingress_watcher:start_link(),
+            timer:sleep(50),
+            ?assertEqual(ok, pertisk_ingress_watcher:reconcile_now()),
+            ?assert(meck:num_calls(pertisk_gateway_reconciler, merge_results, '_') >= 1),
+            ok = gen_server:stop(Pid),
+            wait_down(Pid, 20)
+        after
+            stop_watcher(),
+            pertisk_eproxy_test_helpers:unload_mocks([
+                pertisk_gateway_reconciler,
+                pertisk_gateway_class_status,
+                pertisk_gateway_status,
+                pertisk_ingress_status_patcher
+            ])
+        end
+    end).
+
+watcher_apply_reconcile_failure_test() ->
+    stop_watcher(),
+    ensure_mocks_clean(),
+    ensure_tls(),
+    ok = pertisk_ingress_status:init(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    with_watcher_env(#{}, fun() ->
+        Conn = {mock_api, mock_access},
+        meck:new(pertisk_ingress_ekub, [unstick]),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+        meck:new(ekub, [unstick]),
+        meck:expect(ekub, read, fun
+            (ingress, _, _) -> {ok, #{<<"items">> => [sample_ingress()]}};
+            (secret, _, _) -> {ok, #{<<"items">> => [tls_secret()]}};
+            (_, _, _) -> {error, denied}
+        end),
+        meck:expect(ekub, patch, fun(_, _, _, _, _) -> {ok, #{}} end),
+        meck:expect(ekub, watch, fun(_, _, _) -> {error, refused} end),
+        meck:new(pertisk_ingress_config_sync, [unstick]),
+        meck:expect(pertisk_ingress_config_sync, apply_reconcile_result, fun(_) ->
+            {error, apply_failed}
+        end),
+        meck:new(pertisk_ingress_reconciler, [unstick]),
+        meck:expect(pertisk_ingress_reconciler, reconcile, fun(_, _) ->
+            {ok, #{sites => [], backends => [], tls => []}}
+        end),
+        Tab = ets:new(watcher_reconcile_tab, [public]),
+        meck:new(pertisk_ingress_metrics, [unstick, no_link]),
+        meck:expect(pertisk_ingress_metrics, record_reconcile, fun(Err, _) ->
+            ets:insert(Tab, {err, Err}),
+            ok
+        end),
+        try
+            {ok, Pid} = pertisk_ingress_watcher:start_link(),
+            timer:sleep(50),
+            ?assertEqual(ok, pertisk_ingress_watcher:reconcile_now()),
+            ?assertEqual({error, apply_failed}, ets:lookup_element(Tab, err, 2)),
+            ok = gen_server:stop(Pid),
+            wait_down(Pid, 20)
+        after
+            catch ets:delete(Tab),
+            stop_watcher(),
+            pertisk_eproxy_test_helpers:unload_mocks([
+                pertisk_ingress_config_sync, pertisk_ingress_metrics, pertisk_ingress_reconciler
+            ])
+        end
+    end).
+
+watcher_list_ingress_failure_test() ->
+    stop_watcher(),
+    ensure_mocks_clean(),
+    ensure_tls(),
+    ok = pertisk_ingress_status:init(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    with_watcher_env(#{}, fun() ->
+        Conn = {mock_api, mock_access},
+        meck:new(pertisk_ingress_ekub, [unstick]),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+        meck:new(ekub, [unstick]),
+        meck:expect(ekub, read, fun
+            (ingress, _, _) -> {error, #{<<"code">> => 503}};
+            (_, _, _) -> {error, denied}
+        end),
+        meck:expect(ekub, watch, fun(_, _, _) -> {error, refused} end),
+        try
+            {ok, Pid} = pertisk_ingress_watcher:start_link(),
+            timer:sleep(50),
+            ?assertEqual(ok, pertisk_ingress_watcher:reconcile_now()),
+            ?assert(meck:num_calls(ekub, read, '_') >= 1),
+            ok = gen_server:stop(Pid),
+            wait_down(Pid, 20)
+        after
+            stop_watcher(),
+            pertisk_eproxy_test_helpers:unload_mocks([])
+        end
+    end).
+
+reconcile_recorded_error(Mod, Reason) ->
+    lists:any(
+        fun(Entry) ->
+            case Entry of
+                {call, _, Mod, record_reconcile, [{error, Reason}, _]} -> true;
+                {call, _, Mod, record_reconcile, [{error, Reason}, _], _} -> true;
+                _ -> false
+            end
+        end,
+        meck:history(Mod)
+    ).
+
+reconcile_recorded_list_ingress_error(Mod) ->
+    lists:any(
+        fun(Entry) ->
+            case Entry of
+                {call, _, Mod, record_reconcile, [{error, {list_ingress, _}}, _]} -> true;
+                {call, _, Mod, record_reconcile, [{error, {list_ingress, _}}, _], _} -> true;
+                _ -> false
+            end
+        end,
+        meck:history(Mod)
+    ).

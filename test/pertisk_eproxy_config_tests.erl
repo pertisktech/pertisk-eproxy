@@ -1200,3 +1200,159 @@ put_config_same_sites_no_acme_scan_test() ->
             pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
         end
     end).
+
+put_config_tls_host_mismatch_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        {CertFile, KeyFile} = listener_pem_paths(),
+        {ok, CertBin} = file:read_file(CertFile),
+        {ok, KeyBin} = file:read_file(KeyFile),
+        {ok, _} = pertisk_eproxy_db:upsert_certificate_record(
+            DbPath, <<"localhost-cert">>, binary_to_list(CertBin), binary_to_list(KeyBin), <<"imported_pem">>),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => <<"wrong.example.com">>,
+                backend => <<"web">>,
+                certificate => <<"localhost-cert">>,
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [<<"localhost-cert">>],
+            dns_providers => []
+        },
+        ?assertMatch(
+            {error, {tls_validation_host_mismatch, _, _}},
+            pertisk_eproxy_config:put_config(Config)
+        )
+    end).
+
+put_config_missing_cert_pem_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        {ok, _} = pertisk_eproxy_db:insert_certificate(DbPath, <<"no-pem">>),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => <<"tls.example.com">>,
+                backend => <<"web">>,
+                certificate => <<"no-pem">>,
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [<<"no-pem">>],
+            dns_providers => []
+        },
+        ?assertMatch(
+            {error, {tls_validation_missing_cert_pem, _, _}},
+            pertisk_eproxy_config:put_config(Config)
+        )
+    end).
+
+put_config_skips_acme_and_k8s_refs_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [
+                #{
+                    host => <<"acme.example">>,
+                    backend => <<"web">>,
+                    certificate => <<"acme/acme.example">>,
+                    routes => []
+                },
+                #{
+                    host => <<"ingress.example">>,
+                    backend => <<"web">>,
+                    certificate => <<"k8s/default/tls-secret">>,
+                    routes => []
+                }
+            ],
+            backends => site_backends(),
+            certificates => [],
+            dns_providers => []
+        },
+        ?assertEqual(ok, put_config_retry(Config))
+    end).
+
+put_config_redacted_dns_cleanup_on_reload_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            DbPath, <<"redacted-db">>, <<"cloudflare">>, #{<<"api_token">> => <<"[redacted]">>}),
+        Config = (pertisk_eproxy_config:get_config())#{
+            dns_providers => [
+                #{
+                    name => <<"redacted-runtime">>,
+                    provider_type => <<"cloudflare">>,
+                    credentials => #{<<"api_token">> => <<"[redacted]">>}
+                }
+            ],
+            sites => [],
+            backends => [],
+            certificates => []
+        },
+        ok = put_config_retry(Config),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        {ok, Providers} = pertisk_eproxy_db:list_dns_providers(DbPath),
+        Names = [maps:get(name, P) || P <- Providers],
+        ?assertNot(lists:member(<<"redacted-db">>, Names)),
+        ?assertNot(lists:member(<<"redacted-runtime">>, Names))
+    end).
+
+config_metrics_env_overrides_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            metrics_enabled => true,
+            metrics_addr => {10, 0, 0, 1},
+            metrics_port => 9200,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = put_config_retry(Config),
+        with_env("PERTISK_METRICS_ENABLED", {set, "false"}, fun() ->
+            ?assertEqual(false, pertisk_eproxy_config:metrics_enabled())
+        end),
+        with_env("PERTISK_METRICS_ADDR", {set, "127.0.0.1:9199"}, fun() ->
+            ?assertEqual({{10, 0, 0, 1}, 9200}, pertisk_eproxy_config:metrics_listen())
+        end)
+    end).
+
+put_config_persist_failure_meck_test() ->
+    with_tmp_db_config(fun() ->
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, put_runtime_config, fun(_, _) -> {error, persist_boom} end),
+        try
+            Config = (pertisk_eproxy_config:get_config())#{
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => []
+            },
+            ?assertMatch(
+                {error, {persist_runtime_config, persist_boom}},
+                pertisk_eproxy_config:put_config(Config)
+            )
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db])
+        end
+    end).
+
+reload_schedules_acme_scan_in_proxy_mode_test() ->
+    with_tmp_db_config(fun() ->
+        Self = self(),
+        meck:new(pertisk_eproxy_acme_dns, [unstick]),
+        meck:expect(pertisk_eproxy_acme_dns, schedule_scan, fun() ->
+            Self ! acme_scan_on_reload,
+            ok
+        end),
+        try
+            ?assertEqual(ok, pertisk_eproxy_config:reload()),
+            receive acme_scan_on_reload -> ok after 2000 -> ?assert(false) end,
+            ?assertEqual(1, meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
+        end
+    end).
+
+listener_pem_paths() ->
+    Base = filename:join([code:priv_dir(pertisk_eproxy), "tls"]),
+    {filename:join(Base, "listener.pem"), filename:join(Base, "listener.key")}.

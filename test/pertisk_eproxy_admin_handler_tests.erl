@@ -3499,3 +3499,42 @@ api_sites_head_test() ->
 
 api_management_head_test() ->
     ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/management">>)).
+
+api_build_health_json_lego_installed_mocked_test() ->
+    ensure_env(),
+    meck:new(pertisk_eproxy_acme_lego, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_acme_lego, find_lego_executable, fun() -> "/usr/local/bin/lego" end),
+    try
+        {ok, Map} = thoas:decode(pertisk_eproxy_admin_handler:build_health_json()),
+        Acme = maps:get(<<"acme">>, Map),
+        ?assertEqual(true, maps:get(<<"lego_installed">>, Acme)),
+        ?assertEqual(<<"/usr/local/bin/lego">>, maps:get(<<"lego_path">>, Acme))
+    after
+        safe_meck_unload(pertisk_eproxy_acme_lego)
+    end.
+
+api_certificate_renew_db_error_test() ->
+    with_tmp_db(fun(_Db) ->
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, list_certificates, fun(_) ->
+            {error, {sqlite3_cli, <<"database locked">>}}
+        end),
+        try
+            ?assertMatch(
+                {ok, 400, _, _},
+                dispatch(<<"POST">>, <<"/api/certificates/1/renew">>)
+            )
+        after
+            safe_meck_unload(pertisk_eproxy_db)
+        end
+    end).
+
+api_ingress_guest_k8s_delete_forbidden_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_ADMIN", unset, fun() ->
+            ?assertMatch(
+                {ok, 403, _, _},
+                dispatch(<<"DELETE">>, <<"/api/sites/guest-k8s.example">>)
+            )
+        end)
+    end).

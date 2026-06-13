@@ -214,3 +214,23 @@ format_invalid_unicode_list_metadata_test() ->
     Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
     {ok, Map} = thoas:decode(Bin),
     ?assert(is_binary(maps:get(<<"raw">>, Map))).
+
+format_thoas_encode_throw_fallback_test() ->
+    pertisk_eproxy_test_helpers:unload_mocks([lager_msg, thoas]),
+    meck:new(thoas, [unstick, passthrough]),
+    meck:expect(thoas, encode, fun
+        (#{<<"timestamp">> := _} = Map) when is_map(Map) ->
+            erlang:error(encode_failed);
+        (Other) ->
+            meck:passthrough([thoas, encode, [Other]])
+    end),
+    try
+        Msg = lager_msg:new("ok", error, [], []),
+        Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+        ?assertEqual($\n, binary:last(Bin)),
+        ?assertNotEqual(nomatch, binary:match(Bin, <<"log_format_error">>)),
+        ?assertNotEqual(nomatch, binary:match(Bin, <<"\"message\":\"ok\"">>)),
+        ?assertNotEqual(nomatch, binary:match(Bin, <<"\"level\":\"error\"">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([thoas])
+    end.
