@@ -54,4 +54,5 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set resources.requests.cpu="$CPU_REQUEST" \
   --set resources.requests.memory="$MEMORY_REQUEST" \
   --set resources.limits.cpu="$CPU_LIMIT" \
-  --set resources.limits.memory="$MEMORY_LIMIT"
+  --set resources.limits.memory="$MEMORY_LIMIT" \
+  --set ingress.gatewayApiEnabled=true
