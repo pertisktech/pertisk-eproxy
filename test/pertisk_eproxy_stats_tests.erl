@@ -111,7 +111,7 @@ snapshot_sum_gauge_catch_test() ->
             ?assertEqual(0, maps:get(<<"active_connections">>, Snap))
         after
             case lists:member(prometheus_gauge, meck:mocked()) of
-                true -> meck:unload(prometheus_gauge);
+                true -> pertisk_eproxy_test_helpers:unload_mocks([prometheus_gauge]);
                 false -> ok
             end
         end
@@ -151,7 +151,7 @@ with_metrics(Fun) ->
     after
         unload_prometheus_meck(),
         case lists:member(prometheus_gauge, meck:mocked()) of
-            true -> meck:unload(prometheus_gauge);
+            true -> pertisk_eproxy_test_helpers:unload_mocks([prometheus_gauge]);
             false -> ok
         end
     end.
@@ -167,6 +167,6 @@ map_has_key(K, Map) ->
 
 unload_prometheus_meck() ->
     case lists:member(prometheus_counter, meck:mocked()) of
-        true -> meck:unload(prometheus_counter);
+        true -> pertisk_eproxy_test_helpers:unload_mocks([prometheus_counter]);
         false -> ok
     end.

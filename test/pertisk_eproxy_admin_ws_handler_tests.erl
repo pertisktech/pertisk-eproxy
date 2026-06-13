@@ -13,7 +13,7 @@ unload_mocks(Mods) ->
     lists:foreach(
         fun(Mod) ->
             case lists:member(Mod, meck:mocked()) of
-                true -> meck:unload(Mod);
+                true -> pertisk_eproxy_test_helpers:unload_mocks([Mod]);
                 false -> ok
             end
         end,
@@ -57,7 +57,7 @@ with_server(Fun) ->
     case whereis(pertisk_eproxy_admin_realtime) of
         undefined ->
             {ok, Pid} = pertisk_eproxy_admin_realtime:start_link(),
-            try Fun() after catch gen_server:stop(Pid, normal, 5000) end;
+            try Fun() after pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000) end;
         _ ->
             Fun()
     end.
@@ -122,7 +122,7 @@ websocket_handle_auth_success_test() ->
         ?assertMatch({[{text, _}], #{authenticated := true, timer_ref := _}},
             pertisk_eproxy_admin_ws_handler:websocket_handle({text, Frame}, State))
     end),
-    meck:unload(pertisk_eproxy_auth).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth]).
 
 websocket_handle_auth_bad_frame_test() ->
     State = #{authenticated => false},
@@ -137,7 +137,7 @@ websocket_handle_auth_invalid_token_test() ->
     State = #{authenticated => false},
     ?assertMatch({[{close, 4401, _}], _},
         pertisk_eproxy_admin_ws_handler:websocket_handle({text, Frame}, State)),
-    meck:unload(pertisk_eproxy_auth).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth]).
 
 websocket_handle_ignores_when_authenticated_test() ->
     State = #{authenticated => true},

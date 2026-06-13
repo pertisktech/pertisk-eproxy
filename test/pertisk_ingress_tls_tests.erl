@@ -3,7 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 ensure_tls() ->
-    catch meck:unload(pertisk_ingress_tls),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_tls]) end),
     case whereis(pertisk_ingress_tls) of
         undefined -> {ok, _} = pertisk_ingress_tls:start_link();
         _ -> ok
@@ -130,4 +130,44 @@ restore_from_disk_sites_test() ->
 unknown_call_test() ->
     with_tls(fun() ->
         ?assertEqual({error, unknown}, gen_server:call(pertisk_ingress_tls, bogus))
+    end).
+
+clear_removes_all_hosts_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts([<<"clear.example">>], {CertPem, KeyPem}),
+        ?assertEqual(1, length(pertisk_ingress_tls:all_hosts())),
+        ok = pertisk_ingress_tls:clear(),
+        ?assertEqual([], pertisk_ingress_tls:all_hosts())
+    end).
+
+paths_for_host_without_paths_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts([<<"nopaths.example">>], {CertPem, KeyPem}),
+        ?assertEqual(error, pertisk_ingress_tls:paths_for_host(<<"nopaths.example">>))
+    end).
+
+lookup_no_wildcard_match_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts([<<"*.only.example">>], {CertPem, KeyPem}),
+        ?assertEqual(error, pertisk_ingress_tls:lookup(<<"other.example">>))
+    end).
+
+restore_site_from_disk_skips_invalid_host_test() ->
+    with_tls(fun() ->
+        ?assertEqual(ok, pertisk_ingress_tls:restore_from_disk_sites([#{host => null}]))
+    end).
+
+decode_entry_invalid_tls_material_test() ->
+    {CertPem, KeyPem} = listener_pems(),
+    ?assertEqual({error, invalid_tls_material},
+        pertisk_ingress_tls:decode_entry(#{cert_pem => CertPem, key_pem => <<"not-a-key">>})).
+
+set_hosts_list_host_key_test() ->
+    with_tls(fun() ->
+        {CertPem, KeyPem} = listener_pems(),
+        ok = pertisk_ingress_tls:set_hosts(["List.Host"], {CertPem, KeyPem}),
+        ?assert(lists:member("list.host", pertisk_ingress_tls:all_hosts()))
     end).

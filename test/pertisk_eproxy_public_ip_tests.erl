@@ -52,7 +52,7 @@ with_public_ip(Fun, ResponseFun) when is_function(ResponseFun, 4) ->
     try
         Fun(Pid)
     after
-        catch gen_server:stop(Pid),
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid),
         unload_httpc()
     end.
 
@@ -78,11 +78,11 @@ trim_responses() ->
 stop_public_ip() ->
     case whereis(pertisk_eproxy_public_ip) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid)
     end.
 
 unload_httpc() ->
     case lists:member(httpc, meck:mocked()) of
-        true -> meck:unload(httpc);
+        true -> pertisk_eproxy_test_helpers:unload_mocks([httpc]);
         false -> ok
     end.

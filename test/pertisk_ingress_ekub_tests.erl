@@ -38,7 +38,7 @@ with_mocked_in_cluster(Fun) ->
     meck:new(ekub_api, [unstick]),
     meck:expect(ekub_api, load, fun(_Access) -> {ok, mock_api} end),
     try Fun() after
-        meck:unload([filelib, ekub_access, ekub_api])
+        pertisk_eproxy_test_helpers:unload_mocks([filelib, ekub_access, ekub_api])
     end.
 
 init_outside_cluster_test() ->
@@ -52,7 +52,7 @@ init_outside_cluster_test() ->
             try
                 ?assertMatch({ok, {mock_api, _}}, pertisk_ingress_ekub:init())
             after
-                meck:unload(ekub)
+                pertisk_eproxy_test_helpers:unload_mocks([ekub])
             end
     end.
 
@@ -124,3 +124,63 @@ init_in_cluster_api_load_error_test() ->
         meck:expect(ekub_api, load, fun(_) -> {error, bad_api} end),
         ?assertEqual({error, bad_api}, pertisk_ingress_ekub:init())
     end).
+
+merge_patch_success_test() ->
+    Access = #{server => "https://k8s.example", token => <<"tok">>},
+    meck:new(hackney, [unstick, no_link]),
+    meck:expect(hackney, request, fun(patch, Url, Headers, Body, _Opts) ->
+        ?assertEqual(<<"https://k8s.example/api/v1/namespaces/default/status">>, Url),
+        ?assertEqual(<<"application/merge-patch+json">>, proplists:get_value(<<"Content-Type">>, Headers)),
+        ?assertEqual(<<"{\"status\":\"ok\"}">>, Body),
+        {ok, 200, [], patch_ref}
+    end),
+    meck:expect(hackney, body, fun(patch_ref) -> {ok, <<"{\"status\":\"ok\"}">>} end),
+    try
+        ?assertMatch(
+            {ok, #{<<"status">> := <<"ok">>}},
+            pertisk_ingress_ekub:merge_patch(
+                <<"/api/v1/namespaces/default/status">>,
+                #{<<"status">> => <<"ok">>},
+                {mock_api, Access}
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([hackney])
+    end.
+
+merge_patch_http_error_test() ->
+    Access = #{server => "https://k8s.example", token => <<"tok">>},
+    meck:new(hackney, [unstick, no_link]),
+    meck:expect(hackney, request, fun(patch, _, _, _, _) ->
+        {ok, 409, [], patch_ref}
+    end),
+    meck:expect(hackney, body, fun(patch_ref) -> {ok, <<"{\"message\":\"conflict\"}">>} end),
+    try
+        ?assertMatch(
+            {error, #{<<"message">> := <<"conflict">>}},
+            pertisk_ingress_ekub:merge_patch(
+                <<"/api/v1/namespaces/default/status">>,
+                #{<<"status">> => <<"pending">>},
+                {mock_api, Access}
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([hackney])
+    end.
+
+merge_patch_request_failed_test() ->
+    Access = #{server => "https://k8s.example", token => <<"tok">>},
+    meck:new(hackney, [unstick, no_link]),
+    meck:expect(hackney, request, fun(patch, _, _, _, _) -> {error, timeout} end),
+    try
+        ?assertEqual(
+            {error, timeout},
+            pertisk_ingress_ekub:merge_patch(
+                <<"/api/v1/namespaces/default/status">>,
+                #{<<"status">> => <<"pending">>},
+                {mock_api, Access}
+            )
+        )
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([hackney])
+    end.

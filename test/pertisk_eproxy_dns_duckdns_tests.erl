@@ -7,7 +7,7 @@ with_httpc_mock(Fun) ->
     meck:expect(httpc, request, fun(get, {Url, _Hdrs}, _Opts, _HttpOpts) ->
         duckdns_http(Url)
     end),
-    try Fun() after meck:unload(httpc) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([httpc]) end.
 
 duckdns_http(Url) ->
     case binary:match(list_to_binary(Url), <<"duckdns.org/update">>) of
@@ -37,7 +37,7 @@ create_txt_http_error_test() ->
         ?assertMatch({error, {http, 500, _}},
             pertisk_eproxy_dns_duckdns:create_txt(<<"sub">>, <<"tok">>, <<"txt">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 create_txt_unexpected_body_test() ->
@@ -49,7 +49,7 @@ create_txt_unexpected_body_test() ->
         ?assertMatch({error, {unexpected_response, _}},
             pertisk_eproxy_dns_duckdns:create_txt(<<"sub">>, <<"tok">>, <<"txt">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 create_txt_network_error_test() ->
@@ -59,7 +59,7 @@ create_txt_network_error_test() ->
         ?assertEqual({error, timeout},
             pertisk_eproxy_dns_duckdns:create_txt(<<"sub">>, <<"tok">>, <<"txt">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 delete_txt_ok_test() ->
@@ -76,5 +76,5 @@ delete_txt_error_test() ->
         ?assertMatch({error, {http, 403, _}},
             pertisk_eproxy_dns_duckdns:delete_txt(<<"sub">>, <<"tok">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.

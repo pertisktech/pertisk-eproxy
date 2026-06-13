@@ -734,3 +734,99 @@ init_xff_client_ip_test() ->
     }, fun(Req) ->
         ?assertMatch({ok, #{reply := {404, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
     end).
+
+init_rate_limit_deny_429_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }}
+    }, fun(Req) ->
+        unload_mocks([pertisk_eproxy_rate_limit]),
+        meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> deny end),
+        try
+            ?assertMatch({ok, #{reply := {429, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_rate_limit])
+        end
+    end).
+
+init_auth_denied_403_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }}
+    }, fun(Req) ->
+        unload_mocks([pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth]),
+        meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> allow end),
+        meck:new(pertisk_eproxy_external_auth, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_external_auth, authorize, fun(_, _, _, _, _, _) ->
+            {error, {auth_denied, 403}}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {403, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth])
+        end
+    end).
+
+init_auth_unreachable_502_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }}
+    }, fun(Req) ->
+        unload_mocks([pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth]),
+        meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> allow end),
+        meck:new(pertisk_eproxy_external_auth, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_external_auth, authorize, fun(_, _, _, _, _, _) ->
+            {error, auth_unreachable}
+        end),
+        try
+            ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_handler:init(Req, #{}))
+        after
+            unload_mocks([pertisk_eproxy_rate_limit, pertisk_eproxy_external_auth])
+        end
+    end).
+
+init_loopback_uses_ephemeral_connection_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        add_body_mocks(Req),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun, pertisk_eproxy_upstream_pool]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) ->
+            {error, should_not_checkout}
+        end),
+        meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+        meck:expect(gun, open, fun(_, _, _) -> {ok, gun_pid} end),
+        meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) -> {response, fin, 204, []} end),
+        meck:expect(gun, close, fun(_) -> ok end),
+        try
+            ?assertMatch({ok, #{reply := {204, _}}, _}, pertisk_eproxy_handler:init(Req, #{})),
+            ?assertEqual(0, meck:num_calls(pertisk_eproxy_upstream_pool, checkout, '_')),
+            ?assertEqual(1, meck:num_calls(gun, open, '_'))
+        after
+            unload_mocks([gun, pertisk_eproxy_upstream_pool])
+        end
+    end).

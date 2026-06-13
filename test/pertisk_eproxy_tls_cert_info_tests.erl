@@ -49,8 +49,8 @@ with_config(Fun) ->
     try
         Fun()
     after
-        _ = catch pertisk_eproxy_test_helpers:put_config_retry(BaseConfig),
-        catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
+        _ = pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:put_config_retry(BaseConfig) end),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends) end),
         maybe_stop_config(Started)
     end.
 
@@ -59,7 +59,7 @@ stop_config_if_running() ->
         undefined ->
             ok;
         Pid ->
-            catch gen_server:stop(Pid, normal, 5000),
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
             wait_config_stopped(30)
     end.
 
@@ -396,3 +396,30 @@ placeholder_cert_pem() ->
     _ = file:delete(CertPath),
     _ = file:delete(KeyPath),
     Pem.
+
+listener_cert_rows_integer_certificate_id_test() ->
+    CertPath = listener_pem_path(),
+    KeyPath = listener_key_path(),
+    {ok, Info} = pertisk_eproxy_tls_cert_info:describe_listener_pem(CertPath),
+    [SiteHost | _] = maps:get(hosts, Info),
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [#{
+            host => SiteHost,
+            backend => <<"web">>,
+            certificate => 1,
+            routes => []
+        }],
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
+        ok = pertisk_eproxy_config:sync_ingress(Sites, []),
+        [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
+        ?assertEqual([], maps:get(<<"sites">>, Row))
+    end).

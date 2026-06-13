@@ -1,7 +1,6 @@
 -module(pertisk_eproxy_lager_json_formatter_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include_lib("lager/include/lager.hrl").
 
 format_returns_json_line_test() ->
     Msg = lager_msg:new(<<"hello">>, info, [], []),
@@ -165,3 +164,53 @@ format_list_metadata_value_test() ->
     Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
     {ok, Map} = thoas:decode(Bin),
     ?assertEqual(<<"ab">>, maps:get(<<"labels">>, Map)).
+
+format_non_atom_level_test() ->
+    meck:new(lager_msg, [unstick, passthrough]),
+    meck:expect(lager_msg, severity, fun(_) -> 42 end),
+    try
+        Msg = lager_msg:new(<<"lvl">>, info, [], []),
+        Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+        {ok, Map} = thoas:decode(Bin),
+        ?assertEqual(42, maps:get(<<"level">>, Map))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([lager_msg])
+    end.
+
+format_timestamp_microseconds_test() ->
+    meck:new(lager_msg, [unstick, passthrough]),
+    meck:expect(lager_msg, timestamp, fun(_) -> {0, 1000, 123456} end),
+    try
+        Msg = lager_msg:new(<<"ts">>, info, [], []),
+        Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+        {ok, Map} = thoas:decode(Bin),
+        Ts = maps:get(<<"timestamp">>, Map),
+        ?assertNotEqual(nomatch, binary:match(Ts, <<".123456Z">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([lager_msg])
+    end.
+
+format_float_meta_key_test() ->
+    Msg = lager_msg:new(<<"k">>, info, [{1.5, <<"v">>}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<"v">>, maps:get(<<"1.5">>, Map)).
+
+format_function_metadata_value_test() ->
+    Msg = lager_msg:new(<<"fn">>, info, [{callback, fun() -> ok end}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assert(is_binary(maps:get(<<"callback">>, Map))).
+
+format_escape_low_control_char_test() ->
+    Msg = lager_msg:new(<<16#01/utf8, "ctrl">>, info, [], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assertEqual(<<16#01/utf8, "ctrl">>, maps:get(<<"message">>, Map)).
+
+format_invalid_unicode_list_metadata_test() ->
+    BadList = [16#D800],
+    Msg = lager_msg:new(<<"bad">>, info, [{raw, BadList}], []),
+    Bin = iolist_to_binary(pertisk_eproxy_lager_json_formatter:format(Msg, [])),
+    {ok, Map} = thoas:decode(Bin),
+    ?assert(is_binary(maps:get(<<"raw">>, Map))).

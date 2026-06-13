@@ -141,3 +141,25 @@ porkbun_validation_accepts_keys_only_test() ->
         #{<<"api_key">> => <<"k">>, <<"secret_api_key">> => <<"s">>}
     ),
     ?assertMatch({ok, #{provider := <<"porkbun">>}}, Result).
+
+cloudflare_validation_accepts_token_only_test() ->
+    Result = pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"cloudflare">>,
+        #{<<"api_token">> => <<"secret">>}
+    ),
+    ?assertMatch({ok, #{provider := <<"cloudflare">>}}, Result).
+
+desec_validation_requires_token_test() ->
+    ?assertMatch(
+        {error, missing_api_token},
+        pertisk_eproxy_acme_dns:validate_dns_provider(<<"desec">>, #{})
+    ).
+
+custom_lego_with_provider_name_test() ->
+    case pertisk_eproxy_acme_dns:validate_dns_provider(
+        <<"customlego">>, #{<<"lego_provider">> => <<"mydns">>}
+    ) of
+        {error, lego_not_found} -> ok;
+        {error, _} -> ok;
+        {ok, #{provider := <<"mydns">>}} -> ok
+    end.

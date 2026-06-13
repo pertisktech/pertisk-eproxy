@@ -8,7 +8,7 @@ unload_mocks(Mods) ->
     lists:foreach(
         fun(Mod) ->
             case lists:member(Mod, meck:mocked()) of
-                true -> meck:unload(Mod);
+                true -> pertisk_eproxy_test_helpers:unload_mocks([Mod]);
                 false -> ok
             end
         end,

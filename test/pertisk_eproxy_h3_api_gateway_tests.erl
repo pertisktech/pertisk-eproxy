@@ -16,7 +16,9 @@ unload_mocks(Mods) ->
         fun(Mod) ->
             case lists:member(Mod, meck:mocked()) of
                 true ->
-                    try meck:unload(Mod) catch _:_ -> ok end;
+                    pertisk_eproxy_test_helpers:ignoring_errors(
+                fun() -> pertisk_eproxy_test_helpers:unload_mocks([Mod]) end
+            );
                 false ->
                     ok
             end
@@ -811,8 +813,8 @@ with_gateway_start_mock(Fun) ->
     try
         Fun()
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
-        catch pertisk_eproxy_h3_api_gateway:stop_probe(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop_probe() end),
         unload_mocks([quic_h3])
     end.
 
@@ -1051,7 +1053,7 @@ gateway_start_split_bind_fallback_test() ->
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
     after
         erase({quic_start_count, Ref}),
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([quic_h3])
     end.
 
@@ -1233,7 +1235,7 @@ gateway_start_with_ingress_tls_test() ->
         Config = #{sites => [#{host => <<"ingress.example.com">>}], https_port => 18443},
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([pertisk_ingress_env, pertisk_ingress_tls, quic_h3])
     end.
 
@@ -1462,7 +1464,7 @@ gateway_start_ingress_default_tls_test() ->
         Config = #{sites => [#{host => IngressHost}], https_port => 18443},
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([pertisk_ingress_env, pertisk_ingress_tls, quic_h3])
     end.
 
@@ -1483,7 +1485,7 @@ gateway_start_ingress_sni_site_test() ->
         Config = (gateway_tls_config())#{sites => [#{host => SniHost}]},
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([pertisk_ingress_env, pertisk_ingress_tls, quic_h3])
     end.
 
@@ -1753,7 +1755,7 @@ gateway_start_ingress_tls_decode_entry_test() ->
         },
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([pertisk_ingress_env, pertisk_ingress_tls, quic_h3])
     end.
 
@@ -1778,7 +1780,7 @@ gateway_start_ingress_sni_lookup_only_test() ->
         Config = (gateway_tls_config())#{sites => [#{host => LookupHost}]},
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         unload_mocks([pertisk_ingress_env, pertisk_ingress_tls, quic_h3])
     end.
 
@@ -1971,7 +1973,7 @@ with_os_type_mock(OsType, Fun) ->
         Fun()
     after
         %% Restore real os:type/0; keep passthrough mock (unload crashes code_server).
-        catch meck:delete(os, type, 0)
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> meck:delete(os, type, 0) end)
     end.
 
 with_linux_os_mock(Fun) ->
@@ -1990,7 +1992,7 @@ gateway_start_linux_dual_stack_udp_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
     end.
@@ -2017,7 +2019,7 @@ gateway_start_linux_dual_stack_fallback_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         erase({linux_ds_n, Ref}),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
@@ -2036,7 +2038,7 @@ gateway_start_linux_split_udp_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
     end.
@@ -2059,7 +2061,7 @@ gateway_start_linux_split_v4_fail_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
     end.
@@ -2128,7 +2130,7 @@ gateway_start_linux_split_v4_fail_v6_ok_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
     end.
@@ -2172,7 +2174,7 @@ gateway_start_probe_linux_dual_stack_test() ->
             ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start_probe(gateway_tls_config()))
         end)
     after
-        catch pertisk_eproxy_h3_api_gateway:stop_probe(),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop_probe() end),
         ok = pertisk_eproxy_test_helpers:put_config_retry(OldCfg),
         unload_mocks([quic_h3])
     end.
@@ -2861,3 +2863,24 @@ gateway_start_tls_chain_info_test() ->
     after
         _ = file:del_dir_r(Tmp)
     end.
+
+gateway_proxied_path_with_query_test() ->
+    with_proxied_site(fun(#{host := Host}) ->
+        with_quic_h3_mock(fun() ->
+            with_gun_h3_proxy_mock(#{await_body => {ok, <<"ok">>}}, fun() ->
+                Path = <<"/search?q=term">>,
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, Path, auth(Host))),
+                ?assertEqual({<<"GET">>, <<"/search?q=term">>}, get(gun_last_request))
+            end)
+        end)
+    end).
+
+gateway_authority_without_port_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    with_proxied_site(fun(#{host := Host}) ->
+        with_quic_h3_mock(fun() ->
+            with_gun_h3_proxy_mock(#{await_body => {ok, <<"ok">>}}, fun() ->
+                ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, [{<<":authority">>, Host}]))
+            end)
+        end)
+    end).

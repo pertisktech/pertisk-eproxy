@@ -76,7 +76,9 @@ with_mock_req(Opts, Fun) ->
     meck:expect(cowboy_req, stream_reply, fun(_Status, _Hdrs, Req) -> Req#{stream => started} end),
     meck:expect(cowboy_req, stream_body, fun(_Payload, _Fin, Req) -> Req end),
     try Fun(#{}) after
-        meck:unload([cowboy_req, pertisk_eproxy_response_headers, pertisk_eproxy_alt_svc])
+        pertisk_eproxy_test_helpers:unload_mocks([
+            cowboy_req, pertisk_eproxy_response_headers, pertisk_eproxy_alt_svc
+        ])
     end.
 
 init_auth_disabled_starts_stream_test() ->
@@ -103,7 +105,7 @@ init_authorized_with_valid_token_test() ->
             ?assertMatch({ok, #{stream := started}, _}, pertisk_eproxy_admin_sse_handler:init(Req, #{}))
         end)
     after
-        meck:unload(pertisk_eproxy_auth),
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth]),
         restore_auth_mode(Old)
     end.
 

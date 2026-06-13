@@ -162,3 +162,35 @@ leader_namespace_all_namespaces_fallback_test() ->
             ?assert(byte_size(Ns) > 0)
         end)
     end).
+
+publish_service_name_from_env_test() ->
+    with_env("PERTISK_K8S_PUBLISH_SERVICE", {set, "ingress-lb"}, fun() ->
+        ?assertEqual({ok, <<"ingress-lb">>}, pertisk_ingress_env:publish_service_name())
+    end).
+
+publish_service_name_falls_back_to_controller_test() ->
+    with_env("PERTISK_K8S_PUBLISH_SERVICE", unset, fun() ->
+        with_env("PERTISK_K8S_CONTROLLER_NAME", {set, "my-controller"}, fun() ->
+            ?assertEqual({ok, <<"my-controller">>}, pertisk_ingress_env:publish_service_name())
+        end)
+    end).
+
+publish_service_name_error_when_unset_test() ->
+    with_env("PERTISK_K8S_PUBLISH_SERVICE", unset, fun() ->
+        with_env("PERTISK_K8S_CONTROLLER_NAME", unset, fun() ->
+            ?assertEqual(error, pertisk_ingress_env:publish_service_name())
+        end)
+    end).
+
+gateway_api_enabled_defaults_false_test() ->
+    with_env("PERTISK_GATEWAY_API_ENABLED", unset, fun() ->
+        ?assertNot(pertisk_ingress_env:gateway_api_enabled())
+    end).
+
+gateway_api_enabled_from_env_test() ->
+    with_env("PERTISK_GATEWAY_API_ENABLED", {set, "true"}, fun() ->
+        ?assert(pertisk_ingress_env:gateway_api_enabled())
+    end),
+    with_env("PERTISK_GATEWAY_API_ENABLED", {set, "0"}, fun() ->
+        ?assertNot(pertisk_ingress_env:gateway_api_enabled())
+    end).

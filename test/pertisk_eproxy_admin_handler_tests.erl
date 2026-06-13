@@ -75,7 +75,9 @@ dispatch_auth(Method, Path, Body, Token) ->
 safe_meck_unload(Mod) ->
     case lists:member(Mod, meck:mocked()) of
         true ->
-            try meck:unload(Mod) catch _:_ -> ok end;
+            pertisk_eproxy_test_helpers:ignoring_errors(
+                fun() -> pertisk_eproxy_test_helpers:unload_mocks([Mod]) end
+            );
         false ->
             ok
     end.
@@ -157,7 +159,7 @@ stop_config_if_running() ->
         undefined ->
             ok;
         Pid ->
-            catch gen_server:stop(Pid, normal, 5000),
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
             wait_config_stopped(30)
     end.
 
@@ -243,7 +245,7 @@ with_tmp_db(Fun) ->
             file:delete(DbPath),
             case ConfigWasUp of
                 true ->
-                    catch pertisk_eproxy_config:reload();
+                    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_config:reload() end);
                 false ->
                     stop_config_if_running(),
                     ensure_env()
@@ -255,10 +257,10 @@ with_auth_server(Fun) ->
     case whereis(pertisk_eproxy_auth) of
         undefined ->
             {ok, Pid} = pertisk_eproxy_auth:start_link(),
-            try Fun() after catch gen_server:stop(Pid, normal, 5000) end;
+            try Fun() after pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000) end;
         Pid ->
             Fun(),
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end.
 
 with_local_auth(Fun) ->
@@ -359,10 +361,10 @@ with_mock_k8s(Fun) ->
     meck:new(ekub, [unstick]),
     meck:new(ekub_api, [unstick]),
     meck:new(ekub_core, [unstick]),
-    meck:new(pertisk_ingress_watcher, [unstick]),
-    meck:expect(pertisk_ingress_watcher, trigger_reconcile, fun() -> ok end),
     try Fun(Conn) after
-        meck:unload([pertisk_ingress_ekub, ekub, ekub_api, ekub_core, pertisk_ingress_watcher])
+        pertisk_eproxy_test_helpers:unload_mocks([
+            pertisk_ingress_ekub, ekub, ekub_api, ekub_core
+        ])
     end.
 
 ensure_backend_sup() ->
@@ -489,7 +491,7 @@ build_health_json_with_backend_test() ->
         ?assert(maps:is_key(<<"total">>, Row)),
         ?assert(maps:is_key(<<"healthy">>, Row))
     after
-        catch gen_server:stop(Pid, normal, 5000),
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.
 
@@ -746,7 +748,7 @@ api_backend_get_test() ->
         ?assertMatch({ok, 201, _, _}, dispatch(<<"POST">>, <<"/api/backends">>, Body)),
         ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/backends/bgtest">>))
     after
-        catch gen_server:stop(Pid, normal, 5000),
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
         _ = dispatch(<<"DELETE">>, <<"/api/backends/bgtest">>)
     end.
 
@@ -1879,7 +1881,7 @@ api_backend_get_reports_health_test() ->
         ?assert(maps:is_key(<<"healthy">>, Up)),
         ?assert(maps:is_key(<<"conns">>, Up))
     after
-        catch gen_server:stop(Pid, normal, 5000),
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
         _ = dispatch(<<"DELETE">>, <<"/api/backends/bhealth">>)
     end.
 
@@ -2260,7 +2262,7 @@ with_mock_helm(Fun) ->
     meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) ->
         "[{\"revision\":1,\"status\":\"deployed\"}]\n__PERTISK_HELM_RC__:0\n"
     end),
-    try Fun() after meck:unload(pertisk_eproxy_shell) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_shell]) end.
 
 api_helm_history_ingress_success_mocked_test() ->
     with_ingress_authenticated(fun(Token) ->
@@ -2501,7 +2503,7 @@ api_backend_health_summary_via_build_health_json_test() ->
             )
         )
     after
-        catch gen_server:stop(Pid, normal, 5000),
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.
 
@@ -2526,7 +2528,7 @@ api_helm_history_ingress_invalid_json_mocked_test() ->
                     dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
                 )
             after
-                meck:unload(pertisk_eproxy_shell)
+                pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_shell])
             end
         end)
     end).
@@ -2544,7 +2546,7 @@ api_helm_history_ingress_cmd_failed_mocked_test() ->
                     dispatch_auth(<<"GET">>, <<"/api/helm/history">>, <<>>, Token)
                 )
             after
-                meck:unload(pertisk_eproxy_shell)
+                pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_shell])
             end
         end)
     end).
@@ -2654,7 +2656,7 @@ api_helm_values_ingress_cmd_failed_mocked_test() ->
                     dispatch_auth(<<"GET">>, <<"/api/helm/values/1">>, <<>>, Token)
                 )
             after
-                meck:unload(pertisk_eproxy_shell)
+                pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_shell])
             end
         end)
     end).
@@ -3230,7 +3232,7 @@ api_k8s_namespaces_k8s_404_error_test() ->
                 dispatch_auth(<<"GET">>, <<"/api/kubernetes/namespaces">>, <<>>, Token)
             )
         after
-            meck:unload(pertisk_eproxy_admin_kubernetes)
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_admin_kubernetes])
         end
     end).
 
@@ -3246,7 +3248,7 @@ api_k8s_namespaces_k8s_403_error_test() ->
                 dispatch_auth(<<"GET">>, <<"/api/kubernetes/namespaces">>, <<>>, Token)
             )
         after
-            meck:unload(pertisk_eproxy_admin_kubernetes)
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_admin_kubernetes])
         end
     end).
 
@@ -3262,7 +3264,7 @@ api_k8s_pods_k8s_not_found_nested_error_test() ->
                 dispatch_auth(<<"GET">>, <<"/api/kubernetes/pods">>, <<"namespace=default">>, Token)
             )
         after
-            meck:unload(pertisk_eproxy_admin_kubernetes)
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_admin_kubernetes])
         end
     end).
 
@@ -3279,7 +3281,7 @@ api_k8s_services_k8s_generic_error_test() ->
             {ok, Map} = thoas:decode(Body),
             ?assert(maps:is_key(<<"error">>, Map))
         after
-            meck:unload(pertisk_eproxy_admin_kubernetes)
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_admin_kubernetes])
         end
     end).
 
@@ -3337,7 +3339,7 @@ api_k8s_tls_secrets_init_get_test() ->
                 dispatch_auth(<<"GET">>, <<"/api/kubernetes/tls-secrets">>, <<>>, Token)
             )
         after
-            meck:unload(pertisk_eproxy_admin_kubernetes)
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_admin_kubernetes])
         end
     end).
 
@@ -3359,3 +3361,141 @@ api_ingress_viewer_mutating_forbidden_test() ->
             end)
         end)
     end).
+
+%% ---------------------------------------------------------------------------
+%% certificate renew, dns list errors, init auth, extra routes
+%% ---------------------------------------------------------------------------
+
+api_certificate_renew_invalid_id_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            dispatch(<<"POST">>, <<"/api/certificates/not-a-number/renew">>)
+        )
+    end).
+
+api_certificate_renew_not_found_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 404, _, _},
+            dispatch(<<"POST">>, <<"/api/certificates/9999/renew">>)
+        )
+    end).
+
+api_certificate_renew_unassigned_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"orphan-renew-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Path = <<"/api/certificates/", IdBin/binary, "/renew">>,
+        ?assertMatch({ok, 400, _, _}, dispatch(<<"POST">>, Path))
+    end).
+
+api_certificate_renew_schedules_scan_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"renew-me-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Path = <<"/api/certificates/", IdBin/binary, "/renew">>,
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"renew-site.example">>, backend => <<"web">>,
+              certificate => <<"renew-me-cert">>, routes => []}],
+            []
+        ),
+        try
+            {ok, 202, _, Body} = dispatch(<<"POST">>, Path),
+            {ok, Map} = thoas:decode(Body),
+            ?assertEqual(<<"scheduled">>, maps:get(<<"status">>, Map)),
+            ?assert(lists:member(<<"renew-site.example">>, maps:get(<<"sites">>, Map)))
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_certificate_renew_init_post_test() ->
+    with_tmp_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"init-renew-cert">>}),
+        {ok, 201, _, Resp} = dispatch(<<"POST">>, <<"/api/certificates">>, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{host => <<"init-renew.example">>, backend => <<"web">>,
+              certificate => <<"init-renew-cert">>, routes => []}],
+            []
+        ),
+        try
+            Path = <<"/api/certificates/", IdBin/binary, "/renew">>,
+            ?assertMatch({ok, 202, _, _}, dispatch(<<"POST">>, Path))
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+api_dns_providers_list_db_error_test() ->
+    ensure_env(),
+    meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+    meck:expect(pertisk_eproxy_db, list_dns_providers, fun(_) ->
+        {error, {sqlite3_cli, <<"db locked">>}}
+    end),
+    try
+        ?assertMatch({ok, 500, _, _}, dispatch(<<"GET">>, <<"/api/dns-providers">>))
+    after
+        safe_meck_unload(pertisk_eproxy_db)
+    end.
+
+api_auth_local_unauthorized_init_test() ->
+    with_local_auth(fun() ->
+        ?assertMatch(
+            {ok, 401, _, _},
+            init_dispatch(<<"GET">>, <<"/api/config">>, config)
+        ),
+        ?assertMatch(
+            {ok, 401, _, _},
+            init_dispatch(<<"GET">>, <<"/api/sites">>, sites)
+        )
+    end).
+
+api_auth_local_unauthorized_post_init_test() ->
+    with_local_auth(fun() ->
+        Body = thoas:encode(#{<<"name">> => <<"web">>}),
+        ?assertMatch(
+            {ok, 401, _, _},
+            init_dispatch(<<"POST">>, <<"/api/backends">>, backends, Body)
+        )
+    end).
+
+api_backends_get_head_test() ->
+    ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/backends">>)),
+    ?assertMatch({ok, 200, _, _}, init_dispatch(<<"HEAD">>, <<"/api/version">>, version)).
+
+api_certificates_head_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/certificates">>)),
+        ?assertMatch({ok, 200, _, <<>>}, init_dispatch(<<"HEAD">>, <<"/api/auth/config">>, auth_config))
+    end).
+
+api_dns_providers_head_test() ->
+    with_tmp_db(fun(_Db) ->
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/dns-providers">>)),
+        ?assertMatch({ok, 200, _, <<>>}, init_dispatch(<<"HEAD">>, <<"/api/auth/config">>, auth_config))
+    end).
+
+api_sites_head_test() ->
+    ?assertMatch({ok, 200, _, _}, init_dispatch(<<"HEAD">>, <<"/api/ingress/live">>, ingress_live)).
+
+api_management_head_test() ->
+    ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/management">>)).

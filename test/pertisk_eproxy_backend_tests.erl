@@ -272,7 +272,7 @@ maybe_recover_transient_down_expired_test() ->
     %% monotonic_time may be negative on some platforms (macOS).
     %% When Past is negative, the Until > 0 guard in the source
     %% will not match, and the upstream remains unhealthy.
-    Now = erlang:monotonic_time(millisecond),
+    _Now = erlang:monotonic_time(millisecond),
     case Past > 0 of
         true ->
             ?assertEqual(true, maps:get(healthy, U)),
@@ -458,3 +458,81 @@ backend_gen_server_callbacks_test() ->
         ?assertEqual(ok, pertisk_eproxy_backend:terminate(normal, State)),
         ?assertMatch({ok, State}, pertisk_eproxy_backend:code_change(1, State, extra))
     end).
+
+backend_init_with_health_path_test() ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Name = backend_runtime_name(),
+    Backend = #{
+        name => Name,
+        algorithm => round_robin,
+        health_path => <<"/healthz">>,
+        health_interval_secs => 60,
+        upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+    },
+    {ok, Pid} = pertisk_eproxy_backend:start_link(Backend),
+    true = erlang:unlink(Pid),
+    try
+        {ok, #{upstreams := [_]}} = pertisk_eproxy_backend:status(Name)
+    after
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    end.
+
+backend_do_health_check_success_test() ->
+    meck:new(gun, [unstick, passthrough]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, get, fun(_, _, _) -> make_ref() end),
+    meck:expect(gun, await, fun(_, _, _) -> {response, fin, 200, []} end),
+    meck:expect(gun, close, fun(_) -> ok end),
+    try
+        Name = backend_runtime_name(),
+        Backend = #{
+            name => Name,
+            algorithm => round_robin,
+            health_path => <<"/healthz">>,
+            health_interval_secs => 1,
+            upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+        },
+        pertisk_eproxy_test_helpers:ensure_metrics(),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        {ok, Pid} = pertisk_eproxy_backend:start_link(Backend),
+        true = erlang:unlink(Pid),
+        Pid ! health_check,
+        timer:sleep(100),
+        {ok, #{upstreams := [U]}} = pertisk_eproxy_backend:status(Name),
+        ?assertEqual(true, maps:get(healthy, U)),
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([gun])
+    end.
+
+backend_do_health_check_open_failure_test() ->
+    meck:new(gun, [unstick, passthrough]),
+    meck:expect(gun, open, fun(_, _, _) -> {error, econnrefused} end),
+    try
+        Name = backend_runtime_name(),
+        Backend = #{
+            name => Name,
+            algorithm => round_robin,
+            health_path => <<"/healthz">>,
+            health_interval_secs => 1,
+            upstreams => [#{addr => <<"127.0.0.1:9">>, weight => 1}]
+        },
+        pertisk_eproxy_test_helpers:ensure_metrics(),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        {ok, Pid} = pertisk_eproxy_backend:start_link(Backend),
+        true = erlang:unlink(Pid),
+        Pid ! health_check,
+        timer:sleep(100),
+        {ok, #{upstreams := [U]}} = pertisk_eproxy_backend:status(Name),
+        ?assertEqual(false, maps:get(healthy, U)),
+        pertisk_eproxy_test_helpers:stop_backend(Name)
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([gun])
+    end.
+
+parse_addr_uri_non_string_host_test() ->
+    {Host, Port} = pertisk_eproxy_backend:parse_addr(<<"http://127.0.0.1:9090/path">>),
+    ?assertEqual("127.0.0.1", Host),
+    ?assertEqual(9090, Port).

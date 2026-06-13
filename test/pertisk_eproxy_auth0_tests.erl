@@ -26,7 +26,8 @@ auth0_public_config_with_domain_and_client_test() ->
 clear_auth0_env() ->
     application:unset_env(pertisk_eproxy, admin_auth0_domain),
     application:unset_env(pertisk_eproxy, admin_auth0_client_id),
-    application:unset_env(pertisk_eproxy, admin_auth0_audience).
+    application:unset_env(pertisk_eproxy, admin_auth0_audience),
+    application:unset_env(pertisk_eproxy, admin_auth0_issuer).
 
 restore_env(Key, undefined) ->
     application:unset_env(pertisk_eproxy, Key);
@@ -79,7 +80,7 @@ auth0_public_config_with_audience_test() ->
 %% ---------------------------------------------------------------------------
 
 clear_jwks_cache() ->
-    catch ets:delete(pertisk_eproxy_auth0_jwks),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> ets:delete(pertisk_eproxy_auth0_jwks) end),
     ok.
 
 with_auth0_env(Fun) ->
@@ -105,7 +106,7 @@ with_httpc_jwks_mock(JwksBody, Fun) ->
     try
         Fun()
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 test_jwk_and_jwks() ->
@@ -149,7 +150,7 @@ verify_bearer_jwks_http_error_test() ->
         try
             ?assertMatch({error, {jwks_http, _}}, pertisk_eproxy_auth0:verify_bearer(Token))
         after
-            meck:unload(httpc)
+            pertisk_eproxy_test_helpers:unload_mocks([httpc])
         end
     end).
 
@@ -260,6 +261,85 @@ verify_bearer_jwks_http_non_200_test() ->
         try
             ?assertMatch({error, {jwks_http, 503, _}}, pertisk_eproxy_auth0:verify_bearer(Token))
         after
-            meck:unload(httpc)
+            pertisk_eproxy_test_helpers:unload_mocks([httpc])
         end
+    end).
+
+verify_bearer_jwks_unreachable_cached_test() ->
+    with_auth0_env(fun() ->
+        {Jwk, _} = test_jwk_and_jwks(),
+        Token = sign_test_token(Jwk, base_claims()),
+        meck:new(httpc, [unstick, passthrough]),
+        meck:expect(httpc, request, fun(get, {_Url, _}, _Opts, _HttpOpts) ->
+            {error, timeout}
+        end),
+        try
+            ?assertMatch({error, {jwks_http, _}}, pertisk_eproxy_auth0:verify_bearer(Token)),
+            ?assertEqual({error, jwks_unreachable_cached}, pertisk_eproxy_auth0:verify_bearer(Token))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([httpc]),
+            clear_jwks_cache()
+        end
+    end).
+
+verify_bearer_username_from_sub_test() ->
+    with_auth0_env(fun() ->
+        {Jwk, JwksBody} = test_jwk_and_jwks(),
+        Claims = #{
+            <<"iss">> => <<"https://tenant.auth0.com/">>,
+            <<"aud">> => <<"client-id">>,
+            <<"exp">> => erlang:system_time(second) + 3600,
+            <<"sub">> => <<"auth0|12345">>
+        },
+        Token = sign_test_token(Jwk, Claims),
+        with_httpc_jwks_mock(JwksBody, fun() ->
+            ?assertMatch({ok, <<"auth0|12345">>, _}, pertisk_eproxy_auth0:verify_bearer(Token))
+        end)
+    end).
+
+verify_bearer_no_matching_kid_test() ->
+    with_auth0_env(fun() ->
+        {Jwk, _} = test_jwk_and_jwks(),
+        Token = sign_test_token(Jwk, base_claims()),
+        EmptyJwks = thoas:encode(#{<<"keys">> => []}),
+        with_httpc_jwks_mock(EmptyJwks, fun() ->
+            ?assertEqual({error, jwks_no_matching_key}, pertisk_eproxy_auth0:verify_bearer(Token))
+        end)
+    end).
+
+auth0_public_config_domain_list_test() ->
+    application:set_env(pertisk_eproxy, admin_auth0_domain, "tenant.auth0.com"),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, "client-id"),
+    try
+        M = pertisk_eproxy_auth0:auth0_public_config(),
+        ?assertEqual(<<"tenant.auth0.com">>, maps:get(<<"auth0_domain">>, M))
+    after
+        clear_auth0_env()
+    end.
+
+auth0_public_config_empty_audience_ignored_test() ->
+    application:set_env(pertisk_eproxy, admin_auth0_domain, <<"tenant.auth0.com">>),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, <<"client-id">>),
+    application:set_env(pertisk_eproxy, admin_auth0_audience, <<"  ">>),
+    try
+        M = pertisk_eproxy_auth0:auth0_public_config(),
+        ?assertNot(maps:is_key(<<"auth0_audience">>, M))
+    after
+        clear_auth0_env()
+    end.
+
+verify_bearer_email_username_test() ->
+    with_auth0_env(fun() ->
+        {Jwk, JwksBody} = test_jwk_and_jwks(),
+        Claims = #{
+            <<"iss">> => <<"https://tenant.auth0.com/">>,
+            <<"aud">> => <<"client-id">>,
+            <<"exp">> => erlang:system_time(second) + 3600,
+            <<"sub">> => <<"auth0|12345">>,
+            <<"email">> => <<"user@example.com">>
+        },
+        Token = sign_test_token(Jwk, Claims),
+        with_httpc_jwks_mock(JwksBody, fun() ->
+            ?assertMatch({ok, <<"user@example.com">>, _}, pertisk_eproxy_auth0:verify_bearer(Token))
+        end)
     end).

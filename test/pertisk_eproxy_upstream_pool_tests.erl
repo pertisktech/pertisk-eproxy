@@ -24,7 +24,7 @@ checkout_without_pool_opens_connection_test() ->
         #{connect_timeout => 200, protocols => [http]}
     ) of
         {ok, Pid} ->
-            catch gun:close(Pid),
+            pertisk_eproxy_test_helpers:ignoring_errors(fun() -> gun:close(Pid) end),
             ok;
         {error, _} ->
             ok
@@ -259,12 +259,12 @@ setup_gun_mock() ->
     ok.
 
 stop_pool(Pid) when is_pid(Pid) ->
-    catch gen_server:stop(Pid),
+    pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid),
     ok.
 
 unload_gun() ->
     case lists:member(gun, meck:mocked()) of
-        true -> meck:unload(gun);
+        true -> pertisk_eproxy_test_helpers:unload_mocks([gun]);
         false -> ok
     end.
 

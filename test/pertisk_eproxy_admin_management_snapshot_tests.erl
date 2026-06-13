@@ -137,3 +137,49 @@ snapshot_proxy_access_log_env_test() ->
             V -> os:putenv("PERTISK_PROXY_ACCESS_LOG", V)
         end
     end.
+
+snapshot_proxy_mode_db_path_test() ->
+    Old = os:getenv("PERTISK_MODE"),
+    os:putenv("PERTISK_MODE", "proxy"),
+    ensure_config(),
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    OldDb = application:get_env(pertisk_eproxy, db_file),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    try
+        S = pertisk_eproxy_admin_management_snapshot:snapshot(),
+        ?assertEqual(list_to_binary(DbPath), maps:get(<<"db_path">>, S))
+    after
+        case OldDb of
+            {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
+            undefined -> application:unset_env(pertisk_eproxy, db_file)
+        end,
+        case Old of
+            false -> os:unsetenv("PERTISK_MODE");
+            ModeVal -> os:putenv("PERTISK_MODE", ModeVal)
+        end
+    end.
+
+snapshot_management_tls_listener_test() ->
+    ensure_config(),
+    C = pertisk_eproxy_config:get_config(),
+    C2 = maps:put(management_tls_enabled, true, C),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(C2),
+    try
+        S = pertisk_eproxy_admin_management_snapshot:snapshot(),
+        Listeners = maps:get(<<"listeners">>, S),
+        [Mgmt | _] = [L || L <- Listeners, maps:get(<<"id">>, L) =:= <<"management">>],
+        ?assertEqual(true, maps:get(<<"tls">>, Mgmt)),
+        Desc = maps:get(<<"description">>, Mgmt),
+        ?assertNotEqual(nomatch, binary:match(Desc, <<"ALPN">>))
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(C)
+    end.
+
+snapshot_cpu_reuses_last_sample_within_interval_test() ->
+    ensure_config(),
+    ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
+    S1 = pertisk_eproxy_admin_management_snapshot:snapshot(),
+    Cpu1 = maps:get(<<"process_cpu_usage_percent">>, S1),
+    S2 = pertisk_eproxy_admin_management_snapshot:snapshot(),
+    Cpu2 = maps:get(<<"process_cpu_usage_percent">>, S2),
+    ?assertEqual(Cpu1, Cpu2).

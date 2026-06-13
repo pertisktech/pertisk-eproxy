@@ -37,7 +37,7 @@ unload_mocks(Mods) ->
     lists:foreach(
         fun(Mod) ->
             case lists:member(Mod, meck:mocked()) of
-                true -> meck:unload(Mod);
+                true -> pertisk_eproxy_test_helpers:unload_mocks([Mod]);
                 false -> ok
             end
         end,
@@ -64,7 +64,7 @@ with_app_reload_mocks(Fun) ->
     meck:new(pertisk_eproxy_config, [unstick, passthrough]),
     meck:new(pertisk_eproxy_h3_api_gateway, [unstick]),
     meck:new(pertisk_ingress_env, [unstick]),
-    meck:new(pertisk_eproxy_tls_paths, [unstick]),
+    meck:new(pertisk_eproxy_tls_paths, [passthrough]),
     meck:expect(pertisk_eproxy_config, get_config, fun() -> reload_config() end),
     meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> false end),
     meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
@@ -127,4 +127,80 @@ stop_listeners_test() ->
     with_app_reload_mocks(fun() ->
         ?assertEqual(ok, pertisk_eproxy_app:stop(#{})),
         ?assert(meck:num_calls(cowboy, stop_listener, '_') >= 7)
+    end).
+
+%% ---------------------------------------------------------------------------
+%% start/2 (proxy mode, heavily mocked)
+%% ---------------------------------------------------------------------------
+
+start_config() ->
+    #{
+        http_port => 18080,
+        management_port => 19080,
+        h3_api_gateway_enabled => false,
+        h3_probe_enabled => false,
+        quic_enabled => false
+    }.
+
+with_app_start_mocks(Fun) ->
+    pertisk_eproxy_test_helpers:ensure_lager(),
+    unload_mocks([
+        cowboy, pertisk_eproxy_config, pertisk_eproxy_metrics,
+        pertisk_eproxy_admin_management_snapshot, pertisk_eproxy_sup,
+        pertisk_ingress_env, pertisk_eproxy_db,
+        pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway
+    ]),
+    meck:new(cowboy, [unstick]),
+    meck:new(pertisk_eproxy_config, [unstick, passthrough]),
+    meck:new(pertisk_eproxy_metrics, [unstick]),
+    meck:new(pertisk_eproxy_admin_management_snapshot, [unstick]),
+    meck:new(pertisk_eproxy_sup, [unstick]),
+    meck:new(pertisk_ingress_env, [unstick]),
+    meck:new(pertisk_eproxy_db, [passthrough]),
+    meck:new(pertisk_eproxy_shell, [unstick]),
+    meck:new(pertisk_eproxy_auth0, [unstick]),
+    meck:new(pertisk_eproxy_h3_api_gateway, [unstick]),
+    meck:expect(pertisk_eproxy_config, get_config, fun() -> start_config() end),
+    meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
+    meck:expect(pertisk_eproxy_config, data_dir, fun() -> "/tmp/pertisk-eproxy-test" end),
+    meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> false end),
+    meck:expect(pertisk_eproxy_config, metrics_listen, fun() -> {{127, 0, 0, 1}, 9190} end),
+    meck:expect(pertisk_eproxy_metrics, setup, fun() -> ok end),
+    meck:expect(pertisk_eproxy_admin_management_snapshot, init_cpu_sample, fun() -> ok end),
+    meck:expect(pertisk_eproxy_sup, start_link, fun() -> {ok, self()} end),
+    meck:expect(pertisk_ingress_env, ingress_mode, fun() -> false end),
+    meck:expect(pertisk_ingress_env, enabled, fun() -> false end),
+    meck:expect(pertisk_eproxy_db, ensure_ready, fun(_) -> {ok, ok} end),
+    meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {error, openssl_not_found} end),
+    meck:expect(cowboy, stop_listener, fun(_) -> ok end),
+    meck:expect(cowboy, start_clear, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(cowboy, start_tls, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(pertisk_eproxy_auth0, maybe_prefetch_jwks, fun() -> ok end),
+    meck:expect(pertisk_eproxy_h3_api_gateway, stop, fun() -> ok end),
+    meck:expect(pertisk_eproxy_h3_api_gateway, stop_probe, fun() -> ok end),
+    meck:expect(pertisk_eproxy_h3_api_gateway, start, fun(_) ->
+        {error, {missing_tls_file, cert, "/x"}}
+    end),
+    meck:expect(pertisk_eproxy_h3_api_gateway, start_probe, fun(_) ->
+        {error, {missing_tls_file, cert, "/x"}}
+    end),
+    try
+        Fun()
+    after
+        unload_mocks([
+            cowboy, pertisk_eproxy_config, pertisk_eproxy_metrics,
+            pertisk_eproxy_admin_management_snapshot, pertisk_eproxy_sup,
+            pertisk_ingress_env, pertisk_eproxy_db,
+            pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway
+        ])
+    end.
+
+start_proxy_mode_mocked_test() ->
+    with_app_start_mocks(fun() ->
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_sup, start_link, '_')),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_metrics, setup, '_')),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_auth0, maybe_prefetch_jwks, '_')),
+        ?assert(meck:num_calls(cowboy, start_clear, '_') >= 3),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_db, ensure_ready, '_'))
     end).

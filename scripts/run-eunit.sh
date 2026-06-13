@@ -63,6 +63,7 @@ finalize_cover() {
 
 eunit_cover_arg() {
   if [ "$COVER" -eq 1 ]; then
+    export PERTISK_EUNIT_COVER=1
     printf '%s' "--cover"
   fi
 }

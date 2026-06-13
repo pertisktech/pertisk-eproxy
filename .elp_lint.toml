@@ -1,0 +1,14 @@
+# ELP OTP 29 marks some stdlib calls as {unsafe, possibly}; elp_lint can crash (L0002)
+# until the language server handles that category. Tests intentionally call gen_server:stop,
+# cover:*, meck:unload, etc. with defensive wrappers.
+[linters.W0052]
+enabled = false
+
+[linters.deprecated_function]
+enabled = false
+
+[linters.possibly_unsafe_function]
+enabled = false
+
+[linters.W0054]
+enabled = false

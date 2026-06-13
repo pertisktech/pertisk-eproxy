@@ -30,7 +30,7 @@ with_httpc_mock(Fun) ->
     meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
         dns_http(normalize_method(Method), Req, Opts, HttpOpts)
     end),
-    try Fun() after meck:unload(httpc) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([httpc]) end.
 
 url(Method, Req) ->
     case {Method, Req} of
@@ -173,7 +173,7 @@ cloudflare_find_zone_not_found_test() ->
         ?assertMatch({error, {zone_not_found, _}},
             pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"missing.example.com">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_get_zone_error_test() ->
@@ -188,7 +188,7 @@ cloudflare_get_zone_error_test() ->
         ?assertMatch({error, {zone_lookup, _}},
             pertisk_eproxy_dns_cloudflare:get_zone(?TOKEN, <<"z1">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_duplicate_post(<<"https://api.cloudflare.com/client/v4/zones/z1/dns_records">>) ->
@@ -232,7 +232,7 @@ cloudflare_create_txt_duplicate_reuses_id_test() ->
         ?assertEqual({ok, <<"dup-rec">>},
             pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_delete_txt_error_test() ->
@@ -249,7 +249,7 @@ cloudflare_delete_txt_error_test() ->
         ?assertMatch({error, {cloudflare, _}},
             pertisk_eproxy_dns_cloudflare:delete_txt(?TOKEN, <<"z1">>, <<"bad">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% deSEC
@@ -275,7 +275,7 @@ desec_resolve_domain_test() ->
         ?assertMatch({ok, ?ZONE},
             pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 desec_create_txt_test() ->
@@ -315,7 +315,7 @@ hetzner_resolve_zone_test() ->
         ?assertMatch({ok, #{zone_id := <<"hz1">>}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_create_txt_test() ->
@@ -327,7 +327,7 @@ hetzner_create_txt_test() ->
         ?assertMatch({ok, <<"hz-rec">>},
             pertisk_eproxy_dns_hetzner:create_txt(?TOKEN, <<"hz1">>, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_delete_txt_test() ->
@@ -338,7 +338,7 @@ hetzner_delete_txt_test() ->
     try
         ?assertEqual(ok, pertisk_eproxy_dns_hetzner:delete_txt(?TOKEN, <<"hz1">>, <<"hz-rec">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% Vultr
@@ -366,7 +366,7 @@ vultr_resolve_zone_test() ->
         ?assertMatch({ok, ?ZONE},
             pertisk_eproxy_dns_vultr:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_create_txt_test() ->
@@ -378,7 +378,7 @@ vultr_create_txt_test() ->
         ?assertMatch({ok, <<"v1">>},
             pertisk_eproxy_dns_vultr:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_delete_txt_test() ->
@@ -389,7 +389,7 @@ vultr_delete_txt_test() ->
     try
         ?assertEqual(ok, pertisk_eproxy_dns_vultr:delete_txt(?TOKEN, ?ZONE, <<"v1">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% Gandi
@@ -415,7 +415,7 @@ gandi_resolve_domain_test() ->
         ?assertMatch({ok, ?ZONE},
             pertisk_eproxy_dns_gandi:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 gandi_create_txt_test() ->
@@ -454,7 +454,7 @@ digitalocean_resolve_domain_test() ->
         ?assertMatch({ok, ?ZONE},
             pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 digitalocean_create_txt_test() ->
@@ -466,7 +466,7 @@ digitalocean_create_txt_test() ->
         ?assertMatch({ok, 42},
             pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 digitalocean_delete_txt_test() ->
@@ -477,7 +477,7 @@ digitalocean_delete_txt_test() ->
     try
         ?assertEqual(ok, pertisk_eproxy_dns_digitalocean:delete_txt(?TOKEN, ?ZONE, 42))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% Linode
@@ -515,7 +515,7 @@ linode_resolve_domain_explicit_test() ->
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>)
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_resolve_domain_from_host_test() ->
@@ -529,7 +529,7 @@ linode_resolve_domain_from_host_test() ->
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>)
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_txt_record_name_test() ->
@@ -549,7 +549,7 @@ linode_create_txt_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_delete_txt_test() ->
@@ -563,7 +563,7 @@ linode_delete_txt_test() ->
             pertisk_eproxy_dns_linode:delete_txt(?TOKEN, ?LINODE_DOMAIN_ID, ?LINODE_RECORD_ID)
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% Porkbun
@@ -605,7 +605,7 @@ porkbun_resolve_domain_explicit_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_resolve_domain_from_host_test() ->
@@ -620,7 +620,7 @@ porkbun_resolve_domain_from_host_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, undefined, Host
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_txt_record_name_test() ->
@@ -640,7 +640,7 @@ porkbun_create_txt_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_delete_txt_test() ->
@@ -656,7 +656,7 @@ porkbun_delete_txt_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% PowerDNS
@@ -690,7 +690,7 @@ powerdns_resolve_zone_explicit_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_resolve_zone_from_host_test() ->
@@ -707,7 +707,7 @@ powerdns_resolve_zone_from_host_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_txt_record_name_test() ->
@@ -727,7 +727,7 @@ powerdns_create_txt_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_delete_txt_test() ->
@@ -743,7 +743,7 @@ powerdns_delete_txt_test() ->
             )
         )
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% ---------------------------------------------------------------------------
@@ -753,7 +753,7 @@ powerdns_delete_txt_test() ->
 with_httpc_transport_error(Fun) ->
     meck:new(httpc, [unstick, passthrough]),
     meck:expect(httpc, request, fun(_, _, _, _) -> {error, timeout} end),
-    try Fun() after meck:unload(httpc) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([httpc]) end.
 
 with_httpc_status_error(Method, Status, Fun) ->
     meck:new(httpc, [unstick, passthrough]),
@@ -765,7 +765,7 @@ with_httpc_status_error(Method, Status, Fun) ->
                 dns_http(normalize_method(M), Req, Opts, HttpOpts)
         end
     end),
-    try Fun() after meck:unload(httpc) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([httpc]) end.
 
 %% Cloudflare
 cloudflare_find_zone_http_404_retries_test() ->
@@ -780,7 +780,7 @@ cloudflare_find_zone_http_404_retries_test() ->
         ?assertMatch({error, {zone_not_found, _}},
             pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"missing.example.com">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_find_zone_httpc_error_test() ->
@@ -801,7 +801,7 @@ cloudflare_find_zone_api_error_test() ->
         ?assertMatch({error, {zone_lookup, {cloudflare, _}}},
             pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_create_txt_httpc_error_test() ->
@@ -829,7 +829,7 @@ cloudflare_create_txt_duplicate_lookup_fails_test() ->
         ?assertMatch({error, {cloudflare, _}},
             pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_create_txt_unexpected_test() ->
@@ -841,7 +841,7 @@ cloudflare_create_txt_unexpected_test() ->
         ?assertMatch({error, {unexpected, _}},
             pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 cloudflare_delete_txt_httpc_error_test() ->
@@ -875,7 +875,7 @@ cloudflare_auth_6111_test() ->
         ?assertMatch({error, {zone_lookup, {error, invalid_cloudflare_auth_header}}},
             pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% deSEC
@@ -896,7 +896,7 @@ desec_resolve_domain_from_host_test() ->
         ?assertMatch({ok, Host},
             pertisk_eproxy_dns_desec:resolve_domain(?TOKEN, undefined, Host))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 desec_resolve_domain_not_found_test() ->
@@ -931,7 +931,7 @@ hetzner_resolve_zone_from_host_test() ->
         ?assertMatch({ok, #{zone_id := <<"hz1">>}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_resolve_zone_not_found_test() ->
@@ -946,7 +946,7 @@ hetzner_resolve_zone_not_found_test() ->
         ?assertMatch({error, zone_not_found},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, undefined, <<"missing.example.com">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_create_txt_httpc_error_test() ->
@@ -964,7 +964,7 @@ hetzner_create_txt_missing_record_test() ->
         ?assertMatch({error, {missing_record_id, _}},
             pertisk_eproxy_dns_hetzner:create_txt(?TOKEN, <<"hz1">>, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_delete_txt_httpc_error_test() ->
@@ -988,7 +988,7 @@ vultr_resolve_zone_from_host_test() ->
         ?assertMatch({ok, Host},
             pertisk_eproxy_dns_vultr:resolve_zone(?TOKEN, undefined, Host))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_resolve_zone_not_found_test() ->
@@ -1012,7 +1012,7 @@ vultr_create_txt_missing_id_test() ->
         ?assertMatch({error, {missing_record_id, _}},
             pertisk_eproxy_dns_vultr:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_delete_txt_httpc_error_test() ->
@@ -1036,7 +1036,7 @@ gandi_resolve_domain_from_host_test() ->
         ?assertMatch({ok, Host},
             pertisk_eproxy_dns_gandi:resolve_domain(?TOKEN, undefined, Host))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 gandi_resolve_domain_not_found_test() ->
@@ -1072,7 +1072,7 @@ digitalocean_resolve_domain_from_host_test() ->
         ?assertMatch({ok, Host},
             pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, undefined, Host))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 digitalocean_resolve_domain_not_found_test() ->
@@ -1109,7 +1109,7 @@ linode_resolve_domain_not_found_test() ->
         ?assertMatch({error, domain_not_found},
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, undefined, <<"missing.example.com">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_create_txt_httpc_error_test() ->
@@ -1127,7 +1127,7 @@ linode_create_txt_missing_id_test() ->
         ?assertMatch({error, {missing_record_id, _}},
             pertisk_eproxy_dns_linode:create_txt(?TOKEN, ?LINODE_DOMAIN_ID, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_delete_txt_httpc_error_test() ->
@@ -1154,7 +1154,7 @@ porkbun_resolve_domain_not_found_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, undefined, <<"missing.example.com">>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_create_txt_httpc_error_test() ->
@@ -1176,7 +1176,7 @@ porkbun_create_txt_missing_id_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, ?ZONE, ?RECORD, ?TXT
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_delete_txt_httpc_error_test() ->
@@ -1226,7 +1226,7 @@ powerdns_resolve_zone_trailing_slash_url_test() ->
                 <<?PDNS_URL/binary, "/">>, ?PDNS_KEY, undefined, ?ZONE, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 %% ---------------------------------------------------------------------------
@@ -1251,7 +1251,7 @@ gandi_resolve_domain_fatal_error_test() ->
         ?assertMatch({error, {domain_lookup_failed, _, {http, 500, _}}},
             pertisk_eproxy_dns_gandi:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 gandi_create_txt_http_status_error_test() ->
@@ -1269,7 +1269,7 @@ gandi_create_txt_201_response_test() ->
         ?assertMatch({ok, {gandi, ?TOKEN, ?ZONE, ?RECORD}},
             pertisk_eproxy_dns_gandi:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 gandi_create_txt_invalid_json_body_test() ->
@@ -1281,7 +1281,7 @@ gandi_create_txt_invalid_json_body_test() ->
         ?assertMatch({ok, {gandi, ?TOKEN, ?ZONE, ?RECORD}},
             pertisk_eproxy_dns_gandi:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 gandi_resolve_domain_trim_spaces_test() ->
@@ -1296,7 +1296,7 @@ gandi_resolve_domain_trim_spaces_test() ->
         ?assertMatch({ok, ?ZONE},
             pertisk_eproxy_dns_gandi:resolve_domain(?TOKEN, <<"  ", ?ZONE/binary, "  ">>, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_resolve_zone_explicit_failure_test() ->
@@ -1311,7 +1311,7 @@ hetzner_resolve_zone_explicit_failure_test() ->
         ?assertMatch({error, {zone_lookup_failed, ?ZONE, {error, zone_not_found}}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_resolve_zone_fatal_error_test() ->
@@ -1326,7 +1326,7 @@ hetzner_resolve_zone_fatal_error_test() ->
         ?assertMatch({error, {zone_lookup_failed, _, {http, 500, _}}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_resolve_zone_bad_zone_map_test() ->
@@ -1341,7 +1341,7 @@ hetzner_resolve_zone_bad_zone_map_test() ->
         ?assertMatch({error, {zone_lookup_failed, ?ZONE, {error, {zone_lookup, _}}}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_create_txt_unexpected_response_test() ->
@@ -1353,7 +1353,7 @@ hetzner_create_txt_unexpected_response_test() ->
         ?assertMatch({error, {missing_record, _}},
             pertisk_eproxy_dns_hetzner:create_txt(?TOKEN, <<"hz1">>, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_delete_txt_http_status_error_test() ->
@@ -1373,7 +1373,7 @@ hetzner_delete_txt_integer_id_test() ->
     try
         ?assertEqual(ok, pertisk_eproxy_dns_hetzner:delete_txt(?TOKEN, <<"hz1">>, 42))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_resolve_domain_explicit_failure_test() ->
@@ -1388,7 +1388,7 @@ linode_resolve_domain_explicit_failure_test() ->
         ?assertMatch({error, {domain_lookup_failed, ?ZONE, {error, domain_not_found}}},
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_resolve_domain_fatal_error_test() ->
@@ -1403,7 +1403,7 @@ linode_resolve_domain_fatal_error_test() ->
         ?assertMatch({error, {domain_lookup_failed, _, {http, 500, _}}},
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_list_domains_unexpected_test() ->
@@ -1418,7 +1418,7 @@ linode_list_domains_unexpected_test() ->
         ?assertMatch({error, {domain_lookup_failed, _, {unexpected_domains_response, _}}},
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_create_txt_integer_domain_id_test() ->
@@ -1433,7 +1433,7 @@ linode_create_txt_integer_domain_id_test() ->
         ?assertMatch({ok, ?LINODE_RECORD_ID},
             pertisk_eproxy_dns_linode:create_txt(?TOKEN, ?LINODE_DOMAIN_ID, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_delete_txt_http_status_error_test() ->
@@ -1456,7 +1456,7 @@ porkbun_resolve_domain_explicit_failure_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, ?ZONE, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_resolve_domain_fatal_error_test() ->
@@ -1473,7 +1473,7 @@ porkbun_resolve_domain_fatal_error_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, undefined, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_create_txt_from_records_array_test() ->
@@ -1492,7 +1492,7 @@ porkbun_create_txt_from_records_array_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, ?ZONE, ?RECORD, ?TXT
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_create_txt_http_status_error_test() ->
@@ -1517,7 +1517,7 @@ porkbun_invalid_domain_400_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, undefined, <<"bad.example.com">>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_resolve_zone_explicit_failure_test() ->
@@ -1538,7 +1538,7 @@ vultr_resolve_zone_fatal_error_test() ->
         ?assertMatch({error, {zone_lookup_failed, _, {zone_lookup, {error, {http, 500, _}}}}},
             pertisk_eproxy_dns_vultr:resolve_zone(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_get_zone_domain_map_test() ->
@@ -1553,7 +1553,7 @@ vultr_get_zone_domain_map_test() ->
         ?assertEqual({ok, ?ZONE},
             pertisk_eproxy_dns_vultr:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_create_txt_200_response_test() ->
@@ -1565,7 +1565,7 @@ vultr_create_txt_200_response_test() ->
         ?assertEqual({ok, <<"v200">>},
             pertisk_eproxy_dns_vultr:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_delete_txt_http_status_error_test() ->
@@ -1582,7 +1582,7 @@ vultr_delete_txt_200_body_test() ->
     try
         ?assertEqual(ok, pertisk_eproxy_dns_vultr:delete_txt(?TOKEN, ?ZONE, <<"v1">>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_resolve_zone_explicit_failure_test() ->
@@ -1607,7 +1607,7 @@ powerdns_resolve_zone_fatal_error_test() ->
                 ?PDNS_URL, ?PDNS_KEY, undefined, undefined, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_default_server_id_list_test() ->
@@ -1621,7 +1621,7 @@ powerdns_default_server_id_list_test() ->
                 ?PDNS_URL, ?PDNS_KEY, undefined, ?ZONE, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_create_txt_http_status_error_test() ->
@@ -1646,7 +1646,7 @@ powerdns_get_zone_204_test() ->
                 ?PDNS_URL, ?PDNS_KEY, undefined, ?ZONE, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 powerdns_txt_record_name_trailing_dot_zone_test() ->
@@ -1665,7 +1665,7 @@ hetzner_get_zone_unexpected_response_test() ->
         ?assertMatch({error, {zone_lookup_failed, ?ZONE, {error, {zone_lookup, _}}}},
             pertisk_eproxy_dns_hetzner:resolve_zone(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 hetzner_txt_record_name_short_fqdn_test() ->
@@ -1680,7 +1680,7 @@ hetzner_create_txt_json_error_test() ->
         ?assertMatch({error, {json, _}},
             pertisk_eproxy_dns_hetzner:create_txt(?TOKEN, <<"hz1">>, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_normalize_domain_without_type_test() ->
@@ -1698,7 +1698,7 @@ linode_normalize_domain_without_type_test() ->
         ?assertMatch({ok, #{id := 99, domain := ?ZONE}},
             pertisk_eproxy_dns_linode:resolve_domain(?TOKEN, undefined, <<"www.", ?ZONE/binary>>))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 linode_txt_record_name_short_fqdn_test() ->
@@ -1713,7 +1713,7 @@ linode_delete_txt_200_invalid_json_test() ->
         ?assertEqual(ok,
             pertisk_eproxy_dns_linode:delete_txt(?TOKEN, ?LINODE_DOMAIN_ID, ?LINODE_RECORD_ID))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_get_records_json_error_test() ->
@@ -1727,7 +1727,7 @@ porkbun_get_records_json_error_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, ?ZONE, <<"www.", ?ZONE/binary>>
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 porkbun_create_txt_lowercase_success_status_test() ->
@@ -1744,7 +1744,7 @@ porkbun_create_txt_lowercase_success_status_test() ->
                 ?PORKBUN_KEY, ?PORKBUN_SECRET, ?ZONE, ?RECORD, ?TXT
             ))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_create_txt_unexpected_response_test() ->
@@ -1756,7 +1756,7 @@ vultr_create_txt_unexpected_response_test() ->
         ?assertMatch({error, {unexpected, _}},
             pertisk_eproxy_dns_vultr:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 vultr_txt_record_name_short_fqdn_test() ->

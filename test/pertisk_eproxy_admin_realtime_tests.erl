@@ -6,7 +6,7 @@ with_server(Fun) ->
     case whereis(pertisk_eproxy_admin_realtime) of
         undefined ->
             {ok, Pid} = pertisk_eproxy_admin_realtime:start_link(),
-            try Fun(Pid) after catch gen_server:stop(Pid, normal, 5000) end;
+            try Fun(Pid) after pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000) end;
         Pid ->
             Fun(Pid)
     end.
@@ -14,7 +14,7 @@ with_server(Fun) ->
 ssl_job_without_server_is_ok_test() ->
     case whereis(pertisk_eproxy_admin_realtime) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid, normal, 5000)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end,
     ?assertEqual(ok, pertisk_eproxy_admin_realtime:ssl_job(#{
         host => <<"example.com">>,
@@ -26,7 +26,7 @@ ssl_job_without_server_is_ok_test() ->
 subscribe_without_server_is_ok_test() ->
     case whereis(pertisk_eproxy_admin_realtime) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid, normal, 5000)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end,
     ?assertEqual(ok, pertisk_eproxy_admin_realtime:subscribe(self())),
     ?assertEqual(ok, pertisk_eproxy_admin_realtime:unsubscribe(self())).
@@ -87,7 +87,7 @@ gen_server_callbacks_test() ->
 clear_ssl_job_without_server_test() ->
     case whereis(pertisk_eproxy_admin_realtime) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid, normal, 5000)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end,
     ?assertEqual(ok, pertisk_eproxy_admin_realtime:clear_ssl_job(<<"gone.example">>)).
 

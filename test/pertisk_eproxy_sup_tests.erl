@@ -27,7 +27,7 @@ with_backend_sup(Fun) ->
             true ->
                 case whereis(pertisk_eproxy_backend_sup) of
                     undefined -> ok;
-                    Pid -> catch gen_server:stop(Pid)
+                    Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid)
                 end;
             false ->
                 ok
@@ -61,27 +61,39 @@ proxy_sup_start_link_test() ->
         {ok, Pid} = pertisk_eproxy_sup:start_link(),
         ?assert(is_pid(Pid))
     after
-        meck:unload(supervisor)
+        pertisk_eproxy_test_helpers:unload_mocks([supervisor])
     end.
 
 proxy_sup_ingress_child_when_enabled_test() ->
-    meck:new(pertisk_ingress_env, [unstick, passthrough]),
-    meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
+    Old = os:getenv("PERTISK_MODE"),
+    os:putenv("PERTISK_MODE", "ingress"),
     try
         {ok, {_Flags, Children}} = pertisk_eproxy_sup:init([]),
         Ids = [maps:get(id, C) || C <- Children],
         ?assert(lists:member(pertisk_ingress_sup, Ids))
     after
-        meck:unload(pertisk_ingress_env)
+        case Old of
+            false -> os:unsetenv("PERTISK_MODE");
+            V -> os:putenv("PERTISK_MODE", V)
+        end
     end.
 
 proxy_sup_no_ingress_child_when_disabled_test() ->
-    meck:new(pertisk_ingress_env, [unstick, passthrough]),
-    meck:expect(pertisk_ingress_env, enabled, fun() -> false end),
+    OldMode = os:getenv("PERTISK_MODE"),
+    OldEnabled = os:getenv("PERTISK_K8S_INGRESS_ENABLED"),
+    os:unsetenv("PERTISK_MODE"),
+    os:putenv("PERTISK_K8S_INGRESS_ENABLED", "false"),
     try
         {ok, {_Flags, Children}} = pertisk_eproxy_sup:init([]),
         Ids = [maps:get(id, C) || C <- Children],
         ?assertNot(lists:member(pertisk_ingress_sup, Ids))
     after
-        meck:unload(pertisk_ingress_env)
+        case OldMode of
+            false -> os:unsetenv("PERTISK_MODE");
+            ModeV -> os:putenv("PERTISK_MODE", ModeV)
+        end,
+        case OldEnabled of
+            false -> os:unsetenv("PERTISK_K8S_INGRESS_ENABLED");
+            EnabledV -> os:putenv("PERTISK_K8S_INGRESS_ENABLED", EnabledV)
+        end
     end.

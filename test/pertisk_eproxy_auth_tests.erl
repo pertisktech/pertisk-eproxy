@@ -74,10 +74,10 @@ with_auth_server(Fun) ->
     case whereis(pertisk_eproxy_auth) of
         undefined ->
             {ok, Pid} = pertisk_eproxy_auth:start_link(),
-            try Fun() after catch gen_server:stop(Pid, normal, 5000) end;
+            try Fun() after pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000) end;
         Pid ->
             Fun(),
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end.
 
 start_link_and_callbacks_test() ->
@@ -284,7 +284,7 @@ auth_config_map_local_with_sso_test() ->
         ?assertEqual(<<"both">>, maps:get(<<"mode">>, Map)),
         ?assertEqual(true, maps:get(<<"supports_sso">>, Map))
     after
-        meck:unload(pertisk_eproxy_auth0),
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth0]),
         case Old of
             {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
             undefined -> application:unset_env(pertisk_eproxy, admin_auth)
@@ -312,3 +312,126 @@ verify_request_with_api_token_test() ->
             end
         end
     end).
+
+login_sqlite_db_error_maps_to_invalid_credentials_test() ->
+    with_local_auth(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, verify_admin_login, fun(_, _, _) ->
+            {error, {sqlite3_cli, <<"shell failed">>}}
+        end),
+        try
+            ?assertEqual(
+                {error, invalid_credentials},
+                pertisk_eproxy_auth:login(<<"admin">>, <<"admin">>)
+            )
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db]),
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
+
+login_ingress_local_disabled_test() ->
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    try
+        with_ingress_env(fun() ->
+            with_auth_server(fun() ->
+                ok = pertisk_eproxy_env_auth:configure(),
+                ?assertEqual({error, login_disabled}, pertisk_eproxy_auth:login(<<"u">>, <<"p">>))
+            end)
+        end)
+    after
+        case OldAuth of
+            {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+            undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+        end
+    end.
+
+login_with_list_credentials_test() ->
+    with_local_auth(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            ?assertMatch({ok, #{username := <<"admin">>}},
+                pertisk_eproxy_auth:login("admin", "admin"))
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
+
+verify_token_auth0_success_test() ->
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    with_auth_server(fun() ->
+        meck:new(pertisk_eproxy_auth0, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_auth0, verify_bearer, fun(_) ->
+            {ok, <<"sso-user@example.com">>, erlang:system_time(second) + 3600}
+        end),
+        try
+            ?assertMatch({ok, <<"sso-user@example.com">>},
+                pertisk_eproxy_auth:verify_token(<<"eyJ.a.b">>))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth0]),
+            case OldAuth of
+                {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+                undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+            end
+        end
+    end).
+
+refresh_auth0_token_test() ->
+    OldAuth = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, local),
+    with_auth_server(fun() ->
+        Exp = erlang:system_time(second) + 7200,
+        meck:new(pertisk_eproxy_auth0, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_auth0, verify_bearer, fun(_) ->
+            {ok, <<"sso-user@example.com">>, Exp}
+        end),
+        try
+            ?assertMatch({ok, #{username := <<"sso-user@example.com">>, expires_in := _}},
+                pertisk_eproxy_auth:refresh(<<"eyJ.a.b">>))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth0]),
+            case OldAuth of
+                {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+                undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+            end
+        end
+    end).
+
+verify_request_x_eproxy_lowercase_bearer_test() ->
+    with_local_auth(fun() ->
+        Req = #{headers => #{<<"x-eproxy-bearer">> => <<"bearer lowercase-token">>}},
+        ?assertEqual({error, unauthorized}, pertisk_eproxy_auth:verify_request(Req))
+    end).
+
+auth_config_map_disabled_guest_mode_test() ->
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, disabled),
+    try
+        Map = pertisk_eproxy_auth:auth_config_map(),
+        ?assertEqual(true, maps:get(<<"guest_mode">>, Map))
+    after
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+            undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+        end
+    end.

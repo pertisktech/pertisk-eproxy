@@ -612,8 +612,8 @@ with_config(Fun) ->
     try
         Fun()
     after
-        _ = catch put_config_retry(BaseConfig),
-        catch pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends),
+        _ = pertisk_eproxy_test_helpers:ignoring_errors(fun() -> put_config_retry(BaseConfig) end),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_config:sync_ingress(BaseSites, BaseBackends) end),
         maybe_stop_config(Started)
     end.
 
@@ -659,7 +659,7 @@ stop_config_if_running() ->
         undefined ->
             ok;
         Pid ->
-            catch gen_server:stop(Pid, normal, 5000),
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
             wait_config_stopped(30)
     end.
 
@@ -698,7 +698,7 @@ with_tmp_db_config(Fun) ->
             file:delete(DbPath),
             case ConfigWasUp of
                 true ->
-                    catch pertisk_eproxy_config:reload();
+                    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_config:reload() end);
                 false ->
                     stop_config_if_running()
             end
@@ -870,18 +870,11 @@ put_config_unknown_certificate_rejected_test() ->
 reload_in_ingress_mode_triggers_reconcile_test() ->
     with_config(fun() ->
         with_ingress_env(fun() ->
-            Self = self(),
-            meck:new(pertisk_ingress_watcher, [unstick]),
-            meck:expect(pertisk_ingress_watcher, trigger_reconcile, fun() ->
-                Self ! reconcile_triggered,
-                ok
-            end),
-            try
-                ?assertEqual(ok, pertisk_eproxy_config:reload()),
-                receive reconcile_triggered -> ok after 1000 -> ?assert(false) end
-            after
-                meck:unload(pertisk_ingress_watcher)
-            end
+            case whereis(pertisk_ingress_watcher) of
+                undefined -> ok;
+                Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid)
+            end,
+            ?assertEqual(ok, pertisk_eproxy_config:reload())
         end)
     end).
 
@@ -1061,7 +1054,7 @@ config_reload_load_error_test() ->
                 ?assertNot(pertisk_eproxy_config:ingress_mode()),
                 ?assertMatch({error, _}, pertisk_eproxy_config:reload())
             after
-                meck:unload(pertisk_eproxy_db)
+                pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db])
             end
         end)
     end).
@@ -1086,4 +1079,124 @@ config_backend_is_management_only_false_for_mixed_test() ->
         }],
         ok = pertisk_eproxy_config:sync_ingress([], Backends),
         ?assertNot(pertisk_eproxy_config:backend_is_management_only(<<"mixed">>))
+    end).
+
+%% ---------------------------------------------------------------------------
+%% site_auth_url / site_rate_limit / ACME scan scheduling
+%% ---------------------------------------------------------------------------
+
+site_backends() ->
+    [#{
+        name => <<"web">>,
+        algorithm => round_robin,
+        upstreams => [#{addr => <<"127.0.0.1:8080">>, weight => 1}]
+    }].
+
+site_auth_url_found_test() ->
+    with_config(fun() ->
+        Sites = [#{
+            host => <<"auth.example">>,
+            backend => <<"web">>,
+            auth_url => <<"https://auth.example/login">>,
+            routes => []
+        }],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, site_backends()),
+        ?assertEqual(
+            <<"https://auth.example/login">>,
+            pertisk_eproxy_config:site_auth_url(<<"auth.example">>)
+        )
+    end).
+
+site_auth_url_missing_test() ->
+    with_config(fun() ->
+        Sites = [#{host => <<"plain.example">>, backend => <<"web">>, routes => []}],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, site_backends()),
+        ?assertEqual(undefined, pertisk_eproxy_config:site_auth_url(<<"missing.example">>)),
+        ?assertEqual(undefined, pertisk_eproxy_config:site_auth_url(<<"plain.example">>))
+    end).
+
+site_rate_limit_ok_test() ->
+    with_config(fun() ->
+        Sites = [#{
+            host => <<"limited.example">>,
+            backend => <<"web">>,
+            rate_limit_rps => 100,
+            rate_limit_burst => 200,
+            routes => []
+        }],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, site_backends()),
+        ?assertEqual({ok, 100, 200}, pertisk_eproxy_config:site_rate_limit(<<"limited.example">>))
+    end).
+
+site_rate_limit_error_test() ->
+    with_config(fun() ->
+        Sites = [#{
+            host => <<"partial.example">>,
+            backend => <<"web">>,
+            rate_limit_rps => 50,
+            routes => []
+        }],
+        ok = pertisk_eproxy_config:sync_ingress(Sites, site_backends()),
+        ?assertEqual(error, pertisk_eproxy_config:site_rate_limit(<<"partial.example">>)),
+        ?assertEqual(error, pertisk_eproxy_config:site_rate_limit(<<"unknown.example">>))
+    end).
+
+put_config_schedules_acme_scan_test() ->
+    with_tmp_db_config(fun() ->
+        Self = self(),
+        meck:new(pertisk_eproxy_acme_dns, [unstick]),
+        meck:expect(pertisk_eproxy_acme_dns, schedule_scan, fun() ->
+            Self ! acme_scan_scheduled,
+            ok
+        end),
+        try
+            Base = (pertisk_eproxy_config:get_config())#{
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => []
+            },
+            ok = put_config_retry(Base),
+            Config1 = Base#{
+                sites => [#{
+                    host => <<"acme.example">>,
+                    backend => <<"web">>,
+                    challenge_type => <<"dns-01">>,
+                    dns_provider => <<"cf">>,
+                    routes => []
+                }],
+                backends => site_backends()
+            },
+            ok = put_config_retry(Config1),
+            receive acme_scan_scheduled -> ok after 2000 -> ?assert(false) end,
+            ?assertEqual(1, meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
+        end
+    end).
+
+put_config_same_sites_no_acme_scan_test() ->
+    with_tmp_db_config(fun() ->
+        meck:new(pertisk_eproxy_acme_dns, [unstick]),
+        meck:expect(pertisk_eproxy_acme_dns, schedule_scan, fun() -> ok end),
+        try
+            Config = (pertisk_eproxy_config:get_config())#{
+                sites => [#{
+                    host => <<"stable.example">>,
+                    backend => <<"web">>,
+                    routes => []
+                }],
+                backends => site_backends(),
+                certificates => [],
+                dns_providers => []
+            },
+            ok = put_config_retry(Config),
+            timer:sleep(50),
+            Calls0 = meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'),
+            ok = put_config_retry(Config#{http_port => maps:get(http_port, Config, 80)}),
+            timer:sleep(50),
+            ?assertEqual(Calls0, meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'))
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
+        end
     end).

@@ -5,7 +5,7 @@
 stop_leader() ->
     case whereis(pertisk_ingress_leader) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid)
     end.
 
 with_env(Key, Val, Fun) ->
@@ -22,14 +22,14 @@ with_env(Key, Val, Fun) ->
     end.
 
 with_leader_env(Expects, Fun) ->
-    catch meck:unload(pertisk_ingress_env),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_env]) end),
     meck:new(pertisk_ingress_env, [unstick, passthrough]),
     maps:fold(
         fun(K, V, _) -> meck:expect(pertisk_ingress_env, K, fun() -> V end) end,
         ok,
         Expects
     ),
-    try Fun() after meck:unload(pertisk_ingress_env) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_env]) end.
 
 lease_now() ->
     {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
@@ -66,7 +66,7 @@ leader_ekub_init_failure_test() ->
         ?assert(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload(pertisk_ingress_ekub),
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_ekub]),
     stop_leader().
 
 leader_create_lease_test() ->
@@ -76,10 +76,10 @@ leader_create_lease_test() ->
     meck:new(pertisk_ingress_ekub, [unstick]),
     meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
     meck:new(ekub, [unstick]),
-    meck:expect(ekub, read, fun(lease, _Ns, _Name, Conn) ->
+    meck:expect(ekub, read, fun(lease, _Ns, _Name, _MockConn) ->
         {error, #{<<"code">> => 404}}
     end),
-    meck:expect(ekub, create, fun(_Lease, _Ns, Conn) -> {ok, #{}} end),
+    meck:expect(ekub, create, fun(_Lease, _Ns, _MockConn) -> {ok, #{}} end),
     with_leader_env(#{
         leader_election_enabled => true,
         leader_namespace => <<"default">>,
@@ -95,7 +95,7 @@ leader_create_lease_test() ->
         ?assert(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload([ekub, pertisk_ingress_ekub]),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
     stop_leader().
 
 leader_renew_existing_owner_test() ->
@@ -114,8 +114,8 @@ leader_renew_existing_owner_test() ->
     meck:new(pertisk_ingress_ekub, [unstick]),
     meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
     meck:new(ekub, [unstick]),
-    meck:expect(ekub, read, fun(lease, _A, _B, Conn) -> {ok, Lease} end),
-    meck:expect(ekub, replace, fun(_L, _Ns, Conn) -> {ok, #{}} end),
+    meck:expect(ekub, read, fun(lease, _A, _B, _MockConn) -> {ok, Lease} end),
+    meck:expect(ekub, replace, fun(_L, _Ns, _MockConn) -> {ok, #{}} end),
     with_leader_env(#{
         leader_election_enabled => true,
         leader_namespace => <<"default">>,
@@ -130,7 +130,7 @@ leader_renew_existing_owner_test() ->
         ?assert(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload([ekub, pertisk_ingress_ekub]),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
     stop_leader().
 
 leader_not_owner_unexpired_test() ->
@@ -147,7 +147,7 @@ leader_not_owner_unexpired_test() ->
     meck:new(pertisk_ingress_ekub, [unstick]),
     meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
     meck:new(ekub, [unstick]),
-    meck:expect(ekub, read, fun(lease, _A, _B, Conn) -> {ok, Lease} end),
+    meck:expect(ekub, read, fun(lease, _A, _B, _MockConn) -> {ok, Lease} end),
     with_leader_env(#{
         leader_election_enabled => true,
         leader_namespace => <<"default">>,
@@ -162,7 +162,7 @@ leader_not_owner_unexpired_test() ->
         ?assertNot(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload([ekub, pertisk_ingress_ekub]),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
     stop_leader().
 
 leader_take_expired_lease_test() ->
@@ -180,8 +180,8 @@ leader_take_expired_lease_test() ->
     meck:new(pertisk_ingress_ekub, [unstick]),
     meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
     meck:new(ekub, [unstick]),
-    meck:expect(ekub, read, fun(lease, _A, _B, Conn) -> {ok, Lease} end),
-    meck:expect(ekub, replace, fun(_L, _Ns, Conn) -> {ok, #{}} end),
+    meck:expect(ekub, read, fun(lease, _A, _B, _MockConn) -> {ok, Lease} end),
+    meck:expect(ekub, replace, fun(_L, _Ns, _MockConn) -> {ok, #{}} end),
     with_leader_env(#{
         leader_election_enabled => true,
         leader_namespace => <<"default">>,
@@ -196,7 +196,7 @@ leader_take_expired_lease_test() ->
         ?assert(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload([ekub, pertisk_ingress_ekub]),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
     stop_leader().
 
 leader_list_fallback_create_test() ->
@@ -229,7 +229,7 @@ leader_list_fallback_create_test() ->
         ?assertNot(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),
-    meck:unload([ekub, pertisk_ingress_ekub]),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
     stop_leader().
 
 leader_renew_disabled_state_test() ->
@@ -238,6 +238,82 @@ leader_renew_disabled_state_test() ->
     with_leader_env(#{leader_election_enabled => false}, fun() ->
         {ok, Pid} = pertisk_ingress_leader:start_link(),
         Pid ! renew,
+        ?assert(pertisk_ingress_leader:is_leader()),
+        gen_server:stop(Pid)
+    end),
+    stop_leader().
+
+leader_renew_api_error_keeps_state_test() ->
+    stop_leader(),
+    ok = pertisk_ingress_status:init(),
+    Conn = mock_conn,
+    Holder = <<"holder-f">>,
+    Lease = #{
+        <<"spec">> => #{
+            <<"holderIdentity">> => Holder,
+            <<"renewTime">> => lease_now(),
+            <<"leaseDurationSeconds">> => 15,
+            <<"acquireTime">> => lease_now()
+        }
+    },
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_ekub]) end),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([ekub]) end),
+    meck:new(pertisk_ingress_ekub, [unstick]),
+    meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+    meck:new(ekub, [unstick]),
+    meck:expect(ekub, read, fun(lease, _A, _B, _Conn) -> {ok, Lease} end),
+    meck:expect(ekub, replace, fun(_L, _Ns, _Conn) -> {error, #{<<"code">> => 500}} end),
+    with_leader_env(#{
+        leader_election_enabled => true,
+        leader_namespace => <<"default">>,
+        leader_lease_name => <<"test-lease">>,
+        holder_id => Holder,
+        lease_duration_seconds => 15,
+        renew_interval_seconds => 1
+    }, fun() ->
+        {ok, Pid} = pertisk_ingress_leader:start_link(),
+        Pid ! renew,
+        timer:sleep(50),
+        ?assertNot(pertisk_ingress_leader:is_leader()),
+        gen_server:stop(Pid)
+    end),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
+    stop_leader().
+
+leader_create_non_conflict_error_test() ->
+    stop_leader(),
+    ok = pertisk_ingress_status:init(),
+    Conn = mock_conn,
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_ekub]) end),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_test_helpers:unload_mocks([ekub]) end),
+    meck:new(pertisk_ingress_ekub, [unstick]),
+    meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, Conn} end),
+    meck:new(ekub, [unstick]),
+    meck:expect(ekub, read, fun(lease, _Ns, _Name, _Conn) -> {error, #{<<"code">> => 404}} end),
+    meck:expect(ekub, create, fun(_Lease, _Ns, _Conn) -> {error, #{<<"code">> => 500}} end),
+    with_leader_env(#{
+        leader_election_enabled => true,
+        leader_namespace => <<"default">>,
+        leader_lease_name => <<"test-lease">>,
+        holder_id => <<"holder-g">>,
+        lease_duration_seconds => 15,
+        renew_interval_seconds => 1
+    }, fun() ->
+        {ok, Pid} = pertisk_ingress_leader:start_link(),
+        Pid ! renew,
+        timer:sleep(50),
+        ?assertNot(pertisk_ingress_leader:is_leader()),
+        gen_server:stop(Pid)
+    end),
+    pertisk_eproxy_test_helpers:unload_mocks([ekub, pertisk_ingress_ekub]),
+    stop_leader().
+
+leader_handle_info_other_test() ->
+    stop_leader(),
+    ok = pertisk_ingress_status:init(),
+    with_leader_env(#{leader_election_enabled => false}, fun() ->
+        {ok, Pid} = pertisk_ingress_leader:start_link(),
+        Pid ! other_message,
         ?assert(pertisk_ingress_leader:is_leader()),
         gen_server:stop(Pid)
     end),

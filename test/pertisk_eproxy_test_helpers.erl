@@ -16,7 +16,12 @@
     put_config_retry/1,
     put_config_retry/2,
     unload_mocks/1,
-    unload_mocks/2
+    unload_mocks/2,
+    unload_mock/2,
+    safe_gen_server_stop/1,
+    safe_gen_server_stop/3,
+    safe_exit/2,
+    ignoring_errors/1
 ]).
 
 -define(DB_LOCK_KEY, pertisk_db_lock_depth).
@@ -164,18 +169,51 @@ unload_mock(Mod, TimeoutMs) ->
         false ->
             ok;
         true ->
-            Parent = self(),
-            Worker = spawn(fun() ->
-                Parent ! {meck_unload_done, Mod, catch meck:unload(Mod)}
-            end),
-            receive
-                {meck_unload_done, Mod, _} ->
-                    ok
-            after TimeoutMs ->
-                exit(Worker, kill),
-                force_stop_meck(Mod),
-                ok
+            case try meck:unload(Mod) catch _:_ -> {'EXIT', error} end of
+                ok ->
+                    ok;
+                {'EXIT', _} ->
+                    force_stop_meck(Mod),
+                    ok;
+                _ ->
+                    Parent = self(),
+                    Worker = spawn(fun() ->
+                        Result =
+                            try meck:unload(Mod)
+                            catch _:_ -> error
+                            end,
+                        Parent ! {meck_unload_done, Mod, Result}
+                    end),
+                    receive
+                        {meck_unload_done, Mod, ok} ->
+                            ok;
+                        {meck_unload_done, Mod, _} ->
+                            force_stop_meck(Mod),
+                            ok
+                    after TimeoutMs ->
+                        exit(Worker, kill),
+                        force_stop_meck(Mod),
+                        ok
+                    end
             end
+    end.
+
+safe_gen_server_stop(Pid) ->
+    safe_gen_server_stop(Pid, normal, 5000).
+
+safe_gen_server_stop(Pid, Reason, Timeout) ->
+    try gen_server:stop(Pid, Reason, Timeout)
+    catch _:_ -> ok
+    end.
+
+safe_exit(Pid, Signal) ->
+    try exit(Pid, Signal)
+    catch _:_ -> ok
+    end.
+
+ignoring_errors(Fun) when is_function(Fun, 0) ->
+    try Fun()
+    catch _:_ -> ok
     end.
 
 force_stop_meck(Mod) ->
@@ -184,7 +222,7 @@ force_stop_meck(Mod) ->
         undefined ->
             ok;
         Pid when is_pid(Pid) ->
-            catch exit(Pid, kill),
+            safe_exit(Pid, kill),
             ok
     end.
 

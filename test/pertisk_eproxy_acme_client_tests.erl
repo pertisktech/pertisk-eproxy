@@ -31,7 +31,7 @@ with_httpc_mock(Fun) ->
     meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
         acme_http(Method, Req, Opts, HttpOpts)
     end),
-    try Fun() after meck:unload(httpc) end.
+    try Fun() after pertisk_eproxy_test_helpers:unload_mocks([httpc]) end.
 
 acme_url(Suffix) when is_binary(Suffix) ->
     <<(?ACME_BASE)/binary, Suffix/binary>>.
@@ -181,7 +181,7 @@ obtain_certificate_order_invalid_test() ->
         put(acme_finalized, false),
         ?assertMatch({error, {order_invalid, _, _}}, pertisk_eproxy_acme_client:obtain_certificate(Opts))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.
 
 obtain_certificate_bad_nonce_retry_test() ->
@@ -213,5 +213,5 @@ obtain_certificate_bad_nonce_retry_test() ->
         Opts = base_opts(#{dns_propagation_delay_ms => 0}),
         ?assertMatch({ok, _, _}, pertisk_eproxy_acme_client:obtain_certificate(Opts))
     after
-        meck:unload(httpc)
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
     end.

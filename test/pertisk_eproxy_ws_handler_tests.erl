@@ -6,7 +6,7 @@ unload_mocks(Mods) ->
     lists:foreach(
         fun(Mod) ->
             case lists:member(Mod, meck:mocked()) of
-                true -> meck:unload(Mod);
+                true -> pertisk_eproxy_test_helpers:unload_mocks([Mod]);
                 false -> ok
             end
         end,
@@ -54,7 +54,7 @@ with_mock_req(Opts, Fun) ->
     end),
     Req = maps:get(req, Opts, #{}),
     try Fun(Req) after
-        meck:unload([cowboy_req, pertisk_eproxy_response_headers])
+        pertisk_eproxy_test_helpers:unload_mocks([cowboy_req, pertisk_eproxy_response_headers])
     end.
 
 ws_state() ->
@@ -80,7 +80,7 @@ init_no_route_test() ->
     with_mock_req(#{host => <<"missing.example">>, path => <<"/ws">>}, fun(Req) ->
         ?assertMatch({ok, #{reply := {404, _}}, _}, pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
-    meck:unload(pertisk_eproxy_router).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_router]).
 
 init_no_healthy_upstream_test() ->
     unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
@@ -93,7 +93,7 @@ init_no_healthy_upstream_test() ->
     with_mock_req(#{}, fun(Req) ->
         ?assertMatch({ok, #{reply := {502, _}}, _}, pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
-    meck:unload([pertisk_eproxy_backend, pertisk_eproxy_router]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).
 
 init_upgrade_success_test() ->
     unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
@@ -113,7 +113,7 @@ init_upgrade_success_test() ->
         ?assertMatch({cowboy_websocket, _, #{upstream_path := <<"/up?a=1">>}, _},
             pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
-    meck:unload([pertisk_eproxy_backend, pertisk_eproxy_router]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).
 
 init_console_subprotocol_test() ->
     unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
@@ -131,7 +131,7 @@ init_console_subprotocol_test() ->
     }, fun(Req) ->
         ?assertMatch({cowboy_websocket, _, _, _}, pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
-    meck:unload([pertisk_eproxy_backend, pertisk_eproxy_router]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).
 
 websocket_init_success_test() ->
     unload_mocks([gun]),
@@ -141,14 +141,14 @@ websocket_init_success_test() ->
     meck:expect(gun, ws_upgrade, fun(_, _, _) -> stream1 end),
     State = (ws_state())#{upstream_addr => <<"127.0.0.1:8080">>},
     ?assertMatch({ok, #{conn_pid := gun_pid}}, pertisk_eproxy_ws_handler:websocket_init(State)),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 websocket_init_open_failure_test() ->
     unload_mocks([gun]),
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {error, refused} end),
     ?assertMatch({stop, _}, pertisk_eproxy_ws_handler:websocket_init(ws_state())),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 websocket_init_await_failure_test() ->
     unload_mocks([gun]),
@@ -157,7 +157,7 @@ websocket_init_await_failure_test() ->
     meck:expect(gun, await_up, fun(_, _) -> {error, timeout} end),
     meck:expect(gun, close, fun(_) -> ok end),
     ?assertMatch({stop, _}, pertisk_eproxy_ws_handler:websocket_init(ws_state())),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 websocket_init_tls_upstream_test() ->
     unload_mocks([gun]),
@@ -170,7 +170,7 @@ websocket_init_tls_upstream_test() ->
     meck:expect(gun, ws_upgrade, fun(_, _, _) -> stream1 end),
     State = (ws_state())#{upstream_addr => <<"https://secure.example">>},
     ?assertMatch({ok, _}, pertisk_eproxy_ws_handler:websocket_init(State)),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 websocket_handle_paths_test() ->
     unload_mocks([gun]),
@@ -185,7 +185,7 @@ websocket_handle_paths_test() ->
     ?assertMatch({ok, _}, pertisk_eproxy_ws_handler:websocket_handle({text, <<"y">>}, Full)),
     ?assertMatch({ok, _},
         pertisk_eproxy_ws_handler:websocket_handle({text, <<"z">>}, (ws_state())#{conn_pid => undefined})),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 websocket_info_paths_test() ->
     unload_mocks([gun]),
@@ -221,7 +221,7 @@ websocket_info_paths_test() ->
         pertisk_eproxy_ws_handler:websocket_info({gun_down, self(), http, normal, []}, State)),
     ?assertMatch({ok, _},
         pertisk_eproxy_ws_handler:websocket_info(ignored, State)),
-    meck:unload(gun).
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
 terminate_paths_test() ->
     unload_mocks([gun, pertisk_eproxy_backend]),
@@ -234,7 +234,7 @@ terminate_paths_test() ->
     ?assertEqual(ok, pertisk_eproxy_ws_handler:terminate(normal, req,
         maps:remove(conn_pid, State))),
     ?assertEqual(ok, pertisk_eproxy_ws_handler:terminate(normal, req, #{})),
-    meck:unload([pertisk_eproxy_backend, gun]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, gun]).
 
 init_forwarded_headers_test() ->
     unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
@@ -256,4 +256,4 @@ init_forwarded_headers_test() ->
     }, fun(Req) ->
         ?assertMatch({cowboy_websocket, _, _, _}, pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
-    meck:unload([pertisk_eproxy_backend, pertisk_eproxy_router]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).

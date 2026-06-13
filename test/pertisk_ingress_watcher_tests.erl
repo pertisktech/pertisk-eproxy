@@ -11,21 +11,16 @@ wait_down(Pid, N) ->
     end.
 
 ensure_mocks_clean() ->
-    lists:foreach(
-        fun(Mod) ->
-            case lists:member(Mod, meck:mocked()) of
-                true -> ok = meck:unload(Mod);
-                false -> ok
-            end
-        end,
-        [ekub, pertisk_ingress_ekub, ekub_api, ekub_core, pertisk_ingress_env]
-    ).
+    pertisk_eproxy_test_helpers:unload_mocks([
+        ekub, pertisk_ingress_ekub, ekub_api, ekub_core, pertisk_ingress_env,
+        pertisk_ingress_watcher
+    ]).
 
 stop_watcher() ->
     case whereis(pertisk_ingress_watcher) of
         undefined -> ok;
         Pid ->
-            catch gen_server:stop(Pid, normal),
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
             wait_down(Pid, 20)
     end,
     ensure_mocks_clean().
@@ -44,7 +39,7 @@ with_watcher_env(Expects, Fun) ->
     ),
     try Fun() after
         stop_watcher(),
-        catch meck:unload(pertisk_ingress_env)
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_env])
     end.
 
 ensure_tls() ->
@@ -179,6 +174,35 @@ watcher_lifecycle_test() ->
         Pid ! reconcile_now,
         timer:sleep(50),
         ?assertEqual({error, unknown}, gen_server:call(Pid, unknown, 1000)),
+        ok = gen_server:stop(Pid),
+        wait_down(Pid, 20)
+    end).
+
+watcher_unknown_callbacks_test() ->
+    State = #{conn => mock_conn},
+    ?assertEqual({noreply, State}, pertisk_ingress_watcher:handle_cast(unknown, State)),
+    ?assertEqual({noreply, State}, pertisk_ingress_watcher:handle_info(unknown, State)),
+    ?assertEqual(ok, pertisk_ingress_watcher:terminate(normal, State)).
+
+watcher_start_watch_failure_backoff_test() ->
+    stop_watcher(),
+    ensure_mocks_clean(),
+    ensure_tls(),
+    ok = pertisk_ingress_status:init(),
+    with_watcher_env(#{watch_backoff_ms => 5}, fun() ->
+        meck:new(pertisk_ingress_ekub, [unstick]),
+        meck:expect(pertisk_ingress_ekub, init, fun() -> {ok, mock_conn} end),
+        meck:new(ekub, [unstick]),
+        meck:expect(ekub, read, fun
+            (ingress, _, _) -> {ok, #{<<"items">> => []}};
+            (secret, _, _) -> {ok, #{<<"items">> => []}};
+            (_, _, _) -> {error, denied}
+        end),
+        meck:expect(ekub, watch, fun(ingress, _, _) -> {error, refused} end),
+        meck:expect(ekub, patch, fun(_, _, _, _, _) -> {ok, #{}} end),
+        {ok, Pid} = pertisk_ingress_watcher:start_link(),
+        timer:sleep(30),
+        ?assertEqual(<<"error">>, maps:get(<<"watcher">>, pertisk_ingress_status:snapshot())),
         ok = gen_server:stop(Pid),
         wait_down(Pid, 20)
     end).

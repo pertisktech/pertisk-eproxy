@@ -57,6 +57,26 @@ record_proxy_bytes_zero_skips_inc_test() ->
     setup(),
     ?assertEqual(ok, pertisk_eproxy_metrics:record_proxy_bytes(<<"host">>, 0, 0)).
 
+inc_rate_limit_denied_test() ->
+    setup(),
+    ?assertEqual(ok, pertisk_eproxy_metrics:inc_rate_limit_denied(<<"host">>, <<"site">>)).
+
+inc_rate_limit_denied_empty_site_test() ->
+    setup(),
+    ?assertEqual(ok, pertisk_eproxy_metrics:inc_rate_limit_denied(<<"host">>, undefined)).
+
+metrics_handle_info_other_test() ->
+    setup(),
+    Pid = whereis(pertisk_eproxy_metrics),
+    ?assert(is_pid(Pid)),
+    Pid ! other,
+    receive after 50 -> ok end.
+
+metrics_handle_call_test() ->
+    setup(),
+    Pid = whereis(pertisk_eproxy_metrics),
+    ?assertEqual(ok, gen_server:call(Pid, other)).
+
 metrics_update_upstream_metrics_info_test() ->
     setup(),
     pertisk_eproxy_test_helpers:ensure_config(),
@@ -87,6 +107,6 @@ metrics_update_upstream_metrics_info_test() ->
             )
         )
     after
-        meck:unload(pertisk_eproxy_backend),
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend]),
         pertisk_eproxy_config:sync_ingress([], BaseBackends)
     end.

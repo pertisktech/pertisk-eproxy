@@ -99,7 +99,7 @@ apply_warn_level_test() ->
 
 apply_without_console_backend_test() ->
     application:ensure_all_started(lager),
-    catch lager:stop_backend(lager_console_backend),
+    pertisk_eproxy_test_helpers:ignoring_errors(fun() -> lager:stop_backend(lager_console_backend) end),
     os:putenv("PERTISK_LOG_LEVEL", "info"),
     ?assertEqual(ok, pertisk_eproxy_log_level:apply()),
     application:ensure_all_started(lager),

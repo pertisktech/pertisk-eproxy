@@ -257,7 +257,10 @@ h3_spa_get_with_query_test() ->
 h3_api_post_unsupported_method_test() ->
     ensure_env(),
     Result = dispatch([<<"PUT">>, <<"localhost">>, <<"/api/version">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
-    ?assertMatch({ok, Status, _, _} when Status >= 400; Status =:= 405, Result).
+    case Result of
+        {ok, Status, _, _} when Status >= 400; Status =:= 405 -> ok;
+        _ -> ?assert(false)
+    end.
 
 h3_static_png_content_type_test() ->
     ensure_env(),
@@ -381,3 +384,29 @@ h3_null_byte_in_asset_path_test() ->
             ]),
         ?assertEqual(<<"text/html; charset=utf-8">>, proplists:get_value(<<"content-type">>, Hdrs))
     end).
+
+h3_api_stats_get_dispatch_test() ->
+    ensure_env(),
+    {ok, 200, Hdrs, Body} =
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/stats">>, <<>>, [], <<>>, <<"127.0.0.1">>]),
+    ?assertEqual(<<"application/json">>, proplists:get_value(<<"content-type">>, Hdrs)),
+    {ok, _} = thoas:decode(Body).
+
+h3_health_get_with_bearer_test() ->
+    ensure_env(),
+    case whereis(pertisk_eproxy_health_cache) of
+        undefined -> {ok, _} = pertisk_eproxy_health_cache:start_link();
+        _ -> ok
+    end,
+    pertisk_eproxy_health_cache:invalidate(),
+    meck:new(pertisk_eproxy_auth, [unstick, passthrough]),
+    meck:expect(pertisk_eproxy_auth, verify_token, fun(_) -> {ok, <<"admin">>} end),
+    try
+        Hdrs = [{<<"authorization">>, <<"Bearer test-session-token">>}],
+        {ok, 200, _, Body} =
+            dispatch([<<"GET">>, <<"localhost">>, <<"/api/health">>, <<>>, Hdrs, <<>>, <<"127.0.0.1">>]),
+        {ok, Map} = thoas:decode(Body),
+        ?assert(maps:is_key(<<"backends">>, Map))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth])
+    end.

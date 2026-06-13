@@ -483,3 +483,114 @@ delete_certificate_not_found_test() ->
         ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
         ?assertEqual({error, not_found}, pertisk_eproxy_db:delete_certificate(Path, 99999))
     end).
+
+update_dns_provider_not_found_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found},
+            pertisk_eproxy_db:update_dns_provider(Path, 99999, <<"x">>, <<"cloudflare">>, #{}))
+    end).
+
+insert_dns_provider_empty_provider_type_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, empty_provider_type},
+            pertisk_eproxy_db:insert_dns_provider(Path, <<"cf">>, <<"">>, #{}))
+    end).
+
+delete_dns_provider_by_name_empty_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:delete_dns_provider_by_name(Path, <<"  ">>))
+    end).
+
+ensure_certificates_seeded_cleans_numeric_placeholders_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        _ = sqlite3_exec(Path, "\"INSERT INTO certificates(name, source_type) VALUES('42', 'acme');\""),
+        ?assertEqual(ok, pertisk_eproxy_db:ensure_certificates_seeded(Path, [<<"valid-cert">>])),
+        {ok, Certs} = pertisk_eproxy_db:list_certificates(Path),
+        Names = [maps:get(name, C) || C <- Certs],
+        ?assert(lists:member(<<"valid-cert">>, Names)),
+        ?assertNot(lists:member(<<"42">>, Names))
+    end).
+
+list_sites_routes_json_projection_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Cfg = sample_runtime_config(),
+        ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(Path, Cfg)),
+        {ok, [Site | _]} = pertisk_eproxy_db:list_sites(Path),
+        Routes = maps:get(routes, Site),
+        ?assertEqual(1, length(Routes)),
+        ?assertEqual(<<"/api">>, maps:get(path, hd(Routes)))
+    end).
+
+verify_admin_login_non_binary_rejected_test() ->
+    with_db(fun(Path) ->
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(Path)),
+        ?assertEqual({error, invalid_credentials},
+            pertisk_eproxy_db:verify_admin_login(Path, 123, <<"admin">>))
+    end).
+
+put_runtime_config_invalid_encoding_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Bad = binary_to_list(base64:encode(term_to_binary(not_a_map))),
+        _ = sqlite3_exec(Path, "\"INSERT INTO runtime_state(key, value) VALUES('runtime_config', '" ++ Bad ++ "');\""),
+        ?assertMatch({error, _}, pertisk_eproxy_db:get_runtime_config(Path))
+    end).
+
+delete_dns_provider_not_found_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:delete_dns_provider(Path, 99999))
+    end).
+
+update_certificate_empty_name_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {ok, Id} = pertisk_eproxy_db:insert_certificate(Path, <<"rename-target">>),
+        ?assertEqual({error, empty_name}, pertisk_eproxy_db:update_certificate(Path, Id, <<"  ">>))
+    end).
+
+update_dns_provider_empty_name_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {ok, Id} = pertisk_eproxy_db:insert_dns_provider(Path, <<"cf">>, <<"cloudflare">>, #{}),
+        ?assertEqual({error, empty_name},
+            pertisk_eproxy_db:update_dns_provider(Path, Id, <<"">>, <<"cloudflare">>, #{}))
+    end).
+
+upsert_certificate_record_empty_name_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, empty_name},
+            pertisk_eproxy_db:upsert_certificate_record(Path, <<"">>, <<"cert">>, <<"key">>, <<"imported">>))
+    end).
+
+insert_certificate_pem_empty_name_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {CertFile, KeyFile} = listener_pem_paths(),
+        ?assertEqual({error, empty_name},
+            pertisk_eproxy_db:insert_certificate_pem(Path, <<"">>, CertFile, KeyFile))
+    end).
+
+list_sites_exact_path_type_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Cfg = (sample_runtime_config())#{
+            sites => [
+                #{
+                    host => <<"exact.example">>,
+                    backend => <<"web">>,
+                    routes => [#{path => <<"/health">>, path_type => exact}]
+                }
+            ]
+        },
+        ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(Path, Cfg)),
+        {ok, [Site | _]} = pertisk_eproxy_db:list_sites(Path),
+        [Route | _] = maps:get(routes, Site),
+        ?assertEqual(exact, maps:get(path_type, Route))
+    end).

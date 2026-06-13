@@ -103,3 +103,51 @@ merge_results_test() ->
     B = #{sites => [#{host => <<"b">>}], backends => [], tls => []},
     M = pertisk_gateway_reconciler:merge_results(A, B),
     ?assertEqual(2, length(maps:get(sites, M))).
+
+reconcile_skips_wrong_class_test() ->
+    with_class("pertisk-eproxy", fun() ->
+        Route = sample_route(#{
+            annotations => #{<<"pertisk.io/gateway-class">> => <<"other-class">>}
+        }),
+        {ok, Result} = pertisk_gateway_reconciler:reconcile([Route]),
+        ?assertEqual([], maps:get(sites, Result)),
+        ?assertEqual([], maps:get(backends, Result))
+    end).
+
+reconcile_tls_secret_annotation_test() ->
+    with_class("pertisk-eproxy", fun() ->
+        Route = sample_route(#{
+            annotations => #{
+                <<"pertisk.io/gateway-class">> => <<"pertisk-eproxy">>,
+                <<"pertisk.io/tls-secret">> => <<"route-tls">>,
+                <<"pertisk.io/tls-secret-namespace">> => <<"tls-ns">>
+            }
+        }),
+        {ok, Result} = pertisk_gateway_reconciler:reconcile([Route], [], [tls_secret()]),
+        [Site] = maps:get(sites, Result),
+        ?assertEqual(
+            pertisk_ingress_tls:cert_ref(<<"tls-ns">>, <<"route-tls">>),
+            maps:get(certificate, Site)
+        )
+    end).
+
+reconcile_default_backend_port_test() ->
+    with_class("pertisk-eproxy", fun() ->
+        Route = sample_route(#{}),
+        RouteNoPort = Route#{
+            <<"spec">> => (maps:get(<<"spec">>, Route))#{
+                <<"rules">> => [
+                    #{
+                        <<"matches">> => [
+                            #{<<"path">> => #{<<"type">> => <<"Exact">>, <<"value">> => <<"/health">>}}
+                        ],
+                        <<"backendRefs">> => [#{<<"name">> => <<"svc">>}]
+                    }
+                ]
+            }
+        },
+        {ok, Result} = pertisk_gateway_reconciler:reconcile([RouteNoPort]),
+        [Backend] = maps:get(backends, Result),
+        Addr = maps:get(addr, hd(maps:get(upstreams, Backend))),
+        ?assertNotEqual(nomatch, binary:match(Addr, <<":80">>))
+    end).

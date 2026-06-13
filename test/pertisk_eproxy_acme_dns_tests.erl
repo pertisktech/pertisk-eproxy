@@ -7,7 +7,9 @@
 safe_meck_unload(Mod) ->
     case lists:member(Mod, meck:mocked()) of
         true ->
-            try meck:unload(Mod) catch _:_ -> ok end;
+            pertisk_eproxy_test_helpers:ignoring_errors(
+                fun() -> pertisk_eproxy_test_helpers:unload_mocks([Mod]) end
+            );
         false ->
             ok
     end.
@@ -45,7 +47,7 @@ init_scan_db(DbPath, Retries) ->
 stop_acme_dns() ->
     case whereis(pertisk_eproxy_acme_dns) of
         undefined -> ok;
-        Pid -> catch gen_server:stop(Pid, normal, 5000)
+        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end.
 
 mock_acme_client_ok() ->
@@ -128,7 +130,7 @@ run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupF
             gen_server:cast(Pid, scan),
             timer:sleep(?SCAN_SLEEP_MS)
         after
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
         end
     after
         safe_meck_unload_all([pertisk_eproxy_acme_client | MockMods]),
@@ -594,7 +596,7 @@ handle_call_unknown_returns_error_test() ->
             try
                 ?assertMatch({error, unknown_call}, gen_server:call(Pid, foo, 1000))
             after
-                catch gen_server:stop(Pid, normal, 5000)
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end;
         Pid ->
             ?assertMatch({error, unknown_call}, gen_server:call(Pid, foo, 1000))
@@ -608,7 +610,7 @@ schedule_scan_with_running_server_test() ->
                 ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan()),
                 timer:sleep(50)
             after
-                catch gen_server:stop(Pid, normal, 5000)
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end;
         _ ->
             ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan())
@@ -620,7 +622,7 @@ handle_info_scan_casts_scan_test() ->
         ?assertEqual({noreply, #{}}, pertisk_eproxy_acme_dns:handle_info(scan, #{})),
         timer:sleep(50)
     after
-        catch gen_server:stop(Pid, normal, 5000)
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end.
 
 terminate_and_code_change_test() ->
@@ -744,7 +746,7 @@ scan_terms_not_agreed_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(500)
         after
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
         end
     after
         safe_meck_unload(pertisk_eproxy_dns_cloudflare),
@@ -784,7 +786,7 @@ scan_missing_dns_provider_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(200)
         after
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
         end
     after
         pertisk_eproxy_test_helpers:sync_router([], []),
@@ -850,7 +852,7 @@ scan_mocked_successful_issue_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(800)
         after
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
         end
     after
         safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -908,7 +910,7 @@ scan_triggers_with_configured_site_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(200)
         after
-            catch gen_server:stop(Pid, normal, 5000)
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
         end
     after
         pertisk_eproxy_test_helpers:sync_router([], []),
@@ -1150,7 +1152,7 @@ scan_cloudflare_find_zone_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                catch gen_server:stop(Pid, normal, 5000)
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1180,7 +1182,7 @@ scan_acme_client_failure_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                catch gen_server:stop(Pid, normal, 5000)
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1218,7 +1220,7 @@ scan_lego_missing_warning_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(500)
             after
-                catch gen_server:stop(Pid, normal, 5000)
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
         after
             case OldLego of
@@ -1245,3 +1247,155 @@ digitalocean_domain_lookup_failure_test() ->
     after
         safe_meck_unload(pertisk_eproxy_dns_digitalocean)
     end.
+
+scan_lego_obtain_certificate_success_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"lego-ok.example">>, <<"r53">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_acme_lego, obtain_certificate, fun(_, _, _, _, _, _, _, _) ->
+            {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"key">>}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"r53">>,
+                <<"route53">>,
+                #{
+                    <<"access_key_id">> => <<"AKIA">>,
+                    <<"secret_access_key">> => <<"SECRET">>
+                }
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload(pertisk_eproxy_acme_lego),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_lego_not_found_obtain_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"lego-missing.example">>, <<"gd">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_acme_lego, obtain_certificate, fun(_, _, _, _, _, _, _, _) ->
+            {error, lego_not_found}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"gd">>,
+                <<"godaddy">>,
+                #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload(pertisk_eproxy_acme_lego),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_csr_failure_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        run_scan_issue(
+            DbPath,
+            <<"csr-fail.example">>,
+            <<"cf-csr">>,
+            <<"cloudflare">>,
+            #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>},
+            [pertisk_eproxy_dns_cloudflare, pertisk_eproxy_acme_csr],
+            fun() ->
+                mock_dns_cloudflare(),
+                meck:expect(pertisk_eproxy_acme_csr, generate_rsa_csr, fun(_) ->
+                    {error, openssl_failed}
+                end)
+            end
+        )
+    end).
+
+scan_lego_provider_env_error_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"lego-env.example">>, <<"cl">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_acme_lego, obtain_certificate, fun(_, _, _, _, _, _, _, _) ->
+            {error, {missing_credential, <<"api_key">>}}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cl">>,
+                <<"customlego">>,
+                #{<<"lego_provider">> => <<"godaddy">>, <<"api_key">> => <<"k">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload(pertisk_eproxy_acme_lego),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_acme_client_csr_failure_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"acme-csr.example">>, <<"cf-acme">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        meck:new(pertisk_eproxy_acme_csr, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_acme_csr, generate_rsa_csr, fun(_) ->
+            {ok, #{csr_der => <<>>, key_pem => <<"key">>}}
+        end),
+        mock_acme_client_error({csr_rejected, invalid}),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-acme">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([
+                pertisk_eproxy_acme_client,
+                pertisk_eproxy_dns_cloudflare,
+                pertisk_eproxy_acme_csr
+            ]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).

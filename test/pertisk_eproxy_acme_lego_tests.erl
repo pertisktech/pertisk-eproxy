@@ -435,3 +435,95 @@ validate_provider_customlego_named_provider_test() ->
         _Lego ->
             ?assertMatch({error, _}, pertisk_eproxy_acme_lego:validate_provider(customlego, Creds, WorkRoot))
     end.
+
+obtain_certificate_lego_not_found_test() ->
+    Old = os:getenv("PERTISK_LEGO_BIN"),
+    os:putenv("PERTISK_LEGO_BIN", "/nonexistent/lego-missing"),
+    try
+        ?assertMatch(
+            {error, lego_not_found},
+            pertisk_eproxy_acme_lego:obtain_certificate(
+                godaddy,
+                #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>},
+                [<<"example.com">>],
+                <<"ops@example.com">>,
+                <<"https://acme-staging-v02.api.letsencrypt.org/directory">>,
+                lego_work_root(),
+                <<"example-com">>,
+                fun(_, _) -> ok end
+            )
+        )
+    after
+        case Old of
+            false -> os:unsetenv("PERTISK_LEGO_BIN");
+            V -> os:putenv("PERTISK_LEGO_BIN", V)
+        end
+    end.
+
+obtain_certificate_provider_env_error_test() ->
+    with_fake_lego(fun(AcmeDir) ->
+        ?assertMatch(
+            {error, {missing_credential, _}},
+            pertisk_eproxy_acme_lego:obtain_certificate(
+                godaddy,
+                #{},
+                [<<"example.com">>],
+                <<"ops@example.com">>,
+                <<"https://acme-staging-v02.api.letsencrypt.org/directory">>,
+                AcmeDir,
+                <<"example-com">>,
+                fun(_, _) -> ok end
+            )
+        )
+    end).
+
+obtain_certificate_read_key_missing_test() ->
+    Dir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk-lego-nokey-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    ok = file:make_dir(Dir),
+    DataDir = filename:join(Dir, "data"),
+    ok = file:make_dir(DataDir),
+    Bin = filename:join(Dir, "lego"),
+    Script = [
+        "#!/bin/sh\n",
+        "while [ $# -gt 0 ]; do\n",
+        "  case \"$1\" in\n",
+        "    --path) LEGOPATH=\"$2\"; shift 2;;\n",
+        "    run)\n",
+        "      mkdir -p \"$LEGOPATH/certificates\"\n",
+        "      echo '-----BEGIN CERTIFICATE-----' > \"$LEGOPATH/certificates/example.com.crt\"\n",
+        "      echo '-----END CERTIFICATE-----' >> \"$LEGOPATH/certificates/example.com.crt\"\n",
+        "      exit 0;;\n",
+        "    *) shift;;\n",
+        "  esac\n",
+        "done\n",
+        "exit 0\n"
+    ],
+    ok = file:write_file(Bin, Script),
+    ok = file:change_mode(Bin, 8#755),
+    Old = os:getenv("PERTISK_LEGO_BIN"),
+    os:putenv("PERTISK_LEGO_BIN", Bin),
+    try
+        Creds = #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>},
+        ?assertMatch(
+            {error, {lego_read_failed, _, _, _, _}},
+            pertisk_eproxy_acme_lego:obtain_certificate(
+                godaddy,
+                Creds,
+                [<<"example.com">>],
+                <<"ops@example.com">>,
+                <<"https://acme-staging-v02.api.letsencrypt.org/directory">>,
+                DataDir,
+                <<"example-com">>,
+                fun(_, _) -> ok end
+            )
+        )
+    after
+        case Old of
+            false -> os:unsetenv("PERTISK_LEGO_BIN");
+            V -> os:putenv("PERTISK_LEGO_BIN", V)
+        end,
+        _ = os:cmd("rm -rf " ++ Dir)
+    end.

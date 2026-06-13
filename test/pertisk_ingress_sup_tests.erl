@@ -29,5 +29,5 @@ ingress_sup_start_link_test() ->
         {ok, Pid} = pertisk_ingress_sup:start_link(),
         ?assert(is_pid(Pid))
     after
-        meck:unload(supervisor)
+        pertisk_eproxy_test_helpers:unload_mocks([supervisor])
     end.
