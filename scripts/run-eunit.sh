@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Run eunit in batches. pertisk_eproxy_admin_handler_tests exceeds the ~120s
 # rebar3/eunit runner wall clock for a single invocation (~262 tests).
+#
+# With --cover, each module run is archived separately. Rebar3's incremental
+# eunit.coverdata merge zeroes modules that were covered in earlier runs; we
+# merge chunks with scripts/merge-cover.escript (best coverage per module).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REBAR="${REBAR:-rebar3}"
 COVER=0
 ADMIN_BATCH_SIZE="${ADMIN_HANDLER_EUNIT_BATCH_SIZE:-120}"
+CHUNK_DIR="${ROOT_DIR}/_build/test/cover/chunks"
+COVER_OUT="${ROOT_DIR}/_build/test/cover/eunit.coverdata"
+CHUNK_SEQ=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,6 +31,36 @@ done
 
 cd "$ROOT_DIR"
 
+clean_root_coverdata() {
+  find "$ROOT_DIR" -maxdepth 1 -name '*.coverdata' -delete 2>/dev/null || true
+}
+
+init_cover_chunks() {
+  rm -rf "$CHUNK_DIR"
+  mkdir -p "$CHUNK_DIR"
+  rm -f "$COVER_OUT"
+  clean_root_coverdata
+}
+
+archive_cover_chunk() {
+  local label="$1"
+  local chunk_file="$CHUNK_DIR/${label}.coverdata"
+  if [ -f "$COVER_OUT" ]; then
+    cp "$COVER_OUT" "$chunk_file"
+    rm -f "$COVER_OUT"
+  fi
+  clean_root_coverdata
+}
+
+finalize_cover() {
+  if [ ! -d "$CHUNK_DIR" ] || [ -z "$(find "$CHUNK_DIR" -maxdepth 1 -name '*.coverdata' -print -quit)" ]; then
+    echo "==> cover: no chunk files to merge" >&2
+    return 1
+  fi
+  echo "==> cover: merging chunks (best coverage per module)"
+  ROOT_DIR="$ROOT_DIR" "$ROOT_DIR/scripts/merge-cover.escript" "$CHUNK_DIR" "$COVER_OUT" merge
+}
+
 eunit_cover_arg() {
   if [ "$COVER" -eq 1 ]; then
     printf '%s' "--cover"
@@ -35,6 +72,10 @@ run_module() {
   echo "==> eunit ${mod}"
   # shellcheck disable=SC2046
   $REBAR eunit $(eunit_cover_arg) --module="$mod"
+  if [ "$COVER" -eq 1 ]; then
+    CHUNK_SEQ=$((CHUNK_SEQ + 1))
+    archive_cover_chunk "$(printf '%04d_%s' "$CHUNK_SEQ" "$mod")"
+  fi
 }
 
 run_admin_handler_batches() {
@@ -48,6 +89,10 @@ run_admin_handler_batches() {
     echo "==> eunit ${mod} (batch ${batch_no}, ${count} tests)"
     # shellcheck disable=SC2046
     $REBAR eunit $(eunit_cover_arg) --test="${mod}:${batch}"
+    if [ "$COVER" -eq 1 ]; then
+      CHUNK_SEQ=$((CHUNK_SEQ + 1))
+      archive_cover_chunk "$(printf '%04d_%s_batch%d' "$CHUNK_SEQ" "$mod" "$batch_no")"
+    fi
     batch=""
     count=0
   }
@@ -68,6 +113,10 @@ run_admin_handler_batches() {
   flush_batch
 }
 
+if [ "$COVER" -eq 1 ]; then
+  init_cover_chunks
+fi
+
 ADMIN_MOD="pertisk_eproxy_admin_handler_tests"
 
 while IFS= read -r mod; do
@@ -81,3 +130,8 @@ done < <(find "$ROOT_DIR/test" -maxdepth 1 -name '*_tests.erl' -print \
 # Largest module; batch to stay under the ~120s eunit runner limit. Run last so
 # earlier modules are not affected by accumulated SQLite/config state.
 run_admin_handler_batches
+
+if [ "$COVER" -eq 1 ]; then
+  echo "==> cover: archived $(find "$CHUNK_DIR" -maxdepth 1 -name '*.coverdata' | wc -l | tr -d ' ') chunk(s) in $CHUNK_DIR"
+  echo "==> cover: run scripts/merge-cover.escript to build eunit.coverdata"
+fi

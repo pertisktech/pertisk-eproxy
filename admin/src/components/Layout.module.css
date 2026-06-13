@@ -222,7 +222,28 @@
   box-sizing: border-box;
   background: color-mix(in srgb, var(--color-surface) 86%, transparent);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 12%, var(--color-border));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--color-primary) 14%, transparent),
+    0 14px 26px -24px color-mix(in srgb, var(--color-primary) 42%, transparent);
+}
+
+.utilityBar::after {
+  content: '';
+  position: absolute;
+  left: var(--space-page-x);
+  right: var(--space-page-x);
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-primary) 28%, transparent) 22%,
+    color-mix(in srgb, var(--color-primary) 36%, transparent) 50%,
+    color-mix(in srgb, var(--color-primary) 28%, transparent) 78%,
+    transparent 100%
+  );
 }
 
 .utilityBarRight {

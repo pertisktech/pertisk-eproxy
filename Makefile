@@ -58,16 +58,17 @@ shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
 test:
-	bash scripts/run-eunit.sh --cover
+	bash scripts/run-eunit.sh
 
 cover:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
 	bash scripts/run-eunit.sh --cover
-	$(REBAR) cover -v -p 2 -m $(COVER_MIN)
+	ROOT_DIR=. scripts/merge-cover.escript _build/test/cover/chunks _build/test/cover/eunit.coverdata $(COVER_MIN) gate
 
 cover-local:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
 	bash scripts/run-eunit.sh --cover
+	ROOT_DIR=. scripts/merge-cover.escript _build/test/cover/chunks _build/test/cover/eunit.coverdata merge
 	$(REBAR) cover -v -p 2
  
 dialyzer:
