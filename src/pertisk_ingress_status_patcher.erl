@@ -56,7 +56,7 @@ condition(?CONDITION_REASON_OK, false) ->
         <<"status">> => <<"True">>,
         <<"reason">> => ?CONDITION_REASON_OK,
         <<"message">> => <<"Ingress routes programmed">>,
-        <<"lastTransitionTime">> => iso8601_now()
+        <<"lastTransitionTime">> => pertisk_k8s_time:rfc3339_now()
     };
 condition(?CONDITION_REASON_RESOURCE, true) ->
     #{
@@ -67,7 +67,7 @@ condition(?CONDITION_REASON_RESOURCE, true) ->
             "Resource backend requires pertisk.io/resource-upstreams annotation "
             "(JSON map: resource name -> host:port)"
         >>,
-        <<"lastTransitionTime">> => iso8601_now()
+        <<"lastTransitionTime">> => pertisk_k8s_time:rfc3339_now()
     }.
 
 ingress_has_resource_backend(Ingress) ->
@@ -122,9 +122,3 @@ namespace_of(_) -> <<"default">>.
 
 name_of(#{<<"name">> := Name}) when is_binary(Name) -> Name;
 name_of(_) -> <<"unknown">>.
-
-iso8601_now() ->
-    {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
-    list_to_binary(
-        io_lib:format("~4..0w-~2..0w-~2..0wT~2..0w:~2..0w:~2..0wZ", [Y, Mo, D, H, Mi, S])
-    ).

@@ -139,6 +139,9 @@ It lists HTTPRoutes with the annotation above and programs the proxy LoadBalance
 kubectl get gatewayclass,gateway,httproute -n pertisk-eproxy
 # GatewayClass ACCEPTED=True, Gateway Programmed=True (ingress image >= 0.5.48)
 
+# Gateway ADDRESS comes from the Helm publish Service LoadBalancer status
+# (same Service as Ingress .status.loadBalancer; default: release Service name).
+
 # Site should include certificate for your hostname (management API, auth required):
 kubectl run gw-debug --rm -it -n pertisk-eproxy --image=curlimages/curl -- \
   sh -c 'TOKEN=$(curl -s -X POST http://pertisk-eproxy:9080/api/auth/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"admin\"}" | sed -n "s/.*\"token\":\"\\([^\"]*\\)\".*/\\1/p"); curl -s http://pertisk-eproxy:9080/api/sites -H "Authorization: Bearer $TOKEN" | grep admin.gateway'

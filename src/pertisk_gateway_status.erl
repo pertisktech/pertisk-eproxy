@@ -1,7 +1,7 @@
 %% @doc Patch Gateway API Gateway .status (Accepted + Programmed conditions).
 -module(pertisk_gateway_status).
 
--export([maybe_update/1]).
+-export([maybe_update/1, row_to_address/1]).
 
 -spec maybe_update({term(), map()}) -> ok.
 maybe_update(Conn) ->
@@ -47,20 +47,64 @@ patch_one(Gateway, Conn) ->
         Name,
         <<"status">>
     ),
+    Addresses = gateway_addresses(Conn),
     Body = #{
         <<"status">> => #{
+            <<"addresses">> => Addresses,
             <<"conditions">> => [accepted_condition(), programmed_condition()]
         }
     },
     case pertisk_ingress_ekub:merge_patch(Endpoint, Body, Conn) of
         {ok, _} ->
-            lager:info("Gateway ~s/~s status Accepted=True Programmed=True", [namespace_of(Meta), Name]),
+            lager:info(
+                "Gateway ~s/~s status Accepted=True Programmed=True addresses=~p",
+                [namespace_of(Meta), Name, length(Addresses)]
+            ),
             ok;
         {error, #{<<"code">> := 404}} ->
             ok;
         {error, Err} ->
             lager:warning("Gateway status patch ~s/~s failed: ~p", [namespace_of(Meta), Name, Err]),
             ok
+    end.
+
+gateway_addresses(Conn) ->
+    lists:flatmap(fun row_to_address/1, load_balancer_rows(Conn)).
+
+row_to_address(#{<<"ip">> := Ip}) when is_binary(Ip), Ip =/= <<>> ->
+    [#{<<"type">> => <<"IPAddress">>, <<"value">> => Ip}];
+row_to_address(#{<<"hostname">> := Host}) when is_binary(Host), Host =/= <<>> ->
+    [#{<<"type">> => <<"Hostname">>, <<"value">> => Host}];
+row_to_address(_) ->
+    [].
+
+load_balancer_rows(Conn) ->
+    case publish_service_ref() of
+        {ok, Ns, SvcName} ->
+            case ekub:read(service, Ns, SvcName, Conn) of
+                {ok, Svc} ->
+                    ingress_rows_from_service(Svc);
+                {error, _} ->
+                    []
+            end;
+        error ->
+            []
+    end.
+
+ingress_rows_from_service(Svc) ->
+    Status = maps:get(<<"status">>, Svc, #{}),
+    case maps:get(<<"loadBalancer">>, Status, undefined) of
+        #{<<"ingress">> := Rows} when is_list(Rows) -> Rows;
+        _ -> []
+    end.
+
+publish_service_ref() ->
+    case pertisk_ingress_env:publish_service_name() of
+        {ok, Name} ->
+            Ns = pertisk_ingress_env:leader_namespace(),
+            {ok, Ns, Name};
+        error ->
+            error
     end.
 
 list_gateways(Conn) ->
@@ -105,7 +149,7 @@ accepted_condition() ->
         <<"status">> => <<"True">>,
         <<"reason">> => <<"Accepted">>,
         <<"message">> => <<"Gateway accepted by pertisk-eproxy controller">>,
-        <<"lastTransitionTime">> => iso8601_now()
+        <<"lastTransitionTime">> => pertisk_k8s_time:rfc3339_now()
     }.
 
 programmed_condition() ->
@@ -116,7 +160,7 @@ programmed_condition() ->
         <<"message">> => <<
             "Routes are programmed via HTTPRoute annotation pertisk.io/gateway-class"
         >>,
-        <<"lastTransitionTime">> => iso8601_now()
+        <<"lastTransitionTime">> => pertisk_k8s_time:rfc3339_now()
     }.
 
 items_from_list(#{<<"items">> := Items}) when is_list(Items) ->
@@ -134,9 +178,3 @@ namespace_of(_) -> <<"default">>.
 
 name_of(#{<<"name">> := Name}) when is_binary(Name) -> Name;
 name_of(_) -> <<"unknown">>.
-
-iso8601_now() ->
-    {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
-    list_to_binary(
-        io_lib:format("~4..0w-~2..0w-~2..0wT~2..0w:~2..0w:~2..0wZ", [Y, Mo, D, H, Mi, S])
-    ).

@@ -64,11 +64,5 @@ accepted_condition() ->
         <<"status">> => <<"True">>,
         <<"reason">> => <<"Accepted">>,
         <<"message">> => <<"GatewayClass accepted by pertisk-eproxy controller">>,
-        <<"lastTransitionTime">> => iso8601_now()
+        <<"lastTransitionTime">> => pertisk_k8s_time:rfc3339_now()
     }.
-
-iso8601_now() ->
-    {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
-    list_to_binary(
-        io_lib:format("~4..0w-~2..0w-~2..0wT~2..0w:~2..0w:~2..0wZ", [Y, Mo, D, H, Mi, S])
-    ).

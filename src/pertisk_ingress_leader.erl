@@ -114,7 +114,7 @@ field_selector(Name) ->
     "metadata.name=" ++ binary_to_list(Name).
 
 create_lease(Conn, Ns, Name, Holder, Dur) ->
-    Now = iso8601_now(),
+    Now = pertisk_k8s_time:rfc3339_now(),
     Lease = #{
         <<"apiVersion">> => <<"coordination.k8s.io/v1">>,
         <<"kind">> => <<"Lease">>,
@@ -132,7 +132,9 @@ create_lease(Conn, Ns, Name, Holder, Dur) ->
     case ekub:create(Lease, Ns, Conn) of
         {ok, _} -> true;
         {error, #{<<"code">> := 409}} -> false;
-        {error, _} -> false
+        {error, Err} ->
+            lager:warning("Leader lease create ~s/~s failed: ~p", [Ns, Name, Err]),
+            false
     end.
 
 renew_existing(Conn, Ns, _Name, Holder, Dur, Lease) ->
@@ -145,7 +147,7 @@ renew_existing(Conn, Ns, _Name, Holder, Dur, Lease) ->
         {false, false} ->
             false;
         _ ->
-            Now = iso8601_now(),
+            Now = pertisk_k8s_time:rfc3339_now(),
             Spec1 = Spec0#{
                 <<"holderIdentity">> => Holder,
                 <<"leaseDurationSeconds">> => Dur,
@@ -183,9 +185,3 @@ parse_rfc3339(Bin) ->
     catch
         _:_ -> error
     end.
-
-iso8601_now() ->
-    {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
-    list_to_binary(
-        io_lib:format("~4..0w-~2..0w-~2..0wT~2..0w:~2..0w:~2..0wZ", [Y, Mo, D, H, Mi, S])
-    ).
