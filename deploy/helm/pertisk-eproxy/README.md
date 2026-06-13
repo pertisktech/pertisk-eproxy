@@ -38,6 +38,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 | `image.registry` | Registry | `harbor.tools.thaidevops.co` |
 | `image.repository` | Image path (ingress image) | `pertisksoft/pertisk-eproxy/ingress` |
 | `ingress.className` | `ingressClassName` filter | `pertisk-eproxy` |
+| `ingress.gatewayApiEnabled` | Reconcile Gateway API HTTPRoutes; creates `GatewayClass` | `false` |
 | `ingress.watchNamespace` | Single namespace (empty = all) | `""` |
 | `leaderElection.enabled` | K8s Lease leader election | `true` |
 | `helm.enabled` | Enable Helm history/values API in ingress admin | `true` |

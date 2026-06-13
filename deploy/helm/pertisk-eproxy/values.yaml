@@ -258,6 +258,12 @@ ingressClassResource:
   default: false
   controller: pertisk.tech/pertisk-eproxy
 
+# Gateway API GatewayClass (kubectl get gatewayclass). Created when
+# ingress.gatewayApiEnabled is true, or when gatewayClassResource.enabled is true.
+gatewayClassResource:
+  enabled: false
+  controllerName: pertisk.tech/pertisk-eproxy
+
 # Optional Ingress to expose the management API (viewer-only) via another controller
 adminIngress:
   enabled: false

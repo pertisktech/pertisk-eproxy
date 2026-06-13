@@ -120,7 +120,9 @@ snapshot() ->
         <<"backends_count">> => length(pertisk_eproxy_config:get_backends()),
         <<"tls_secrets_count">> => length(pertisk_ingress_tls:all_hosts()),
         <<"namespace">> => namespace_bin(),
-        <<"ingress_class">> => ingress_class_bin()
+        <<"ingress_class">> => ingress_class_bin(),
+        <<"gateway_api_enabled">> => pertisk_ingress_env:gateway_api_enabled(),
+        <<"gateway_class">> => gateway_class_bin()
     }.
 
 get_state() ->
@@ -144,6 +146,14 @@ ingress_class_bin() ->
     case pertisk_ingress_env:ingress_class() of
         {ok, C} -> C;
         all -> null
+    end.
+
+gateway_class_bin() ->
+    case pertisk_ingress_env:gateway_api_enabled() of
+        false ->
+            null;
+        true ->
+            ingress_class_bin()
     end.
 
 format_error(Err) when is_binary(Err) -> Err;
