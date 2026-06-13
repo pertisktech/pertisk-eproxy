@@ -96,9 +96,12 @@ start_link_and_callbacks_test() ->
 
 with_local_auth(Fun) ->
     Old = application:get_env(pertisk_eproxy, admin_auth),
+    OldMode = os:getenv("PERTISK_MODE"),
     application:set_env(pertisk_eproxy, admin_auth, local),
+    os:putenv("PERTISK_MODE", "proxy"),
     with_auth_server(fun() ->
         try Fun() after
+            restore_env("PERTISK_MODE", OldMode),
             case Old of
                 {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
                 undefined -> application:unset_env(pertisk_eproxy, admin_auth)

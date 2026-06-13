@@ -1053,14 +1053,17 @@ config_metrics_listen_custom_test() ->
     end).
 
 config_reload_load_error_test() ->
-    with_tmp_db_config(fun() ->
-        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
-        meck:expect(pertisk_eproxy_db, get_runtime_config, fun(_) -> {error, corrupt} end),
-        try
-            ?assertMatch({error, _}, pertisk_eproxy_config:reload())
-        after
-            meck:unload(pertisk_eproxy_db)
-        end
+    with_env("PERTISK_MODE", unset, fun() ->
+        with_tmp_db_config(fun() ->
+            meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+            meck:expect(pertisk_eproxy_db, get_runtime_config, fun(_) -> {error, corrupt} end),
+            try
+                ?assertNot(pertisk_eproxy_config:ingress_mode()),
+                ?assertMatch({error, _}, pertisk_eproxy_config:reload())
+            after
+                meck:unload(pertisk_eproxy_db)
+            end
+        end)
     end).
 
 config_sync_ingress_empty_lists_test() ->
