@@ -25,15 +25,19 @@ unload_mocks(Mods) ->
     ).
 
 with_quic_h3_mock(Fun) ->
-    unload_mocks([quic_h3]),
+    unload_mocks([quic_h3, pertisk_eproxy_rate_limit]),
+    pertisk_eproxy_rate_limit:reset(),
     meck:new(quic_h3, [unstick, no_link]),
     meck:expect(quic_h3, send_response, fun(_, _, _, _) -> ok end),
     meck:expect(quic_h3, send_data, fun(_, _, _, _) -> ok end),
     meck:expect(quic_h3, set_stream_handler, fun(_, _, _) -> {ok, []} end),
+    meck:new(pertisk_eproxy_rate_limit, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _) -> allow end),
+    meck:expect(pertisk_eproxy_rate_limit, check, fun(_, _, _) -> allow end),
     try
         Fun()
     after
-        unload_mocks([quic_h3])
+        unload_mocks([quic_h3, pertisk_eproxy_rate_limit])
     end.
 
 with_gun_h3_proxy_mock(Fun) -> with_gun_h3_proxy_mock(#{}, Fun).

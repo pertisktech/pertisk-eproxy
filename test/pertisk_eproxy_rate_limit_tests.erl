@@ -15,8 +15,10 @@ deny_when_burst_exhausted_test() ->
     },
     ok = pertisk_eproxy_config:put_config(Config1),
     try
+        pertisk_eproxy_rate_limit:reset(),
         ?assertEqual(allow, pertisk_eproxy_rate_limit:check(<<"9.9.9.9">>, <<"limited.example">>)),
         ?assertEqual(deny, pertisk_eproxy_rate_limit:check(<<"9.9.9.9">>, <<"limited.example">>))
     after
+        pertisk_eproxy_rate_limit:reset(),
         ok = pertisk_eproxy_config:put_config(Config)
     end.

@@ -1,7 +1,7 @@
 %% @doc Simple per-client-IP token bucket rate limiter (optional, config-driven).
 -module(pertisk_eproxy_rate_limit).
 
--export([check/2, check/3]).
+-export([check/2, check/3, reset/0]).
 
 -define(TAB, pertisk_eproxy_rate_limit_tab).
 
@@ -10,6 +10,14 @@ check(ClientIp, Host) ->
     check(ClientIp, Host, undefined).
 
 -spec check(binary(), binary(), binary() | undefined) -> allow | deny.
+%% Clear token-bucket state (eunit isolation when limits are enabled in config).
+-spec reset() -> ok.
+reset() ->
+    case ets:info(?TAB) of
+        undefined -> ok;
+        _ -> true = ets:delete_all_objects(?TAB), ok
+    end.
+
 check(ClientIp, Host, SiteHost) ->
     case effective_limits(SiteHost) of
         disabled ->

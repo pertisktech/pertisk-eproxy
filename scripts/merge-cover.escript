@@ -76,9 +76,15 @@ best_per_module(ChunkFiles, Ebin) ->
             lists:foldl(
                 fun({M, {C, NC}}, Inner) ->
                     T = C + NC,
+                    P = pct(C, T),
                     case maps:find(M, Inner) of
-                        {ok, {BestC, BestT}} when C =< BestC -> Inner;
-                        _ -> maps:put(M, {C, T}, Inner)
+                        {ok, {BestC, BestT}} ->
+                            case P =< pct(BestC, BestT) of
+                                true -> Inner;
+                                false -> maps:put(M, {C, T}, Inner)
+                            end;
+                        _ ->
+                            maps:put(M, {C, T}, Inner)
                     end
                 end,
                 Acc,
