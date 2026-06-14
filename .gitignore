@@ -44,4 +44,5 @@ migrations/
 *.coverdata
 *_meck_original.*.coverdata
 _release_export/
+priv/*.db
 

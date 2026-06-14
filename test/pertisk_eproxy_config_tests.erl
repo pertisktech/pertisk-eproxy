@@ -1711,7 +1711,8 @@ config_init_ingress_load_failure_test() ->
         try
             ?assertEqual(#{}, pertisk_eproxy_config:get_config()),
             ?assertEqual([], pertisk_eproxy_config:get_sites()),
-            ?assertEqual([], pertisk_eproxy_config:get_backends())
+            ?assertEqual([], pertisk_eproxy_config:get_backends()),
+            ?assertEqual([], pertisk_eproxy_config:get_certificates())
         after
             stop_config_if_running(),
             file:delete(Tmp),
@@ -1784,3 +1785,70 @@ rebuild_runtime_config_from_db_test() ->
         ?assertEqual(1, length(Sites)),
         ?assertEqual(<<"rebuild.example">>, maps:get(host, hd(Sites)))
     end).
+
+put_config_cert_integer_ref_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        {CertFile, KeyFile} = generated_cert_files(<<"intref.example">>),
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(DbPath)),
+        ?assertMatch({ok, _}, pertisk_eproxy_db:insert_certificate_pem(DbPath, <<"intref">>, CertFile, KeyFile)),
+        {ok, Certs} = pertisk_eproxy_db:list_certificates(DbPath),
+        Id = maps:get(id, hd(Certs)),
+        Base = (pertisk_eproxy_config:get_config())#{
+            sites => [],
+            backends => site_backends(),
+            certificates => [],
+            dns_providers => []
+        },
+        ok = put_config_retry(Base),
+        Config = Base#{
+            sites => [#{
+                host => <<"intref.example">>,
+                backend => <<"web">>,
+                certificate => Id,
+                routes => []
+            }]
+        },
+        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config))
+    end).
+
+config_get_backend_missing_test() ->
+    with_config(fun() ->
+        ?assertEqual(error, pertisk_eproxy_config:get_backend(<<"missing-backend">>))
+    end).
+
+put_config_site_list_host_test() ->
+    with_tmp_db_config(fun() ->
+        Base = (pertisk_eproxy_config:get_config())#{
+            sites => [],
+            backends => site_backends(),
+            certificates => [],
+            dns_providers => []
+        },
+        ok = put_config_retry(Base),
+        Config = Base#{
+            sites => [#{host => "listhost.example", backend => <<"web">>, routes => []}]
+        },
+        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config))
+    end).
+
+dns_credentials_redacted_list_value_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Config = #{
+            mode => proxy,
+            dns_providers => [
+                #{name => <<"list-redacted">>, provider_type => <<"cf">>, credentials => #{token => "[redacted]"}}
+            ],
+            sites => [],
+            backends => [],
+            certificates => []
+        },
+        ok = pertisk_eproxy_db:put_runtime_config(DbPath, Config),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        ?assertEqual([], maps:get(dns_providers, pertisk_eproxy_config:get_config()))
+    end).
+
+certificates_whitespace_only_excluded_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"certificates">> => [<<"   ">>]}),
+    ?assertEqual([], maps:get(certificates, C)).

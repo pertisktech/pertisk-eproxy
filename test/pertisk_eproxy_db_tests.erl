@@ -41,6 +41,9 @@ fake_sqlite3_script(Output) ->
 
 with_fake_sqlite3(Output, Fun) ->
     Script = fake_sqlite3_script(Output),
+    with_fake_sqlite3_path(Script, Fun).
+
+with_fake_sqlite3_path(Script, Fun) ->
     Old = application:get_env(pertisk_eproxy, sqlite3_executable),
     application:set_env(pertisk_eproxy, sqlite3_executable, Script),
     try Fun(Script) after
@@ -897,3 +900,41 @@ insert_site_sqlite_error_test() ->
                 pertisk_eproxy_db:delete_dns_provider_by_name(Path, <<"missing">>))
         end)
     end).
+
+sqlite_exec_ignores_non_error_output_test() ->
+    with_db(fun(Path) ->
+        with_fake_sqlite3("done", fun(_) ->
+            ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path))
+        end)
+    end).
+
+sqlite_query_no_such_file_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("/usr/bin/sqlite3: No such file or directory", fun(_) ->
+            ?assertMatch({error, {sqlite3_cli, _}}, pertisk_eproxy_db:list_sites(Path))
+        end)
+    end).
+
+get_config_list_sites_error_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("Error: no such table: sites", fun(_) ->
+            ?assertMatch({error, _}, pertisk_eproxy_db:get_config(Path))
+        end)
+    end).
+
+sqlite_escape_shell_db_path_quote_test() ->
+    Dir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk_db_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    ok = file:make_dir(Dir),
+    Path = filename:join([Dir, 'quote"db.db']),
+    cleanup_db(Path),
+    try
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path))
+    after
+        cleanup_db(Path),
+        file:del_dir(Dir)
+    end.

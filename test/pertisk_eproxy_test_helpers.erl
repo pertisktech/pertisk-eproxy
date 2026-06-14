@@ -34,11 +34,27 @@ ensure_metrics() ->
     application:ensure_all_started(prometheus),
     pertisk_eproxy_metrics:setup().
 
+-define(TEST_CONFIG_DB, {pertisk_eproxy, test_config_db}).
+
 ensure_config() ->
     ensure_lager(),
     case whereis(pertisk_eproxy_config) of
-        undefined -> {ok, _} = pertisk_eproxy_config:start_link();
-        _ -> ok
+        undefined ->
+            os:putenv("PERTISK_MODE", "proxy"),
+            application:unset_env(pertisk_eproxy, mode),
+            DbPath =
+                case persistent_term:get(?TEST_CONFIG_DB, undefined) of
+                    undefined ->
+                        P = tmp_db(),
+                        persistent_term:put(?TEST_CONFIG_DB, P),
+                        P;
+                    P ->
+                        P
+                end,
+            application:set_env(pertisk_eproxy, db_file, DbPath),
+            {ok, _} = pertisk_eproxy_config:start_link();
+        _ ->
+            ok
     end.
 
 ensure_h3_deps() ->
