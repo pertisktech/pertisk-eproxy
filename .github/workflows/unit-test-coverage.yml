@@ -1,0 +1,30 @@
+name: Unit Test & Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: unit-test-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-test-coverage:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          rebar3-version: "3.24"
+
+      - name: Patch dependencies
+        run: make patch-ekub patch-quic patch-hackney
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Unit tests with coverage
+        run: make cover
