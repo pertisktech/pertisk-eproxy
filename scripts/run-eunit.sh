@@ -106,7 +106,6 @@ archive_cover_chunk() {
     cp "$COVER_OUT" "$chunk_file"
     rm -f "$COVER_OUT"
   fi
-  clean_root_coverdata
 }
 
 eunit_cover_arg() {
@@ -291,4 +290,5 @@ if [ "$COVER" -eq 1 ]; then
   chunk_count="$(find "$CHUNK_DIR" -maxdepth 1 -name '*.coverdata' | wc -l | tr -d ' ')"
   echo "==> cover: archived ${chunk_count} chunk(s) in ${CHUNK_DIR}"
   echo "==> cover: run scripts/merge-cover.escript to build eunit.coverdata"
+  clean_root_coverdata
 fi
