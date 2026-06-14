@@ -768,20 +768,15 @@ reload_proxy_tls_wildcard_sni_test() ->
         "pertisk-app-wc-" ++ integer_to_list(erlang:unique_integer([positive]))
     ]),
     ok = file:make_dir(TmpDir),
-    CertFile = filename:join(TmpDir, "cert.pem"),
-    KeyFile = filename:join(TmpDir, "key.pem"),
-    ok = file:write_file(CertFile, read_priv_pem_file("listener.pem")),
-    ok = file:write_file(KeyFile, read_priv_pem_file("listener.key")),
+    {CertFile, KeyFile} = generate_cert_files(TmpDir, <<"*.wc.example.com">>),
     {ok, CertId} = pertisk_eproxy_db:insert_certificate_pem(DbPath, <<"wc-cert">>, CertFile, KeyFile),
-    ListenerCert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
-    ListenerKey = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
     try
         with_app_reload_mocks(fun() ->
             meck:expect(pertisk_eproxy_config, get_config, fun() ->
                 (reload_config())#{
                     https_port => 18443,
-                    tls_cert_file => ListenerCert,
-                    tls_key_file => ListenerKey,
+                    tls_cert_file => CertFile,
+                    tls_key_file => KeyFile,
                     sites => [
                         #{
                             host => <<"*.wc.example.com">>,
@@ -806,13 +801,15 @@ reload_proxy_tls_wildcard_sni_test() ->
         file:delete(DbPath)
     end.
 
-read_priv_pem_file(Name) ->
-    RuntimePath = filename:join([code:priv_dir(pertisk_eproxy), "tls", Name]),
-    RepoPath = filename:join([filename:dirname(?FILE), "..", "priv", "tls", Name]),
-    case file:read_file(RuntimePath) of
-        {ok, Bin} ->
-            Bin;
-        {error, _} ->
-            {ok, Bin} = file:read_file(RepoPath),
-            Bin
-    end.
+generate_cert_files(Dir, Host) when is_binary(Host) ->
+    CertFile = filename:join(Dir, "cert.pem"),
+    KeyFile = filename:join(Dir, "key.pem"),
+    HostStr = binary_to_list(Host),
+    Cmd = "openssl req -x509 -newkey rsa:2048 -nodes -days 1 "
+        "-subj '/CN=" ++ HostStr ++ "' "
+        "-addext 'subjectAltName=DNS:" ++ HostStr ++ "' "
+        "-keyout " ++ KeyFile ++ " -out " ++ CertFile ++ " 2>/dev/null",
+    _ = os:cmd(Cmd),
+    ?assert(filelib:is_regular(CertFile)),
+    ?assert(filelib:is_regular(KeyFile)),
+    {CertFile, KeyFile}.
