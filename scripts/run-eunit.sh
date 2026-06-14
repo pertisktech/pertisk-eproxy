@@ -3,13 +3,12 @@
 # fresh BEAM VM. pertisk_eproxy_admin_handler_tests is split into batches because
 # a single invocation exceeds the ~120s rebar3/eunit runner wall clock (~262 tests).
 #
-# With --cover, each job archives coverdata separately. Rebar3's incremental
-# eunit.coverdata merge zeroes modules covered in earlier runs; merge chunks with
-# scripts/merge-cover.escript (best coverage per module).
+# With --cover, each job writes coverdata under _build/test/cover/work/<job>/.
+# Never delete project-root *.coverdata while jobs run (meck+cover uses PID files).
 #
 # Env:
-#   EUNIT_PARALLEL                 max concurrent jobs (default: min(8, CPU count))
-#   ADMIN_HANDLER_EUNIT_BATCH_SIZE tests per admin_handler batch (default: 120)
+#   EUNIT_PARALLEL                 max concurrent jobs (default: 4 with --cover, else min(8, CPU))
+#   ADMIN_HANDLER_EUNIT_BATCH_SIZE tests per admin_handler batch (default: 80)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,10 +16,8 @@ REBAR="${REBAR:-rebar3}"
 COVER=0
 ADMIN_BATCH_SIZE="${ADMIN_HANDLER_EUNIT_BATCH_SIZE:-80}"
 CHUNK_DIR="${ROOT_DIR}/_build/test/cover/chunks"
-COVER_OUT="${ROOT_DIR}/_build/test/cover/eunit.coverdata"
+COVER_WORK="${CHUNK_DIR}/work"
 LOG_DIR="${ROOT_DIR}/_build/test/logs"
-FAILURES_FILE="${LOG_DIR}/.failures"
-JOB_MANIFEST="${LOG_DIR}/jobs.tsv"
 SEEN_DIR="${LOG_DIR}/seen"
 SLOT_DIR="${LOG_DIR}/slots"
 COVER_LOCK="${CHUNK_DIR}/.archive.lock.dir"
@@ -39,7 +36,7 @@ cpu_count() {
 }
 
 default_parallel() {
-  local n
+  local n cover_cap
   n="$(cpu_count)"
   if [ "$n" -gt 8 ]; then
     n=8
@@ -47,20 +44,14 @@ default_parallel() {
   if [ "$n" -lt 1 ]; then
     n=1
   fi
+  if [ "$COVER" -eq 1 ]; then
+    cover_cap=4
+    if [ "$n" -gt "$cover_cap" ]; then
+      n="$cover_cap"
+    fi
+  fi
   printf '%s' "$n"
 }
-
-EUNIT_PARALLEL="${EUNIT_PARALLEL:-$(default_parallel)}"
-case "$EUNIT_PARALLEL" in
-  *[!0-9]*|'')
-    echo "EUNIT_PARALLEL must be a positive integer (got: ${EUNIT_PARALLEL})" >&2
-    exit 1
-    ;;
-  0)
-    echo "EUNIT_PARALLEL must be >= 1 (got: 0)" >&2
-    exit 1
-    ;;
-esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,7 +66,7 @@ Options:
   --cover   collect per-job coverdata chunks for merge-cover.escript
 
 Env:
-  EUNIT_PARALLEL=${EUNIT_PARALLEL}
+  EUNIT_PARALLEL=${EUNIT_PARALLEL:-$(default_parallel)}
   ADMIN_HANDLER_EUNIT_BATCH_SIZE=${ADMIN_BATCH_SIZE}
 EOF
       exit 0
@@ -87,6 +78,18 @@ EOF
   esac
 done
 
+EUNIT_PARALLEL="${EUNIT_PARALLEL:-$(default_parallel)}"
+case "$EUNIT_PARALLEL" in
+  *[!0-9]*|'')
+    echo "EUNIT_PARALLEL must be a positive integer (got: ${EUNIT_PARALLEL})" >&2
+    exit 1
+    ;;
+  0)
+    echo "EUNIT_PARALLEL must be >= 1 (got: 0)" >&2
+    exit 1
+    ;;
+esac
+
 cd "$ROOT_DIR"
 
 clean_root_coverdata() {
@@ -95,8 +98,7 @@ clean_root_coverdata() {
 
 init_cover_chunks() {
   rm -rf "$CHUNK_DIR"
-  mkdir -p "$CHUNK_DIR"
-  rm -f "$COVER_OUT"
+  mkdir -p "$COVER_WORK"
   clean_root_coverdata
 }
 
@@ -110,20 +112,29 @@ with_cover_lock() {
   return "$rc"
 }
 
-archive_cover_chunk() {
-  local label="$1"
-  local chunk_file="$CHUNK_DIR/${label}.coverdata"
-  if [ -f "$COVER_OUT" ]; then
-    cp "$COVER_OUT" "$chunk_file"
-    rm -f "$COVER_OUT"
-  fi
-  clean_root_coverdata
+job_cover_base() {
+  printf '%s/work/%s/eunit' "$CHUNK_DIR" "$1"
 }
 
-eunit_cover_arg() {
+archive_cover_chunk() {
+  local label="$1"
+  local cover_base chunk_file
+  cover_base="$(job_cover_base "$label")"
+  chunk_file="$CHUNK_DIR/${label}.coverdata"
+  if [ -f "${cover_base}.coverdata" ]; then
+    cp "${cover_base}.coverdata" "$chunk_file"
+    rm -f "${cover_base}.coverdata"
+  fi
+}
+
+eunit_cover_args() {
+  local safe_id="$1"
   if [ "$COVER" -eq 1 ]; then
     export PERTISK_EUNIT_COVER=1
-    printf '%s' "--cover"
+    local cover_base
+    cover_base="$(job_cover_base "$safe_id")"
+    mkdir -p "$(dirname "$cover_base")"
+    printf '%s' "--cover --cover_export_name=${cover_base}"
   fi
 }
 
@@ -133,16 +144,15 @@ sanitize_job_id() {
 
 lookup_job_id() {
   local safe_id="$1"
-  awk -F '\t' -v id="$safe_id" '$1 == id { print $2; exit }' "$JOB_MANIFEST" 2>/dev/null
+  awk -F '\t' -v id="$safe_id" '$1 == id { print $2; exit }' "$LOG_DIR/jobs.tsv" 2>/dev/null
 }
 
 lookup_job_start() {
   local safe_id="$1"
-  awk -F '\t' -v id="$safe_id" '$1 == id { print $3; exit }' "$JOB_MANIFEST" 2>/dev/null
+  awk -F '\t' -v id="$safe_id" '$1 == id { print $3; exit }' "$LOG_DIR/jobs.tsv" 2>/dev/null
 }
 
 progress_line() {
-  # stderr, unbuffered where supported
   printf '%s\n' "$*" >&2
 }
 
@@ -182,17 +192,19 @@ run_job() {
   slot="$(acquire_slot)"
   JOBS_STARTED=$((JOBS_STARTED + 1))
   start=$(date +%s)
-  printf '%s\t%s\t%s\n' "$safe_id" "$job_id" "$start" >>"$JOB_MANIFEST"
+  printf '%s\t%s\t%s\n' "$safe_id" "$job_id" "$start" >>"$LOG_DIR/jobs.tsv"
   progress_line "==> [start ${JOBS_STARTED}/${JOB_TOTAL}] ${job_id}"
 
   {
     trap 'release_slot "$slot"' EXIT
     echo "==> job ${job_id}"
-    echo "==> rebar3 eunit ${rebar_args}"
+    echo "==> rebar3 as test eunit ${rebar_args}"
     echo "==> started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     export PERTISK_EUNIT_PARALLEL="${EUNIT_PARALLEL}"
+    export REBAR_OFFLINE="${REBAR_OFFLINE:-1}"
+    cd "$ROOT_DIR"
     # shellcheck disable=SC2046
-    $REBAR as test eunit $(eunit_cover_arg) ${rebar_args}
+    $REBAR as test eunit $(eunit_cover_args "$safe_id") ${rebar_args}
     rc=$?
     end=$(date +%s)
     elapsed=$((end - start))
@@ -201,9 +213,6 @@ run_job() {
     fi
     echo "==> finished exit=${rc} duration=${elapsed}s"
     printf '%s\n' "$rc" >"$exit_file"
-    if [ "$rc" -ne 0 ]; then
-      printf '%s\n' "$job_id" >>"$FAILURES_FILE"
-    fi
     exit "$rc"
   } >"$log" 2>&1 &
 }
@@ -257,44 +266,54 @@ print_failure_excerpt() {
     return 0
   fi
   echo "    log: $log"
-  if grep -qE 'cancelled|global_sqlite_lock_timeout|did not run' "$log" 2>/dev/null; then
+  if grep -qE 'cant_open_file.*\.coverdata|coverdata.*enoent' "$log" 2>/dev/null; then
+    echo "    --- cover/meck (parallel coverdata race) ---"
+    grep -E 'cant_open_file.*\.coverdata|coverdata.*enoent' "$log" | head -5 | sed 's/^/      /'
+  fi
+  if grep -qE 'cancelled|global_sqlite_lock_timeout|did not run|\{timeout,' "$log" 2>/dev/null; then
     echo "    --- cancelled / timeout ---"
-    grep -E 'cancelled|timeout|global_sqlite|did not run|Pending' "$log" | head -15 | sed 's/^/      /'
+    grep -E 'cancelled|timeout|global_sqlite|did not run|Pending|\{timeout,' "$log" | head -15 | sed 's/^/      /'
   fi
   if grep -qE '^\*\*\* ' "$log" 2>/dev/null; then
     echo "    --- eunit failures ---"
     grep -E '^\*\*\* ' "$log" | head -20 | sed 's/^/      /'
   fi
-  if grep -qE 'Failed: [1-9]|failures' "$log" 2>/dev/null; then
+  if grep -qE '[0-9]+ tests, [1-9][0-9]* failures' "$log" 2>/dev/null; then
     echo "    --- summary ---"
-    grep -E 'tests,|Failed:|Skipped:|Passed:' "$log" | tail -5 | sed 's/^/      /'
+    grep -E '[0-9]+ tests,' "$log" | tail -3 | sed 's/^/      /'
   fi
-  if ! grep -qE '^\*\*\* |Failed: [1-9]|failures' "$log" 2>/dev/null; then
+  if ! grep -qE '^\*\*\* | [1-9][0-9]* failures|cancelled' "$log" 2>/dev/null; then
     echo "    --- tail ---"
-    tail -25 "$log" | sed 's/^/      /'
+    tail -20 "$log" | sed 's/^/      /'
   fi
 }
 
 report_failures() {
-  local failed total job safe_id log
-  if [ ! -f "$FAILURES_FILE" ]; then
-    return 0
-  fi
-  failed="$(sort -u "$FAILURES_FILE" | sed '/^$/d' | wc -l | tr -d ' ')"
+  local failed=0 total=0 job safe_id log rc
+  for exit_file in "$LOG_DIR"/*.exit; do
+    [ -e "$exit_file" ] || continue
+    total=$((total + 1))
+    rc="$(tr -d '[:space:]' <"$exit_file")"
+    [ "$rc" = "0" ] && continue
+    failed=$((failed + 1))
+  done
   if [ "$failed" -eq 0 ]; then
     return 0
   fi
-  total="$(find "$LOG_DIR" -maxdepth 1 -name '*.exit' | wc -l | tr -d ' ')"
   echo "" >&2
   echo "==> EUNIT FAILED: ${failed} of ${total} job(s)" >&2
-  while IFS= read -r job; do
-    [ -z "$job" ] && continue
-    safe_id="$(sanitize_job_id "$job")"
+  for exit_file in "$LOG_DIR"/*.exit; do
+    [ -e "$exit_file" ] || continue
+    rc="$(tr -d '[:space:]' <"$exit_file")"
+    [ "$rc" = "0" ] && continue
+    safe_id="$(basename "$exit_file" .exit)"
     log="${LOG_DIR}/${safe_id}.log"
+    job="$(lookup_job_id "$safe_id")"
+    [ -z "$job" ] && job="$safe_id"
     echo "" >&2
-    echo "  [FAIL] ${job}" >&2
+    echo "  [FAIL] ${job} (exit ${rc})" >&2
     print_failure_excerpt "$log" >&2
-  done < <(sort -u "$FAILURES_FILE")
+  done
   echo "" >&2
   echo "==> full logs: ${LOG_DIR}/" >&2
   return 1
@@ -350,8 +369,7 @@ fi
 
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
-: >"$FAILURES_FILE"
-: >"$JOB_MANIFEST"
+: >"$LOG_DIR/jobs.tsv"
 
 echo "==> compile test profile (once before parallel eunit)"
 $REBAR as test compile
@@ -372,7 +390,11 @@ if [ -f "$ROOT_DIR/test/${ADMIN_MOD}.erl" ]; then
 fi
 JOB_TOTAL=$(( ${#MODULES[@]} + admin_batches ))
 
-echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))"
+cover_note=""
+if [ "$COVER" -eq 1 ]; then
+  cover_note=" (cover capped at 4 workers; set EUNIT_PARALLEL to override)"
+fi
+echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))${cover_note}"
 echo "==> per-job logs: ${LOG_DIR}/"
 
 set +e
@@ -395,4 +417,5 @@ if [ "$COVER" -eq 1 ]; then
   echo "==> cover: archived ${chunk_count} chunk(s) in ${CHUNK_DIR}"
   echo "==> cover: run scripts/merge-cover.escript to build eunit.coverdata"
   clean_root_coverdata
+  rm -rf "$COVER_WORK"
 fi
