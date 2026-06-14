@@ -535,7 +535,7 @@ tls_opts(Config) ->
             SniHosts = build_sni_hosts(Config),
             case SniHosts of
                 [] -> Base;
-                _ -> Base ++ [{sni_hosts, SniHosts}]
+                _ -> Base ++ [{sni_fun, wildcard_sni_fun(SniHosts)}]
             end
     end.
 
@@ -650,6 +650,52 @@ build_sni_hosts(Config) ->
 sort_sni_hosts(Hosts) ->
     lists:sort(fun sni_host_entry_less/2, Hosts).
 
+wildcard_sni_fun(SniHosts) when is_list(SniHosts) ->
+    fun(ServerName) ->
+        select_sni_opts(ServerName, SniHosts)
+    end.
+
+select_sni_opts(ServerName, SniHosts) ->
+    Host = normalize_site_host(site_host_to_list(ServerName)),
+    case Host of
+        [] ->
+            undefined;
+        _ ->
+            case lists:keyfind(Host, 1, SniHosts) of
+                {_, Opts} ->
+                    Opts;
+                false ->
+                    wildcard_sni_opts(Host, SniHosts)
+            end
+    end.
+
+wildcard_sni_opts(Host, SniHosts) ->
+    Candidates = [
+        {Pattern, Opts}
+     || {Pattern, Opts} <- SniHosts,
+        sni_wildcard_matches(Host, Pattern)
+    ],
+    case Candidates of
+        [] ->
+            undefined;
+        _ ->
+            %% Longest wildcard suffix wins (most specific zone).
+            [{_, Opts} | _] = lists:sort(fun sni_host_entry_less/2, Candidates),
+            Opts
+    end.
+
+sni_wildcard_matches(Host, Pattern) when is_list(Host), is_list(Pattern) ->
+    case lists:prefix("*.", Pattern) of
+        false ->
+            false;
+        true ->
+            Suffix = string:slice(Pattern, 2),
+            case string:split(Host, ".", all) of
+                [_Single] -> false;
+                [_First | Rest] -> string:join(Rest, ".") =:= Suffix
+            end
+    end.
+
 sni_host_entry_less({H1, _}, {H2, _}) ->
     R1 = sni_host_rank(H1),
     R2 = sni_host_rank(H2),
@@ -680,7 +726,11 @@ cert_path_matches_host(CertPath, Host) ->
                 [{'Certificate', Der, not_encrypted} | _] ->
                     try
                         Cert = public_key:pkix_decode_cert(Der, otp),
-                        public_key:pkix_verify_hostname(Cert, [{dns_id, HostName}])
+                        public_key:pkix_verify_hostname(
+                            Cert,
+                            [{dns_id, HostName}],
+                            [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]
+                        )
                     catch
                         _:_ -> false
                     end;
