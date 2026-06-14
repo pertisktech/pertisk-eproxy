@@ -807,9 +807,10 @@ generate_wildcard_cert_files(Dir) ->
     HostStr = "*.wc.example.com",
     Openssl = os:find_executable("openssl"),
     ?assertNotEqual(false, Openssl),
+    OpensslCmd = shell_quote(Openssl),
     Subject = shell_quote("/CN=" ++ HostStr),
     SubjectAltName = shell_quote("subjectAltName=DNS:" ++ HostStr),
-    Cmd = Openssl ++ " req -x509 -newkey rsa:2048 -nodes -days 1 "
+    Cmd = OpensslCmd ++ " req -x509 -newkey rsa:2048 -nodes -days 1 "
         "-subj " ++ Subject ++ " "
         "-addext " ++ SubjectAltName ++ " "
         "-keyout " ++ shell_quote(KeyFile) ++ " -out " ++ shell_quote(CertFile) ++ " 2>&1",
