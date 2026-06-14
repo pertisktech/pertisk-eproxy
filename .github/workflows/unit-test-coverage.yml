@@ -12,8 +12,11 @@ concurrency:
 jobs:
   unit-test-coverage:
     runs-on: [self-hosted, linux]
+    env:
+      # Required by erlef/setup-beam on self-hosted runners (not set by GitHub-hosted images).
+      ImageOS: ubuntu24
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: erlef/setup-beam@v1
         with:
