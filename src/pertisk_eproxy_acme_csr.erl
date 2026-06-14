@@ -54,12 +54,25 @@ do_openssl(Openssl, Ids) ->
     end.
 
 mktemp_dir() ->
+    mktemp_dir(8).
+
+mktemp_dir(0) ->
+    error({mktemp_dir_failed, retries_exhausted});
+mktemp_dir(AttemptsLeft) ->
     Base = filename:join(
         os:getenv("TMPDIR", "/tmp"),
-        "pertisk_acme_" ++ integer_to_list(erlang:unique_integer([positive]))
+        "pertisk_acme_" ++ os:getpid() ++ "_" ++
+            integer_to_list(erlang:system_time(nanosecond)) ++ "_" ++
+            integer_to_list(erlang:unique_integer([positive]))
     ),
-    ok = file:make_dir(Base),
-    Base.
+    case file:make_dir(Base) of
+        ok ->
+            Base;
+        {error, eexist} ->
+            mktemp_dir(AttemptsLeft - 1);
+        {error, Reason} ->
+            error({mktemp_dir_failed, Reason})
+    end.
 
 openssl_cnf(Primary, Rest) ->
     DnsLines = dns_lines(Rest, 2),
