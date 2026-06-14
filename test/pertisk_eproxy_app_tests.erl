@@ -34,7 +34,7 @@ quic_noise_filter_quic_shutdown_other_type_stops_test() ->
 %% ---------------------------------------------------------------------------
 
 unload_mocks(Mods) ->
-    pertisk_eproxy_test_helpers:unload_mocks(Mods).
+    pertisk_eproxy_test_helpers:unload_mocks(lists:reverse(Mods)).
 
 reload_config() ->
     #{
@@ -52,11 +52,11 @@ with_app_reload_mocks(Fun) ->
         cowboy, pertisk_eproxy_config, pertisk_eproxy_h3_api_gateway,
         pertisk_ingress_env, pertisk_eproxy_tls_paths
     ]),
-    meck:new(cowboy, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_config, [unstick, passthrough, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_ingress_env, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_tls_paths, [passthrough, no_passthrough_cover]),
+    meck:new(cowboy, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link, passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_ingress_env, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_tls_paths, [no_link, passthrough, no_passthrough_cover]),
     meck:expect(pertisk_eproxy_config, get_config, fun() -> reload_config() end),
     meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> false end),
     meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
@@ -143,17 +143,17 @@ with_app_start_mocks(Fun) ->
         pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway,
         pertisk_eproxy_tls_paths
     ]),
-    meck:new(cowboy, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_config, [unstick, passthrough, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_metrics, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_admin_management_snapshot, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_sup, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_ingress_env, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_db, [passthrough, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_shell, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_auth0, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_passthrough_cover]),
-    meck:new(pertisk_eproxy_tls_paths, [passthrough, no_passthrough_cover]),
+    meck:new(cowboy, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link, passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_metrics, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_admin_management_snapshot, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_sup, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_ingress_env, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_db, [no_link, passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_shell, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_auth0, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_link, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_tls_paths, [no_link, passthrough, no_passthrough_cover]),
     meck:expect(pertisk_eproxy_config, get_config, fun() -> start_config() end),
     meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
     meck:expect(pertisk_eproxy_config, data_dir, fun() -> "/tmp/pertisk-eproxy-test" end),
@@ -209,7 +209,7 @@ start_ingress_mode_skips_db_ensure_ready_test() ->
     with_app_start_mocks(fun() ->
         meck:expect(pertisk_ingress_env, ingress_mode, fun() -> true end),
         meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
-        meck:new(pertisk_eproxy_env_auth, [unstick, no_passthrough_cover]),
+        meck:new(pertisk_eproxy_env_auth, [unstick, no_link, no_passthrough_cover]),
         meck:expect(pertisk_eproxy_env_auth, configure, fun() -> ok end),
         try
             ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),

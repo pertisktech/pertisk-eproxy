@@ -18,6 +18,10 @@ ensure_ingress_status_env() ->
         _ -> ok
     end.
 
+with_ingress_status_env(Fun) ->
+    ensure_ingress_status_env(),
+    Fun().
+
 dispatch(Method, Path) ->
     dispatch(Method, Path, <<>>, <<>>).
 
@@ -3698,4 +3702,64 @@ api_ingress_viewer_blocked_init_put_test() ->
                 )
             end)
         end)
+    end).
+
+api_dns_providers_init_get_test() ->
+    with_proxy_db(fun(_Db) ->
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/dns-providers">>, dns_providers))
+    end).
+
+api_dns_providers_init_post_test() ->
+    with_proxy_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"name">> => <<"init-cf">>,
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/dns-providers">>, dns_providers, Body))
+    end).
+
+api_logs_init_get_test() ->
+    with_proxy_db(fun(_Db) ->
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/logs">>, logs))
+    end).
+
+api_ingress_status_init_get_test() ->
+    with_ingress_status_env(fun() ->
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/ingress/status">>, ingress_status))
+    end).
+
+api_kubernetes_ingresses_init_get_test() ->
+    with_ingress_status_env(fun() ->
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"GET">>, <<"/api/kubernetes/ingresses">>, kubernetes_ingresses)
+        )
+    end).
+
+api_put_site_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"host">> => <<"init-put.example">>,
+            <<"backend">> => <<"web">>,
+            <<"routes">> => []
+        }),
+        ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/sites">>, sites, Add)),
+        Put = thoas:encode(#{<<"backend">> => <<"web">>, <<"routes">> => []}),
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"PUT">>, <<"/api/sites/init-put.example">>, site, Put)
+        )
+    end).
+
+api_certificate_get_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"init-get-cert">>}),
+        {ok, 201, _, Resp} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
+        {ok, Map} = thoas:decode(Resp),
+        Id = maps:get(<<"id">>, Map),
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"GET">>, <<"/api/certificates/", Id/binary>>, certificate)
+        )
     end).
