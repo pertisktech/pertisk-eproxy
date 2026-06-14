@@ -376,6 +376,9 @@ rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
 : >"$LOG_DIR/jobs.tsv"
 
+echo "==> ensure test TLS fixtures (priv/tls/ is gitignored)"
+bash "${ROOT_DIR}/scripts/ensure-test-tls.sh"
+
 echo "==> compile test profile (once before parallel eunit)"
 $REBAR as test compile
 
