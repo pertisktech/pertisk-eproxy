@@ -385,11 +385,10 @@ reload_proxy_tls_http2_disabled_test() ->
 
 start_generate_fake_tls_success_test() ->
     with_app_start_mocks(fun() ->
-        DataDir = filename:join([
+        DataDir = ensure_test_dir(filename:join([
             os:getenv("TMPDIR", "/tmp"),
             "pertisk-app-tls-" ++ integer_to_list(erlang:unique_integer([positive]))
-        ]),
-        ok = file:make_dir(DataDir),
+        ])),
         meck:expect(pertisk_eproxy_config, data_dir, fun() -> DataDir end),
         meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {ok, "openssl"} end),
         meck:expect(pertisk_eproxy_shell, os_cmd, fun(Cmd) ->
@@ -504,11 +503,10 @@ reload_proxy_tls_sni_site_cert_from_db_test() ->
     file:delete(DbPath),
     application:set_env(pertisk_eproxy, db_file, DbPath),
     ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
-    TmpDir = filename:join([
+    TmpDir = ensure_test_dir(filename:join([
         os:getenv("TMPDIR", "/tmp"),
         "pertisk-app-sni-" ++ integer_to_list(erlang:unique_integer([positive]))
-    ]),
-    ok = file:make_dir(TmpDir),
+    ])),
     CertFile = filename:join(TmpDir, "cert.pem"),
     KeyFile = filename:join(TmpDir, "key.pem"),
     ok = file:write_file(CertFile, <<"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----">>),
@@ -707,11 +705,10 @@ start_https_port_zero_disabled_test() ->
 
 start_generate_fake_tls_openssl_failure_test() ->
     with_app_start_mocks(fun() ->
-        DataDir = filename:join([
+        DataDir = ensure_test_dir(filename:join([
             os:getenv("TMPDIR", "/tmp"),
             "pertisk-app-tls-fail-" ++ integer_to_list(erlang:unique_integer([positive]))
-        ]),
-        ok = file:make_dir(DataDir),
+        ])),
         meck:expect(pertisk_eproxy_config, data_dir, fun() -> DataDir end),
         meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {ok, "false"} end),
         meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) -> <<"openssl failed">> end),
@@ -763,11 +760,10 @@ reload_proxy_tls_wildcard_sni_test() ->
     file:delete(DbPath),
     application:set_env(pertisk_eproxy, db_file, DbPath),
     ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
-    TmpDir = filename:join([
+    TmpDir = ensure_test_dir(filename:join([
         os:getenv("TMPDIR", "/tmp"),
         "pertisk-app-wc-" ++ integer_to_list(erlang:unique_integer([positive]))
-    ]),
-    ok = file:make_dir(TmpDir),
+    ])),
     CertFile = filename:join(TmpDir, "cert.pem"),
     KeyFile = filename:join(TmpDir, "key.pem"),
     ok = file:write_file(CertFile, read_priv_pem_file("listener.pem")),
@@ -816,3 +812,8 @@ read_priv_pem_file(Name) ->
             {ok, Bin} = file:read_file(RepoPath),
             Bin
     end.
+
+ensure_test_dir(Dir) ->
+    _ = file:del_dir_r(Dir),
+    ok = filelib:ensure_dir(filename:join(Dir, ".keep")),
+    Dir.

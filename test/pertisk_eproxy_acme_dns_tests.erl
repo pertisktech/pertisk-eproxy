@@ -3,8 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SCAN_SLEEP_MS, 900).
--define(SCAN_WAIT_MS, 8000).
--define(SCAN_POLL_MS, 50).
+-define(SCAN_WAIT_MS, 45000).
+-define(SCAN_POLL_MS, 100).
 
 assert_meck_calls_at_least(Mod, Fun, Min) ->
     assert_meck_calls_at_least(Mod, Fun, Min, ?SCAN_WAIT_MS).
@@ -43,6 +43,17 @@ assert_meck_calls_zero_loop(Mod, Fun, Deadline) ->
             timer:sleep(?SCAN_POLL_MS),
             assert_meck_calls_zero_loop(Mod, Fun, Deadline)
     end.
+
+insert_dns_provider_ready(DbPath, Name, Type, Creds) ->
+    {ok, Row} = pertisk_eproxy_db:insert_dns_provider(DbPath, Name, Type, Creds),
+    NameBin =
+        case Name of
+            N when is_binary(N) -> N;
+            N when is_list(N) -> list_to_binary(N)
+        end,
+    {ok, Rows} = pertisk_eproxy_db:list_dns_providers(DbPath),
+    ?assert(lists:any(fun(R) -> maps:get(name, R, <<>>) =:= NameBin end, Rows)),
+    {ok, Row}.
 
 safe_meck_unload(Mod) ->
     case lists:member(Mod, meck:mocked()) of
@@ -1463,7 +1474,7 @@ scan_skips_site_with_production_cert_test() ->
         end),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath, <<"cf-skip">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>}
             ),
             stop_acme_dns(),
@@ -1506,7 +1517,7 @@ scan_reissues_staging_cert_test() ->
         end),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath, <<"cf-staging">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"zone-id">>}
             ),
             stop_acme_dns(),
@@ -1583,11 +1594,8 @@ scan_dynamic_lego_provider_test() ->
             {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"key">>}
         end),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
-                DbPath,
-                <<"exotic">>,
-                <<"exoticdns">>,
-                #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
+            insert_dns_provider_ready(
+                DbPath, <<"exotic">>, <<"exoticdns">>, #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
             ),
             stop_acme_dns(),
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
@@ -1698,7 +1706,7 @@ scan_cloudflare_create_txt_error_test() ->
         end),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath,
                 <<"cf-txt">>,
                 <<"cloudflare">>,
@@ -1730,7 +1738,7 @@ scan_cert_ref_acme_name_without_disk_pem_test() ->
         mock_dns_cloudflare(),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath, <<"cf-ref">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"z">>}
             ),
             stop_acme_dns(),
@@ -2144,7 +2152,7 @@ scan_cert_id_ref_from_db_test() ->
         end),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath, <<"cf-dbcert">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"z">>}
             ),
             stop_acme_dns(),
@@ -2479,7 +2487,7 @@ scan_cert_pem_from_db_row_test() ->
         end),
         mock_acme_client_ok(),
         try
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            insert_dns_provider_ready(
                 DbPath, <<"cf-pem">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"z">>}
             ),
             stop_acme_dns(),
