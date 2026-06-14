@@ -12,16 +12,23 @@ concurrency:
 jobs:
   unit-test-coverage:
     runs-on: [self-hosted, linux]
-    env:
-      # Required by erlef/setup-beam on self-hosted runners (not set by GitHub-hosted images).
-      ImageOS: ubuntu24
     steps:
       - uses: actions/checkout@v5
 
-      - uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27"
-          rebar3-version: "3.24"
+      # Use OTP/rebar3 installed on the runner (setup-beam Ubuntu builds fail on
+      # RHEL-family hosts: crypto NIF vs system OpenSSL mismatch).
+      - name: Verify Erlang toolchain
+        run: |
+          set -euo pipefail
+          command -v erl >/dev/null
+          command -v rebar3 >/dev/null
+          otp="$(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().')"
+          echo "OTP ${otp}, $(erl -noshell -eval 'io:format("~s", [erlang:system_info(system_version)]), halt().')"
+          rebar3 version
+          test "${otp}" = "27" || {
+            echo "Expected OTP 27 on the self-hosted runner (got ${otp})." >&2
+            exit 1
+          }
 
       - name: Patch dependencies
         run: make patch-ekub patch-quic patch-hackney
