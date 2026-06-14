@@ -17,8 +17,8 @@
 -define(EUNIT_OPTS, [{scale_timeouts, 12.0}, {timeout, 300}]).
 
 main(Args) ->
-    _ = load_code_paths(),
     ok = maybe_start_cover(),
+    _ = load_code_paths(),
     Spec = parse_spec(Args),
     Result = eunit:test(Spec, ?EUNIT_OPTS),
     ok = maybe_export_cover(),
@@ -32,7 +32,9 @@ parse_spec(Args) ->
         {module, Mod} ->
             list_to_atom(Mod);
         {test, Mod, Tests} ->
-            {list_to_atom(Mod), parse_test_list(Tests)}
+            Funs = parse_test_list(Tests),
+            ModAtom = list_to_atom(Mod),
+            [{test, ModAtom, Fun} || Fun <- Funs]
     end.
 
 parse_spec_args([], module, Mod) when Mod =/= undefined ->
@@ -84,7 +86,10 @@ maybe_start_cover() ->
             case cover:start() of
                 {ok, _} -> ok;
                 {error, {already_started, _}} -> ok
-            end;
+            end,
+            Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
+            _ = cover:compile_beam_directory(Ebin),
+            ok;
         _ ->
             ok
     end.

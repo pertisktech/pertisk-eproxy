@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Run eunit in parallel (one rebar3 invocation per module/batch). Each job uses a
+# Run eunit in parallel (one BEAM VM per module/batch). Each job uses a
 # fresh BEAM VM. pertisk_eproxy_admin_handler_tests is split into batches because
 # a single invocation exceeds the ~120s rebar3/eunit runner wall clock (~262 tests).
 #
-# With --cover, each job writes coverdata under _build/test/cover/work/<job>/.
-# Never delete project-root *.coverdata while jobs run (meck+cover uses PID files).
+# Jobs call scripts/eunit-job.escript against precompiled beams. Parallel
+# rebar3 eunit races on _build/test/*.beam (missing_module, failed renames).
+#
+# With --cover, each job instruments beams via cover:compile_beam_directory and
+# writes coverdata under _build/test/cover/work/<job>/.
 #
 # Env:
 #   EUNIT_PARALLEL                 max concurrent jobs (default: 4 with --cover, else min(8, CPU))
