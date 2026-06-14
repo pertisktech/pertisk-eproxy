@@ -347,6 +347,23 @@ upsert_acme_certificate_pem_test() ->
         ?assertEqual(<<"acme">>, maps:get(source_type, Row))
     end).
 
+upsert_acme_certificate_pem_empty_fields_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual(
+            {error, empty_name},
+            pertisk_eproxy_db:upsert_acme_certificate_pem(Path, <<"   ">>, "/tmp/cert.pem", "/tmp/key.pem")
+        ),
+        ?assertEqual(
+            {error, empty_cert_file},
+            pertisk_eproxy_db:upsert_acme_certificate_pem(Path, <<"acme/x">>, "", "/tmp/key.pem")
+        ),
+        ?assertEqual(
+            {error, empty_key_file},
+            pertisk_eproxy_db:upsert_acme_certificate_pem(Path, <<"acme/x">>, "/tmp/cert.pem", "")
+        )
+    end).
+
 update_certificate_pem_test() ->
     with_db(fun(Path) ->
         {CertFile, KeyFile} = listener_pem_paths(),
