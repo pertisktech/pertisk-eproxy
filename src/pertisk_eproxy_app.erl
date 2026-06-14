@@ -726,9 +726,10 @@ cert_path_matches_host(CertPath, Host) ->
                 [{'Certificate', Der, not_encrypted} | _] ->
                     try
                         Cert = public_key:pkix_decode_cert(Der, otp),
+                        VerifyHost = cert_verify_hostname(HostName),
                         public_key:pkix_verify_hostname(
                             Cert,
-                            [{dns_id, HostName}],
+                            [{dns_id, VerifyHost}],
                             [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]
                         )
                     catch
@@ -739,6 +740,14 @@ cert_path_matches_host(CertPath, Host) ->
             end;
         _ ->
             false
+    end.
+
+cert_verify_hostname(HostName) when is_list(HostName) ->
+    case lists:prefix("*.", HostName) of
+        true ->
+            "__sni_probe__." ++ string:slice(HostName, 2);
+        false ->
+            HostName
     end.
 
 resolve_site_cert_paths(Site, CertRowsById) ->
