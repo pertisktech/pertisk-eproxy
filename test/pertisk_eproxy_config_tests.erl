@@ -1360,21 +1360,30 @@ put_config_persist_failure_meck_test() ->
 
 reload_schedules_acme_scan_in_proxy_mode_test() ->
     with_env("PERTISK_MODE", unset, fun() ->
-        with_tmp_db_config(fun() ->
-            Self = self(),
-            meck:new(pertisk_eproxy_acme_dns, [unstick]),
-            meck:expect(pertisk_eproxy_acme_dns, schedule_scan, fun() ->
-                Self ! acme_scan_on_reload,
-                ok
-            end),
-            try
-                ?assertEqual(ok, pertisk_eproxy_config:reload()),
-                receive acme_scan_on_reload -> ok after 2000 -> ?assert(false) end,
-                ?assertEqual(1, meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'))
-            after
-                pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
+        OldMode = application:get_env(pertisk_eproxy, mode),
+        application:set_env(pertisk_eproxy, mode, proxy),
+        try
+            with_tmp_db_config(fun() ->
+                Self = self(),
+                meck:new(pertisk_eproxy_acme_dns, [unstick]),
+                meck:expect(pertisk_eproxy_acme_dns, schedule_scan, fun() ->
+                    Self ! acme_scan_on_reload,
+                    ok
+                end),
+                try
+                    ?assertEqual(ok, pertisk_eproxy_config:reload()),
+                    receive acme_scan_on_reload -> ok after 2000 -> ?assert(false) end,
+                    ?assertEqual(1, meck:num_calls(pertisk_eproxy_acme_dns, schedule_scan, '_'))
+                after
+                    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_acme_dns])
+                end
+            end)
+        after
+            case OldMode of
+                {ok, V} -> application:set_env(pertisk_eproxy, mode, V);
+                undefined -> application:unset_env(pertisk_eproxy, mode)
             end
-        end)
+        end
     end).
 
 listener_pem_paths() ->

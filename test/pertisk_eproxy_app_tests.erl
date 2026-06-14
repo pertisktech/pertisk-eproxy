@@ -807,5 +807,12 @@ reload_proxy_tls_wildcard_sni_test() ->
     end.
 
 read_priv_pem_file(Name) ->
-    {ok, Bin} = file:read_file(filename:join([code:priv_dir(pertisk_eproxy), "tls", Name])),
-    Bin.
+    RuntimePath = filename:join([code:priv_dir(pertisk_eproxy), "tls", Name]),
+    RepoPath = filename:join([filename:dirname(?FILE), "..", "priv", "tls", Name]),
+    case file:read_file(RuntimePath) of
+        {ok, Bin} ->
+            Bin;
+        {error, _} ->
+            {ok, Bin} = file:read_file(RepoPath),
+            Bin
+    end.
