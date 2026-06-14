@@ -810,8 +810,23 @@ generate_wildcard_cert_files(Dir) ->
     Cmd = Openssl ++ " req -x509 -newkey rsa:2048 -nodes -days 1 "
         "-subj '/CN=" ++ HostStr ++ "' "
         "-addext 'subjectAltName=DNS:" ++ HostStr ++ "' "
-        "-keyout " ++ KeyFile ++ " -out " ++ CertFile ++ " 2>/dev/null",
-    _ = os:cmd(Cmd),
-    ?assert(filelib:is_regular(CertFile)),
-    ?assert(filelib:is_regular(KeyFile)),
-    {CertFile, KeyFile}.
+        "-keyout " ++ shell_quote(KeyFile) ++ " -out " ++ shell_quote(CertFile) ++ " 2>&1",
+    Output = os:cmd(Cmd),
+    case {filelib:is_regular(CertFile), filelib:is_regular(KeyFile)} of
+        {true, true} ->
+            {CertFile, KeyFile};
+        Actual ->
+            erlang:error({openssl_cert_generation_failed, Actual, Output})
+    end.
+
+shell_quote(Path) when is_binary(Path) ->
+    shell_quote(binary_to_list(Path));
+shell_quote(Path) when is_list(Path) ->
+    [$' | shell_quote_1(Path)] ++ "'".
+
+shell_quote_1([]) ->
+    [];
+shell_quote_1([$' | Rest]) ->
+    "'\\''" ++ shell_quote_1(Rest);
+shell_quote_1([C | Rest]) ->
+    [C | shell_quote_1(Rest)].
