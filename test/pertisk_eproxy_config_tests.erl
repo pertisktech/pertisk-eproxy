@@ -589,8 +589,19 @@ is_management_upstream_addr_test() ->
     end).
 
 ingress_mode_false_by_default_test() ->
-    with_config(fun() ->
-        ?assertNot(pertisk_eproxy_config:ingress_mode())
+    with_env("PERTISK_MODE", unset, fun() ->
+        OldMode = application:get_env(pertisk_eproxy, mode),
+        application:unset_env(pertisk_eproxy, mode),
+        try
+            with_tmp_db_config(fun() ->
+                ?assertNot(pertisk_eproxy_config:ingress_mode())
+            end)
+        after
+            case OldMode of
+                {ok, V} -> application:set_env(pertisk_eproxy, mode, V);
+                undefined -> ok
+            end
+        end
     end).
 
 %% ---------------------------------------------------------------------------
@@ -790,8 +801,19 @@ backend_is_management_only_test() ->
     end).
 
 proxy_mode_default_test() ->
-    with_config(fun() ->
-        ?assert(pertisk_eproxy_config:proxy_mode())
+    with_env("PERTISK_MODE", unset, fun() ->
+        OldMode = application:get_env(pertisk_eproxy, mode),
+        application:unset_env(pertisk_eproxy, mode),
+        try
+            with_tmp_db_config(fun() ->
+                ?assert(pertisk_eproxy_config:proxy_mode())
+            end)
+        after
+            case OldMode of
+                {ok, V} -> application:set_env(pertisk_eproxy, mode, V);
+                undefined -> ok
+            end
+        end
     end).
 
 db_file_and_data_dir_test() ->
@@ -1356,3 +1378,409 @@ reload_schedules_acme_scan_in_proxy_mode_test() ->
 listener_pem_paths() ->
     Base = filename:join([code:priv_dir(pertisk_eproxy), "tls"]),
     {filename:join(Base, "listener.pem"), filename:join(Base, "listener.key")}.
+
+generated_cert_files(Host) when is_binary(Host) ->
+    Base = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "cfg_cert_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    CertFile = Base ++ ".pem",
+    KeyFile = Base ++ ".key",
+    HostStr = binary_to_list(Host),
+    Subj = "/CN=" ++ HostStr,
+    Ext = "subjectAltName=DNS:" ++ HostStr,
+    Cmd = "openssl req -x509 -newkey rsa:2048 -nodes -days 1 "
+        "-subj '" ++ Subj ++ "' "
+        "-addext '" ++ Ext ++ "' "
+        "-keyout " ++ KeyFile ++ " -out " ++ CertFile ++ " 2>/dev/null",
+    _ = os:cmd(Cmd),
+    {CertFile, KeyFile}.
+
+%% ---------------------------------------------------------------------------
+%% Additional coverage (metrics env, TLS validation branches, DNS cleanup)
+%% ---------------------------------------------------------------------------
+
+config_metrics_env_true_and_one_test() ->
+    with_config(fun() ->
+        with_env("PERTISK_METRICS_ENABLED", {set, "true"}, fun() ->
+            ?assertEqual(true, pertisk_eproxy_config:metrics_enabled())
+        end),
+        with_env("PERTISK_METRICS_ENABLED", {set, "1"}, fun() ->
+            ?assertEqual(true, pertisk_eproxy_config:metrics_enabled())
+        end),
+        with_env("PERTISK_METRICS_ENABLED", {set, "0"}, fun() ->
+            ?assertEqual(false, pertisk_eproxy_config:metrics_enabled())
+        end)
+    end).
+
+config_metrics_listen_env_parse_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            metrics_addr => {10, 0, 0, 2},
+            metrics_port => 9292,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = put_config_retry(Config),
+        with_env("PERTISK_METRICS_ADDR", {set, "not-valid"}, fun() ->
+            ?assertEqual({{10, 0, 0, 2}, 9292}, pertisk_eproxy_config:metrics_listen())
+        end)
+    end).
+
+backend_is_management_only_edge_cases_test() ->
+    with_config(fun() ->
+        ?assertNot(pertisk_eproxy_config:backend_is_management_only(<<"missing">>)),
+        ?assertNot(pertisk_eproxy_config:backend_is_management_only(not_binary)),
+        Backends = [#{name => <<"empty">>, algorithm => round_robin, upstreams => []}],
+        ok = pertisk_eproxy_config:sync_ingress([], Backends),
+        ?assertNot(pertisk_eproxy_config:backend_is_management_only(<<"empty">>))
+    end).
+
+put_config_valid_matching_cert_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Host = <<"valid.example">>,
+        {CertFile, KeyFile} = generated_cert_files(Host),
+        {ok, CertBin} = file:read_file(CertFile),
+        {ok, KeyBin} = file:read_file(KeyFile),
+        {ok, _} = pertisk_eproxy_db:upsert_certificate_record(
+            DbPath, <<"valid-cert">>, binary_to_list(CertBin), binary_to_list(KeyBin), <<"imported_pem">>),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => Host,
+                backend => <<"web">>,
+                certificate => <<"valid-cert">>,
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [<<"valid-cert">>],
+            dns_providers => []
+        },
+        ?assertEqual(ok, put_config_retry(Config)),
+        file:delete(CertFile),
+        file:delete(KeyFile)
+    end).
+
+put_config_tls_listener_cert_skipped_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        {CertFile, KeyFile} = listener_pem_paths(),
+        {ok, CertBin} = file:read_file(CertFile),
+        {ok, KeyBin} = file:read_file(KeyFile),
+        {ok, _} = pertisk_eproxy_db:upsert_certificate_record(
+            DbPath, <<"listener-tls">>, binary_to_list(CertBin), binary_to_list(KeyBin), <<"tls_listener">>),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => <<"any.example">>,
+                backend => <<"web">>,
+                certificate => <<"listener-tls">>,
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [<<"listener-tls">>],
+            dns_providers => []
+        },
+        ?assertEqual(ok, put_config_retry(Config))
+    end).
+
+put_config_cert_ref_by_id_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Host = <<"id.example">>,
+        {CertFile, KeyFile} = generated_cert_files(Host),
+        {ok, CertBin} = file:read_file(CertFile),
+        {ok, KeyBin} = file:read_file(KeyFile),
+        {ok, Id} = pertisk_eproxy_db:upsert_certificate_record(
+            DbPath, <<"id-cert">>, binary_to_list(CertBin), binary_to_list(KeyBin), <<"imported_pem">>),
+        Config = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => Host,
+                backend => <<"web">>,
+                certificate => integer_to_binary(Id),
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [<<"id-cert">>],
+            dns_providers => []
+        },
+        ?assertEqual(ok, put_config_retry(Config)),
+        file:delete(CertFile),
+        file:delete(KeyFile)
+    end).
+
+put_config_unchanged_tls_site_skips_validation_test() ->
+    with_tmp_db_config(fun() ->
+        Config0 = (pertisk_eproxy_config:get_config())#{
+            sites => [#{
+                host => <<"stable-tls.example">>,
+                backend => <<"web">>,
+                certificate => <<"acme/stable-tls.example">>,
+                routes => []
+            }],
+            backends => site_backends(),
+            certificates => [],
+            dns_providers => []
+        },
+        ?assertEqual(ok, put_config_retry(Config0)),
+        Config1 = Config0#{http_port => maps:get(http_port, Config0, 80)},
+        ?assertEqual(ok, put_config_retry(Config1))
+    end).
+
+put_config_persist_dns_providers_failure_test() ->
+    with_tmp_db_config(fun() ->
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, replace_dns_providers, fun(_, _) -> {error, dns_boom} end),
+        try
+            Config = (pertisk_eproxy_config:get_config())#{
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => [#{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}]
+            },
+            ?assertMatch(
+                {error, {persist_runtime_config, {persist_dns_providers, dns_boom}}},
+                pertisk_eproxy_config:put_config(Config)
+            )
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db])
+        end
+    end).
+
+put_config_cert_store_unavailable_test() ->
+    with_tmp_db_config(fun() ->
+        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
+        meck:expect(pertisk_eproxy_db, list_certificates, fun(_) -> {error, db_down} end),
+        try
+            Config = (pertisk_eproxy_config:get_config())#{
+                sites => [#{
+                    host => <<"tls.example">>,
+                    backend => <<"web">>,
+                    certificate => <<"any-cert">>,
+                    routes => []
+                }],
+                backends => site_backends(),
+                certificates => [],
+                dns_providers => []
+            },
+            ?assertMatch(
+                {error, {tls_validation_cert_store_unavailable, db_down}},
+                pertisk_eproxy_config:put_config(Config)
+            )
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db])
+        end
+    end).
+
+ingress_mode_from_config_map_test() ->
+    with_env("PERTISK_MODE", unset, fun() ->
+        with_tmp_db_config(fun() ->
+            Config = (pertisk_eproxy_config:get_config())#{
+                mode => ingress,
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => []
+            },
+            ok = put_config_retry(Config),
+            ?assert(pertisk_eproxy_config:ingress_mode()),
+            ?assertNot(pertisk_eproxy_config:proxy_mode())
+        end)
+    end).
+
+nested_redacted_dns_credentials_cleanup_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            dns_providers => [
+                #{
+                    name => <<"nested-redacted">>,
+                    provider_type => <<"cloudflare">>,
+                    credentials => #{<<"nested">> => #{<<"api_token">> => <<"[redacted]">>}}
+                }
+            ],
+            sites => [],
+            backends => [],
+            certificates => []
+        },
+        ok = put_config_retry(Config),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        {ok, Providers} = pertisk_eproxy_db:list_dns_providers(pertisk_eproxy_config:db_file()),
+        Names = [maps:get(name, P) || P <- Providers],
+        ?assertNot(lists:member(<<"nested-redacted">>, Names))
+    end).
+
+otel_and_rate_limit_json_parsing_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"otel_enabled">> => true,
+        <<"otel_service_name">> => <<"eproxy">>,
+        <<"rate_limit_enabled">> => false,
+        <<"rate_limit_rps">> => 50,
+        <<"rate_limit_burst">> => 100
+    }),
+    ?assertEqual(true, maps:get(otel_enabled, C)),
+    ?assertEqual("eproxy", maps:get(otel_service_name, C)),
+    ?assertEqual(false, maps:get(rate_limit_enabled, C)),
+    ?assertEqual(50, maps:get(rate_limit_rps, C)),
+    ?assertEqual(100, maps:get(rate_limit_burst, C)).
+
+dns_provider_legacy_binary_name_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"dns_providers">> => [123]
+    }),
+    ?assertEqual([], maps:get(dns_providers, C)).
+
+sanitize_runtime_tls_redacted_pair_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Cfg = #{
+            mode => proxy,
+            tls_cert_file => "[redacted]",
+            tls_key_file => "/etc/key.pem",
+            sites => [],
+            backends => []
+        },
+        ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(DbPath, Cfg)),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        C = pertisk_eproxy_config:get_config(),
+        ?assertEqual(false, maps:is_key(tls_cert_file, C)),
+        ?assertEqual(false, maps:is_key(tls_key_file, C))
+    end).
+
+config_init_bad_config_file_test() ->
+    with_env("PERTISK_CONFIG_FILE", unset, fun() ->
+        Tmp = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "bad-proxy-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".json"
+        ]),
+        ok = file:write_file(Tmp, <<"{not json">>),
+        Old = application:get_env(pertisk_eproxy, config_file),
+        application:set_env(pertisk_eproxy, config_file, Tmp),
+        Started = case whereis(pertisk_eproxy_config) of
+            undefined ->
+                ?assertMatch({ok, _}, pertisk_eproxy_config:start_link()),
+                true;
+            _ ->
+                stop_config_if_running(),
+                ?assertMatch({ok, _}, pertisk_eproxy_config:start_link()),
+                true
+        end,
+        try
+            ?assert(is_map(pertisk_eproxy_config:get_config()))
+        after
+            case Started of
+                true -> stop_config_if_running();
+                false -> ok
+            end,
+            file:delete(Tmp),
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, config_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, config_file)
+            end
+        end
+    end).
+
+%% ---------------------------------------------------------------------------
+%% Coverage: init failure, empty lookups, JSON branches, TLS skip paths
+%% ---------------------------------------------------------------------------
+
+is_management_upstream_addr_non_binary_test() ->
+    with_config(fun() ->
+        ?assertNot(pertisk_eproxy_config:is_management_upstream_addr(12345))
+    end).
+
+config_lookups_without_server_test() ->
+    stop_config_if_running(),
+    ?assertEqual([], pertisk_eproxy_config:get_sites()),
+    ?assertEqual([], pertisk_eproxy_config:get_backends()),
+    ?assertEqual([], pertisk_eproxy_config:get_certificates()),
+    ?assertEqual([], pertisk_eproxy_config:get_dns_providers()),
+    ?assertEqual([], pertisk_eproxy_config:get_router()).
+
+config_init_ingress_load_failure_test() ->
+    with_env("PERTISK_MODE", {set, "ingress"}, fun() ->
+        Tmp = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "bad-ingress-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".json"
+        ]),
+        ok = file:write_file(Tmp, <<"{not json">>),
+        OldFile = application:get_env(pertisk_eproxy, config_file),
+        application:set_env(pertisk_eproxy, config_file, Tmp),
+        stop_config_if_running(),
+        ?assertMatch({ok, _}, pertisk_eproxy_config:start_link()),
+        try
+            ?assertEqual(#{}, pertisk_eproxy_config:get_config()),
+            ?assertEqual([], pertisk_eproxy_config:get_sites()),
+            ?assertEqual([], pertisk_eproxy_config:get_backends())
+        after
+            stop_config_if_running(),
+            file:delete(Tmp),
+            case OldFile of
+                {ok, V} -> application:set_env(pertisk_eproxy, config_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, config_file)
+            end
+        end
+    end).
+
+put_config_skips_site_without_certificate_test() ->
+    with_tmp_db_config(fun() ->
+        Base = (pertisk_eproxy_config:get_config())#{
+            sites => [],
+            backends => site_backends(),
+            certificates => [],
+            dns_providers => []
+        },
+        ok = put_config_retry(Base),
+        Config = Base#{
+            sites => [#{host => <<"nocert.example">>, backend => <<"web">>, routes => []}]
+        },
+        ?assertEqual(ok, pertisk_eproxy_config:put_config(Config))
+    end).
+
+management_tls_enabled_non_bool_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{<<"management_tls_enabled">> => <<"yes">>}),
+    ?assertEqual(false, maps:get(management_tls_enabled, C)).
+
+route_path_type_unknown_defaults_prefix_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"sites">> => [#{
+            <<"host">> => <<"h.example">>,
+            <<"backend">> => <<"b">>,
+            <<"routes">> => [#{<<"path">> => <<"/">>, <<"path_type">> => <<"regex">>}]
+        }]
+    }),
+    Site = hd(maps:get(sites, C)),
+    Route = hd(maps:get(routes, Site)),
+    ?assertEqual(prefix, maps:get(path_type, Route)).
+
+dns_provider_integer_name_json_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"dns_providers">> => [#{<<"name">> => 42, <<"provider_type">> => <<"cf">>}]
+    }),
+    [P] = maps:get(dns_providers, C),
+    ?assertEqual("42", maps:get(name, P)).
+
+get_dns_providers_legacy_binary_entry_test() ->
+    with_tmp_db_config(fun() ->
+        Config = (pertisk_eproxy_config:get_config())#{
+            dns_providers => [#{name => <<"legacy">>, provider_type => <<"label">>, credentials => #{}}],
+            sites => [],
+            backends => [],
+            certificates => []
+        },
+        ok = put_config_retry(Config),
+        ?assertEqual(["legacy"], pertisk_eproxy_config:get_dns_providers())
+    end).
+
+rebuild_runtime_config_from_db_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(DbPath)),
+        _ = os:cmd("sqlite3 " ++ DbPath ++ " \"DROP TABLE IF EXISTS runtime_state;\""),
+        _ = os:cmd("sqlite3 " ++ DbPath ++ " \"INSERT INTO sites(host, backend, routes_json) "
+            "VALUES('rebuild.example', 'web', '[]');\""),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        Sites = pertisk_eproxy_config:get_sites(),
+        ?assertEqual(1, length(Sites)),
+        ?assertEqual(<<"rebuild.example">>, maps:get(host, hd(Sites)))
+    end).

@@ -119,7 +119,8 @@ init_dispatch(Method, Path, Resource, Body, Headers) ->
             case Body of
                 <<>> -> undefined;
                 _ -> byte_size(Body)
-            end
+            end,
+        bindings => init_dispatch_bindings(Resource, Path)
     },
     _ = pertisk_eproxy_admin_handler:init(Req, Resource),
     Result =
@@ -137,6 +138,20 @@ init_dispatch(Method, Path, Resource, Body, Headers) ->
     unlink(Stub),
     exit(Stub, kill),
     Result.
+
+init_dispatch_bindings(site, <<"/api/sites/", Host/binary>>) ->
+    #{host => Host};
+init_dispatch_bindings(certificate, <<"/api/certificates/", Id/binary>>) ->
+    #{id => Id};
+init_dispatch_bindings(backend, <<"/api/backends/", Name/binary>>) ->
+    #{name => Name};
+init_dispatch_bindings(kubernetes_ingress, <<"/api/kubernetes/ingresses/", Rest/binary>>) ->
+    case binary:split(Rest, <<"/">>) of
+        [Ns, Name] -> #{namespace => Ns, name => Name};
+        _ -> #{}
+    end;
+init_dispatch_bindings(_, _) ->
+    #{}.
 
 ensure_health_cache() ->
     ensure_env(),
@@ -322,6 +337,22 @@ with_ingress_mode(Fun) ->
         ensure_env(),
         Fun()
     end).
+
+with_proxy_mode(Fun) ->
+    OldAppMode = application:get_env(pertisk_eproxy, mode),
+    with_env("PERTISK_MODE", {set, "proxy"}, fun() ->
+        application:unset_env(pertisk_eproxy, mode),
+        stop_config_if_running(),
+        try Fun() after
+            case OldAppMode of
+                {ok, V} -> application:set_env(pertisk_eproxy, mode, V);
+                undefined -> application:unset_env(pertisk_eproxy, mode)
+            end
+        end
+    end).
+
+with_proxy_db(Fun) ->
+    with_proxy_mode(fun() -> with_tmp_db(Fun) end).
 
 with_ingress_authenticated(Fun) ->
     OldSupports = application:get_env(pertisk_eproxy, ingress_supports_local),
@@ -3536,5 +3567,135 @@ api_ingress_guest_k8s_delete_forbidden_test() ->
                 {ok, 403, _, _},
                 dispatch(<<"DELETE">>, <<"/api/sites/guest-k8s.example">>)
             )
+        end)
+    end).
+
+api_auth_check_init_get_test() ->
+    with_local_auth(fun() ->
+        {ok, 200, _, Body} = init_dispatch(<<"GET">>, <<"/api/auth/check">>, auth_check),
+        {ok, Map} = thoas:decode(Body),
+        ?assertEqual(false, maps:get(<<"authenticated">>, Map))
+    end).
+
+api_auth_logout_init_post_test() ->
+    with_local_auth_db(fun(_Db) ->
+        Body = thoas:encode(#{<<"username">> => <<"admin">>, <<"password">> => <<"admin">>}),
+        {ok, 200, _, LoginBody} = init_dispatch(<<"POST">>, <<"/api/auth/login">>, auth_login, Body),
+        {ok, #{<<"token">> := Token}} = thoas:decode(LoginBody),
+        LogoutBody = thoas:encode(#{<<"token">> => Token}),
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"POST">>, <<"/api/auth/logout">>, auth_logout, LogoutBody))
+    end).
+
+api_stats_init_get_unauthorized_test() ->
+    with_proxy_mode(fun() ->
+        with_local_auth(fun() ->
+            ?assertMatch({ok, 401, _, _}, init_dispatch(<<"GET">>, <<"/api/stats">>, stats))
+        end)
+    end).
+
+api_metrics_init_get_test() ->
+    pertisk_eproxy_test_helpers:ensure_metrics(),
+    with_proxy_db(fun(_Db) ->
+        {ok, 200, _, Body} = init_dispatch(<<"GET">>, <<"/api/metrics">>, metrics),
+        ?assert(byte_size(Body) > 0)
+    end).
+
+api_management_init_get_test() ->
+    with_proxy_db(fun(_Db) ->
+        ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/management">>, management))
+    end).
+
+api_dns_provider_validate_init_post_test() ->
+    with_proxy_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"provider_type">> => <<"cloudflare">>,
+            <<"credentials">> => #{<<"api_token">> => <<"tok">>}
+        }),
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"POST">>, <<"/api/dns-providers/validate">>, dns_provider_validate, Body)
+        )
+    end).
+
+api_post_site_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Body = thoas:encode(#{
+            <<"host">> => <<"init-site.example">>,
+            <<"backend">> => <<"web">>,
+            <<"routes">> => []
+        }),
+        ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/sites">>, sites, Body))
+    end).
+
+api_delete_site_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Add = thoas:encode(#{
+            <<"host">> => <<"init-del.example">>,
+            <<"backend">> => <<"web">>,
+            <<"routes">> => []
+        }),
+        ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/sites">>, sites, Add)),
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"DELETE">>, <<"/api/sites/init-del.example">>, site)
+        )
+    end).
+
+api_put_config_init_invalid_json_test() ->
+    with_proxy_db(fun(_Db) ->
+        ?assertMatch(
+            {ok, 400, _, _},
+            init_dispatch(<<"PUT">>, <<"/api/config">>, config, <<"{not-json">>)
+        )
+    end).
+
+api_certificate_delete_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Add = thoas:encode(#{<<"name">> => <<"init-del-cert">>}),
+        {ok, 201, _, _} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
+        {ok, 200, _, ListBody} = init_dispatch(<<"GET">>, <<"/api/certificates">>, certificates),
+        ?assertNotEqual(nomatch, binary:match(ListBody, <<"init-del-cert">>))
+    end).
+
+api_backend_delete_init_test() ->
+    with_proxy_db(fun(_Db) ->
+        Name = <<"init-del-backend">>,
+        Body = thoas:encode(#{
+            <<"name">> => Name,
+            <<"algorithm">> => <<"round_robin">>,
+            <<"upstreams">> => [#{<<"addr">> => <<"127.0.0.1:9">>}]
+        }),
+        ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/backends">>, backends, Body)),
+        ?assertMatch(
+            {ok, 200, _, _},
+            init_dispatch(<<"DELETE">>, <<"/api/backends/", Name/binary>>, backend)
+        )
+    end).
+
+api_auth_disabled_init_get_config_test() ->
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    with_proxy_db(fun(_Db) ->
+        application:set_env(pertisk_eproxy, admin_auth, disabled),
+        try
+            ?assertMatch({ok, 200, _, _}, init_dispatch(<<"GET">>, <<"/api/config">>, config))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+                undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+            end
+        end
+    end).
+
+api_ingress_viewer_blocked_init_put_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_ADMIN", unset, fun() ->
+            with_env("PERTISK_PASSWORD", unset, fun() ->
+                pertisk_eproxy_env_auth:configure(),
+                Body = thoas:encode(#{<<"http_port">> => 8080}),
+                ?assertMatch(
+                    {ok, 403, _, _},
+                    init_dispatch(<<"PUT">>, <<"/api/config">>, config, Body)
+                )
+            end)
         end)
     end).

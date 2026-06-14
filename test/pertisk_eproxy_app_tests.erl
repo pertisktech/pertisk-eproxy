@@ -34,15 +34,7 @@ quic_noise_filter_quic_shutdown_other_type_stops_test() ->
 %% ---------------------------------------------------------------------------
 
 unload_mocks(Mods) ->
-    lists:foreach(
-        fun(Mod) ->
-            case lists:member(Mod, meck:mocked()) of
-                true -> pertisk_eproxy_test_helpers:unload_mocks([Mod]);
-                false -> ok
-            end
-        end,
-        Mods
-    ).
+    pertisk_eproxy_test_helpers:unload_mocks(Mods).
 
 reload_config() ->
     #{
@@ -60,11 +52,11 @@ with_app_reload_mocks(Fun) ->
         cowboy, pertisk_eproxy_config, pertisk_eproxy_h3_api_gateway,
         pertisk_ingress_env, pertisk_eproxy_tls_paths
     ]),
-    meck:new(cowboy, [unstick]),
-    meck:new(pertisk_eproxy_config, [unstick, passthrough]),
-    meck:new(pertisk_eproxy_h3_api_gateway, [unstick]),
-    meck:new(pertisk_ingress_env, [unstick]),
-    meck:new(pertisk_eproxy_tls_paths, [passthrough]),
+    meck:new(cowboy, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_config, [unstick, passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_ingress_env, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_tls_paths, [passthrough, no_passthrough_cover]),
     meck:expect(pertisk_eproxy_config, get_config, fun() -> reload_config() end),
     meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> false end),
     meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
@@ -148,18 +140,20 @@ with_app_start_mocks(Fun) ->
         cowboy, pertisk_eproxy_config, pertisk_eproxy_metrics,
         pertisk_eproxy_admin_management_snapshot, pertisk_eproxy_sup,
         pertisk_ingress_env, pertisk_eproxy_db,
-        pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway
+        pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway,
+        pertisk_eproxy_tls_paths
     ]),
-    meck:new(cowboy, [unstick]),
-    meck:new(pertisk_eproxy_config, [unstick, passthrough]),
-    meck:new(pertisk_eproxy_metrics, [unstick]),
-    meck:new(pertisk_eproxy_admin_management_snapshot, [unstick]),
-    meck:new(pertisk_eproxy_sup, [unstick]),
-    meck:new(pertisk_ingress_env, [unstick]),
-    meck:new(pertisk_eproxy_db, [passthrough]),
-    meck:new(pertisk_eproxy_shell, [unstick]),
-    meck:new(pertisk_eproxy_auth0, [unstick]),
-    meck:new(pertisk_eproxy_h3_api_gateway, [unstick]),
+    meck:new(cowboy, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_config, [unstick, passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_metrics, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_admin_management_snapshot, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_sup, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_ingress_env, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_db, [passthrough, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_shell, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_auth0, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_h3_api_gateway, [unstick, no_passthrough_cover]),
+    meck:new(pertisk_eproxy_tls_paths, [passthrough, no_passthrough_cover]),
     meck:expect(pertisk_eproxy_config, get_config, fun() -> start_config() end),
     meck:expect(pertisk_eproxy_config, db_file, fun() -> pertisk_eproxy_test_helpers:tmp_db() end),
     meck:expect(pertisk_eproxy_config, data_dir, fun() -> "/tmp/pertisk-eproxy-test" end),
@@ -171,6 +165,11 @@ with_app_start_mocks(Fun) ->
     meck:expect(pertisk_ingress_env, ingress_mode, fun() -> false end),
     meck:expect(pertisk_ingress_env, enabled, fun() -> false end),
     meck:expect(pertisk_eproxy_db, ensure_ready, fun(_) -> {ok, ok} end),
+    meck:expect(pertisk_eproxy_db, list_certificates, fun(_) -> {ok, []} end),
+    meck:expect(pertisk_eproxy_tls_paths, resolve_cert_file, fun(_) -> undefined end),
+    meck:expect(pertisk_eproxy_tls_paths, resolve_key_file, fun(_) -> undefined end),
+    meck:expect(pertisk_eproxy_tls_paths, default_cert_file, fun() -> "/nonexistent/cert.pem" end),
+    meck:expect(pertisk_eproxy_tls_paths, default_key_file, fun() -> "/nonexistent/key.pem" end),
     meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {error, openssl_not_found} end),
     meck:expect(cowboy, stop_listener, fun(_) -> ok end),
     meck:expect(cowboy, start_clear, fun(_, _, _) -> {ok, self()} end),
@@ -191,7 +190,8 @@ with_app_start_mocks(Fun) ->
             cowboy, pertisk_eproxy_config, pertisk_eproxy_metrics,
             pertisk_eproxy_admin_management_snapshot, pertisk_eproxy_sup,
             pertisk_ingress_env, pertisk_eproxy_db,
-            pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway
+            pertisk_eproxy_shell, pertisk_eproxy_auth0, pertisk_eproxy_h3_api_gateway,
+            pertisk_eproxy_tls_paths
         ])
     end.
 
@@ -209,7 +209,7 @@ start_ingress_mode_skips_db_ensure_ready_test() ->
     with_app_start_mocks(fun() ->
         meck:expect(pertisk_ingress_env, ingress_mode, fun() -> true end),
         meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
-        meck:new(pertisk_eproxy_env_auth, [unstick]),
+        meck:new(pertisk_eproxy_env_auth, [unstick, no_passthrough_cover]),
         meck:expect(pertisk_eproxy_env_auth, configure, fun() -> ok end),
         try
             ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
@@ -290,5 +290,119 @@ downstream_idle_timeout_clamp_test() ->
             {clamped_idle, 185000} -> ok
         after 1000 ->
             ?assert(false)
+        end
+    end).
+
+start_db_bootstrap_failure_continues_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_db, ensure_ready, fun(_) -> {error, db_failed} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_db, ensure_ready, '_'))
+    end).
+
+start_h3_gateway_start_error_test() ->
+    with_app_start_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                h3_api_gateway_enabled => true
+            }
+        end),
+        meck:expect(pertisk_eproxy_h3_api_gateway, start, fun(_) -> {error, refused} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_h3_api_gateway, start, '_'))
+    end).
+
+start_h3_probe_disabled_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{h3_probe_enabled => false}
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(0, meck:num_calls(pertisk_eproxy_h3_api_gateway, start_probe, '_'))
+    end).
+
+start_https_ingress_no_tls_material_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{https_port => 18443}
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(0, meck:num_calls(cowboy, start_tls, '_'))
+    end).
+
+start_metrics_port_conflict_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                metrics_enabled => true,
+                metrics_addr => {127, 0, 0, 1},
+                metrics_port => 19080
+            }
+        end),
+        meck:expect(pertisk_eproxy_config, metrics_enabled, fun() -> true end),
+        meck:expect(pertisk_eproxy_config, metrics_listen, fun() -> {{127, 0, 0, 1}, 19080} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(0, meck:num_calls(cowboy, start_clear, [metrics, '_', '_']))
+    end).
+
+start_https_ipv4_bind_failure_test() ->
+    with_app_reload_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (reload_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key
+            }
+        end),
+        meck:expect(cowboy, start_tls, fun(https4, _, _) -> {error, eaddrinuse} end),
+        ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
+        ?assertEqual(1, meck:num_calls(cowboy, start_tls, [https4, '_', '_']))
+    end).
+
+reload_proxy_tls_http2_disabled_test() ->
+    Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+    with_app_reload_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (reload_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                tls_http2_enabled => false
+            }
+        end),
+        ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
+        ?assert(meck:num_calls(cowboy, start_tls, '_') >= 1)
+    end).
+
+start_generate_fake_tls_success_test() ->
+    with_app_start_mocks(fun() ->
+        DataDir = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "pertisk-app-tls-" ++ integer_to_list(erlang:unique_integer([positive]))
+        ]),
+        ok = file:make_dir(DataDir),
+        meck:expect(pertisk_eproxy_config, data_dir, fun() -> DataDir end),
+        meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {ok, "openssl"} end),
+        meck:expect(pertisk_eproxy_shell, os_cmd, fun(Cmd) ->
+            _ = os:cmd(Cmd),
+            <<>>
+        end),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+            CertPath = filename:join([DataDir, "tls", "listener.pem"]),
+            KeyPath = filename:join([DataDir, "tls", "listener.key"]),
+            ?assert(filelib:is_file(CertPath)),
+            ?assert(filelib:is_file(KeyPath))
+        after
+            _ = os:cmd("rm -rf " ++ DataDir)
         end
     end).

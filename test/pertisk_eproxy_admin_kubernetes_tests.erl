@@ -662,3 +662,328 @@ update_ingress_replace_error_test() ->
                 pertisk_eproxy_admin_kubernetes:update_ingress(<<"default">>, <<"app">>, Body))
         end)
     end).
+
+%% ---------------------------------------------------------------------------
+%% Additional coverage (ingress form/build, quantities, annotations)
+%% ---------------------------------------------------------------------------
+
+get_ingress_no_spec_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            NoSpec = #{
+                <<"metadata">> => #{<<"name">> => <<"nospec">>, <<"namespace">> => <<"default">>}
+            },
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"nospec">>, _) ->
+                {ok, NoSpec}
+            end),
+            ?assertMatch(
+                {error, <<"Ingress has no spec">>},
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"nospec">>)
+            )
+        end)
+    end).
+
+get_ingress_rule_without_http_paths_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            Ingress = #{
+                <<"metadata">> => #{
+                    <<"name">> => <<"norulepaths">>,
+                    <<"namespace">> => <<"default">>,
+                    <<"annotations">> => #{}
+                },
+                <<"spec">> => #{
+                    <<"rules">> => [#{<<"host">> => <<"bare.example">>}]
+                }
+            },
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"norulepaths">>, _) ->
+                {ok, Ingress}
+            end),
+            ?assertMatch({ok, #{path := <<"/">>, service_name := <<>>}},
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"norulepaths">>))
+        end)
+    end).
+
+create_ingress_legacy_body_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, create, fun(Resource, Ns, _) ->
+                Spec = maps:get(<<"spec">>, Resource),
+                Rules = maps:get(<<"rules">>, Spec),
+                [#{<<"http">> := #{<<"paths">> := [Path | _]}} | _] = Rules,
+                ?assertEqual(<<"/api">>, maps:get(<<"path">>, Path)),
+                ?assertEqual(<<"web">>, maps:get(<<"name">>, maps:get(<<"service">>, maps:get(<<"backend">>, Path)))),
+                {ok, Resource}
+            end),
+            Body = #{
+                <<"host">> => <<"legacy.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 8080,
+                <<"path">> => <<"/api">>,
+                <<"path_type">> => <<"Prefix">>
+            },
+            ?assertMatch({ok, #{message := <<"Ingress created">>}},
+                pertisk_eproxy_admin_kubernetes:create_ingress(Body))
+        end)
+    end).
+
+create_ingress_with_tls_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, create, fun(Resource, _, _) ->
+                Tls = maps:get(<<"tls">>, maps:get(<<"spec">>, Resource)),
+                ?assertEqual(<<"site-tls">>, maps:get(<<"secretName">>, hd(Tls))),
+                {ok, Resource}
+            end),
+            Body = #{
+                <<"host">> => <<"tls.example">>,
+                <<"name">> => <<"tls-ing">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80,
+                <<"tls_secret_name">> => <<"site-tls">>,
+                <<"tls_secret_namespace">> => <<"default">>
+            },
+            ?assertMatch({ok, #{message := <<"Ingress created">>}},
+                pertisk_eproxy_admin_kubernetes:create_ingress(Body))
+        end)
+    end).
+
+create_ingress_tls_wrong_namespace_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            Body = #{
+                <<"host">> => <<"tls.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80,
+                <<"tls_secret_name">> => <<"site-tls">>,
+                <<"tls_secret_namespace">> => <<"other">>
+            },
+            ?assertMatch({error, <<"TLS secret must be in the same namespace as the Ingress">>},
+                pertisk_eproxy_admin_kubernetes:create_ingress(Body))
+        end)
+    end).
+
+create_ingress_wildcard_host_auto_name_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, create, fun(Resource, _, _) ->
+                Name = maps:get(<<"name">>, maps:get(<<"metadata">>, Resource)),
+                ?assertEqual(<<"wildcard-example-com">>, Name),
+                {ok, Resource}
+            end),
+            Body = #{
+                <<"host">> => <<"*.example.com">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80
+            },
+            ?assertMatch({ok, _}, pertisk_eproxy_admin_kubernetes:create_ingress(Body))
+        end)
+    end).
+
+update_ingress_clears_tls_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, _) ->
+                {ok, sample_ingress(<<"app">>, <<"default">>, <<"app.example">>)}
+            end),
+            meck:expect(ekub, replace, fun(Resource, _, _) ->
+                ?assertEqual([], maps:get(<<"tls">>, maps:get(<<"spec">>, Resource))),
+                {ok, Resource}
+            end),
+            Body = #{
+                <<"host">> => <<"app.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"service_name">> => <<"web">>,
+                <<"service_port">> => 80
+            },
+            ?assertMatch({ok, #{message := <<"Ingress updated">>}},
+                pertisk_eproxy_admin_kubernetes:update_ingress(<<"default">>, <<"app">>, Body))
+        end)
+    end).
+
+service_loadbalancer_external_ip_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            Svc = #{
+                <<"metadata">> => #{
+                    <<"name">> => <<"lb">>,
+                    <<"namespace">> => <<"default">>,
+                    <<"creationTimestamp">> => <<"2020-01-01T00:00:00Z">>
+                },
+                <<"spec">> => #{<<"type">> => <<"LoadBalancer">>, <<"ports">> => []},
+                <<"status">> => #{
+                    <<"loadBalancer">> => #{
+                        <<"ingress">> => [#{<<"ip">> => <<"203.0.113.1">>}]
+                    }
+                }
+            },
+            meck:expect(ekub, read, fun(service, <<"default">>, [], _) ->
+                {ok, #{<<"items">> => [Svc]}}
+            end),
+            {ok, [Row | _]} = pertisk_eproxy_admin_kubernetes:services(<<"default">>),
+            ?assertEqual(<<"203.0.113.1">>, maps:get(external_ip, Row))
+        end)
+    end).
+
+get_ingress_legacy_backend_namespace_annotation_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            Ingress = sample_ingress(<<"app">>, <<"default">>, <<"app.example">>),
+            Meta = maps:get(<<"metadata">>, Ingress),
+            Ingress1 = Ingress#{
+                <<"metadata">> => Meta#{
+                    <<"annotations">> => #{<<"pertisk.tech/backend-namespace">> => <<"backend-ns">>}
+                }
+            },
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, _) ->
+                {ok, Ingress1}
+            end),
+            ?assertMatch({ok, #{service_namespace := <<"backend-ns">>}},
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"app">>))
+        end)
+    end).
+
+get_ingress_backend_namespaces_map_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            MapJson = thoas:encode(#{<<"web">> => <<"apps">>}),
+            Ingress = sample_ingress(<<"app">>, <<"default">>, <<"app.example">>),
+            Meta = maps:get(<<"metadata">>, Ingress),
+            Ingress1 = Ingress#{
+                <<"metadata">> => Meta#{
+                    <<"annotations">> => #{<<"pertisk.io/backend-namespaces">> => MapJson}
+                }
+            },
+            meck:expect(ekub, read, fun(ingress, <<"default">>, <<"app">>, _) ->
+                {ok, Ingress1}
+            end),
+            {ok, #{routes := [Route | _]}} =
+                pertisk_eproxy_admin_kubernetes:get_ingress(<<"default">>, <<"app">>),
+            ?assertEqual(<<"apps">>, maps:get(service_namespace, Route))
+        end)
+    end).
+
+delete_ingress_notfound_reason_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, delete, fun(ingress, <<"default">>, <<"gone">>, _) ->
+                {error, #{<<"reason">> => <<"NotFound">>}}
+            end),
+            ?assertMatch({ok, #{message := <<"Ingress deleted">>}},
+                pertisk_eproxy_admin_kubernetes:delete_ingress(<<"default">>, <<"gone">>))
+        end)
+    end).
+
+pods_non_forbidden_error_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub_api, endpoint, fun(_, pod, _, _, _) -> <<"/pods">> end),
+            meck:expect(ekub_core, http_request, fun(_, _, _) -> {error, #{<<"code">> => 500}} end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:pods(<<"default">>))
+        end)
+    end).
+
+pods_default_leader_namespace_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_NAMESPACE", {set, "kube-system"}, fun() ->
+            with_mock_k8s(fun(_Conn) ->
+                meck:expect(ekub_api, endpoint, fun
+                    ({<<"">>, <<"v1">>}, pod, <<"kube-system">>, "", _) ->
+                        <<"/api/v1/namespaces/kube-system/pods">>;
+                    (_, _, _, _, _) ->
+                        <<>>
+                end),
+                meck:expect(ekub_core, http_request, fun
+                    (<<"/api/v1/namespaces/kube-system/pods">>, _, _) ->
+                        {ok, #{<<"items">> => []}};
+                    (_, _, _) ->
+                        {error, #{<<"code">> => 404}}
+                end),
+                ?assertEqual({ok, []}, pertisk_eproxy_admin_kubernetes:pods(<<>>))
+            end)
+        end)
+    end).
+
+create_ingress_service_port_name_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, create, fun(Resource, _, _) ->
+                Spec = maps:get(<<"spec">>, Resource),
+                [#{<<"http">> := #{<<"paths">> := [Path | _]}} | _] =
+                    maps:get(<<"rules">>, Spec),
+                Port = maps:get(<<"port">>, maps:get(<<"service">>, maps:get(<<"backend">>, Path))),
+                ?assertEqual(#{<<"name">> => <<"http">>}, Port),
+                {ok, Resource}
+            end),
+            Body = #{
+                <<"name">> => <<"portname">>,
+                <<"host">> => <<"port.example">>,
+                <<"service_namespace">> => <<"default">>,
+                <<"routes">> => [
+                    #{
+                        <<"path">> => <<"/">>,
+                        <<"service_name">> => <<"web">>,
+                        <<"service_port_name">> => <<"http">>
+                    }
+                ]
+            },
+            ?assertMatch({ok, _}, pertisk_eproxy_admin_kubernetes:create_ingress(Body))
+        end)
+    end).
+
+pods_cpu_plain_and_memory_gi_test() ->
+    with_ingress_mode(fun() ->
+        with_env("PERTISK_K8S_POD_NAME", {set, "pertisk-eproxy"}, fun() ->
+            with_mock_k8s(fun(_Conn) ->
+                meck:expect(ekub_api, endpoint, fun
+                    ({<<"">>, <<"v1">>}, pod, <<"default">>, "", _) ->
+                        <<"/api/v1/namespaces/default/pods">>;
+                    ({<<"metrics.k8s.io">>, _}, pod, <<"default">>, "", _) ->
+                        <<"/apis/metrics.k8s.io/v1beta1/namespaces/default/pods">>;
+                    (_, _, _, _, _) ->
+                        <<>>
+                end),
+                meck:expect(ekub_core, http_request, fun
+                    (<<"/api/v1/namespaces/default/pods">>, _, _) ->
+                        {ok, #{<<"items">> => [sample_pod(<<"pertisk-eproxy-abc">>, <<"default">>)]}};
+                    (<<"/apis/metrics.k8s.io/v1beta1/namespaces/default/pods">>, _, _) ->
+                        {ok, #{
+                            <<"items">> => [
+                                #{
+                                    <<"metadata">> => #{
+                                        <<"name">> => <<"pertisk-eproxy-abc">>,
+                                        <<"namespace">> => <<"default">>
+                                    },
+                                    <<"containers">> => [
+                                        #{
+                                            <<"usage">> => #{
+                                                <<"cpu">> => <<"2">>,
+                                                <<"memory">> => <<"1Gi">>
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }}
+                end),
+                {ok, [Row | _]} = pertisk_eproxy_admin_kubernetes:pods(<<"default">>),
+                ?assertEqual(2000, maps:get(<<"cpu_usage_millicores">>, Row)),
+                ?assertEqual(1024 * 1024 * 1024, maps:get(<<"memory_usage_bytes">>, Row))
+            end)
+        end)
+    end).
+
+tls_secrets_read_error_empty_fallback_test() ->
+    with_ingress_mode(fun() ->
+        with_mock_k8s(fun(_Conn) ->
+            meck:expect(ekub, read, fun
+                (secret, _, _) -> {error, #{<<"code">> => 500}};
+                (ingress, _, _) -> {ok, #{<<"items">> => []}}
+            end),
+            ?assertMatch({error, _}, pertisk_eproxy_admin_kubernetes:tls_secrets(<<>>))
+        end)
+    end).

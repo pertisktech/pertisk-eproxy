@@ -27,6 +27,31 @@ sqlite3_exec(DbPath, SQL) ->
     Cmd = "sqlite3 " ++ DbPath ++ " " ++ SQL,
     os:cmd(Cmd).
 
+fake_sqlite3_script(Output) ->
+    Dir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "fake_sql_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    ok = file:make_dir(Dir),
+    Script = filename:join(Dir, "sqlite3"),
+    Esc = lists:flatten([case C of $' -> "'\\''"; _ -> [C] end || C <- Output]),
+    ok = file:write_file(Script, "#!/bin/sh\necho '" ++ Esc ++ "'\n"),
+    ok = file:change_mode(Script, 8#755),
+    Script.
+
+with_fake_sqlite3(Output, Fun) ->
+    Script = fake_sqlite3_script(Output),
+    Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+    application:set_env(pertisk_eproxy, sqlite3_executable, Script),
+    try Fun(Script) after
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+            undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+        end,
+        file:delete(Script),
+        file:del_dir(filename:dirname(Script))
+    end.
+
 seed_path_rewrites_table(DbPath) ->
     _ = sqlite3_exec(DbPath, "\"CREATE TABLE IF NOT EXISTS path_rewrites ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, site_host TEXT NOT NULL, "
@@ -662,4 +687,213 @@ put_runtime_config_after_drop_runtime_state_test() ->
         Cfg = #{mode => proxy, sites => [], backends => []},
         ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(Path, Cfg)),
         ?assertMatch({ok, #{mode := proxy}}, pertisk_eproxy_db:get_runtime_config(Path))
+    end).
+
+%% ---------------------------------------------------------------------------
+%% Additional coverage (sqlite errors, CRUD edge cases, decode paths)
+%% ---------------------------------------------------------------------------
+
+ensure_ready_db_dir_error_test() ->
+    BadPath = filename:join(["/dev/null/pertisk-db", "proxy.db"]),
+    ?assertMatch({error, {db_dir, _}}, pertisk_eproxy_db:init(BadPath)).
+
+resolve_sqlite3_from_app_env_binary_test() ->
+    with_db(fun(Path) ->
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        Exe =
+            case os:find_executable("sqlite3") of
+                false -> "/usr/bin/sqlite3";
+                P -> P
+            end,
+        application:set_env(pertisk_eproxy, sqlite3_executable, list_to_binary(Exe)),
+        try
+            ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+sqlite_query_executable_missing_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        application:set_env(pertisk_eproxy, sqlite3_executable, "/nonexistent/sqlite3"),
+        try
+            ?assertEqual({error, sqlite3_executable_not_found}, pertisk_eproxy_db:list_sites(Path))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+replace_dns_providers_skips_invalid_entries_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Providers = [
+            #{name => <<"">>, provider_type => <<"label">>, credentials => #{}},
+            #{name => <<"ok">>, provider_type => <<"">>, credentials => #{}},
+            #{name => <<"valid">>, provider_type => <<"cloudflare">>, credentials => #{}}
+        ],
+        ?assertEqual(ok, pertisk_eproxy_db:replace_dns_providers(Path, Providers)),
+        {ok, Got} = pertisk_eproxy_db:list_dns_providers(Path),
+        ?assertEqual(1, length(Got)),
+        ?assertEqual(<<"valid">>, maps:get(name, hd(Got)))
+    end).
+
+replace_dns_providers_insert_error_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        application:set_env(pertisk_eproxy, sqlite3_executable, "/nonexistent/sqlite3"),
+        try
+            ?assertEqual({error, sqlite3_executable_not_found},
+                pertisk_eproxy_db:replace_dns_providers(Path, [
+                    #{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}
+                ]))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+verify_admin_login_corrupt_credentials_test() ->
+    with_db(fun(Path) ->
+        ?assertMatch({ok, _}, pertisk_eproxy_db:init(Path)),
+        _ = sqlite3_exec(Path, "\"UPDATE admin_users SET pass_hash_b64='not-base64!!!' WHERE username='admin';\""),
+        ?assertEqual({error, invalid_credentials},
+            pertisk_eproxy_db:verify_admin_login(Path, <<"admin">>, <<"admin">>))
+    end).
+
+update_certificate_pem_not_found_test() ->
+    with_db(fun(Path) ->
+        {CertFile, KeyFile} = listener_pem_paths(),
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found},
+            pertisk_eproxy_db:update_certificate_pem(Path, 99999, CertFile, KeyFile))
+    end).
+
+list_dns_providers_invalid_credentials_json_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        _ = sqlite3_exec(Path, "\"INSERT INTO dns_providers(name, provider_type, credentials_json, created_at) "
+            "VALUES('bad-json', 'label', 'not-json', '');\""),
+        {ok, [Row | _]} = pertisk_eproxy_db:list_dns_providers(Path),
+        ?assertEqual(#{}, maps:get(credentials, Row))
+    end).
+
+ensure_dns_providers_seeded_skips_non_map_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual(ok, pertisk_eproxy_db:ensure_dns_providers_seeded(Path, [not_a_map, #{name => <<"ok">>}]))
+    end).
+
+decode_runtime_config_legacy_unsafe_term_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Enc = binary_to_list(base64:encode(term_to_binary(#{mode => proxy, sites => [], backends => []}))),
+        _ = sqlite3_exec(Path, "\"INSERT INTO runtime_state(key, value) VALUES('runtime_config', '" ++ Enc ++ "');\""),
+        ?assertMatch({ok, #{mode := proxy}}, pertisk_eproxy_db:get_runtime_config(Path))
+    end).
+
+migrate_schema_init_error_test() ->
+    with_db(fun(Path) ->
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        application:set_env(pertisk_eproxy, sqlite3_executable, "/nonexistent/sqlite3"),
+        try
+            ?assertEqual({error, sqlite3_executable_not_found}, pertisk_eproxy_db:init(Path))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+ensure_ready_migrate_error_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        application:set_env(pertisk_eproxy, sqlite3_executable, "/nonexistent/sqlite3"),
+        try
+            ?assertEqual({error, sqlite3_executable_not_found}, pertisk_eproxy_db:ensure_ready(Path))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+ensure_ready_bad_parent_dir_test() ->
+    BadPath = filename:join(["/dev/null/pertisk-ready", "proxy.db"]),
+    ?assertMatch({error, _}, pertisk_eproxy_db:ensure_ready(BadPath)).
+
+sqlite_exec_shell_failure_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("/bin/sh: 1: sqlite3: not found", fun(_) ->
+            ?assertMatch({error, {sqlite3_cli, _}},
+                pertisk_eproxy_db:replace_dns_providers(Path, [
+                    #{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}
+                ]))
+        end)
+    end).
+
+sqlite_query_shell_failure_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("/bin/sh: sqlite3: not found", fun(_) ->
+            ?assertMatch({error, {sqlite3_cli, _}}, pertisk_eproxy_db:list_sites(Path))
+        end)
+    end).
+
+sqlite_query_json_not_array_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("{\"not\":\"array\"}", fun(_) ->
+            ?assertMatch({error, {sqlite3_cli, _}}, pertisk_eproxy_db:list_sites(Path))
+        end)
+    end).
+
+sqlite_query_json_decode_error_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("[{not valid json", fun(_) ->
+            ?assertMatch({error, {sqlite_json_decode, _, _}}, pertisk_eproxy_db:list_sites(Path))
+        end)
+    end).
+
+resolve_sqlite3_from_app_env_list_test() ->
+    with_db(fun(Path) ->
+        Old = application:get_env(pertisk_eproxy, sqlite3_executable),
+        Exe =
+            case os:find_executable("sqlite3") of
+                false -> "/usr/bin/sqlite3";
+                P -> P
+            end,
+        application:set_env(pertisk_eproxy, sqlite3_executable, Exe),
+        try
+            ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path))
+        after
+            case Old of
+                {ok, V} -> application:set_env(pertisk_eproxy, sqlite3_executable, V);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end
+        end
+    end).
+
+insert_site_sqlite_error_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        with_fake_sqlite3("Error: near \"SYNTAX\": syntax error", fun(_) ->
+            ?assertMatch({error, {sqlite_error, _}},
+                pertisk_eproxy_db:delete_dns_provider_by_name(Path, <<"missing">>))
+        end)
     end).

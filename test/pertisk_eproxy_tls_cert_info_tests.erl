@@ -397,6 +397,22 @@ placeholder_cert_pem() ->
     _ = file:delete(KeyPath),
     Pem.
 
+serial_number_cert_pem() ->
+    Base = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "serial_dn_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    CertPath = Base ++ ".pem",
+    KeyPath = Base ++ ".key",
+    Cmd = "openssl req -x509 -newkey rsa:2048 -nodes -days 1 "
+        "-subj '/SN=abc123456789/CN=sn.example' "
+        "-keyout " ++ KeyPath ++ " -out " ++ CertPath ++ " 2>/dev/null",
+    os:cmd(Cmd),
+    {ok, Pem} = file:read_file(CertPath),
+    _ = file:delete(CertPath),
+    _ = file:delete(KeyPath),
+    Pem.
+
 listener_cert_rows_integer_certificate_id_test() ->
     CertPath = listener_pem_path(),
     KeyPath = listener_key_path(),
@@ -423,3 +439,46 @@ listener_cert_rows_integer_certificate_id_test() ->
         [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
         ?assertEqual([], maps:get(<<"sites">>, Row))
     end).
+
+listener_cert_rows_binary_tls_paths_test() ->
+    CertPath = listener_pem_path(),
+    KeyPath = listener_key_path(),
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => list_to_binary(CertPath),
+            tls_key_file => list_to_binary(KeyPath),
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
+        [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
+        ?assertEqual(<<"listener-tls">>, maps:get(<<"id">>, Row))
+    end).
+
+listener_cert_rows_site_without_certificate_field_test() ->
+    CertPath = listener_pem_path(),
+    KeyPath = listener_key_path(),
+    with_tmp_db_config(fun() ->
+        BaseConfig = pertisk_eproxy_config:get_config(),
+        Config = BaseConfig#{
+            tls_cert_file => CertPath,
+            tls_key_file => KeyPath,
+            sites => [],
+            backends => [],
+            certificates => [],
+            dns_providers => []
+        },
+        Sites = [#{host => <<"orphan.example">>, backend => <<"web">>, routes => []}],
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
+        ok = pertisk_eproxy_config:sync_ingress(Sites, []),
+        [Row] = pertisk_eproxy_tls_cert_info:listener_cert_rows(),
+        ?assertEqual([], maps:get(<<"sites">>, Row))
+    end).
+
+describe_pem_data_serial_number_dn_test() ->
+    Pem = serial_number_cert_pem(),
+    {ok, Info} = pertisk_eproxy_tls_cert_info:describe_pem_data(Pem),
+    ?assert(lists:member(<<"sn.example">>, maps:get(hosts, Info))).

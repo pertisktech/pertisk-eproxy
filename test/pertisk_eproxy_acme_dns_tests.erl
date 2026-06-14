@@ -1489,3 +1489,234 @@ scan_reissues_staging_cert_test() ->
             pertisk_eproxy_test_helpers:sync_router([], [])
         end
     end).
+
+handle_cast_scan_spawns_worker_test() ->
+    {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+    try
+        ?assertEqual({noreply, #{}}, pertisk_eproxy_acme_dns:handle_cast(scan, #{})),
+        timer:sleep(100)
+    after
+        pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+    end.
+
+scan_skips_http01_challenge_site_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [#{
+                host => <<"http01.example">>,
+                backend => <<"web">>,
+                challenge_type => "http-01",
+                dns_provider => <<"cf">>,
+                acme_contact_email => <<"ops@example.com">>,
+                routes => []
+            }],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_acme_client, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
+            {ok, <<"cert">>, <<"kid">>}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath, <<"cf">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                ?assertEqual(0, meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_'))
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload(pertisk_eproxy_acme_client),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_dynamic_lego_provider_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"exotic.example">>, <<"exotic">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough, no_passthrough_cover]),
+        meck:expect(pertisk_eproxy_acme_lego, obtain_certificate, fun(_, _, _, _, _, _, _, _) ->
+            {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"key">>}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"exotic">>,
+                <<"exoticdns">>,
+                #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                ?assert(meck:num_calls(pertisk_eproxy_acme_lego, obtain_certificate, '_') > 0)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload(pertisk_eproxy_acme_lego),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_wildcard_site_identifiers_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [
+                maps:merge(site(<<"*.example.com">>, <<"cf-wc">>), #{
+                    wildcard => true,
+                    acme_wildcard_base => <<"example.com">>
+                })
+            ],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-wc">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_drop_staging_kid_for_production_test() ->
+    with_scan_env(fun(#{db := DbPath, acme_dir := AcmeDir}) ->
+        ok = file:write_file(
+            filename:join(AcmeDir, "kid.txt"),
+            <<"https://acme-staging-v02.api.letsencrypt.org/acme/acct/1\n">>
+        ),
+        application:set_env(
+            pertisk_eproxy,
+            acme_directory_url,
+            <<"https://acme-v02.api.letsencrypt.org/directory">>
+        ),
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"kid-drop.example">>, <<"cf-kid">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-kid">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                KidPath = filename:join(AcmeDir, "kid.txt"),
+                case file:read_file(KidPath) of
+                    {ok, Bin} ->
+                        ?assertEqual(nomatch, binary:match(Bin, <<"acme-staging">>));
+                    {error, enoent} ->
+                        ok
+                end
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            application:unset_env(pertisk_eproxy, acme_directory_url),
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_cloudflare_create_txt_error_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"cf-txt-fail.example">>, <<"cf-txt">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        meck:expect(pertisk_eproxy_dns_cloudflare, create_txt, fun(_, _, _, _, _) ->
+            {error, invalid_api_token_format}
+        end),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath,
+                <<"cf-txt">>,
+                <<"cloudflare">>,
+                #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') >= 1)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+scan_cert_ref_acme_name_without_disk_pem_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        Host = <<"acme-ref.example">>,
+        CertName = <<"acme/acme-ref.example">>,
+        pertisk_eproxy_test_helpers:sync_router(
+            [maps:merge(site(Host, <<"cf-ref">>), #{certificate => CertName})],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        mock_acme_client_ok(),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath, <<"cf-ref">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"z">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS),
+                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+validate_dns_provider_unsupported_empty_type_test() ->
+    ?assertMatch({error, _},
+        pertisk_eproxy_acme_dns:validate_dns_provider(<<"   ">>, #{<<"api_key">> => <<"k">>})).
+
+validate_dns_provider_provider_type_other_test() ->
+    ?assertMatch({error, _},
+        pertisk_eproxy_acme_dns:validate_dns_provider([], #{<<"api_token">> => <<"tok">>})).

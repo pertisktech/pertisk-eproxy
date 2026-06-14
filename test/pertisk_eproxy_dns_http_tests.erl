@@ -1963,3 +1963,249 @@ digitalocean_delete_txt_200_invalid_json_test() ->
 
 digitalocean_txt_record_name_no_suffix_test() ->
     ?assertEqual(<<"other">>, pertisk_eproxy_dns_digitalocean:txt_record_name(<<"other">>, ?ZONE)).
+
+do_hostname_check_failed_error() ->
+    {error, {failed_connect, [{ssl, {alert, hostname_check_failed}}]}}.
+
+with_do_tls_hostname_retry(Fun) ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
+        case get(do_tls_retry_n) of
+            undefined ->
+                put(do_tls_retry_n, 1),
+                do_hostname_check_failed_error();
+            _ ->
+                do_http(normalize_method(Method), Req, Opts, HttpOpts)
+        end
+    end),
+    try Fun() after
+        erase(do_tls_retry_n),
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_resolve_domain_trim_domain_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
+        do_http(Method, Req, Opts, HttpOpts)
+    end),
+    try
+        ?assertMatch({ok, ?ZONE},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(
+                ?TOKEN, <<"  ", ?ZONE/binary, "  ">>, <<"www.", ?ZONE/binary>>
+            ))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_txt_record_suffix_mismatch_test() ->
+    ?assertEqual(<<"x">>, pertisk_eproxy_dns_digitalocean:txt_record_name(<<"x">>, ?ZONE)).
+
+digitalocean_resolve_domain_hostname_retry_test() ->
+    with_do_tls_hostname_retry(fun() ->
+        ?assertMatch({ok, ?ZONE},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
+    end).
+
+digitalocean_create_txt_hostname_retry_test() ->
+    with_do_tls_hostname_retry(fun() ->
+        ?assertMatch({ok, 42},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    end).
+
+digitalocean_delete_txt_hostname_retry_test() ->
+    with_do_tls_hostname_retry(fun() ->
+        ?assertEqual(ok, pertisk_eproxy_dns_digitalocean:delete_txt(?TOKEN, ?ZONE, 42))
+    end).
+
+digitalocean_get_connect_error_without_retry_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, _, _, _) ->
+        {error, {failed_connect, [{reason, econnrefused}]}}
+    end),
+    try
+        ?assertMatch({error, {domain_lookup_failed, _, _}},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, undefined, <<"missing.example.com">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_get_json_decode_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, _, _, _) ->
+        {ok, {{'HTTP/1.1', 200, 'OK'}, [], "not-json"}}
+    end),
+    try
+        ?assertMatch({error, {domain_lookup_failed, ?ZONE, {error, {domain_lookup, {error, {json, _}}}}}},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, ?ZONE, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_post_json_decode_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        {ok, {{'HTTP/1.1', 201, 'Created'}, [], "not-json"}}
+    end),
+    try
+        ?assertMatch({error, {json, _}},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+digitalocean_post_http_status_error_test() ->
+    with_httpc_status_error(post, 403, fun() ->
+        ?assertMatch({error, {http, 403, _}},
+            pertisk_eproxy_dns_digitalocean:create_txt(?TOKEN, ?ZONE, ?RECORD, ?TXT))
+    end).
+
+digitalocean_delete_http_status_error_test() ->
+    with_httpc_status_error(delete, 403, fun() ->
+        ?assertMatch({error, {http, 403, _}},
+            pertisk_eproxy_dns_digitalocean:delete_txt(?TOKEN, ?ZONE, 42))
+    end).
+
+digitalocean_resolve_domain_not_found_alt_error_shape_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, _, _, _) ->
+        {error, {http, 404, <<"missing">>}}
+    end),
+    try
+        ?assertMatch({error, domain_not_found},
+            pertisk_eproxy_dns_digitalocean:resolve_domain(?TOKEN, undefined, <<"missing.example.com">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_global_key_missing_email_test() ->
+    ?assertMatch({error, {zone_lookup, {error, missing_api_email}}},
+        pertisk_eproxy_dns_cloudflare:find_zone({global_key, ?TOKEN, <<>>}, ?ZONE)).
+
+cloudflare_global_key_empty_api_key_test() ->
+    ?assertMatch({error, {zone_lookup, {error, invalid_api_token_format}}},
+        pertisk_eproxy_dns_cloudflare:find_zone({global_key, <<>>, <<"a@b.com">>}, ?ZONE)).
+
+cloudflare_token_or_key_auth_test() ->
+    Auth = {token_or_key, ?TOKEN, <<"a@b.com">>},
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Auth, <<"www.", ?ZONE/binary>>))
+    end).
+
+cloudflare_redacted_plain_token_test() ->
+    ?assertMatch({error, {zone_lookup, {error, redacted_api_token_placeholder}}},
+        pertisk_eproxy_dns_cloudflare:find_zone(<<"redacted">>, ?ZONE)).
+
+cloudflare_authorization_prefix_token_test() ->
+    Token = <<"Authorization: Bearer ", ?TOKEN/binary>>,
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Token, <<"www.", ?ZONE/binary>>))
+    end).
+
+cloudflare_quoted_bearer_token_test() ->
+    Token = <<$", ?TOKEN/binary, $">>,
+    with_httpc_mock(fun() ->
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Token, <<"www.", ?ZONE/binary>>))
+    end).
+
+cloudflare_cf_txt_record_suffix_mismatch_test() ->
+    ?assertEqual(<<"other.example">>,
+        pertisk_eproxy_dns_cloudflare:cf_txt_record_name(<<"other.example">>, ?ZONE)).
+
+cloudflare_token_or_key_6111_retry_success_test() ->
+    Auth = {token_or_key, ?TOKEN, <<"a@b.com">>},
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, Hdr}, _, _) ->
+        case lists:keymember("X-Auth-Key", 1, Hdr) of
+            true ->
+                cloudflare_get(list_to_binary(U));
+            false ->
+                {ok, {{'HTTP/1.1', 400, 'Bad Request'}, [], <<"{\"code\":6111}">>}}
+        end
+    end),
+    try
+        ?assertMatch({ok, #{zone_id := <<"z1">>}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Auth, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_token_or_key_6111_retry_also_fails_test() ->
+    Auth = {token_or_key, ?TOKEN, <<"a@b.com">>},
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(_, _, _, _) ->
+        {ok, {{'HTTP/1.1', 400, 'Bad Request'}, [], <<"{\"code\":6111}">>}}
+    end),
+    try
+        ?assertMatch({error, {zone_lookup, {error, invalid_cloudflare_auth_header}}},
+            pertisk_eproxy_dns_cloudflare:find_zone(Auth, <<"www.", ?ZONE/binary>>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_find_zone_http_error_last_candidate_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(get, {U, _}, _, _) ->
+        case binary:match(list_to_binary(U), <<"api.cloudflare.com/client/v4/zones">>) of
+            nomatch -> {error, not_found};
+            _ -> {error, timeout}
+        end
+    end),
+    try
+        ?assertMatch({error, {zone_lookup, {error, timeout}}},
+            pertisk_eproxy_dns_cloudflare:find_zone(?TOKEN, <<"missing.example.com">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_delete_unexpected_response_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(delete, _, _, _) ->
+        json_ok(#{<<"result">> => true})
+    end),
+    try
+        ?assertMatch({error, {unexpected, _}},
+            pertisk_eproxy_dns_cloudflare:delete_txt(?TOKEN, <<"z1">>, <<"rec1">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_create_txt_json_decode_error_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(post, _, _, _) ->
+        {ok, {{'HTTP/1.1', 200, 'OK'}, [], "not-json"}}
+    end),
+    try
+        ?assertMatch({error, {json, _}},
+            pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_find_existing_txt_lookup_failed_test() ->
+    meck:new(httpc, [unstick, passthrough]),
+    meck:expect(httpc, request, fun(Method, Req, Opts, HttpOpts) ->
+        M = normalize_method(Method),
+        U = url(M, Req),
+        case M of
+            post -> cloudflare_duplicate_post(U);
+            get ->
+                case binary:match(U, <<"dns_records?type=TXT">>) of
+                    nomatch -> cloudflare_get(U);
+                    _ -> {error, timeout}
+                end;
+            _ -> dns_http(M, Req, Opts, HttpOpts)
+        end
+    end),
+    try
+        ?assertMatch({error, {cloudflare, _}},
+            pertisk_eproxy_dns_cloudflare:create_txt(?TOKEN, <<"z1">>, ?RECORD, ?TXT, <<"acme">>))
+    after
+        pertisk_eproxy_test_helpers:unload_mocks([httpc])
+    end.
+
+cloudflare_invalid_token_logs_shape_test() ->
+    ?assertMatch({error, {zone_lookup, {error, invalid_api_token_format}}},
+        pertisk_eproxy_dns_cloudflare:find_zone(<<"Bearer ">>, <<"example.com">>)).
