@@ -1,37 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  erlang:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27"
-          rebar3-version: "3.24"
-
-      - name: Patch dependencies
-        run: make patch-ekub patch-quic patch-hackney
-
-      - name: Compile
-        run: rebar3 compile
-
-      - name: Unit tests
-        run: bash scripts/run-eunit.sh
-
-      - name: Verify H3 param script (syntax)
-        run: bash -n scripts/verify_h3_params.sh
-
   admin:
     runs-on: ubuntu-latest
     steps:

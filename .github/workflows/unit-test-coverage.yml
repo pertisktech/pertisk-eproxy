@@ -31,3 +31,6 @@ jobs:
 
       - name: Unit tests with coverage
         run: make cover
+
+      - name: Verify H3 param script (syntax)
+        run: bash -n scripts/verify_h3_params.sh
