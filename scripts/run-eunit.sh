@@ -99,6 +99,28 @@ clean_root_coverdata() {
   find "$ROOT_DIR" -maxdepth 1 -name '*.coverdata' -delete 2>/dev/null || true
 }
 
+reset_log_dir() {
+  mkdir -p "$LOG_DIR"
+
+  # A previous interrupted run can leave stale writers touching slot dirs.
+  # Avoid hard-failing on transient "Directory not empty" races.
+  local tries=0
+  while [ "$tries" -lt 6 ]; do
+    rm -rf "$SEEN_DIR" "$SLOT_DIR" 2>/dev/null || true
+    find "$LOG_DIR" -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null || true
+    find "$LOG_DIR" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+
+    if [ ! -d "$SEEN_DIR" ] && [ ! -d "$SLOT_DIR" ]; then
+      break
+    fi
+
+    tries=$((tries + 1))
+    sleep 0.05
+  done
+
+  mkdir -p "$SEEN_DIR" "$SLOT_DIR"
+}
+
 init_cover_chunks() {
   rm -rf "$CHUNK_DIR"
   mkdir -p "$COVER_WORK"
@@ -372,8 +394,7 @@ if [ "$COVER" -eq 1 ]; then
   init_cover_chunks
 fi
 
-rm -rf "$LOG_DIR"
-mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
+reset_log_dir
 : >"$LOG_DIR/jobs.tsv"
 
 echo "==> ensure test TLS fixtures (priv/tls/ is gitignored)"
