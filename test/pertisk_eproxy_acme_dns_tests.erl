@@ -3,6 +3,46 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SCAN_SLEEP_MS, 900).
+-define(SCAN_WAIT_MS, 8000).
+-define(SCAN_POLL_MS, 50).
+
+assert_meck_calls_at_least(Mod, Fun, Min) ->
+    assert_meck_calls_at_least(Mod, Fun, Min, ?SCAN_WAIT_MS).
+
+assert_meck_calls_at_least(Mod, Fun, Min, TimeoutMs) ->
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    assert_meck_calls_at_least_loop(Mod, Fun, Min, Deadline).
+
+assert_meck_calls_at_least_loop(Mod, Fun, Min, Deadline) ->
+    N = meck:num_calls(Mod, Fun, '_'),
+    case N >= Min of
+        true ->
+            ok;
+        false ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true ->
+                    ?assert(N >= Min);
+                false ->
+                    timer:sleep(?SCAN_POLL_MS),
+                    assert_meck_calls_at_least_loop(Mod, Fun, Min, Deadline)
+            end
+    end.
+
+assert_meck_calls_zero(Mod, Fun) ->
+    timer:sleep(?SCAN_SLEEP_MS),
+    Deadline = erlang:monotonic_time(millisecond) + ?SCAN_WAIT_MS,
+    assert_meck_calls_zero_loop(Mod, Fun, Deadline).
+
+assert_meck_calls_zero_loop(Mod, Fun, Deadline) ->
+    N = meck:num_calls(Mod, Fun, '_'),
+    ?assertEqual(0, N),
+    case erlang:monotonic_time(millisecond) >= Deadline of
+        true ->
+            ok;
+        false ->
+            timer:sleep(?SCAN_POLL_MS),
+            assert_meck_calls_zero_loop(Mod, Fun, Deadline)
+    end.
 
 safe_meck_unload(Mod) ->
     case lists:member(Mod, meck:mocked()) of
@@ -1430,8 +1470,7 @@ scan_skips_site_with_production_cert_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assertEqual(0, meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_'))
+                assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1474,8 +1513,7 @@ scan_reissues_staging_cert_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(2000),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1524,8 +1562,7 @@ scan_skips_http01_challenge_site_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assertEqual(0, meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_'))
+                assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1556,8 +1593,7 @@ scan_dynamic_lego_provider_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_lego, obtain_certificate, '_') > 0)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_lego, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1672,8 +1708,7 @@ scan_cloudflare_create_txt_error_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') >= 1)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1702,8 +1737,7 @@ scan_cert_ref_acme_name_without_disk_pem_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -2074,8 +2108,7 @@ scan_site_skips_missing_acme_email_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assertEqual(0, meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_'))
+                assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -2118,8 +2151,7 @@ scan_cert_id_ref_from_db_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -2454,8 +2486,7 @@ scan_cert_pem_from_db_row_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS),
-                ?assert(meck:num_calls(pertisk_eproxy_acme_client, obtain_certificate, '_') > 0)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end

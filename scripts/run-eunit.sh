@@ -379,6 +379,9 @@ mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
 echo "==> ensure test TLS fixtures (priv/tls/ is gitignored)"
 bash "${ROOT_DIR}/scripts/ensure-test-tls.sh"
 
+echo "==> ensure test admin UI stubs (priv/admin/ is gitignored)"
+bash "${ROOT_DIR}/scripts/ensure-test-admin.sh"
+
 echo "==> compile test profile (once before parallel eunit)"
 $REBAR as test compile
 
