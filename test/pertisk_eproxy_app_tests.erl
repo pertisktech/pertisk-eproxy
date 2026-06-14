@@ -768,7 +768,7 @@ reload_proxy_tls_wildcard_sni_test() ->
         "pertisk-app-wc-" ++ integer_to_list(erlang:unique_integer([positive]))
     ]),
     ok = file:make_dir(TmpDir),
-    {CertFile, KeyFile} = generate_cert_files(TmpDir, <<"*.wc.example.com">>),
+    {CertFile, KeyFile} = generate_wildcard_cert_files(TmpDir),
     {ok, CertId} = pertisk_eproxy_db:insert_certificate_pem(DbPath, <<"wc-cert">>, CertFile, KeyFile),
     try
         with_app_reload_mocks(fun() ->
@@ -801,11 +801,13 @@ reload_proxy_tls_wildcard_sni_test() ->
         file:delete(DbPath)
     end.
 
-generate_cert_files(Dir, Host) when is_binary(Host) ->
+generate_wildcard_cert_files(Dir) ->
     CertFile = filename:join(Dir, "cert.pem"),
     KeyFile = filename:join(Dir, "key.pem"),
-    HostStr = binary_to_list(Host),
-    Cmd = "openssl req -x509 -newkey rsa:2048 -nodes -days 1 "
+    HostStr = "*.wc.example.com",
+    Openssl = os:find_executable("openssl"),
+    ?assertNotEqual(false, Openssl),
+    Cmd = Openssl ++ " req -x509 -newkey rsa:2048 -nodes -days 1 "
         "-subj '/CN=" ++ HostStr ++ "' "
         "-addext 'subjectAltName=DNS:" ++ HostStr ++ "' "
         "-keyout " ++ KeyFile ++ " -out " ++ CertFile ++ " 2>/dev/null",
