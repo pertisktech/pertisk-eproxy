@@ -549,9 +549,14 @@ tls_cert_key_paths(Config) ->
                 {C, K} when is_list(C), is_list(K) ->
                     {C, K};
                 _ ->
-                    Cert = pertisk_eproxy_tls_paths:resolve_cert_file(Config),
-                    Key = pertisk_eproxy_tls_paths:resolve_key_file(Config),
-                    normalize_cert_key_pair(Cert, Key)
+                    case maps:get(sites, Config, []) of
+                        [] ->
+                            Cert = pertisk_eproxy_tls_paths:resolve_cert_file(Config),
+                            Key = pertisk_eproxy_tls_paths:resolve_key_file(Config),
+                            normalize_cert_key_pair(Cert, Key);
+                        _ ->
+                            {undefined, undefined}
+                    end
             end;
         Cert0 ->
             Key0 = maps:get(tls_key_file, Config, undefined),
@@ -620,9 +625,18 @@ build_sni_hosts(Config) ->
                             {_, undefined} ->
                                 Acc;
                             {H, {CertPath, KeyPath}} ->
-                                case lists:keymember(H, 1, Acc) of
-                                    true -> Acc;
-                                    false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+                                case cert_path_matches_host(CertPath, H) of
+                                    true ->
+                                        case lists:keymember(H, 1, Acc) of
+                                            true -> Acc;
+                                            false -> [{H, [{certfile, CertPath}, {keyfile, KeyPath}]} | Acc]
+                                        end;
+                                    false ->
+                                        lager:warning(
+                                            "Skipping TLS cert ~s for host ~s because the certificate SAN/CN does not match",
+                                            [CertPath, H]
+                                        ),
+                                        Acc
                                 end
                         end
                 end
@@ -657,6 +671,24 @@ cert_rows_by_id(DbPath) ->
             maps:from_list([{integer_to_binary(maps:get(id, Row)), Row} || Row <- Rows]);
         _ ->
             #{}
+    end.
+
+cert_path_matches_host(CertPath, Host) ->
+    case {file:read_file(CertPath), normalize_site_host(site_host_to_list(Host))} of
+        {{ok, CertPem}, HostName} when HostName =/= [] ->
+            case public_key:pem_decode(CertPem) of
+                [{'Certificate', Der, not_encrypted} | _] ->
+                    try
+                        Cert = public_key:pkix_decode_cert(Der, otp),
+                        public_key:pkix_verify_hostname(Cert, [{dns_id, HostName}])
+                    catch
+                        _:_ -> false
+                    end;
+                _ ->
+                    false
+            end;
+        _ ->
+            false
     end.
 
 resolve_site_cert_paths(Site, CertRowsById) ->

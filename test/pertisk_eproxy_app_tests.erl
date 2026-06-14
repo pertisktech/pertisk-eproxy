@@ -616,3 +616,196 @@ start_https_bind_generic_error_test() ->
         ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
         ?assertEqual(1, meck:num_calls(cowboy, start_tls, [https4, '_', '_']))
     end).
+
+start_h3_gateway_success_test() ->
+    with_app_start_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                h3_api_gateway_enabled => true
+            }
+        end),
+        meck:expect(pertisk_eproxy_h3_api_gateway, start, fun(_) -> {ok, self()} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_h3_api_gateway, start, '_'))
+    end).
+
+start_h3_probe_success_test() ->
+    with_app_start_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                h3_probe_enabled => true
+            }
+        end),
+        meck:expect(pertisk_eproxy_h3_api_gateway, start_probe, fun(_) -> {ok, self()} end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(1, meck:num_calls(pertisk_eproxy_h3_api_gateway, start_probe, '_'))
+    end).
+
+start_quic_start_failure_test() ->
+    case erlang:function_exported(cowboy, start_quic, 3) of
+        false ->
+            ok;
+        true ->
+            Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+            Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+            with_app_start_mocks(fun() ->
+                meck:expect(pertisk_eproxy_config, get_config, fun() ->
+                    (start_config())#{
+                        https_port => 18443,
+                        tls_cert_file => Cert,
+                        tls_key_file => Key,
+                        quic_enabled => true,
+                        quic_port => 18444,
+                        h3_api_gateway_enabled => false,
+                        h3_probe_enabled => false
+                    }
+                end),
+                meck:expect(cowboy, start_quic, fun(_, _, _) -> {error, refused} end),
+                ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+                ?assertEqual(1, meck:num_calls(cowboy, start_quic, '_'))
+            end)
+    end.
+
+start_custom_listener_acceptors_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                http_num_acceptors => 8,
+                https_num_acceptors => 8,
+                management_num_acceptors => 4,
+                quic_num_acceptors => 6
+            }
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assert(meck:num_calls(cowboy, start_clear, '_') >= 3)
+    end).
+
+start_https_port_zero_disabled_test() ->
+    with_app_start_mocks(fun() ->
+        Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+        Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 0,
+                tls_cert_file => Cert,
+                tls_key_file => Key
+            }
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(0, meck:num_calls(cowboy, start_tls, '_'))
+    end).
+
+start_generate_fake_tls_openssl_failure_test() ->
+    with_app_start_mocks(fun() ->
+        DataDir = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "pertisk-app-tls-fail-" ++ integer_to_list(erlang:unique_integer([positive]))
+        ]),
+        ok = file:make_dir(DataDir),
+        meck:expect(pertisk_eproxy_config, data_dir, fun() -> DataDir end),
+        meck:expect(pertisk_eproxy_shell, openssl_executable, fun() -> {ok, "false"} end),
+        meck:expect(pertisk_eproxy_shell, os_cmd, fun(_) -> <<"openssl failed">> end),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, []))
+        after
+            _ = os:cmd("rm -rf " ++ DataDir)
+        end
+    end).
+
+reload_proxy_tls_ingress_sni_hosts_test() ->
+    Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+    IngressCert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    IngressKey = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+    with_app_reload_mocks(fun() ->
+        meck:expect(pertisk_ingress_env, enabled, fun() -> true end),
+        meck:new(pertisk_ingress_tls, [unstick, no_link, no_passthrough_cover]),
+        meck:expect(pertisk_ingress_tls, paths_for_host, fun(H) ->
+            case H of
+                "ingress.example.com" -> {ok, {IngressCert, IngressKey}};
+                _ -> error
+            end
+        end),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (reload_config())#{
+                https_port => 18443,
+                tls_cert_file => Cert,
+                tls_key_file => Key,
+                sites => [
+                    #{
+                        host => <<"ingress.example.com">>,
+                        backend => <<"web">>,
+                        routes => []
+                    }
+                ]
+            }
+        end),
+        try
+            ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
+            ?assert(meck:num_calls(cowboy, start_tls, '_') >= 1)
+        after
+            pertisk_eproxy_test_helpers:unload_mocks([pertisk_ingress_tls])
+        end
+    end).
+
+reload_proxy_tls_wildcard_sni_test() ->
+    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+    file:delete(DbPath),
+    application:set_env(pertisk_eproxy, db_file, DbPath),
+    ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+    TmpDir = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk-app-wc-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    ok = file:make_dir(TmpDir),
+    CertFile = filename:join(TmpDir, "cert.pem"),
+    KeyFile = filename:join(TmpDir, "key.pem"),
+    ok = file:write_file(CertFile, read_priv_pem_file("listener.pem")),
+    ok = file:write_file(KeyFile, read_priv_pem_file("listener.key")),
+    {ok, CertId} = pertisk_eproxy_db:insert_certificate_pem(DbPath, <<"wc-cert">>, CertFile, KeyFile),
+    ListenerCert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    ListenerKey = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+    try
+        with_app_reload_mocks(fun() ->
+            meck:expect(pertisk_eproxy_config, get_config, fun() ->
+                (reload_config())#{
+                    https_port => 18443,
+                    tls_cert_file => ListenerCert,
+                    tls_key_file => ListenerKey,
+                    sites => [
+                        #{
+                            host => <<"*.wc.example.com">>,
+                            backend => <<"web">>,
+                            certificate => integer_to_binary(CertId),
+                            routes => []
+                        },
+                        #{
+                            host => <<"admin.wc.example.com">>,
+                            backend => <<"web">>,
+                            routes => []
+                        }
+                    ]
+                }
+            end),
+            meck:expect(pertisk_eproxy_config, db_file, fun() -> DbPath end),
+            ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
+            ?assert(meck:num_calls(cowboy, start_tls, '_') >= 1)
+        end)
+    after
+        _ = os:cmd("rm -rf " ++ TmpDir),
+        file:delete(DbPath)
+    end.
+
+read_priv_pem_file(Name) ->
+    {ok, Bin} = file:read_file(filename:join([code:priv_dir(pertisk_eproxy), "tls", Name])),
+    Bin.

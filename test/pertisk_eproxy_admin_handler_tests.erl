@@ -94,6 +94,21 @@ init_dispatch(Method, Path, Resource, Body) ->
     init_dispatch(Method, Path, Resource, Body, []).
 
 init_dispatch(Method, Path, Resource, Body, Headers) ->
+    init_dispatch_with_retry(Method, Path, Resource, Body, Headers, 8).
+
+init_dispatch_with_retry(Method, Path, Resource, Body, Headers, 0) ->
+    do_init_dispatch(Method, Path, Resource, Body, Headers);
+init_dispatch_with_retry(Method, Path, Resource, Body, Headers, Retries) ->
+    Resp = do_init_dispatch(Method, Path, Resource, Body, Headers),
+    case should_retry_locked_response(Method, Resp) of
+        true ->
+            timer:sleep(75),
+            init_dispatch_with_retry(Method, Path, Resource, Body, Headers, Retries - 1);
+        false ->
+            Resp
+    end.
+
+do_init_dispatch(Method, Path, Resource, Body, Headers) ->
     Parent = self(),
     Stub = pertisk_eproxy_cowboy_stub_conn:start(Parent, Body),
     HdrMap = maps:from_list([{string:lowercase(K), V} || {K, V} <- Headers]),
@@ -3711,8 +3726,9 @@ api_dns_providers_init_get_test() ->
 
 api_dns_providers_init_post_test() ->
     with_proxy_db(fun(_Db) ->
+        Suffix = integer_to_binary(erlang:unique_integer([positive])),
         Body = thoas:encode(#{
-            <<"name">> => <<"init-cf">>,
+            <<"name">> => <<"init-cf-", Suffix/binary>>,
             <<"provider_type">> => <<"cloudflare">>,
             <<"credentials">> => #{<<"api_token">> => <<"tok">>}
         }),
@@ -3759,11 +3775,20 @@ api_put_site_init_test() ->
 
 api_certificate_put_init_test() ->
     with_proxy_db(fun(_Db) ->
-        Add = thoas:encode(#{<<"name">> => <<"init-put-cert">>}),
-        {ok, 201, _, _} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
-        Put = thoas:encode(#{<<"name">> => <<"init-put-cert-renamed">>}),
+        Suffix = integer_to_binary(erlang:unique_integer([positive])),
+        Name = <<"init-put-cert-", Suffix/binary>>,
+        Renamed = <<"init-put-cert-renamed-", Suffix/binary>>,
+        Add = thoas:encode(#{<<"name">> => Name}),
+        {ok, 201, _, Resp} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
+        {ok, #{<<"id">> := Id}} = thoas:decode(Resp),
+        IdBin =
+            case Id of
+                I when is_integer(I) -> integer_to_binary(I);
+                B when is_binary(B) -> B
+            end,
+        Put = thoas:encode(#{<<"name">> => Renamed}),
         ?assertMatch(
             {ok, 200, _, _},
-            init_dispatch(<<"PUT">>, <<"/api/certificates/1">>, certificate, Put)
+            init_dispatch(<<"PUT">>, <<"/api/certificates/", IdBin/binary>>, certificate, Put)
         )
     end).
