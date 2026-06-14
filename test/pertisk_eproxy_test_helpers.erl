@@ -12,7 +12,11 @@
     start_backend/2,
     stop_backend/1,
     tmp_db/0,
+    init_tmp_db/1,
+    init_tmp_db/2,
     with_db_lock/1,
+    with_h3_udp_bind/2,
+    gateway_test_port/0,
     put_config_retry/1,
     put_config_retry/2,
     unload_mocks/1,
@@ -26,6 +30,7 @@
 
 -define(DB_LOCK_KEY, pertisk_db_lock_depth).
 -define(MECK_UNLOAD_TIMEOUT_MS, 250).
+-define(GLOBAL_DB_LOCK_DIR, "pertisk_eunit_sqlite.global.lock").
 
 ensure_lager() ->
     application:ensure_all_started(lager).
@@ -99,12 +104,148 @@ stop_backend(Name) ->
     end.
 
 tmp_db() ->
+    Pid =
+        case os:getpid() of
+            P when is_list(P) -> P;
+            P when is_integer(P) -> integer_to_list(P);
+            P -> lists:flatten(io_lib:format("~p", [P]))
+        end,
     filename:join([
         os:getenv("TMPDIR", "/tmp"),
-        "pertisk_db_" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".db"
+        "pertisk_db_"
+            ++ integer_to_list(erlang:unique_integer([positive, monotonic]))
+            ++ "_"
+            ++ Pid
+            ++ ".db"
     ]).
 
-%% Serialize SQLite mutations across eunit modules (reentrant within one process).
+%% Stable per-VM UDP/TCP port for H3 gateway tests (avoids parallel eaddrinuse).
+gateway_test_port() ->
+    16000 + (erlang:phash2({os:getpid(), node()}, 8000) rem 8000).
+
+init_tmp_db(DbPath) ->
+    init_tmp_db(DbPath, 24).
+
+init_tmp_db(DbPath, Retries) ->
+    init_tmp_db_unlocked(DbPath, Retries).
+
+init_tmp_db_unlocked(DbPath, 0) ->
+    with_sqlite_global_lock(fun() -> pertisk_eproxy_db:init(DbPath) end);
+init_tmp_db_unlocked(DbPath, Retries) ->
+    case with_sqlite_global_lock(fun() -> pertisk_eproxy_db:init(DbPath) end) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, Reason} when Retries > 0 ->
+            case config_locked_error(Reason) of
+                true ->
+                    timer:sleep(50 + (24 - Retries) * 25),
+                    init_tmp_db_unlocked(DbPath, Retries - 1);
+                false ->
+                    {error, Reason}
+            end;
+        Other ->
+            Other
+    end.
+
+with_sqlite_global_lock(Fun) ->
+    ok = acquire_global_db_lock(),
+    try Fun()
+    after release_global_db_lock()
+    end.
+
+with_h3_udp_bind(BindMode, Fun) when BindMode =:= split; BindMode =:= dual_stack ->
+    ensure_h3_env(),
+    with_db_lock(fun() ->
+        Config0 = pertisk_eproxy_config:get_config(),
+        Config1 = Config0#{h3_udp_bind => BindMode},
+        ok = put_config_retry(Config1),
+        try Fun()
+        after put_config_retry(Config0)
+        end
+    end).
+
+global_db_lock_dir() ->
+    filename:join([os:getenv("TMPDIR", "/tmp"), ?GLOBAL_DB_LOCK_DIR]).
+
+owner_pid_string() ->
+    case os:getpid() of
+        P when is_list(P) -> P;
+        P when is_integer(P) -> integer_to_list(P);
+        P -> lists:flatten(io_lib:format("~p", [P]))
+    end.
+
+acquire_global_db_lock() ->
+    LockDir = global_db_lock_dir(),
+    OwnerFile = filename:join([LockDir, "owner"]),
+    acquire_global_db_lock(LockDir, OwnerFile, 600).
+
+acquire_global_db_lock(_LockDir, _OwnerFile, 0) ->
+    error(global_sqlite_lock_timeout);
+acquire_global_db_lock(LockDir, OwnerFile, Tries) ->
+    case file:make_dir(LockDir) of
+        ok ->
+            ok = file:write_file(OwnerFile, owner_pid_string());
+        {error, eexist} ->
+            case stale_global_db_lock(LockDir, OwnerFile) of
+                true ->
+                    acquire_global_db_lock(LockDir, OwnerFile, Tries - 1);
+                false ->
+                    timer:sleep(50),
+                    acquire_global_db_lock(LockDir, OwnerFile, Tries - 1)
+            end;
+        {error, Reason} ->
+            {error, {global_db_lock, Reason}}
+    end.
+
+pid_string(Bin) when is_binary(Bin) ->
+    binary_to_list(string:trim(Bin, leading, " \t\n\r"));
+pid_string(L) when is_list(L) ->
+    string:trim(L).
+
+stale_global_db_lock(LockDir, OwnerFile) ->
+    case file:read_file(OwnerFile) of
+        {ok, PidBin} ->
+            PidStr = pid_string(PidBin),
+            case os:type() of
+                {unix, _} ->
+                    Alive =
+                        case os:cmd("kill -0 " ++ PidStr ++ " 2>/dev/null") of
+                            "" -> true;
+                            _ -> false
+                        end,
+                    case Alive of
+                        true -> false;
+                        false -> file:del_dir_r(LockDir), true
+                    end;
+                _ ->
+                    false
+            end;
+        {error, enoent} ->
+            file:del_dir_r(LockDir),
+            true;
+        _ ->
+            file:del_dir_r(LockDir),
+            true
+    end.
+
+release_global_db_lock() ->
+    LockDir = global_db_lock_dir(),
+    OwnerFile = filename:join([LockDir, "owner"]),
+    MyPid = owner_pid_string(),
+    case file:read_file(OwnerFile) of
+        {ok, PidBin} ->
+            case pid_string(PidBin) =:= MyPid of
+                true ->
+                    _ = try file:del_dir_r(LockDir) catch _:_ -> ok end,
+                    ok;
+                false ->
+                    ok
+            end;
+        _ ->
+            ok
+    end.
+
+%% Serialize SQLite mutations within one eunit VM (reentrant).
 with_db_lock(Fun) ->
     case get(?DB_LOCK_KEY) of
         undefined ->
@@ -129,9 +270,9 @@ put_config_retry(Config, Retries) ->
     with_db_lock(fun() -> put_config_retry_unlocked(Config, Retries) end).
 
 put_config_retry_unlocked(Config, 0) ->
-    pertisk_eproxy_config:put_config(Config);
+    with_sqlite_global_lock(fun() -> pertisk_eproxy_config:put_config(Config) end);
 put_config_retry_unlocked(Config, Retries) ->
-    case pertisk_eproxy_config:put_config(Config) of
+    case with_sqlite_global_lock(fun() -> pertisk_eproxy_config:put_config(Config) end) of
         ok ->
             ok;
         {error, Reason} when Retries > 0 ->

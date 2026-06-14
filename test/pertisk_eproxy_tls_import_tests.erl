@@ -59,12 +59,19 @@ save_listener_pem_binary_tls_data_dir_test() ->
     end.
 
 save_listener_pem_cannot_create_dir_test() ->
-    BadDir = "/nonexistent/root/pertisk_tls_" ++ integer_to_list(erlang:unique_integer([positive])),
+    TmpBase = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "pertisk_tls_block_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ]),
+    Blocker = TmpBase ++ ".file",
+    ok = file:write_file(Blocker, <<>>),
+    BadDir = Blocker ++ "/nested",
     application:set_env(pertisk_eproxy, tls_data_dir, BadDir),
     Cert = read_priv_pem("listener.pem"),
     Key = read_priv_pem("listener.key"),
     try
         ?assertMatch({error, _}, pertisk_eproxy_tls_import:save_listener_pem(Cert, Key))
     after
-        application:unset_env(pertisk_eproxy, tls_data_dir)
+        application:unset_env(pertisk_eproxy, tls_data_dir),
+        _ = file:delete(Blocker)
     end.

@@ -209,25 +209,7 @@ wait_config_stopped(N) ->
     end.
 
 init_tmp_db(DbPath) ->
-    init_tmp_db(DbPath, 12).
-
-init_tmp_db(DbPath, 0) ->
-    pertisk_eproxy_db:init(DbPath);
-init_tmp_db(DbPath, Retries) ->
-    case pertisk_eproxy_db:init(DbPath) of
-        {ok, _} = Ok ->
-            Ok;
-        {error, {sqlite_error, Msg, _}} when Retries > 0 ->
-            case sqlite_locked_msg(Msg) of
-                true ->
-                    timer:sleep(75),
-                    init_tmp_db(DbPath, Retries - 1);
-                false ->
-                    {error, {sqlite_error, Msg, locked}}
-            end;
-        Other ->
-            Other
-    end.
+    pertisk_eproxy_test_helpers:init_tmp_db(DbPath).
 
 sqlite_locked_msg(Msg) when is_binary(Msg) ->
     binary:match(Msg, <<"locked">>) =/= nomatch;

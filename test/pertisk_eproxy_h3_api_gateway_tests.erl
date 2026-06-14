@@ -791,18 +791,32 @@ proxied_options_success_test() ->
     end).
 
 gateway_tls_config() ->
+    gateway_tls_config(#{}).
+
+gateway_tls_config(Extra) when is_map(Extra) ->
+    Port = pertisk_eproxy_test_helpers:gateway_test_port(),
     Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
     Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
-    #{
-        https_port => 18443,
-        quic_port => 18443,
-        tls_cert_file => Cert,
-        tls_key_file => Key,
-        sites => [],
-        h3_idle_timeout_secs => 300,
-        h3_keepalive_interval_secs => 20,
-        h3_quic_pool_size => 4
-    }.
+    maps:merge(
+        #{
+            https_port => Port,
+            quic_port => Port,
+            tls_cert_file => Cert,
+            tls_key_file => Key,
+            sites => [],
+            h3_idle_timeout_secs => 300,
+            h3_keepalive_interval_secs => 20,
+            h3_quic_pool_size => 4
+        },
+        Extra
+    ).
+
+uses_unix_split_udp_bind() ->
+    case os:type() of
+        {unix, linux} -> false;
+        {unix, _} -> true;
+        _ -> false
+    end.
 
 with_gateway_start_mock(Fun) ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),
@@ -1035,26 +1049,36 @@ gateway_start_v6_only_fallback_test() ->
     end).
 
 gateway_start_split_bind_fallback_test() ->
-    pertisk_eproxy_test_helpers:ensure_h3_env(),
-    unload_mocks([quic_h3]),
-    meck:new(quic_h3, [unstick, no_link]),
-    Ref = make_ref(), put({quic_start_count, Ref}, 0),
-    meck:expect(quic_h3, start_server, fun(_, _, _) ->
-        N = get({quic_start_count, Ref}) + 1,
-        put({quic_start_count, Ref}, N),
-        case N of
-            1 -> {error, eaddrinuse};
-            2 -> {error, eaddrinuse};
-            _ -> {ok, self()}
-        end
-    end),
-    meck:expect(quic_h3, stop_server, fun(_) -> ok end),
-    try
-        ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
-    after
-        erase({quic_start_count, Ref}),
-        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
-        unload_mocks([quic_h3])
+    case uses_unix_split_udp_bind() of
+        false ->
+            %% Linux split/dual-stack paths differ; covered by gateway_start_v6_only_fallback_test.
+            ok;
+        true ->
+            pertisk_eproxy_test_helpers:with_h3_udp_bind(split, fun() ->
+                pertisk_eproxy_test_helpers:ensure_h3_env(),
+                unload_mocks([quic_h3]),
+                meck:new(quic_h3, [unstick, no_link]),
+                Ref = make_ref(), put({quic_start_count, Ref}, 0),
+                meck:expect(quic_h3, start_server, fun(_, _, _) ->
+                    N = get({quic_start_count, Ref}) + 1,
+                    put({quic_start_count, Ref}, N),
+                    case N of
+                        1 -> {error, eaddrinuse};
+                        2 -> {error, eaddrinuse};
+                        _ -> {ok, self()}
+                    end
+                end),
+                meck:expect(quic_h3, stop_server, fun(_) -> ok end),
+                try
+                    ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
+                after
+                    erase({quic_start_count, Ref}),
+                    pertisk_eproxy_test_helpers:ignoring_errors(
+                        fun() -> pertisk_eproxy_h3_api_gateway:stop() end
+                    ),
+                    unload_mocks([quic_h3])
+                end
+            end)
     end.
 
 gateway_start_incompatible_qpack_test() ->
@@ -1542,19 +1566,26 @@ gateway_start_sni_by_cert_name_test() ->
     end).
 
 gateway_start_unix_v4_only_test() ->
-    with_gateway_start_mock(fun() ->
-        unload_mocks([quic_h3]),
-        meck:new(quic_h3, [unstick, no_link]),
-        meck:expect(quic_h3, start_server, fun(Name, _, _) ->
-            case Name of
-                pertisk_eproxy_h3_api_v4 -> {ok, self()};
-                pertisk_eproxy_h3_api -> {error, eaddrinuse};
-                _ -> {ok, self()}
-            end
-        end),
-        meck:expect(quic_h3, stop_server, fun(_) -> ok end),
-        ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
-    end).
+    case uses_unix_split_udp_bind() of
+        false ->
+            ok;
+        true ->
+            pertisk_eproxy_test_helpers:with_h3_udp_bind(split, fun() ->
+                with_gateway_start_mock(fun() ->
+                    unload_mocks([quic_h3]),
+                    meck:new(quic_h3, [unstick, no_link]),
+                    meck:expect(quic_h3, start_server, fun(Name, _, _) ->
+                        case Name of
+                            pertisk_eproxy_h3_api_v4 -> {ok, self()};
+                            pertisk_eproxy_h3_api -> {error, eaddrinuse};
+                            _ -> {ok, self()}
+                        end
+                    end),
+                    meck:expect(quic_h3, stop_server, fun(_) -> ok end),
+                    ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(gateway_tls_config()))
+                end)
+            end)
+    end.
 
 post_body_collect_via_messages_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),

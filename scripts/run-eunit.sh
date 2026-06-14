@@ -345,6 +345,7 @@ fi
 
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
+rm -rf "${TMPDIR:-/tmp}/pertisk_eunit_sqlite.global.lock" 2>/dev/null || true
 : >"$FAILURES_FILE"
 : >"$JOB_MANIFEST"
 

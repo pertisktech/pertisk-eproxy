@@ -629,41 +629,10 @@ with_config(Fun) ->
     end.
 
 init_tmp_db(DbPath) ->
-    init_tmp_db(DbPath, 12).
+    pertisk_eproxy_test_helpers:init_tmp_db(DbPath).
 
 put_config_retry(Config) ->
     pertisk_eproxy_test_helpers:put_config_retry(Config).
-
-sqlite_locked_msg(Msg) when is_binary(Msg) ->
-    binary:match(Msg, <<"locked">>) =/= nomatch;
-sqlite_locked_msg(Msg) when is_list(Msg) ->
-    string:find(Msg, "locked") =/= nomatch;
-sqlite_locked_msg(_) ->
-    false.
-
-init_tmp_db(DbPath, 0) ->
-    pertisk_eproxy_db:init(DbPath);
-init_tmp_db(DbPath, Retries) ->
-    case pertisk_eproxy_db:init(DbPath) of
-        {ok, _} = Ok ->
-            Ok;
-        {error, {sqlite_error, Msg, _}} when Retries > 0 ->
-            Locked =
-                case Msg of
-                    B when is_binary(B) -> binary:match(B, <<"locked">>) =/= nomatch;
-                    S when is_list(S) -> string:find(S, "locked") =/= nomatch;
-                    _ -> false
-                end,
-            case Locked of
-                true ->
-                    timer:sleep(50),
-                    init_tmp_db(DbPath, Retries - 1);
-                false ->
-                    {error, {sqlite_error, Msg, locked}}
-            end;
-        Other ->
-            Other
-    end.
 
 stop_config_if_running() ->
     case whereis(pertisk_eproxy_config) of
@@ -848,12 +817,16 @@ put_config_persists_runtime_config_test() ->
                 upstreams => [#{addr => <<"127.0.0.1:1">>, weight => 1}]
             }],
             certificates => [],
-            dns_providers => [#{name => <<"cf">>, provider_type => <<"label">>, credentials => #{}}]
+            dns_providers => [#{
+                name => <<"cf">>,
+                provider_type => <<"cloudflare">>,
+                credentials => #{<<"api_token">> => <<"test">>}
+            }]
         },
         ?assertEqual(ok, put_config_retry(Config)),
+        ?assertMatch({ok, [_]}, pertisk_eproxy_db:list_dns_providers(DbPath)),
         {ok, Stored} = pertisk_eproxy_db:get_runtime_config(DbPath),
-        ?assertEqual(1, length(maps:get(sites, Stored))),
-        ?assertMatch({ok, [_]}, pertisk_eproxy_db:list_dns_providers(DbPath))
+        ?assertEqual(1, length(maps:get(sites, Stored)))
     end).
 
 put_config_rejected_in_ingress_env_test() ->
