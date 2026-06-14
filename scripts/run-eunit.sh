@@ -15,7 +15,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REBAR="${REBAR:-rebar3}"
 COVER=0
-ADMIN_BATCH_SIZE="${ADMIN_HANDLER_EUNIT_BATCH_SIZE:-120}"
+ADMIN_BATCH_SIZE="${ADMIN_HANDLER_EUNIT_BATCH_SIZE:-80}"
 CHUNK_DIR="${ROOT_DIR}/_build/test/cover/chunks"
 COVER_OUT="${ROOT_DIR}/_build/test/cover/eunit.coverdata"
 LOG_DIR="${ROOT_DIR}/_build/test/logs"
@@ -256,6 +256,10 @@ print_failure_excerpt() {
     return 0
   fi
   echo "    log: $log"
+  if grep -qE 'cancelled|global_sqlite_lock_timeout|did not run' "$log" 2>/dev/null; then
+    echo "    --- cancelled / timeout ---"
+    grep -E 'cancelled|timeout|global_sqlite|did not run|Pending' "$log" | head -15 | sed 's/^/      /'
+  fi
   if grep -qE '^\*\*\* ' "$log" 2>/dev/null; then
     echo "    --- eunit failures ---"
     grep -E '^\*\*\* ' "$log" | head -20 | sed 's/^/      /'
@@ -345,7 +349,6 @@ fi
 
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
-rm -rf "${TMPDIR:-/tmp}/pertisk_eunit_sqlite.global.lock" 2>/dev/null || true
 : >"$FAILURES_FILE"
 : >"$JOB_MANIFEST"
 

@@ -106,6 +106,14 @@ apply_without_console_backend_test() ->
     os:unsetenv("PERTISK_LOG_LEVEL").
 
 apply_empty_handlers_covers_backend_error_paths_test() ->
+    %% Stops/restarts lager globally; unsafe under parallel eunit (other jobs need lager).
+    case os:getenv("PERTISK_EUNIT_PARALLEL") of
+        "1" -> apply_empty_handlers_covers_backend_error_paths_test_body();
+        false -> apply_empty_handlers_covers_backend_error_paths_test_body();
+        _ -> ok
+    end.
+
+apply_empty_handlers_covers_backend_error_paths_test_body() ->
     application:load(lager),
     application:set_env(lager, handlers, []),
     application:stop(lager),
