@@ -20,8 +20,13 @@ CHUNK_DIR="${ROOT_DIR}/_build/test/cover/chunks"
 COVER_OUT="${ROOT_DIR}/_build/test/cover/eunit.coverdata"
 LOG_DIR="${ROOT_DIR}/_build/test/logs"
 FAILURES_FILE="${LOG_DIR}/.failures"
+JOB_MANIFEST="${LOG_DIR}/jobs.tsv"
+SEEN_DIR="${LOG_DIR}/seen"
+SLOT_DIR="${LOG_DIR}/slots"
 COVER_LOCK="${CHUNK_DIR}/.archive.lock.dir"
 ADMIN_MOD="pertisk_eproxy_admin_handler_tests"
+JOB_TOTAL=0
+JOBS_STARTED=0
 
 cpu_count() {
   if command -v nproc >/dev/null 2>&1; then
@@ -46,10 +51,16 @@ default_parallel() {
 }
 
 EUNIT_PARALLEL="${EUNIT_PARALLEL:-$(default_parallel)}"
-if ! [[ "$EUNIT_PARALLEL" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EUNIT_PARALLEL must be a positive integer (got: ${EUNIT_PARALLEL})" >&2
-  exit 1
-fi
+case "$EUNIT_PARALLEL" in
+  *[!0-9]*|'')
+    echo "EUNIT_PARALLEL must be a positive integer (got: ${EUNIT_PARALLEL})" >&2
+    exit 1
+    ;;
+  0)
+    echo "EUNIT_PARALLEL must be >= 1 (got: 0)" >&2
+    exit 1
+    ;;
+esac
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -106,6 +117,7 @@ archive_cover_chunk() {
     cp "$COVER_OUT" "$chunk_file"
     rm -f "$COVER_OUT"
   fi
+  clean_root_coverdata
 }
 
 eunit_cover_arg() {
@@ -119,20 +131,65 @@ sanitize_job_id() {
   printf '%s' "$1" | tr '/:+ ' '____'
 }
 
+lookup_job_id() {
+  local safe_id="$1"
+  awk -F '\t' -v id="$safe_id" '$1 == id { print $2; exit }' "$JOB_MANIFEST" 2>/dev/null
+}
+
+lookup_job_start() {
+  local safe_id="$1"
+  awk -F '\t' -v id="$safe_id" '$1 == id { print $3; exit }' "$JOB_MANIFEST" 2>/dev/null
+}
+
+progress_line() {
+  # stderr, unbuffered where supported
+  printf '%s\n' "$*" >&2
+}
+
+acquire_slot() {
+  local n=0
+  while true; do
+    n=0
+    while [ "$n" -lt "$EUNIT_PARALLEL" ]; do
+      if mkdir "${SLOT_DIR}/${n}" 2>/dev/null; then
+        printf '%s' "$n"
+        return 0
+      fi
+      n=$((n + 1))
+    done
+    sleep 0.05
+  done
+}
+
+release_slot() {
+  local slot="$1"
+  rmdir "${SLOT_DIR}/${slot}" 2>/dev/null || true
+}
+
+active_slot_count() {
+  find "$SLOT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '
+}
+
 # $1=job_id  $2=rebar eunit args (e.g. --module=foo or --test=mod:a+b)
 run_job() {
   local job_id="$1"
   local rebar_args="$2"
-  local safe_id log exit_file start end elapsed rc
+  local safe_id log exit_file start end elapsed rc slot
   safe_id="$(sanitize_job_id "$job_id")"
   log="${LOG_DIR}/${safe_id}.log"
   exit_file="${LOG_DIR}/${safe_id}.exit"
 
+  slot="$(acquire_slot)"
+  JOBS_STARTED=$((JOBS_STARTED + 1))
+  start=$(date +%s)
+  printf '%s\t%s\t%s\n' "$safe_id" "$job_id" "$start" >>"$JOB_MANIFEST"
+  progress_line "==> [start ${JOBS_STARTED}/${JOB_TOTAL}] ${job_id}"
+
   {
+    trap 'release_slot "$slot"' EXIT
     echo "==> job ${job_id}"
     echo "==> rebar3 eunit ${rebar_args}"
     echo "==> started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    start=$(date +%s)
     # shellcheck disable=SC2046
     $REBAR eunit $(eunit_cover_arg) ${rebar_args}
     rc=$?
@@ -150,15 +207,8 @@ run_job() {
   } >"$log" 2>&1 &
 }
 
-wait_for_slot() {
-  while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$EUNIT_PARALLEL" ]; do
-    sleep 0.05
-  done
-}
-
 enqueue_module_job() {
   local mod="$1"
-  wait_for_slot
   run_job "$mod" "--module=${mod}"
 }
 
@@ -167,7 +217,6 @@ enqueue_admin_batch_job() {
   local batch_tests="$2"
   local count="$3"
   local job_id="${ADMIN_MOD}#batch${batch_no}(${count})"
-  wait_for_slot
   run_job "$job_id" "--test=${ADMIN_MOD}:${batch_tests}"
 }
 
@@ -211,11 +260,11 @@ print_failure_excerpt() {
     echo "    --- eunit failures ---"
     grep -E '^\*\*\* ' "$log" | head -20 | sed 's/^/      /'
   fi
-  if grep -qE 'Failed: [1-9]' "$log" 2>/dev/null; then
+  if grep -qE 'Failed: [1-9]|failures' "$log" 2>/dev/null; then
     echo "    --- summary ---"
-    grep -E 'Failed:|Skipped:|Passed:' "$log" | tail -3 | sed 's/^/      /'
+    grep -E 'tests,|Failed:|Skipped:|Passed:' "$log" | tail -5 | sed 's/^/      /'
   fi
-  if ! grep -qE '^\*\*\* |Failed: [1-9]' "$log" 2>/dev/null; then
+  if ! grep -qE '^\*\*\* |Failed: [1-9]|failures' "$log" 2>/dev/null; then
     echo "    --- tail ---"
     tail -25 "$log" | sed 's/^/      /'
   fi
@@ -227,6 +276,9 @@ report_failures() {
     return 0
   fi
   failed="$(sort -u "$FAILURES_FILE" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$failed" -eq 0 ]; then
+    return 0
+  fi
   total="$(find "$LOG_DIR" -maxdepth 1 -name '*.exit' | wc -l | tr -d ' ')"
   echo "" >&2
   echo "==> EUNIT FAILED: ${failed} of ${total} job(s)" >&2
@@ -243,16 +295,61 @@ report_failures() {
   return 1
 }
 
+wait_for_jobs_with_progress() {
+  local completed=0 last_completed=0 stall_ticks=0 running job_id safe_id rc start_ts now elapsed
+  while [ "$completed" -lt "$JOB_TOTAL" ]; do
+    for exit_file in "$LOG_DIR"/*.exit; do
+      [ -e "$exit_file" ] || continue
+      safe_id="$(basename "$exit_file" .exit)"
+      [ -f "${SEEN_DIR}/${safe_id}" ] && continue
+      touch "${SEEN_DIR}/${safe_id}"
+      rc="$(tr -d '[:space:]' <"$exit_file")"
+      job_id="$(lookup_job_id "$safe_id")"
+      [ -z "$job_id" ] && job_id="$safe_id"
+      start_ts="$(lookup_job_start "$safe_id")"
+      now=$(date +%s)
+      if [ -n "$start_ts" ]; then
+        elapsed=$((now - start_ts))
+      else
+        elapsed=0
+      fi
+      completed=$((completed + 1))
+      if [ "$rc" = "0" ]; then
+        progress_line "==> [done ${completed}/${JOB_TOTAL}] OK   ${job_id} (${elapsed}s)"
+      else
+        progress_line "==> [done ${completed}/${JOB_TOTAL}] FAIL ${job_id} (${elapsed}s) — ${LOG_DIR}/${safe_id}.log"
+      fi
+    done
+
+    if [ "$completed" -lt "$JOB_TOTAL" ]; then
+      if [ "$completed" -eq "$last_completed" ]; then
+        stall_ticks=$((stall_ticks + 1))
+        if [ "$stall_ticks" -ge 20 ]; then
+          running="$(active_slot_count)"
+          progress_line "==> progress: ${completed}/${JOB_TOTAL} done, ${running} active (tail logs: ${LOG_DIR}/)"
+          stall_ticks=0
+        fi
+      else
+        last_completed=$completed
+        stall_ticks=0
+      fi
+      sleep 0.5
+    fi
+  done
+  builtin wait 2>/dev/null || true
+}
+
 if [ "$COVER" -eq 1 ]; then
   init_cover_chunks
 fi
 
 rm -rf "$LOG_DIR"
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$SEEN_DIR" "$SLOT_DIR"
 : >"$FAILURES_FILE"
+: >"$JOB_MANIFEST"
 
-echo "==> compile (once before parallel eunit)"
-$REBAR compile
+echo "==> compile test profile (once before parallel eunit)"
+$REBAR as test compile
 
 MODULES=()
 while IFS= read -r mod; do
@@ -268,20 +365,22 @@ admin_batches=0
 if [ -f "$ROOT_DIR/test/${ADMIN_MOD}.erl" ]; then
   admin_batches=$(( ($(grep -cE '^[a-z_][a-z0-9_]*_test\(\)' "$ROOT_DIR/test/${ADMIN_MOD}.erl") + ADMIN_BATCH_SIZE - 1) / ADMIN_BATCH_SIZE ))
 fi
-job_total=$(( ${#MODULES[@]} + admin_batches ))
+JOB_TOTAL=$(( ${#MODULES[@]} + admin_batches ))
 
-echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${job_total} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))"
+echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))"
+echo "==> per-job logs: ${LOG_DIR}/"
 
 set +e
 for mod in "${MODULES[@]}"; do
-  enqueue_module_job "$mod"
+  enqueue_module_job "$mod" &
 done
-collect_admin_batches
+collect_admin_batches &
 wait
+wait_for_jobs_with_progress
 set -e
 
 if report_failures; then
-  echo "==> eunit passed (${job_total} job(s))"
+  echo "==> eunit passed (${JOB_TOTAL} job(s))"
 else
   exit 1
 fi
