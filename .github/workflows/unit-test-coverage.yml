@@ -25,10 +25,13 @@ jobs:
           otp="$(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().')"
           echo "OTP ${otp}, $(erl -noshell -eval 'io:format("~s", [erlang:system_info(system_version)]), halt().')"
           rebar3 version
-          test "${otp}" = "27" || {
-            echo "Expected OTP 27 on the self-hosted runner (got ${otp})." >&2
-            exit 1
-          }
+          case "${otp}" in
+            27|28) ;;
+            *)
+              echo "Expected OTP 27 or 28 on the self-hosted runner (got ${otp})." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Patch dependencies
         run: make patch-ekub patch-quic patch-hackney
