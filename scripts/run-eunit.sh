@@ -127,14 +127,16 @@ archive_cover_chunk() {
   fi
 }
 
-eunit_cover_args() {
+eunit_cover_env() {
   local safe_id="$1"
   if [ "$COVER" -eq 1 ]; then
     export PERTISK_EUNIT_COVER=1
     local cover_base
     cover_base="$(job_cover_base "$safe_id")"
     mkdir -p "$(dirname "$cover_base")"
-    printf '%s' "--cover --cover_export_name=${cover_base}"
+    export PERTISK_EUNIT_COVER_EXPORT="$cover_base"
+  else
+    unset PERTISK_EUNIT_COVER PERTISK_EUNIT_COVER_EXPORT 2>/dev/null || true
   fi
 }
 
@@ -198,13 +200,13 @@ run_job() {
   {
     trap 'release_slot "$slot"' EXIT
     echo "==> job ${job_id}"
-    echo "==> rebar3 as test eunit ${rebar_args}"
+    echo "==> scripts/eunit-job.escript ${rebar_args}"
     echo "==> started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     export PERTISK_EUNIT_PARALLEL="${EUNIT_PARALLEL}"
-    export REBAR_OFFLINE="${REBAR_OFFLINE:-1}"
+    export ROOT_DIR="$ROOT_DIR"
     cd "$ROOT_DIR"
-    # shellcheck disable=SC2046
-    $REBAR as test eunit $(eunit_cover_args "$safe_id") ${rebar_args}
+    eunit_cover_env "$safe_id"
+    "${ROOT_DIR}/scripts/eunit-job.escript" ${rebar_args}
     rc=$?
     end=$(date +%s)
     elapsed=$((end - start))
@@ -266,9 +268,9 @@ print_failure_excerpt() {
     return 0
   fi
   echo "    log: $log"
-  if grep -qE 'cant_open_file.*\.coverdata|coverdata.*enoent' "$log" 2>/dev/null; then
-    echo "    --- cover/meck (parallel coverdata race) ---"
-    grep -E 'cant_open_file.*\.coverdata|coverdata.*enoent' "$log" | head -5 | sed 's/^/      /'
+  if grep -qE 'missing_module|failed to rename.*\.beam|cant_open_file.*\.coverdata|coverdata.*enoent' "$log" 2>/dev/null; then
+    echo "    --- build/cover race ---"
+    grep -E 'missing_module|failed to rename.*\.beam|cant_open_file.*\.coverdata|coverdata.*enoent' "$log" | head -8 | sed 's/^/      /'
   fi
   if grep -qE 'cancelled|global_sqlite_lock_timeout|did not run|\{timeout,' "$log" 2>/dev/null; then
     echo "    --- cancelled / timeout ---"

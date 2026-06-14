@@ -1,0 +1,104 @@
+#!/usr/bin/env escript
+%% Run one eunit job against precompiled test beams (no rebar3 per job).
+%%
+%% Parallel rebar3 eunit invocations race on _build/test/*.beam (missing_module,
+%% failed .bea# renames). run-eunit.sh compiles once, then calls this script.
+%%
+%% Usage:
+%%   eunit-job.escript --module=pertisk_foo_tests
+%%   eunit-job.escript --test=pertisk_foo_tests:bar_test+baz_test
+%%
+%% Env:
+%%   ROOT_DIR                    project root (default: parent of scripts/)
+%%   PERTISK_EUNIT_COVER=1       start cover and export after the run
+%%   PERTISK_EUNIT_COVER_EXPORT  base path for cover export (no .coverdata suffix)
+-mode(compile).
+
+-define(EUNIT_OPTS, [{scale_timeouts, 12.0}, {timeout, 300}]).
+
+main(Args) ->
+    _ = load_code_paths(),
+    ok = maybe_start_cover(),
+    Spec = parse_spec(Args),
+    Result = eunit:test(Spec, ?EUNIT_OPTS),
+    ok = maybe_export_cover(),
+    case Result of
+        ok -> halt(0);
+        error -> halt(1)
+    end.
+
+parse_spec(Args) ->
+    case parse_spec_args(Args, undefined, undefined) of
+        {module, Mod} ->
+            list_to_atom(Mod);
+        {test, Mod, Tests} ->
+            {list_to_atom(Mod), parse_test_list(Tests)}
+    end.
+
+parse_spec_args([], module, Mod) when Mod =/= undefined ->
+    {module, Mod};
+parse_spec_args([], test, {Mod, Tests}) when Mod =/= undefined, Tests =/= undefined ->
+    {test, Mod, Tests};
+parse_spec_args([], _, _) ->
+    usage_error("expected --module=Mod or --test=Mod:fun1+fun2");
+parse_spec_args(["--module=" ++ Mod | Rest], _, _) ->
+    parse_spec_args(Rest, module, Mod);
+parse_spec_args(["--test=" ++ TestSpec | Rest], _, _) ->
+    case string:split(TestSpec, ":", leading) of
+        [Mod, Tests] ->
+            parse_spec_args(Rest, test, {Mod, Tests});
+        _ ->
+            usage_error("invalid --test= value (want Mod:fun1+fun2)")
+    end;
+parse_spec_args([Other | _], _, _) ->
+    usage_error("unknown argument: " ++ Other).
+
+parse_test_list(Bin) when is_list(Bin) ->
+    [list_to_atom(T) || T <- string:split(Bin, "+", all), T =/= ""].
+
+load_code_paths() ->
+    Root = root_dir(),
+    Globs = [
+        Root ++ "/_build/test/lib/*/ebin",
+        Root ++ "/_build/test/lib/*/test",
+        Root ++ "/_build/default/lib/*/ebin"
+    ],
+    Paths = lists:flatmap(fun(Glob) -> filelib:wildcard(Glob) end, Globs),
+    Unique = lists:usort(Paths),
+    case code:add_pathsa(Unique) of
+        ok -> ok;
+        {error, bad_directory} -> usage_error("failed to add code paths")
+    end.
+
+root_dir() ->
+    case os:getenv("ROOT_DIR") of
+        false ->
+            filename:dirname(filename:dirname(escript:script_name()));
+        Dir ->
+            Dir
+    end.
+
+maybe_start_cover() ->
+    case os:getenv("PERTISK_EUNIT_COVER") of
+        "1" ->
+            case cover:start() of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok
+            end;
+        _ ->
+            ok
+    end.
+
+maybe_export_cover() ->
+    case os:getenv("PERTISK_EUNIT_COVER_EXPORT") of
+        false ->
+            ok;
+        Base ->
+            File = Base ++ ".coverdata",
+            ok = filelib:ensure_dir(File),
+            cover:export(File)
+    end.
+
+usage_error(Msg) ->
+    io:format(standard_error, "eunit-job.escript: ~s~n", [Msg]),
+    halt(2).
