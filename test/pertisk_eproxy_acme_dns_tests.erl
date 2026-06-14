@@ -2177,3 +2177,70 @@ validate_dns_provider_route53_with_fake_lego_test() ->
     after
         safe_meck_unload(pertisk_eproxy_acme_lego)
     end.
+
+scan_dns_provider_not_found_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"orphan.example">>, <<"missing-dns">>)],
+            [backend()]
+        ),
+        try
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).
+
+validate_dns_provider_godaddy_with_fake_lego_test() ->
+    meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough, no_passthrough_cover]),
+    meck:expect(pertisk_eproxy_acme_lego, validate_provider, fun(_, _, _) ->
+        {ok, #{lego_path => <<"/bin/lego">>, env_var_count => 2}}
+    end),
+    try
+        ?assertMatch(
+            {ok, #{mode := <<"lego">>, provider := <<"godaddy">>}},
+            pertisk_eproxy_acme_dns:validate_dns_provider(
+                <<"godaddy">>,
+                #{<<"api_key">> => <<"k">>, <<"api_secret">> => <<"s">>}
+            )
+        )
+    after
+        safe_meck_unload(pertisk_eproxy_acme_lego)
+    end.
+
+scan_acme_order_invalid_humanize_test() ->
+    with_scan_env(fun(#{db := DbPath}) ->
+        pertisk_eproxy_test_helpers:sync_router(
+            [site(<<"order-inv.example">>, <<"cf-order">>)],
+            [backend()]
+        ),
+        meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
+        mock_dns_cloudflare(),
+        meck:new(pertisk_eproxy_acme_client, [unstick, no_link, passthrough]),
+        meck:expect(pertisk_eproxy_acme_client, obtain_certificate, fun(_) ->
+            {error, {order_invalid, #{}, [{challenge, timeout}]}}
+        end),
+        try
+            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+                DbPath, <<"cf-order">>, <<"cloudflare">>, #{<<"api_token">> => <<"tok">>, <<"zone_id">> => <<"z">>}
+            ),
+            stop_acme_dns(),
+            {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
+            try
+                gen_server:cast(Pid, scan),
+                timer:sleep(?SCAN_SLEEP_MS)
+            after
+                pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+            end
+        after
+            safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
+            pertisk_eproxy_test_helpers:sync_router([], [])
+        end
+    end).

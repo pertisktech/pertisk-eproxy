@@ -3730,36 +3730,40 @@ api_ingress_status_init_get_test() ->
     end).
 
 api_kubernetes_ingresses_init_get_test() ->
-    with_ingress_status_env(fun() ->
+    with_proxy_db(fun(_Db) ->
         ?assertMatch(
-            {ok, 200, _, _},
+            {ok, 404, _, _},
             init_dispatch(<<"GET">>, <<"/api/kubernetes/ingresses">>, kubernetes_ingresses)
         )
     end).
 
 api_put_site_init_test() ->
     with_proxy_db(fun(_Db) ->
+        Host = <<"init-put.example">>,
         Add = thoas:encode(#{
-            <<"host">> => <<"init-put.example">>,
+            <<"host">> => Host,
             <<"backend">> => <<"web">>,
             <<"routes">> => []
         }),
         ?assertMatch({ok, 201, _, _}, init_dispatch(<<"POST">>, <<"/api/sites">>, sites, Add)),
-        Put = thoas:encode(#{<<"backend">> => <<"web">>, <<"routes">> => []}),
+        Put = thoas:encode(#{
+            <<"host">> => Host,
+            <<"backend">> => <<"web">>,
+            <<"routes">> => []
+        }),
         ?assertMatch(
             {ok, 200, _, _},
             init_dispatch(<<"PUT">>, <<"/api/sites/init-put.example">>, site, Put)
         )
     end).
 
-api_certificate_get_init_test() ->
+api_certificate_put_init_test() ->
     with_proxy_db(fun(_Db) ->
-        Add = thoas:encode(#{<<"name">> => <<"init-get-cert">>}),
-        {ok, 201, _, Resp} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
-        {ok, Map} = thoas:decode(Resp),
-        Id = maps:get(<<"id">>, Map),
+        Add = thoas:encode(#{<<"name">> => <<"init-put-cert">>}),
+        {ok, 201, _, _} = init_dispatch(<<"POST">>, <<"/api/certificates">>, certificates, Add),
+        Put = thoas:encode(#{<<"name">> => <<"init-put-cert-renamed">>}),
         ?assertMatch(
             {ok, 200, _, _},
-            init_dispatch(<<"GET">>, <<"/api/certificates/", Id/binary>>, certificate)
+            init_dispatch(<<"PUT">>, <<"/api/certificates/1">>, certificate, Put)
         )
     end).

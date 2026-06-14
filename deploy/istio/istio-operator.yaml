@@ -1,0 +1,44 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+spec:
+  components:
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        k8s:
+          service:
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+                protocol: TCP
+              - name: https
+                port: 443
+                targetPort: 8443
+                protocol: TCP
+              - name: http3
+                port: 443
+                targetPort: 8443
+                protocol: UDP
+            # Dual-stack service configuration
+            ipFamilies:
+              - IPv4
+              - IPv6
+            ipFamilyPolicy: PreferDualStack
+          hpaSpec:
+            minReplicas: 3
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_QUIC_LISTENERS: "true"
+    # Global dual-stack configuration
+    global:
+      ipFamilies:
+        - IPv4
+        - IPv6
+      ipFamilyPolicy: PreferDualStack
+  meshConfig:
+    # Enable dual-stack connectivity
+    defaultConfig:
+      proxyMetadata:
+        ISTIO_DUAL_STACK: "true"

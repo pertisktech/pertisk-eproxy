@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: goapi-app-vs
+  namespace: test
+spec:
+  hosts:
+    - "api.istio.pertisk.com"
+  gateways:
+    - istio-system/istio-gateway
+  http:
+    - route:
+        - destination:
+            host: goapi-goapitutorial
+            port:
+              number: 80

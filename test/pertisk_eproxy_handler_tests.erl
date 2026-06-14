@@ -1346,3 +1346,14 @@ init_admin_fallback_atom_method_test() ->
             unload_mocks([pertisk_eproxy_h3_local_admin])
         end
     end).
+
+site_advertise_http3_exact_before_wildcard_test() ->
+    pertisk_eproxy_test_helpers:sync_router(
+        [
+            #{host => <<"*.example.com">>, backend => <<"b">>, routes => [], advertise_http3 => true},
+            #{host => <<"admin.example.com">>, backend => <<"b">>, routes => [], advertise_http3 => false}
+        ],
+        []
+    ),
+    ?assertNot(pertisk_eproxy_handler:site_advertise_http3(<<"admin.example.com">>)),
+    pertisk_eproxy_test_helpers:sync_router([], []).
