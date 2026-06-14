@@ -785,7 +785,7 @@ scan_terms_not_agreed_test() ->
         {ok, #{zone_id => <<"z">>, zone_name => <<"example.com">>}}
     end),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_scan_db(DbPath)),
         {ok, _} = pertisk_eproxy_db:insert_dns_provider(
             DbPath,
             <<"cf">>,
@@ -831,7 +831,7 @@ scan_missing_dns_provider_test() ->
     OldDb = application:get_env(pertisk_eproxy, db_file),
     application:set_env(pertisk_eproxy, db_file, DbPath),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_scan_db(DbPath)),
         {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
         try
             gen_server:cast(Pid, scan),
@@ -891,7 +891,7 @@ scan_mocked_successful_issue_test() ->
     meck:expect(pertisk_eproxy_dns_cloudflare, create_txt, fun(_, _, _, _, _) -> {ok, <<"rid">>} end),
     meck:expect(pertisk_eproxy_dns_cloudflare, delete_txt, fun(_, _, _) -> ok end),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_scan_db(DbPath)),
         {ok, _} = pertisk_eproxy_db:insert_dns_provider(
             DbPath,
             <<"cf">>,
@@ -949,7 +949,7 @@ scan_triggers_with_configured_site_test() ->
     OldDb = application:get_env(pertisk_eproxy, db_file),
     application:set_env(pertisk_eproxy, db_file, DbPath),
     try
-        ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+        ?assertMatch({ok, _}, init_scan_db(DbPath)),
         {ok, _} = pertisk_eproxy_db:insert_dns_provider(
             DbPath,
             <<"cf">>,
