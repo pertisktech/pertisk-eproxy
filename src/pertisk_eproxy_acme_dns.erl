@@ -1934,9 +1934,14 @@ save_and_register(DbPath, _Site, Host, PemChain, KeyPem) ->
     ok = file:write_file(KeyPath, KeyPem),
     _ = try file:change_mode(KeyPath, 8#600) catch _:_ -> ok end,
     CertName = cert_db_name(Host),
-    {ok, _Id} = pertisk_eproxy_db:upsert_acme_certificate_pem(DbPath, CertName, CertPath, KeyPath),
-    spawn(fun() -> patch_site_certificate(Host, CertName, CertPath, KeyPath) end),
-    ok.
+    case pertisk_eproxy_db:upsert_acme_certificate_pem(DbPath, CertName, CertPath, KeyPath) of
+        {ok, _Id} ->
+            spawn(fun() -> patch_site_certificate(Host, CertName, CertPath, KeyPath) end),
+            ok;
+        {error, Reason} ->
+            lager:error("ACME: failed to persist cert for host=~s reason=~p", [Host, Reason]),
+            {error, Reason}
+    end.
 
 cert_slug(Host) ->
     binary:replace(binary:replace(Host, <<"*">>, <<"star">>, [global]), <<"/">>, <<"_">>, [global]).
