@@ -190,8 +190,9 @@ run_job() {
     echo "==> job ${job_id}"
     echo "==> rebar3 eunit ${rebar_args}"
     echo "==> started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    export PERTISK_EUNIT_PARALLEL="${EUNIT_PARALLEL}"
     # shellcheck disable=SC2046
-    $REBAR eunit $(eunit_cover_arg) ${rebar_args}
+    $REBAR as test eunit $(eunit_cover_arg) ${rebar_args}
     rc=$?
     end=$(date +%s)
     elapsed=$((end - start))
