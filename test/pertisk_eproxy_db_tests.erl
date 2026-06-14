@@ -955,3 +955,35 @@ sqlite_escape_shell_db_path_quote_test() ->
         cleanup_db(Path),
         file:del_dir(Dir)
     end.
+
+update_certificate_pem_empty_paths_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {ok, Id} = pertisk_eproxy_db:insert_certificate(Path, <<"pem-empty">>),
+        ?assertEqual({error, empty_cert_file},
+            pertisk_eproxy_db:update_certificate_pem(Path, Id, "", "/tmp/key.pem")),
+        ?assertEqual({error, empty_key_file},
+            pertisk_eproxy_db:update_certificate_pem(Path, Id, "/tmp/cert.pem", ""))
+    end).
+
+update_dns_provider_empty_provider_type_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {ok, Id} = pertisk_eproxy_db:insert_dns_provider(Path, <<"cf">>, <<"cloudflare">>, #{}),
+        ?assertEqual({error, empty_provider_type},
+            pertisk_eproxy_db:update_dns_provider(Path, Id, <<"cf">>, <<"   ">>, #{}))
+    end).
+
+get_dns_provider_by_name_blank_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        ?assertEqual({error, not_found}, pertisk_eproxy_db:get_dns_provider_by_name(Path, <<"   ">>))
+    end).
+
+delete_dns_provider_by_name_case_insensitive_trim_test() ->
+    with_db(fun(Path) ->
+        ?assertEqual(ok, pertisk_eproxy_db:migrate_schema(Path)),
+        {ok, _} = pertisk_eproxy_db:insert_dns_provider(Path, <<"Cf-Prod">>, <<"cloudflare">>, #{}),
+        ?assertEqual(ok, pertisk_eproxy_db:delete_dns_provider_by_name(Path, <<"  cf-prod  ">>)),
+        ?assertMatch({ok, []}, pertisk_eproxy_db:list_dns_providers(Path))
+    end).
