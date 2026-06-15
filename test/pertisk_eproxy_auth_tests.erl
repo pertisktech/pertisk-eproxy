@@ -313,24 +313,26 @@ verify_request_with_api_token_test() ->
         end
     end).
 
-login_sqlite_db_error_maps_to_invalid_credentials_test() ->
+login_sqlite_executable_missing_maps_to_invalid_credentials_test() ->
     with_local_auth(fun() ->
         DbPath = pertisk_eproxy_test_helpers:tmp_db(),
         file:delete(DbPath),
         OldDb = application:get_env(pertisk_eproxy, db_file),
+        OldSqlite = application:get_env(pertisk_eproxy, sqlite3_executable),
         application:set_env(pertisk_eproxy, db_file, DbPath),
+        %% Point to an unusable path so DB auth fails fast without global meck state.
+        application:set_env(pertisk_eproxy, sqlite3_executable, "/definitely-not-a-real-sqlite3"),
         pertisk_eproxy_test_helpers:ensure_config(),
-        meck:new(pertisk_eproxy_db, [unstick, passthrough]),
-        meck:expect(pertisk_eproxy_db, verify_admin_login, fun(_, _, _) ->
-            {error, {sqlite3_cli, <<"shell failed">>}}
-        end),
         try
             ?assertEqual(
                 {error, invalid_credentials},
                 pertisk_eproxy_auth:login(<<"admin">>, <<"admin">>)
             )
         after
-            pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_db]),
+            case OldSqlite of
+                {ok, VSqlite} -> application:set_env(pertisk_eproxy, sqlite3_executable, VSqlite);
+                undefined -> application:unset_env(pertisk_eproxy, sqlite3_executable)
+            end,
             case OldDb of
                 {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)

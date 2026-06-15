@@ -817,3 +817,34 @@ ensure_test_dir(Dir) ->
     _ = file:del_dir_r(Dir),
     ok = filelib:ensure_dir(filename:join(Dir, ".keep")),
     Dir.
+
+quic_noise_filter_string_format_substring_stops_test() ->
+    Msg = {string, "prefix ~p suffix", ["Received unknown QUIC message {quic,shutdown,ref,0}"]},
+    ?assertEqual(stop, pertisk_eproxy_app:quic_noise_filter(#{msg => Msg}, #{})).
+
+reload_proxy_tls_listeners_https_port_invalid_type_test() ->
+    Cert = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.pem"]),
+    Key = filename:join([code:priv_dir(pertisk_eproxy), "tls", "listener.key"]),
+    with_app_reload_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (reload_config())#{
+                https_port => <<"18443">>,
+                tls_cert_file => Cert,
+                tls_key_file => Key
+            }
+        end),
+        ?assertEqual(ok, pertisk_eproxy_app:reload_proxy_tls_listeners()),
+        ?assertEqual(0, meck:num_calls(cowboy, start_tls, '_'))
+    end).
+
+start_sites_present_disables_default_tls_lookup_test() ->
+    with_app_start_mocks(fun() ->
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            (start_config())#{
+                https_port => 18443,
+                sites => [#{host => <<"example.com">>, backend => <<"web">>, routes => []}]
+            }
+        end),
+        ?assertMatch({ok, _}, pertisk_eproxy_app:start(normal, [])),
+        ?assertEqual(0, meck:num_calls(cowboy, start_tls, '_'))
+    end).

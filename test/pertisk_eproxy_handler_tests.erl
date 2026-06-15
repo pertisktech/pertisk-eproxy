@@ -1459,3 +1459,34 @@ init_loopback_localhost_upstream_test() ->
             unload_mocks([gun])
         end
     end).
+
+headers_have_sse_auth_invalid_type_test() ->
+    ?assertNot(pertisk_eproxy_handler:headers_have_sse_auth(42)).
+
+upstream_req_kind_grpc_timeout_header_test() ->
+    H = #{<<"grpc-timeout">> => <<"3S">>},
+    ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
+
+upstream_req_kind_x_grpc_web_header_test() ->
+    H = #{<<"x-grpc-web">> => <<"1">>},
+    ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
+
+eventstream_initial_await_timeout_bad_config_defaults_test() ->
+    unload_mocks([pertisk_eproxy_config]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_config, get_config, fun() -> #{sse_initial_headers_timeout_ms => <<"bad">>} end),
+    try
+        ?assertEqual(5000, pertisk_eproxy_handler:eventstream_initial_await_timeout_ms(#{}))
+    after
+        unload_mocks([pertisk_eproxy_config])
+    end.
+
+eventstream_initial_await_timeout_configured_test() ->
+    unload_mocks([pertisk_eproxy_config]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_config, get_config, fun() -> #{sse_initial_headers_timeout_ms => 1234} end),
+    try
+        ?assertEqual(1234, pertisk_eproxy_handler:eventstream_initial_await_timeout_ms(#{}))
+    after
+        unload_mocks([pertisk_eproxy_config])
+    end.
