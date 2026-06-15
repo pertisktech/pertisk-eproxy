@@ -41,15 +41,17 @@ log_proxy(Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site) -
 %% Disable all successful proxy access logs with proxy_access_log=false (ingress default).
 %% When disabled, 4xx/5xx are still logged for ops visibility.
 should_skip_hot_path(Path, Status) ->
-    case proxy_access_log_enabled() of
-        false when Status < 400 ->
-            true;
-        _ ->
-            case Status =:= 200 andalso is_health_path(Path) of
-                false ->
-                    false;
-                true ->
-                    not should_log_health()
+    case Status =:= 200 andalso is_health_path(Path) of
+        true ->
+            %% Health probes are controlled by health_access_log / sampling,
+            %% independent of the generic proxy_access_log switch.
+            not should_log_health();
+        false ->
+            case proxy_access_log_enabled() of
+                false when Status < 400 ->
+                    true;
+                _ ->
+                    false
             end
     end.
 

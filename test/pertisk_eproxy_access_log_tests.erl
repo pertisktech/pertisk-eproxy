@@ -22,16 +22,22 @@ with_server(Fun) ->
 
 log_proxy_and_list_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
-    with_server(fun() ->
-        pertisk_eproxy_access_log:refresh_hot_path_flags(),
-        ?assertEqual(ok,
-            pertisk_eproxy_access_log:log_proxy(
-                <<"host.example">>, <<"GET">>, <<"/page">>, 200, 5, 'HTTP/1.1'
-            )),
-        Entries = pertisk_eproxy_access_log:list(undefined, undefined),
-        ?assert(length(Entries) >= 1),
-        ?assert(is_integer(pertisk_eproxy_access_log:count()))
-    end).
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{proxy_access_log => true}),
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"host.example">>, <<"GET">>, <<"/page">>, 200, 5, 'HTTP/1.1'
+                )),
+            Entries = pertisk_eproxy_access_log:list(undefined, undefined),
+            ?assert(length(Entries) >= 1),
+            ?assert(is_integer(pertisk_eproxy_access_log:count()))
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.
 
 log_proxy_skips_health_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
@@ -80,18 +86,24 @@ gen_server_callbacks_test() ->
 
 log_proxy_with_site_and_host_filter_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
-    with_server(fun() ->
-        pertisk_eproxy_access_log:refresh_hot_path_flags(),
-        ?assertEqual(ok,
-            pertisk_eproxy_access_log:log_proxy(
-                <<"filter.example">>, <<"GET">>, <<"/page">>, 200, 3, 'HTTP/1.1',
-                <<"10.0.0.1">>, <<"filter.example">>
-            )),
-        ByHost = pertisk_eproxy_access_log:list(undefined, <<"filter.example">>, undefined),
-        ?assert(length(ByHost) >= 1),
-        BySite = pertisk_eproxy_access_log:list(undefined, undefined, <<"filter.example">>),
-        ?assert(length(BySite) >= 1)
-    end).
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{proxy_access_log => true}),
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"filter.example">>, <<"GET">>, <<"/page">>, 200, 3, 'HTTP/1.1',
+                    <<"10.0.0.1">>, <<"filter.example">>
+                )),
+            ByHost = pertisk_eproxy_access_log:list(undefined, <<"filter.example">>, undefined),
+            ?assert(length(ByHost) >= 1),
+            BySite = pertisk_eproxy_access_log:list(undefined, undefined, <<"filter.example">>),
+            ?assert(length(BySite) >= 1)
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.
 
 log_proxy_skips_readyz_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
@@ -186,22 +198,29 @@ log_proxy_seven_arg_upstream_test() ->
     end).
 
 list_type_proxy_and_system_filters_test() ->
-    with_server(fun() ->
-        pertisk_eproxy_access_log:refresh_hot_path_flags(),
-        ?assertEqual(ok, pertisk_eproxy_access_log:log_system(<<"info">>, <<"system">>, <<"boot">>)),
-        ?assertEqual(ok,
-            pertisk_eproxy_access_log:log_proxy(
-                <<"h">>, <<"GET">>, <<"/">>, 200, 1, 'HTTP/1.0'
-            )),
-        ?assert(length(pertisk_eproxy_access_log:list(<<"proxy">>, undefined)) >= 1),
-        ?assert(length(pertisk_eproxy_access_log:list(<<"system">>, undefined)) >= 1),
-        ?assert(length(pertisk_eproxy_access_log:list(<<"all">>, undefined)) >= 2)
-    end).
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{proxy_access_log => true}),
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            ?assertEqual(ok, pertisk_eproxy_access_log:log_system(<<"info">>, <<"system">>, <<"boot">>)),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"h">>, <<"GET">>, <<"/">>, 200, 1, 'HTTP/1.0'
+                )),
+            ?assert(length(pertisk_eproxy_access_log:list(<<"proxy">>, undefined)) >= 1),
+            ?assert(length(pertisk_eproxy_access_log:list(<<"system">>, undefined)) >= 1),
+            ?assert(length(pertisk_eproxy_access_log:list(<<"all">>, undefined)) >= 2)
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.
 
 health_access_log_enabled_logs_200_test() ->
     pertisk_eproxy_test_helpers:ensure_config(),
     Base = pertisk_eproxy_config:get_config(),
-    Config = Base#{health_access_log => true},
+    Config = Base#{proxy_access_log => false, health_access_log => true, health_access_log_sample => 0},
     ok = pertisk_eproxy_test_helpers:put_config_retry(Config),
     try
         with_server(fun() ->
