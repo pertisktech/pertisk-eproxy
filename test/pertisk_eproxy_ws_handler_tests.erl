@@ -286,9 +286,11 @@ init_k8s_exec_forwarded_headers_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, Opts) ->
-        ?assertEqual(false, lists:keymember(<<"sec-websocket-protocol">>, 1, Hdrs)),
-        ?assertMatch(#{compress := false, protocols := _}, Opts),
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, #{compress := false}) ->
+        ?assertMatch(
+            {<<"sec-websocket-protocol">>, _},
+            lists:keyfind(<<"sec-websocket-protocol">>, 1, Hdrs)
+        ),
         self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
         stream1
     end),
@@ -354,7 +356,7 @@ init_k8s_loopback_forwarded_headers_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, _Opts) ->
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, #{compress := false}) ->
         ?assertEqual(
             {<<"host">>, <<"kube.omni.example">>},
             lists:keyfind(<<"host">>, 1, Hdrs)
@@ -373,7 +375,11 @@ init_k8s_loopback_forwarded_headers_test() ->
         host => <<"kube.omni.example">>,
         path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
         scheme => https,
-        headers => #{<<"authorization">> => <<"Bearer cluster-token">>}
+        headers => #{
+            <<"authorization">> => <<"Bearer cluster-token">>,
+            <<"sec-websocket-protocol">> => <<"v5.channel.k8s.io, channel.k8s.io">>
+        },
+        subproto => <<"v5.channel.k8s.io, channel.k8s.io">>
     }, fun(Req) ->
         ?assertMatch(
             {cowboy_websocket, _, #{upstream_ws_ready := true}, _},
@@ -398,7 +404,7 @@ init_k8s_upstream_handshake_failure_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_, _, _, _) ->
+    meck:expect(gun, ws_upgrade, fun(_, _, _, #{compress := false}) ->
         self() ! {gun_down, self(), http, {closed, normal}, []},
         stream1
     end),

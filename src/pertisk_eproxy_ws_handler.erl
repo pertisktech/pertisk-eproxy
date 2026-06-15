@@ -52,8 +52,6 @@ init(Req, _State) ->
                     WsHeaders = ws_forward_headers(
                         Req, Host, ClientIp, FullPath, SelectedProto, UpstreamAddr
                     ),
-                    K8sGunWsOpts = k8s_gun_ws_upgrade_opts(Req, IsK8sRemoteCmd),
-                    UpstreamWsHeaders = strip_ws_header(<<"sec-websocket-protocol">>, WsHeaders),
                     ReqWs = maybe_set_ws_subprotocol(Req, SelectedProto),
                     IdleTimeout =
                         case IsK8sRemoteCmd of
@@ -63,7 +61,9 @@ init(Req, _State) ->
                     WsOpts = #{idle_timeout => IdleTimeout, compress => false},
                     case IsK8sRemoteCmd of
                         true ->
-                            case connect_upstream_ws(UpstreamAddr, FullPath, UpstreamWsHeaders, K8sGunWsOpts) of
+                            case connect_upstream_ws_k8s(
+                                UpstreamAddr, FullPath, Req, Host, WsHeaders, #{compress => false}
+                            ) of
                                 {ok, ConnPid, StreamRef} ->
                                     lager:info(
                                         "WS k8s upstream ready upstream=~s path=~s",
@@ -86,8 +86,13 @@ init(Req, _State) ->
                                         WsState, WsOpts};
                                 {error, Reason} ->
                                     lager:error(
-                                        "WS k8s upstream handshake failed upstream=~s path=~s reason=~p",
-                                        [UpstreamAddr, ws_log_path(FullPath), Reason]
+                                        "WS k8s upstream handshake failed upstream=~s path=~s reason=~p hdrs=~p",
+                                        [
+                                            UpstreamAddr,
+                                            ws_log_path(FullPath),
+                                            ws_handshake_error_reason(Reason),
+                                            ws_header_names(WsHeaders)
+                                        ]
                                     ),
                                     Req2 = cowboy_req:reply(
                                         502,
@@ -267,6 +272,41 @@ is_ws_upgrade_protocols(_) ->
     false.
 
 connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts) ->
+    connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, once).
+
+connect_upstream_ws_k8s(UpAddr, UpPath, Req, _OrigHost, DefaultHeaders, GunWsOpts) ->
+    case is_loopback_upstream_addr(UpAddr) of
+        true ->
+            {UpHost, UpPort, _} = pertisk_eproxy_handler:parse_upstream(UpAddr),
+            LoopbackHost = iolist_to_binary([UpHost, <<":">>, integer_to_list(UpPort)]),
+            Candidates = [
+                DefaultHeaders,
+                ws_forward_headers_k8s_loopback(Req, LoopbackHost)
+            ],
+            connect_upstream_ws_candidates(UpAddr, UpPath, Candidates, GunWsOpts);
+        false ->
+            connect_upstream_ws(UpAddr, UpPath, DefaultHeaders, GunWsOpts, once)
+    end.
+
+connect_upstream_ws_candidates(_UpAddr, _UpPath, [], _GunWsOpts) ->
+    {error, {closed, normal}};
+connect_upstream_ws_candidates(UpAddr, UpPath, [Headers | Rest], GunWsOpts) ->
+    case connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, once) of
+        {ok, _, _} = Ok ->
+            Ok;
+        {error, Reason} ->
+            lager:info(
+                "WS k8s loopback handshake attempt failed upstream=~s host_hdr=~s reason=~p",
+                [
+                    UpAddr,
+                    proplists:get_value(<<"host">>, Headers, <<>>),
+                    ws_handshake_error_reason(Reason)
+                ]
+            ),
+            connect_upstream_ws_candidates(UpAddr, UpPath, Rest, GunWsOpts)
+    end.
+
+connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, _Mode) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
     GunOpts = ws_gun_opts(UpHost, Transport),
     case gun:open(UpHost, UpPort, GunOpts) of
@@ -331,11 +371,31 @@ ws_gun_opts(Transport) ->
     #{transport => Transport, protocols => [http]}.
 
 ws_gun_opts(UpHost, tls) ->
-    Base = ws_gun_opts(tls),
-    Tls0 = maps:get(tls_opts, Base, []),
-    Base#{tls_opts => [{verify, verify_none} | maybe_sni_opt(UpHost)] ++ Tls0};
-ws_gun_opts(_UpHost, Transport) ->
-    ws_gun_opts(Transport).
+    Base0 = ws_gun_opts(tls),
+    Tls0 = maps:get(tls_opts, Base0, []),
+    Base = Base0#{
+        tls_opts => [{verify, verify_none} | maybe_sni_opt(UpHost)] ++ Tls0
+    },
+    with_loopback_gun_opts(UpHost, Base);
+ws_gun_opts(UpHost, Transport) ->
+    with_loopback_gun_opts(UpHost, ws_gun_opts(Transport)).
+
+with_loopback_gun_opts(UpHost, Base) ->
+    case is_loopback_host(UpHost) of
+        true ->
+            Config = pertisk_eproxy_config:get_config(),
+            Timeout =
+                case maps:get(upstream_loopback_connect_timeout_ms, Config, 3000) of
+                    N when is_integer(N), N > 0 -> N;
+                    _ -> 3000
+                end,
+            Base#{
+                connect_timeout => Timeout,
+                tcp_opts => [{keepalive, true}, {nodelay, true}]
+            };
+        false ->
+            Base
+    end.
 
 maybe_sni_opt(UpHost) when is_list(UpHost) ->
     case inet:parse_address(UpHost) of
@@ -425,32 +485,15 @@ ws_forward_headers_k8s(Req, OrigHost, ClientIp, UpstreamAddr) ->
             ws_forward_headers_k8s_forwarded(Req, OrigHost, ClientIp)
     end.
 
+%% Pass through all client headers (minus hop-by-hop) like nginx does by default.
+%% Do not inject x-forwarded-* on loopback; Omni kube proxy listens plain HTTP.
 ws_forward_headers_k8s_loopback(Req, OrigHost) ->
     InHeaders = cowboy_req:headers(Req),
     Stripped = maps:without(
         ws_hop_by_hop_headers() ++ [<<"accept-encoding">>],
         InHeaders
     ),
-    Keep = [
-        <<"authorization">>,
-        <<"cookie">>,
-        <<"origin">>,
-        <<"referer">>,
-        <<"user-agent">>,
-        <<"x-eproxy-bearer">>
-    ],
-    Base = #{<<"host">> => OrigHost},
-    Out = lists:foldl(
-        fun(K, Acc) ->
-            case maps:get(K, Stripped, undefined) of
-                undefined -> Acc;
-                V -> Acc#{K => V}
-            end
-        end,
-        Base,
-        Keep
-    ),
-    maps:to_list(Out).
+    maps:to_list(Stripped#{<<"host">> => OrigHost}).
 
 ws_forward_headers_k8s_forwarded(Req, OrigHost, ClientIp) ->
     InHeaders = cowboy_req:headers(Req),
@@ -619,31 +662,15 @@ is_loopback_host(Host) when is_list(Host) ->
 is_loopback_host(_) ->
     false.
 
-k8s_gun_ws_upgrade_opts(Req, true) ->
-    case k8s_ws_protocol_tokens(Req) of
-        [] -> #{compress => false};
-        Tokens -> #{compress => false, protocols => [{T, []} || T <- Tokens]}
-    end;
-k8s_gun_ws_upgrade_opts(_Req, false) ->
-    #{}.
+ws_handshake_error_reason({down, _Proto, Reason, _Killed}) ->
+    Reason;
+ws_handshake_error_reason({bad_status, Status, _Headers}) ->
+    {bad_status, Status};
+ws_handshake_error_reason(Reason) ->
+    Reason.
 
-k8s_ws_protocol_tokens(Req) ->
-    case cowboy_req:header(<<"sec-websocket-protocol">>, Req, undefined) of
-        undefined ->
-            [];
-        <<>> ->
-            [];
-        Bin when is_binary(Bin) ->
-            [
-                T
-             || T0 <- binary:split(Bin, <<",">>, [global]),
-                T <- [string:trim(T0, both)],
-                T =/= <<>>
-            ]
-    end.
-
-strip_ws_header(Name, Headers) when is_list(Headers) ->
-    [H || H <- Headers, element(1, H) =/= Name].
+ws_header_names(Headers) when is_list(Headers) ->
+    [K || {K, _} <- Headers, is_binary(K)].
 
 ws_log_path(Path) when is_binary(Path), byte_size(Path) > 180 ->
     <<(binary:part(Path, 0, 180))/binary, "...">>;
