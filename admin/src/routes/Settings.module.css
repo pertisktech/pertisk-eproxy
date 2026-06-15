@@ -23,20 +23,8 @@
   margin-top: 0;
 }
 
-.helpText {
-  margin: 0.6rem 0 0;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
 .actionsRow {
   margin-top: 0.8rem;
-}
-
-.endpointLine {
-  margin-top: 0.5rem;
-  color: var(--text-muted);
-  font-size: 0.9rem;
 }
 
 .sectionsWrap {

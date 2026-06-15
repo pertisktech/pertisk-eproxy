@@ -3,6 +3,11 @@ import { api } from '@/api/client';
 import styles from './Settings.module.css';
 
 type ConfigMap = Record<string, unknown>;
+type ModeInfo = {
+  runtimeMode?: string;
+  deploymentMode?: string;
+  supportedMode?: string;
+};
 
 function asRecord(value: unknown): ConfigMap | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -123,7 +128,7 @@ export default function Settings() {
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [configData, setConfigData] = useState<ConfigMap | null>(null);
-  const [configEndpoint, setConfigEndpoint] = useState('/api/config?show_all=1');
+  const [modeInfo, setModeInfo] = useState<ModeInfo>({});
 
   const loadConfig = async (silent = false) => {
     if (!silent) {
@@ -131,9 +136,19 @@ export default function Settings() {
       setMsg(null);
     }
     try {
-      setConfigEndpoint('/api/config?show_all=1');
-      const cfg = await api.configAll();
+      let cfg: unknown;
+      try {
+        cfg = await api.configAll();
+      } catch {
+        // Backward compatibility: older backends may not support show_all path behavior.
+        cfg = await api.config();
+      }
       setConfigData(asRecord(cfg));
+      const cfgMap = asRecord(cfg);
+      setModeInfo((prev) => ({
+        ...prev,
+        runtimeMode: typeof cfgMap?.mode === 'string' ? cfgMap.mode : prev.runtimeMode,
+      }));
       if (!silent) {
         setMsg({ ok: true, text: 'Config loaded successfully.' });
       }
@@ -150,6 +165,18 @@ export default function Settings() {
 
   useEffect(() => {
     void loadConfig(false);
+    void api
+      .authConfig()
+      .then((authCfg) => {
+        setModeInfo((prev) => ({
+          ...prev,
+          deploymentMode: authCfg.deployment_mode,
+          supportedMode: authCfg.mode,
+        }));
+      })
+      .catch(() => {
+        // Best-effort metadata only.
+      });
   }, []);
 
   const reload = async () => {
@@ -175,24 +202,7 @@ export default function Settings() {
       )}
 
       <div className="card">
-        <h2 style={{ marginBottom: 12 }}>Hot Reload</h2>
-        <button className="btn btn-primary" type="button" onClick={() => void reload()} disabled={reloading}>
-          {reloading ? (
-            <>
-              <span className="spinner" style={{ width: 14, height: 14 }} /> Reloading…
-            </>
-          ) : (
-            <>
-              <i className="fas fa-sync-alt" /> Reload Config
-            </>
-          )}
-        </button>
-      </div>
-
-      <div className="card">
         <h2 style={{ marginBottom: 12 }}>Config View</h2>
-        <p className={styles.helpText}>Structured full config for both proxy and ingress modes.</p>
-        <div className={styles.endpointLine}>Loading from {configEndpoint}</div>
         <div className={styles.actionsRow}>
           <button className="btn btn-primary" type="button" onClick={() => void loadConfig()} disabled={loadingConfig}>
             {loadingConfig ? (
@@ -211,6 +221,26 @@ export default function Settings() {
           <div className={styles.emptyText}>No config loaded yet.</div>
         ) : (
           <div className={styles.sectionsWrap}>
+            <section>
+              <h3 className={styles.sectionTitle}>Mode</h3>
+              <table className={styles.kvTable}>
+                <tbody>
+                  <tr>
+                    <th>runtime_mode</th>
+                    <td>{modeInfo.runtimeMode ?? '-'}</td>
+                  </tr>
+                  <tr>
+                    <th>deployment_mode</th>
+                    <td>{modeInfo.deploymentMode ?? '-'}</td>
+                  </tr>
+                  <tr>
+                    <th>supported_mode</th>
+                    <td>{modeInfo.supportedMode ?? '-'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+
             <section>
               <h3 className={styles.sectionTitle}>General</h3>
               {renderKeyValueTable(configData, ['mode', 'log_level'])}
@@ -267,6 +297,22 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      <div className="card">
+        <h2 style={{ marginBottom: 12 }}>Hot Reload</h2>
+        <button className="btn btn-primary" type="button" onClick={() => void reload()} disabled={reloading}>
+          {reloading ? (
+            <>
+              <span className="spinner" style={{ width: 14, height: 14 }} /> Reloading…
+            </>
+          ) : (
+            <>
+              <i className="fas fa-sync-alt" /> Reload Config
+            </>
+          )}
+        </button>
+      </div>
+
     </div>
   );
 }
