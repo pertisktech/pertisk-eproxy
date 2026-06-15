@@ -7,6 +7,15 @@ export type {
 } from './supportedDnsProviders';
 
 const API = '/api';
+const SHOW_ALL_CONFIG_KEY = 'eproxy.settings.showAllConfig';
+
+function showAllConfigEnabled(): boolean {
+  try {
+    return globalThis.window.localStorage.getItem(SHOW_ALL_CONFIG_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function isLocalRealtimeLogEnabled(): boolean {
   if (import.meta.env.DEV) return true;
@@ -880,7 +889,8 @@ export const api = {
     return get<LogEntry[]>(q ? `/logs?${q}` : '/logs');
   },
 
-  config: () => get<ProxyConfig>('/config'),
+  config: () => get<ProxyConfig>(showAllConfigEnabled() ? '/config?show_all=1' : '/config'),
+  configAll: () => get<ProxyConfig>('/config?show_all=1'),
   putConfig: (c: ProxyConfig) => put<{ status: string }>('/config', c),
 
   sites: () => get<Site[]>('/sites'),

@@ -82,6 +82,8 @@ auth_public(<<"GET">>, ingress_ready) -> true;
 auth_public(<<"HEAD">>, ingress_ready) -> true;
 auth_public(<<"GET">>, ingress_status) -> true;
 auth_public(<<"HEAD">>, ingress_status) -> true;
+auth_public(<<"GET">>, config) -> true;
+auth_public(<<"HEAD">>, config) -> true;
 auth_public(_, _) -> false.
 
 %% ---------------------------------------------------------------------------
@@ -109,7 +111,10 @@ handle(<<"GET">>, logs, Req) ->
     Type = maps:get(<<"type">>, Qs, undefined),
     Host = maps:get(<<"host">>, Qs, undefined),
     Site = maps:get(<<"site">>, Qs, undefined),
-    json_reply(200, pertisk_eproxy_access_log:list(Type, Host, Site), Req);
+    MinLevel = logs_min_level(Qs),
+    Logs0 = pertisk_eproxy_access_log:list(Type, Host, Site),
+    Logs = filter_logs_by_min_level(Logs0, MinLevel),
+    json_reply(200, Logs, Req);
 
 handle(<<"GET">>, auth_config, Req) ->
     json_reply(200, pertisk_eproxy_auth:auth_config_map(), Req);
@@ -683,7 +688,11 @@ handle(<<"POST">>, tls_listener, Req) ->
 
 handle(<<"GET">>, config, Req) ->
     Config = pertisk_eproxy_config:get_config(),
-    Data = config_to_json(Config),
+    Data =
+        case should_show_all_config(Req) of
+            true -> config_to_json_all(Config);
+            false -> config_to_json(Config)
+        end,
     Body = thoas:encode(Data),
     Headers = #{
         <<"content-type">> => <<"application/json">>,
@@ -1025,6 +1034,52 @@ request_tracking_id(Req) ->
 generate_tracking_id() ->
     hex_bin(crypto:strong_rand_bytes(16)).
 
+logs_min_level(Qs) ->
+    case maps:get(<<"min_level">>, Qs, undefined) of
+        undefined ->
+            case maps:get(<<"level">>, Qs, undefined) of
+                undefined ->
+                    iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured()));
+                LevelBin ->
+                    normalize_log_level(LevelBin)
+            end;
+        LevelBin ->
+            normalize_log_level(LevelBin)
+    end.
+
+normalize_log_level(LevelBin) when is_binary(LevelBin) ->
+    case pertisk_eproxy_log_level:parse(LevelBin) of
+        {ok, Level} -> iolist_to_binary(pertisk_eproxy_log_level:label(Level));
+        error -> iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured()))
+    end;
+normalize_log_level(Level) when is_atom(Level) ->
+    iolist_to_binary(pertisk_eproxy_log_level:label(Level));
+normalize_log_level(_) ->
+    iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())).
+
+filter_logs_by_min_level(Logs, MinLevel) when is_list(Logs) ->
+    MinRank = log_level_rank(MinLevel),
+    lists:filter(
+        fun(E) ->
+            Level = maps:get(<<"level">>, E, <<"info">>),
+            log_level_rank(Level) >= MinRank
+        end,
+        Logs
+    ).
+
+log_level_rank(<<"debug">>) -> 10;
+log_level_rank(<<"info">>) -> 20;
+log_level_rank(<<"notice">>) -> 30;
+log_level_rank(<<"warn">>) -> 40;
+log_level_rank(<<"warning">>) -> 40;
+log_level_rank(<<"error">>) -> 50;
+log_level_rank(<<"critical">>) -> 60;
+log_level_rank(<<"alert">>) -> 70;
+log_level_rank(<<"emergency">>) -> 80;
+log_level_rank(Level) when is_atom(Level) ->
+    log_level_rank(iolist_to_binary(pertisk_eproxy_log_level:label(Level)));
+log_level_rank(_) -> 20.
+
 hex_bin(Bin) when is_binary(Bin) ->
     iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B:8>> <= Bin]).
 
@@ -1237,6 +1292,7 @@ config_to_json(Config) ->
         mode            => mode_to_json(maps:get(mode, Config, proxy)),
         http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
+        log_level       => iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())),
         certificates    => [json_text(V) || V <- safe_list(maps:get(certificates, Config, []))],
         dns_providers   => safe_dns_providers_json(maps:get(dns_providers, Config, [])),
         sites           => safe_sites_json(maps:get(sites, Config, [])),
@@ -1275,6 +1331,76 @@ config_to_json(Config) ->
             };
         _ ->
             WithH3ProbePort
+    end.
+
+config_to_json_all(Config) ->
+    Base = config_to_json(Config),
+    IntKeys = [
+        {<<"proxy_max_connections">>, proxy_max_connections},
+        {<<"management_max_connections">>, management_max_connections},
+        {<<"metrics_port">>, metrics_port},
+        {<<"upstream_request_timeout_ms">>, upstream_request_timeout_ms},
+        {<<"upstream_stream_request_timeout_ms">>, upstream_stream_request_timeout_ms},
+        {<<"upstream_pool_size">>, upstream_pool_size},
+        {<<"upstream_pool_idle_timeout_secs">>, upstream_pool_idle_timeout_secs},
+        {<<"health_cache_refresh_ms">>, health_cache_refresh_ms},
+        {<<"h3_idle_timeout_secs">>, h3_idle_timeout_secs},
+        {<<"h3_keepalive_interval_secs">>, h3_keepalive_interval_secs},
+        {<<"h3_quic_pool_size">>, h3_quic_pool_size},
+        {<<"h3_max_udp_payload_size">>, h3_max_udp_payload_size},
+        {<<"h3_max_streams">>, h3_max_streams},
+        {<<"h3_stream_receive_window">>, h3_stream_receive_window},
+        {<<"h3_conn_receive_window">>, h3_conn_receive_window},
+        {<<"alt_svc_port">>, alt_svc_port},
+        {<<"alt_svc_ma_secs">>, alt_svc_ma_secs}
+    ],
+    BoolKeys = [
+        {<<"proxy_access_log">>, proxy_access_log},
+        {<<"health_access_log">>, health_access_log},
+        {<<"h3_pmtu_enabled">>, h3_pmtu_enabled},
+        {<<"h3_qpack_static">>, h3_qpack_static},
+        {<<"alt_svc_persist">>, alt_svc_persist},
+        {<<"sse_early_flush_enabled">>, sse_early_flush_enabled},
+        {<<"metrics_enabled">>, metrics_enabled}
+    ],
+    StrKeys = [
+        {<<"http_addr">>, http_addr},
+        {<<"management_addr">>, management_addr},
+        {<<"metrics_addr">>, metrics_addr},
+        {<<"h3_udp_bind">>, h3_udp_bind}
+    ],
+    Base1 = lists:foldl(fun maybe_put_int_key/2, Base, [{Config, JK, MK} || {JK, MK} <- IntKeys]),
+    Base2 = lists:foldl(fun maybe_put_bool_key/2, Base1, [{Config, JK, MK} || {JK, MK} <- BoolKeys]),
+    lists:foldl(fun maybe_put_str_key/2, Base2, [{Config, JK, MK} || {JK, MK} <- StrKeys]).
+
+maybe_put_int_key({Config, JsonKey, MapKey}, Acc) ->
+    case maps:get(MapKey, Config, undefined) of
+        V when is_integer(V) -> Acc#{JsonKey => V};
+        _ -> Acc
+    end.
+
+maybe_put_bool_key({Config, JsonKey, MapKey}, Acc) ->
+    case maps:get(MapKey, Config, undefined) of
+        V when is_boolean(V) -> Acc#{JsonKey => V};
+        _ -> Acc
+    end.
+
+maybe_put_str_key({Config, JsonKey, MapKey}, Acc) ->
+    case maps:get(MapKey, Config, undefined) of
+        V when is_atom(V) -> Acc#{JsonKey => atom_to_binary(V, utf8)};
+        V when is_binary(V) -> Acc#{JsonKey => V};
+        V when is_list(V) -> Acc#{JsonKey => json_text(V)};
+        V when is_tuple(V) -> Acc#{JsonKey => json_text(inet:ntoa(V))};
+        _ -> Acc
+    end.
+
+should_show_all_config(Req) ->
+    Qs = maps:from_list(cowboy_req:parse_qs(Req)),
+    case maps:get(<<"show_all">>, Qs, <<>>) of
+        <<"1">> -> true;
+        <<"true">> -> true;
+        <<"yes">> -> true;
+        _ -> false
     end.
 
 backup_config_to_json(Config) ->
