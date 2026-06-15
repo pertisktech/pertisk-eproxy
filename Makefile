@@ -69,6 +69,7 @@ cover-local:
 	@find . -maxdepth 1 -name '*.coverdata' -delete
 	bash scripts/run-eunit.sh --cover
 	ROOT_DIR=. scripts/merge-cover.escript _build/test/cover/chunks _build/test/cover/eunit.coverdata merge
+	@find . -maxdepth 1 -name '*.coverdata' -delete
 	$(REBAR) cover -v -p 2
  
 dialyzer:
