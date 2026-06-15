@@ -823,8 +823,11 @@ export function openRealtimeStream(
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
   const mode = realtimeTransportMode();
-  // Use SSE only if explicitly configured; default to WebSocket
-  const useSse = mode === 'sse';
+  // HTTP/3 cannot upgrade WebSocket; prefer SSE on HTTPS unless WS is forced.
+  const useSse =
+    mode === 'sse' ||
+    (mode === 'auto' &&
+      (globalThis.window?.location.protocol === 'https:' || preferSseRealtimeForChromium()));
   if (useSse) {
     return openRealtimeSse(onMessage, onError);
   }

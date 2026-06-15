@@ -216,54 +216,72 @@ h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, Pa
                 log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
                 ok;
             false ->
-                Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
-                case pertisk_eproxy_router:route(LogHost, PathOnly) of
-            {error, no_route} ->
-                inc_h3_metrics(LogHost, LogHost, <<"404">>),
-                _ = h3_reply_status(
-                    H3Conn,
-                    StreamId,
-                    404,
-                    [{<<"content-type">>, <<"text/plain">>}],
-                    <<"No route found for host: ", LogHost/binary>>
-                ),
-                log_h3_access(LogHost, LogHost, Method, PathOnly, 404, T0, <<>>),
-                ok;
-            {ok, #{upstream_path := UpPath, backend := BackendName, site_host := SiteHost}} ->
-                ClientIp = client_ip_h3(H3Conn, Headers),
-                case pertisk_eproxy_rate_limit:check(ClientIp, LogHost, SiteHost) of
-                    deny ->
+                case is_h3_websocket_upgrade(Headers) of
+                    true ->
+                        WsHdrs = [
+                            {<<"content-type">>, <<"text/plain">>},
+                            {<<"alt-svc">>, <<"clear">>}
+                        ],
                         _ = h3_reply_status(
-                            H3Conn, StreamId, 429,
-                            [{<<"content-type">>, <<"text/plain">>}],
-                            <<"Too Many Requests">>
+                            H3Conn,
+                            StreamId,
+                            421,
+                            WsHdrs,
+                            <<"WebSocket over HTTP/3 is not supported; retry over HTTPS/HTTP/1.1">>
                         ),
-                        inc_h3_metrics(LogHost, SiteHost, <<"429">>),
-                        log_h3_access(LogHost, SiteHost, Method, PathOnly, 429, T0, <<>>),
+                        inc_h3_metrics(LogHost, LogHost, <<"421">>),
+                        log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
                         ok;
-                    allow ->
-                        case h3_authorize_request(SiteHost, Method, PathOnly, Qs, Headers, ClientIp) of
-                            {error, {auth_denied, Status}} ->
-                                _ = h3_reply_status(H3Conn, StreamId, Status, [], <<>>),
-                                inc_h3_metrics(LogHost, SiteHost, integer_to_binary(Status)),
-                                log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, <<>>),
-                                ok;
-                            {error, auth_unreachable} ->
+                    false ->
+                        Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
+                        case pertisk_eproxy_router:route(LogHost, PathOnly) of
+                            {error, no_route} ->
+                                inc_h3_metrics(LogHost, LogHost, <<"404">>),
                                 _ = h3_reply_status(
-                                    H3Conn, StreamId, 502,
+                                    H3Conn,
+                                    StreamId,
+                                    404,
                                     [{<<"content-type">>, <<"text/plain">>}],
-                                    <<"Auth service unreachable">>
+                                    <<"No route found for host: ", LogHost/binary>>
                                 ),
-                                inc_h3_metrics(LogHost, SiteHost, <<"502">>),
-                                log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
+                                log_h3_access(LogHost, LogHost, Method, PathOnly, 404, T0, <<>>),
                                 ok;
-                            ok ->
-                                h3_route_after_auth(
-                                    H3Conn, StreamId, Method, Path, Headers, T0, LogHost,
-                                    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
-                                )
+                            {ok, #{upstream_path := UpPath, backend := BackendName, site_host := SiteHost}} ->
+                                ClientIp = client_ip_h3(H3Conn, Headers),
+                                case pertisk_eproxy_rate_limit:check(ClientIp, LogHost, SiteHost) of
+                                    deny ->
+                                        _ = h3_reply_status(
+                                            H3Conn, StreamId, 429,
+                                            [{<<"content-type">>, <<"text/plain">>}],
+                                            <<"Too Many Requests">>
+                                        ),
+                                        inc_h3_metrics(LogHost, SiteHost, <<"429">>),
+                                        log_h3_access(LogHost, SiteHost, Method, PathOnly, 429, T0, <<>>),
+                                        ok;
+                                    allow ->
+                                        case h3_authorize_request(SiteHost, Method, PathOnly, Qs, Headers, ClientIp) of
+                                            {error, {auth_denied, Status}} ->
+                                                _ = h3_reply_status(H3Conn, StreamId, Status, [], <<>>),
+                                                inc_h3_metrics(LogHost, SiteHost, integer_to_binary(Status)),
+                                                log_h3_access(LogHost, SiteHost, Method, PathOnly, Status, T0, <<>>),
+                                                ok;
+                                            {error, auth_unreachable} ->
+                                                _ = h3_reply_status(
+                                                    H3Conn, StreamId, 502,
+                                                    [{<<"content-type">>, <<"text/plain">>}],
+                                                    <<"Auth service unreachable">>
+                                                ),
+                                                inc_h3_metrics(LogHost, SiteHost, <<"502">>),
+                                                log_h3_access(LogHost, SiteHost, Method, PathOnly, 502, T0, <<>>),
+                                                ok;
+                                            ok ->
+                                                h3_route_after_auth(
+                                                    H3Conn, StreamId, Method, Path, Headers, T0, LogHost,
+                                                    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+                                                )
+                                        end
+                                end
                         end
-                end
                 end
         end
     catch
@@ -312,6 +330,23 @@ h3_route_after_auth_body(
     H3Conn, StreamId, Method, Headers, T0, LogHost,
     PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
 ) ->
+    case PathOnly of
+        <<"/api/realtime-sse">> ->
+            h3_handle_admin_realtime_sse(
+                H3Conn, StreamId, Method, Qs, T0, LogHost, SiteHost
+            );
+        _ ->
+            h3_route_after_auth_body_continue(
+                H3Conn, StreamId, Method, Headers, T0, LogHost,
+                PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+            )
+    end,
+    ok.
+
+h3_route_after_auth_body_continue(
+    H3Conn, StreamId, Method, Headers, T0, LogHost,
+    PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
+) ->
                 case pertisk_eproxy_handler:is_sse_proxy_request(
                     PathOnly, h3_req_headers_map(Headers)
                 ) of
@@ -356,8 +391,7 @@ h3_route_after_auth_body(
                             Headers,
                             T0
                         )
-                end,
-    ok.
+                end.
 
 %% Client reset or QUIC connection closed before we finish the response.
 h3_send_response(H3Conn, StreamId, Status, Headers) ->
@@ -1244,13 +1278,125 @@ sse_heartbeat_ms() ->
         _ -> ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS
     end.
 
-should_try_local_admin_fallback(_Host, <<"/api/realtime", _/binary>>) ->
+should_try_local_admin_fallback(_Host, <<"/api/realtime">>) ->
     false;
 should_try_local_admin_fallback(Host, <<"/api/", _/binary>>) ->
     LowerHost = string:lowercase(Host),
     binary:match(LowerHost, <<"admin.">>) =:= {0, byte_size(<<"admin.">>)};
 should_try_local_admin_fallback(_Host, _Path) ->
     false.
+
+-define(ADMIN_SSE_TICK_MS, 2000).
+-define(ADMIN_SSE_MAX_TICKS, 1800).
+
+is_h3_websocket_upgrade(Headers) when is_list(Headers) ->
+    HMap = h3_req_headers_map(Headers),
+    case maps:get(<<"upgrade">>, HMap, <<>>) of
+        U when is_binary(U) ->
+            string:lowercase(U) =:= <<"websocket">>;
+        _ ->
+            maps:is_key(<<"sec-websocket-key">>, HMap)
+                orelse maps:is_key(<<"sec-websocket-version">>, HMap)
+    end;
+is_h3_websocket_upgrade(_) ->
+    false.
+
+h3_handle_admin_realtime_sse(H3Conn, StreamId, Method, Qs, T0, LogHost, SiteHost) ->
+    case normalize_h3_method(Method) of
+        <<"GET">> ->
+            case authorize_admin_sse(Qs) of
+                ok ->
+                    Headers = pertisk_eproxy_response_headers:merge_h3([
+                        {<<"content-type">>, <<"text/event-stream; charset=utf-8">>},
+                        {<<"cache-control">>, <<"no-cache, no-transform">>}
+                    ]),
+                    case h3_send_response(H3Conn, StreamId, 200, Headers) of
+                        ok ->
+                            inc_h3_metrics(LogHost, SiteHost, <<"200">>),
+                            log_h3_access(LogHost, SiteHost, <<"GET">>, <<"/api/realtime-sse">>, 200, T0, <<>>),
+                            h3_admin_sse_loop(H3Conn, StreamId, 0);
+                        {error, connection_gone} ->
+                            log_h3_access(LogHost, SiteHost, <<"GET">>, <<"/api/realtime-sse">>, 0, T0, <<>>),
+                            ok;
+                        {error, _} = Err ->
+                            Err
+                    end;
+                {error, unauthorized} ->
+                    inc_h3_metrics(LogHost, SiteHost, <<"401">>),
+                    _ = h3_reply_status(
+                        H3Conn,
+                        StreamId,
+                        401,
+                        [{<<"content-type">>, <<"application/json">>}],
+                        <<"{\"error\":\"Unauthorized\"}">>
+                    ),
+                    log_h3_access(LogHost, SiteHost, <<"GET">>, <<"/api/realtime-sse">>, 401, T0, <<>>),
+                    ok
+            end;
+        _ ->
+            inc_h3_metrics(LogHost, SiteHost, <<"405">>),
+            _ = h3_reply_status(
+                H3Conn,
+                StreamId,
+                405,
+                [{<<"allow">>, <<"GET">>}],
+                <<>>
+            ),
+            log_h3_access(LogHost, SiteHost, Method, <<"/api/realtime-sse">>, 405, T0, <<>>),
+            ok
+    end.
+
+h3_admin_sse_loop(_H3Conn, _StreamId, Tick) when Tick >= ?ADMIN_SSE_MAX_TICKS ->
+    ok;
+h3_admin_sse_loop(H3Conn, StreamId, Tick) ->
+    Json = pertisk_eproxy_admin_sse_handler:snapshot_json(),
+    Payload = iolist_to_binary([<<"event: snapshot\ndata: ">>, Json, <<"\n\n">>]),
+    case h3_send_data(H3Conn, StreamId, Payload, false) of
+        ok ->
+            receive
+            after ?ADMIN_SSE_TICK_MS ->
+                h3_admin_sse_loop(H3Conn, StreamId, Tick + 1)
+            end;
+        {error, connection_gone} ->
+            ok;
+        {error, _} ->
+            _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+            ok
+    end.
+
+authorize_admin_sse(Qs) ->
+    case pertisk_eproxy_auth:auth_mode() of
+        disabled ->
+            ok;
+        local ->
+            case h3_qs_lookup(Qs, <<"token">>) of
+                <<>> ->
+                    {error, unauthorized};
+                Token ->
+                    case pertisk_eproxy_auth:verify_token(Token) of
+                        {ok, _User} -> ok;
+                        {error, _} -> {error, unauthorized}
+                    end
+            end
+    end.
+
+h3_qs_lookup(<<>>, _Key) ->
+    <<>>;
+h3_qs_lookup(Qs, Key) when is_binary(Qs), is_binary(Key) ->
+    maps:get(Key, h3_qs_map(Qs), <<>>);
+h3_qs_lookup(_, _) ->
+    <<>>.
+
+h3_qs_map(<<>>) ->
+    #{};
+h3_qs_map(Qs) when is_binary(Qs) ->
+    maps:from_list([h3_qs_pair(Part) || Part <- binary:split(Qs, <<"&">>, [global]), Part =/= <<>>]).
+
+h3_qs_pair(Part) ->
+    case binary:split(Part, <<"=">>, []) of
+        [K, V] -> {K, V};
+        [K] -> {K, <<>>}
+    end.
 
 h3_quic_int_opt(Config, Key, Default, Min, Max) ->
     case maps:get(Key, Config, undefined) of

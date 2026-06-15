@@ -33,11 +33,11 @@ health_head_test() ->
     {ok, 200, _, <<>>} =
         dispatch([<<"HEAD">>, <<"localhost">>, <<"/api/health">>, <<>>, [], <<>>, <<"127.0.0.1">>]).
 
-realtime_sse_unsupported_test() ->
+realtime_ws_unsupported_on_h3_local_admin_test() ->
     ensure_env(),
     ?assertEqual(
         {error, unsupported},
-        dispatch([<<"GET">>, <<"localhost">>, <<"/api/realtime-sse">>, <<>>, [], <<>>, <<"127.0.0.1">>])
+        dispatch([<<"GET">>, <<"localhost">>, <<"/api/realtime">>, <<>>, [], <<>>, <<"127.0.0.1">>])
     ).
 
 favicon_svg_test() ->

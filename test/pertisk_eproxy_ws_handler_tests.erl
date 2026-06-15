@@ -259,3 +259,50 @@ init_forwarded_headers_test() ->
         ?assertMatch({cowboy_websocket, _, _, _}, pertisk_eproxy_ws_handler:init(Req, #{}))
     end),
     pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).
+
+init_k8s_exec_forwarded_headers_test() ->
+    unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
+    meck:new(pertisk_eproxy_router, [unstick]),
+    meck:expect(pertisk_eproxy_router, route, fun(_, _) ->
+        {ok, #{
+            upstream_path =>
+                <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+            backend => <<"omni">>
+        }}
+    end),
+    meck:new(pertisk_eproxy_backend, [unstick]),
+    meck:expect(pertisk_eproxy_backend, pick_upstream, fun(_, _) ->
+        {ok, <<"omni.internal:443">>}
+    end),
+    K8sProto =
+        <<"v5.channel.k8s.io, v4.channel.k8s.io, v3.channel.k8s.io, channel.k8s.io">>,
+    with_mock_req(#{
+        host => <<"kube.omni.example">>,
+        path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+        qs => <<"command=sh&stdin=1&stdout=1&stderr=1&tty=1">>,
+        headers => #{
+            <<"authorization">> => <<"Bearer cluster-token">>,
+            <<"sec-websocket-protocol">> => K8sProto
+        },
+        subproto => K8sProto
+    }, fun(Req) ->
+        Result = pertisk_eproxy_ws_handler:init(Req, #{}),
+        ?assertMatch(
+            {cowboy_websocket, _, #{k8s_remote_cmd := true}, #{idle_timeout := infinity}},
+            Result
+        ),
+        {cowboy_websocket, _, #{ws_headers := Hdrs}, _} = Result,
+        ?assertEqual(
+            {<<"host">>, <<"kube.omni.example">>},
+            lists:keyfind(<<"host">>, 1, Hdrs)
+        ),
+        ?assertEqual(
+            false,
+            lists:keymember(<<"x-forwarded-for">>, 1, Hdrs)
+        ),
+        ?assertEqual(
+            {<<"sec-websocket-protocol">>, K8sProto},
+            lists:keyfind(<<"sec-websocket-protocol">>, 1, Hdrs)
+        )
+    end),
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).

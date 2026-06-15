@@ -104,8 +104,8 @@ header_value(Name, Headers) ->
         Headers
     ).
 
-%% WebSocket realtime stays on the TCP management listener only.
-h3_local_management_path(<<"/api/realtime", _/binary>>) ->
+%% WebSocket realtime stays on the TCP management listener only (HTTP/3 cannot upgrade).
+h3_local_management_path(<<"/api/realtime">>) ->
     false;
 h3_local_management_path(_) ->
     true.

@@ -1630,7 +1630,10 @@ api_sites_get_unauthorized_local_auth_test() ->
 
 api_config_get_unauthorized_local_auth_test() ->
     with_local_auth(fun() ->
-        ?assertMatch({ok, 401, _, _}, dispatch(<<"GET">>, <<"/api/config">>))
+        %% GET /api/config is public (settings "show current config"); writes still require auth.
+        ?assertMatch({ok, 200, _, _}, dispatch(<<"GET">>, <<"/api/config">>)),
+        Body = thoas:encode(#{<<"mode">> => <<"proxy">>}),
+        ?assertMatch({ok, 401, _, _}, dispatch(<<"PUT">>, <<"/api/config">>, Body))
     end).
 
 api_admin_change_password_ingress_forbidden_test() ->
@@ -3492,7 +3495,7 @@ api_dns_providers_list_db_error_test() ->
 api_auth_local_unauthorized_init_test() ->
     with_local_auth(fun() ->
         ?assertMatch(
-            {ok, 401, _, _},
+            {ok, 200, _, _},
             init_dispatch(<<"GET">>, <<"/api/config">>, config)
         ),
         ?assertMatch(

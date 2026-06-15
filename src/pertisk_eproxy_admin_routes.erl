@@ -11,6 +11,7 @@ api_routes() ->
         {"/api/management", pertisk_eproxy_admin_handler, management},
         {"/api/stats", pertisk_eproxy_admin_handler, stats},
         {"/api/realtime", pertisk_eproxy_admin_ws_handler, realtime},
+        {"/api/realtime-sse", pertisk_eproxy_admin_sse_handler, []},
         {"/api/logs", pertisk_eproxy_admin_handler, logs},
         {"/api/auth/config", pertisk_eproxy_admin_handler, auth_config},
         {"/api/auth/login", pertisk_eproxy_admin_handler, auth_login},

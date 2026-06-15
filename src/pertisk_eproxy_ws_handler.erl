@@ -16,6 +16,9 @@
 -define(CONNECT_TIMEOUT, 10000).
 %% Gun keeps protocol=gun_http until the WS handshake finishes; ws_send goes to gun_ws only after.
 -define(MAX_WS_OUT_BUFFER, 64).
+%% kubectl exec/attach/port-forward sessions can stay idle for a long time.
+-define(K8S_REMOTE_CMD_IDLE_TIMEOUT, infinity).
+-define(DEFAULT_IDLE_TIMEOUT, 300000).
 
 %% Called from pertisk_eproxy_handler when a WebSocket upgrade is detected.
 init(Req, _State) ->
@@ -43,9 +46,15 @@ init(Req, _State) ->
                         <<>> -> UpPath;
                         _    -> <<UpPath/binary, "?", Qs/binary>>
                     end,
+                    IsK8sRemoteCmd = is_k8s_remote_command_path(FullPath),
                     SelectedProto = selected_ws_subprotocol(Req, FullPath),
                     WsHeaders = ws_forward_headers(Req, Host, ClientIp, FullPath, SelectedProto),
                     ReqWs = maybe_set_ws_subprotocol(Req, SelectedProto),
+                    IdleTimeout =
+                        case IsK8sRemoteCmd of
+                            true -> ?K8S_REMOTE_CMD_IDLE_TIMEOUT;
+                            false -> ?DEFAULT_IDLE_TIMEOUT
+                        end,
                     WsState = #{
                         host                => Host,
                         backend             => BackendName,
@@ -55,11 +64,12 @@ init(Req, _State) ->
                         conn_pid            => undefined,
                         stream_ref          => undefined,
                         upstream_ws_ready   => false,
-                        ws_out_buffer       => []
+                        ws_out_buffer       => [],
+                        k8s_remote_cmd      => IsK8sRemoteCmd
                     },
                     %% Upgrade the cowboy connection to WebSocket.
                     {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
-                        WsState, #{idle_timeout => 300000}}
+                        WsState, #{idle_timeout => IdleTimeout}}
             end
     end.
 
@@ -120,8 +130,16 @@ websocket_handle(_Frame, State) ->
 %% Message from gun (upstream) → forward to client, or handle close/errors.
 
 websocket_info({gun_ws, _ConnPid, _SRef, close}, State = #{host := Host, upstream_path := UpPath}) ->
-    lager:info("WS upstream sent close host=~s path=~s", [Host, UpPath]),
-    {[close], State};
+  case maps:get(k8s_remote_cmd, State, false) of
+    true ->
+      lager:warning(
+        "WS upstream sent close host=~s path=~s (kubernetes remote command)",
+        [Host, UpPath]
+      );
+    false ->
+      lager:info("WS upstream sent close host=~s path=~s", [Host, UpPath])
+  end,
+  {[close], State};
 
 websocket_info({gun_ws, _ConnPid, _SRef, Frame}, State) ->
     {[Frame], State};
@@ -280,14 +298,16 @@ ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto) ->
     Proto = forwarded_proto(Req, InHeaders),
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
     IsConsolePath = skip_forwarded_for(OrigHost, UpPath),
-    %% Gun builds WS transport headers; only forward app-relevant headers.
+    IsK8sRemoteCmd = is_k8s_remote_command_path(UpPath),
+    %% Match HTTP proxy: preserve the client-facing Host for upstream virtual hosting.
     Base0 = #{
+        <<"host">> => OrigHost,
         <<"x-forwarded-host">> => OrigHost,
         <<"x-forwarded-proto">> => Proto,
         <<"x-forwarded-proto-version">> => ProtoVsn
     },
     Base =
-        case skip_forwarded_for(OrigHost, UpPath) of
+        case IsConsolePath orelse IsK8sRemoteCmd of
             true ->
                 Base0;
             false ->
@@ -332,9 +352,19 @@ ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto) ->
         Keep
     ),
     OutWithProto =
-        case SelectedProto of
-            undefined -> maps:remove(<<"sec-websocket-protocol">>, Out);
-            ProtoSel -> Out#{<<"sec-websocket-protocol">> => ProtoSel}
+        case IsK8sRemoteCmd of
+            true ->
+                case maps:get(<<"sec-websocket-protocol">>, InHeaders, undefined) of
+                    undefined ->
+                        maps:remove(<<"sec-websocket-protocol">>, Out);
+                    OrigProto ->
+                        Out#{<<"sec-websocket-protocol">> => OrigProto}
+                end;
+            false ->
+                case SelectedProto of
+                    undefined -> maps:remove(<<"sec-websocket-protocol">>, Out);
+                    ProtoSel -> Out#{<<"sec-websocket-protocol">> => ProtoSel}
+                end
         end,
     case IsConsolePath of
         true ->
@@ -361,6 +391,20 @@ skip_forwarded_for(_Host, Path) when is_binary(Path) ->
         binary:match(Path, <<"/websockify">>) =/= nomatch,
     IsConsolePath;
 skip_forwarded_for(_, _) ->
+    false.
+
+%% kubectl exec/attach/port-forward use WebSocket subprotocol channel.k8s.io.
+is_k8s_remote_command_path(Path) when is_binary(Path) ->
+    case binary:match(Path, <<"/api/">>) of
+        nomatch ->
+            false;
+        _ ->
+            binary:match(Path, <<"/exec">>) =/= nomatch
+                orelse binary:match(Path, <<"/attach">>) =/= nomatch
+                orelse binary:match(Path, <<"/portforward">>) =/= nomatch
+                orelse binary:match(Path, <<"/proxy">>) =/= nomatch
+    end;
+is_k8s_remote_command_path(_) ->
     false.
 
 forwarded_proto(Req, InHeaders) ->
