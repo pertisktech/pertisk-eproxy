@@ -52,6 +52,8 @@ init(Req, _State) ->
                     WsHeaders = ws_forward_headers(
                         Req, Host, ClientIp, FullPath, SelectedProto, UpstreamAddr
                     ),
+                    K8sGunWsOpts = k8s_gun_ws_upgrade_opts(Req, IsK8sRemoteCmd),
+                    UpstreamWsHeaders = strip_ws_header(<<"sec-websocket-protocol">>, WsHeaders),
                     ReqWs = maybe_set_ws_subprotocol(Req, SelectedProto),
                     IdleTimeout =
                         case IsK8sRemoteCmd of
@@ -61,7 +63,7 @@ init(Req, _State) ->
                     WsOpts = #{idle_timeout => IdleTimeout, compress => false},
                     case IsK8sRemoteCmd of
                         true ->
-                            case connect_upstream_ws(UpstreamAddr, FullPath, WsHeaders) of
+                            case connect_upstream_ws(UpstreamAddr, FullPath, UpstreamWsHeaders, K8sGunWsOpts) of
                                 {ok, ConnPid, StreamRef} ->
                                     lager:info(
                                         "WS k8s upstream ready upstream=~s path=~s",
@@ -264,7 +266,7 @@ is_ws_upgrade_protocols([websocket | _]) ->
 is_ws_upgrade_protocols(_) ->
     false.
 
-connect_upstream_ws(UpAddr, UpPath, Headers) ->
+connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
     GunOpts = ws_gun_opts(UpHost, Transport),
     case gun:open(UpHost, UpPort, GunOpts) of
@@ -272,7 +274,7 @@ connect_upstream_ws(UpAddr, UpPath, Headers) ->
             try
                 case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
                     {ok, _} ->
-                        StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers),
+                        StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers, GunWsOpts),
                         case await_upstream_ws_handshake(ConnPid, StreamRef) of
                             ok ->
                                 {ok, ConnPid, StreamRef};
@@ -407,18 +409,57 @@ client_ip(Req) ->
 ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto, UpstreamAddr) ->
     case is_k8s_remote_command_path(UpPath) of
         true ->
-            ws_forward_headers_k8s(Req, OrigHost, ClientIp);
+            ws_forward_headers_k8s(Req, OrigHost, ClientIp, UpstreamAddr);
         false ->
             ws_forward_headers_default(Req, OrigHost, ClientIp, UpPath, SelectedProto)
     end.
 
-%% Match pertisk_eproxy_handler:forward_headers/5 for kubectl exec/attach so Omni
-%% loopback upstream (127.0.0.1:8100) sees the same virtual-host headers as HTTP.
-ws_forward_headers_k8s(Req, OrigHost, ClientIp) ->
+%% Omni k8s-proxy on loopback (:8100) expects nginx-style WS headers (Upgrade/Connection
+%% are added by gun). Do not inject x-forwarded-* on loopback; HTTP uses them but the
+%% kube proxy closes WS upgrades that carry forwarded headers.
+ws_forward_headers_k8s(Req, OrigHost, ClientIp, UpstreamAddr) ->
+    case is_loopback_upstream_addr(UpstreamAddr) of
+        true ->
+            ws_forward_headers_k8s_loopback(Req, OrigHost);
+        false ->
+            ws_forward_headers_k8s_forwarded(Req, OrigHost, ClientIp)
+    end.
+
+ws_forward_headers_k8s_loopback(Req, OrigHost) ->
+    InHeaders = cowboy_req:headers(Req),
+    Stripped = maps:without(
+        ws_hop_by_hop_headers() ++ [<<"accept-encoding">>],
+        InHeaders
+    ),
+    Keep = [
+        <<"authorization">>,
+        <<"cookie">>,
+        <<"origin">>,
+        <<"referer">>,
+        <<"user-agent">>,
+        <<"x-eproxy-bearer">>
+    ],
+    Base = #{<<"host">> => OrigHost},
+    Out = lists:foldl(
+        fun(K, Acc) ->
+            case maps:get(K, Stripped, undefined) of
+                undefined -> Acc;
+                V -> Acc#{K => V}
+            end
+        end,
+        Base,
+        Keep
+    ),
+    maps:to_list(Out).
+
+ws_forward_headers_k8s_forwarded(Req, OrigHost, ClientIp) ->
     InHeaders = cowboy_req:headers(Req),
     Proto = forwarded_proto(Req, InHeaders),
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
-    Stripped = maps:without(ws_hop_by_hop_headers(), InHeaders),
+    Stripped = maps:without(
+        ws_hop_by_hop_headers() ++ [<<"accept-encoding">>],
+        InHeaders
+    ),
     XFF =
         case maps:get(<<"x-forwarded-for">>, InHeaders, undefined) of
             undefined -> ClientIp;
@@ -560,6 +601,49 @@ ws_hop_by_hop_headers() ->
         <<"sec-websocket-version">>,
         <<"sec-websocket-extensions">>
     ].
+
+is_loopback_upstream_addr(UpstreamAddr) ->
+    try
+        {UpHost, _, _} = pertisk_eproxy_handler:parse_upstream(UpstreamAddr),
+        is_loopback_host(UpHost)
+    catch
+        _:_ ->
+            false
+    end.
+
+is_loopback_host(Host) when is_binary(Host) ->
+    is_loopback_host(binary_to_list(Host));
+is_loopback_host(Host) when is_list(Host) ->
+    H = string:lowercase(string:trim(Host)),
+    H =:= "127.0.0.1" orelse H =:= "localhost" orelse H =:= "::1";
+is_loopback_host(_) ->
+    false.
+
+k8s_gun_ws_upgrade_opts(Req, true) ->
+    case k8s_ws_protocol_tokens(Req) of
+        [] -> #{compress => false};
+        Tokens -> #{compress => false, protocols => [{T, []} || T <- Tokens]}
+    end;
+k8s_gun_ws_upgrade_opts(_Req, false) ->
+    #{}.
+
+k8s_ws_protocol_tokens(Req) ->
+    case cowboy_req:header(<<"sec-websocket-protocol">>, Req, undefined) of
+        undefined ->
+            [];
+        <<>> ->
+            [];
+        Bin when is_binary(Bin) ->
+            [
+                T
+             || T0 <- binary:split(Bin, <<",">>, [global]),
+                T <- [string:trim(T0, both)],
+                T =/= <<>>
+            ]
+    end.
+
+strip_ws_header(Name, Headers) when is_list(Headers) ->
+    [H || H <- Headers, element(1, H) =/= Name].
 
 ws_log_path(Path) when is_binary(Path), byte_size(Path) > 180 ->
     <<(binary:part(Path, 0, 180))/binary, "...">>;

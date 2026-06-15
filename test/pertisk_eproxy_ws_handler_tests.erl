@@ -286,7 +286,9 @@ init_k8s_exec_forwarded_headers_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, _Headers) ->
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, Opts) ->
+        ?assertEqual(false, lists:keymember(<<"sec-websocket-protocol">>, 1, Hdrs)),
+        ?assertMatch(#{compress := false, protocols := _}, Opts),
         self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
         stream1
     end),
@@ -352,15 +354,18 @@ init_k8s_loopback_forwarded_headers_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs) ->
-        ?assertMatch(
-            {<<"x-forwarded-proto">>, <<"https">>},
-            lists:keyfind(<<"x-forwarded-proto">>, 1, Hdrs)
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, _Opts) ->
+        ?assertEqual(
+            {<<"host">>, <<"kube.omni.example">>},
+            lists:keyfind(<<"host">>, 1, Hdrs)
         ),
-        ?assertMatch(
-            {<<"x-forwarded-host">>, <<"kube.omni.example">>},
-            lists:keyfind(<<"x-forwarded-host">>, 1, Hdrs)
+        ?assertEqual(
+            {<<"authorization">>, <<"Bearer cluster-token">>},
+            lists:keyfind(<<"authorization">>, 1, Hdrs)
         ),
+        ?assertEqual(false, lists:keymember(<<"x-forwarded-proto">>, 1, Hdrs)),
+        ?assertEqual(false, lists:keymember(<<"x-forwarded-host">>, 1, Hdrs)),
+        ?assertEqual(false, lists:keymember(<<"x-forwarded-for">>, 1, Hdrs)),
         self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
         stream1
     end),
@@ -393,7 +398,7 @@ init_k8s_upstream_handshake_failure_test() ->
     meck:new(gun, [unstick]),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_, _, _) ->
+    meck:expect(gun, ws_upgrade, fun(_, _, _, _) ->
         self() ! {gun_down, self(), http, {closed, normal}, []},
         stream1
     end),
