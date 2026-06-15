@@ -4,12 +4,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION="${VERSION:-0.5.47}"
+VERSION="${VERSION:-}"
+FRONTEND_BUILD_ID="${FRONTEND_BUILD_ID:-$(date +%s)}"
+FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
 ADMIN_HOST="${ADMIN_HOST:-admin.erlang.pertisk.com}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-10m}"
+VERIFY_ADMIN_UI="${VERIFY_ADMIN_UI:-true}"
 CPU_REQUEST="${CPU_REQUEST:-1000m}"
 MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
 CPU_LIMIT="${CPU_LIMIT:-2000m}"
@@ -23,9 +27,19 @@ SERVICEMONITOR_RELEASE_LABEL="${SERVICEMONITOR_RELEASE_LABEL:-kube-prometheus-st
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 
-echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT})"
+if [[ -z "$VERSION" ]]; then
+  echo "ERROR: VERSION is required (example: VERSION=0.5.61 ./deploy/erlang.sh)" >&2
+  exit 2
+fi
 
-make docker-ingress-multi VERSION="$VERSION"
+DOCKER_NO_CACHE=false
+if [[ "$FORCE_DEPLOY" == "true" ]]; then
+  DOCKER_NO_CACHE=true
+fi
+
+echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT}, frontend_build_id=${FRONTEND_BUILD_ID}, force_deploy=${FORCE_DEPLOY})"
+
+make docker-ingress-multi VERSION="$VERSION" FRONTEND_BUILD_ID="$FRONTEND_BUILD_ID" DOCKER_NO_CACHE="$DOCKER_NO_CACHE"
 
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --create-namespace \
@@ -58,3 +72,27 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set resources.limits.memory="$MEMORY_LIMIT" \
   --set ingress.gatewayApiEnabled=true \
   --set gatewayClassResource.enabled=true
+
+echo "Forcing rollout restart to ensure fresh image is running..."
+kubectl -n "$NAMESPACE" rollout restart "deployment/$RELEASE_NAME"
+kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE_NAME" --timeout "$ROLLOUT_TIMEOUT"
+
+if [[ "$VERIFY_ADMIN_UI" == "true" ]]; then
+  ADMIN_URL="https://${ADMIN_HOST}"
+  echo "Verifying live admin bundle from ${ADMIN_URL} ..."
+  ASSET_PATH="$(curl -sk "$ADMIN_URL/" | sed -n 's/.*src="\([^\"]*assets[^\"]*\.js\)".*/\1/p' | head -n 1)"
+  if [[ -z "$ASSET_PATH" ]]; then
+    echo "ERROR: Could not extract admin JS asset path from ${ADMIN_URL}/" >&2
+    exit 3
+  fi
+
+  MARKERS="$(curl -sk "${ADMIN_URL}${ASSET_PATH}" | grep -ao 'Config View\|show_all=1\|runtime_mode' | sort -u || true)"
+  if [[ -z "$MARKERS" ]]; then
+    echo "ERROR: Admin bundle verification failed (expected Settings markers missing)" >&2
+    echo "       host=${ADMIN_HOST} asset=${ASSET_PATH}" >&2
+    exit 4
+  fi
+
+  echo "Admin bundle markers found:"
+  echo "$MARKERS"
+fi

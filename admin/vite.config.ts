@@ -2,12 +2,17 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+const buildId = process.env.VITE_BUILD_ID || `${Date.now()}`;
+
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(buildId),
+  },
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
-  base: '/',
+  base: './',
   build: {
     outDir: '../priv/admin',
     emptyOutDir: true,

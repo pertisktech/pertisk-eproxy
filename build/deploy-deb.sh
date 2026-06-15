@@ -11,6 +11,8 @@ PACKAGE_VERSION="${RAW_PACKAGE_VERSION#v}"
 PACKAGE_VERSION="${PACKAGE_VERSION#V}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
+FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL:-warn}"
+FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG:-false}"
 # Host Erlang toolchains can crash in beam_asm on some systems; default to
 # Dockerized Linux/amd64 release build for deb packaging.
 RELEASE_BUILD_FORCE_DOCKER="${RELEASE_BUILD_FORCE_DOCKER:-1}"
@@ -30,6 +32,10 @@ log_err() { echo -e "${RED}$*${NC}"; }
 
 echo -e "${GREEN}Starting Debian deployment of ${PACKAGE_NAME} version ${PACKAGE_VERSION}${NC}"
 echo -e "${YELLOW}Remote: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}${NC}"
+if [[ -n "${FORCE_LOG_LEVEL}" ]]; then
+	echo -e "${YELLOW}Force runtime log level: ${FORCE_LOG_LEVEL}${NC}"
+fi
+echo -e "${YELLOW}Force proxy access log: ${FORCE_PROXY_ACCESS_LOG}${NC}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -67,6 +73,8 @@ log_info "Installing/updating package on remote server..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" <<EOF
 set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${DEB_FILE}"
+FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL}"
+FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG}"
 
 sudo dpkg -i "\${PKG_PATH}"
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -f install -y
@@ -78,6 +86,26 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
 fi
 
 sudo systemctl enable "${PACKAGE_NAME}" --now
+if [ -n "${FORCE_LOG_LEVEL}" ]; then
+	sudo mkdir -p "/etc/systemd/system/${PACKAGE_NAME}.service.d"
+	sudo tee "/etc/systemd/system/${PACKAGE_NAME}.service.d/10-log-level.conf" >/dev/null <<EOC
+[Service]
+Environment=PERTISK_LOG_LEVEL=${FORCE_LOG_LEVEL}
+EOC
+else
+	sudo rm -f "/etc/systemd/system/${PACKAGE_NAME}.service.d/10-log-level.conf"
+fi
+
+if [ -n "${FORCE_PROXY_ACCESS_LOG}" ]; then
+	sudo mkdir -p "/etc/systemd/system/${PACKAGE_NAME}.service.d"
+	sudo tee "/etc/systemd/system/${PACKAGE_NAME}.service.d/11-proxy-access-log.conf" >/dev/null <<EOC
+[Service]
+Environment=PERTISK_PROXY_ACCESS_LOG=${FORCE_PROXY_ACCESS_LOG}
+EOC
+else
+	sudo rm -f "/etc/systemd/system/${PACKAGE_NAME}.service.d/11-proxy-access-log.conf"
+fi
+sudo systemctl daemon-reload
 sudo systemctl restart "${PACKAGE_NAME}"
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"
 echo "Service status:"

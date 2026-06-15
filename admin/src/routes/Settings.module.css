@@ -22,3 +22,73 @@
 .page :global(.card h2) {
   margin-top: 0;
 }
+
+.actionsRow {
+  margin-top: 0.8rem;
+}
+
+.sectionsWrap {
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.sectionTitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.emptyText {
+  margin-top: 0.8rem;
+  color: var(--text-muted);
+}
+
+.kvTable {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.kvTable th,
+.kvTable td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.kvTable th {
+  width: 36%;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, black 8%);
+}
+
+.kvTable tr:last-child td,
+.kvTable tr:last-child th {
+  border-bottom: none;
+}
+
+.listGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+
+.itemCard {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  background: color-mix(in srgb, var(--bg-elevated) 94%, black 6%);
+}
+
+.itemTitle {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.itemMeta {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}

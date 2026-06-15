@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
+.PHONY: all compile admin-build patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -13,12 +13,22 @@ COVER_MIN ?= 80
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
 HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress
+KUBECONFIG ?= /Users/nat/.kube/talos-255-prod-cluster-kubeconfig.yaml
+PERTISK_AUTH_MODE ?= both
+PERTISK_ADMIN ?= admin
+PERTISK_PASSWORD ?= admin
 VERSION ?= x.x.x
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
+FRONTEND_BUILD_ID ?= $(shell date +%s)
+DOCKER_NO_CACHE ?= false
 ifeq ($(PACKAGE_VERSION),x.x.x)
 PACKAGE_VERSION := 0.1.0
 endif
-DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION)
+DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION) --build-arg FRONTEND_BUILD_ID=$(FRONTEND_BUILD_ID)
+DOCKER_NO_CACHE_ARG :=
+ifeq ($(DOCKER_NO_CACHE),true)
+DOCKER_NO_CACHE_ARG := --no-cache
+endif
 BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
@@ -54,6 +64,9 @@ patch-hackney:
 compile: patch-ekub patch-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
 
+admin-build:
+	cd admin && npm run -s build
+
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
@@ -70,7 +83,7 @@ cover-local:
 	bash scripts/run-eunit.sh --cover
 	ROOT_DIR=. scripts/merge-cover.escript _build/test/cover/chunks _build/test/cover/eunit.coverdata merge
 	@find . -maxdepth 1 -name '*.coverdata' -delete
-	$(REBAR) cover -v -p 2
+	@echo "cover-local: merged sanitized coverage to _build/test/cover/eunit.coverdata"
  
 dialyzer:
 	$(REBAR) dialyzer
@@ -108,6 +121,7 @@ docker-proxy-push: docker-push
 
 docker-proxy-multi: docker-buildx-multi-builder
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
@@ -120,15 +134,16 @@ docker-proxy-multi: docker-buildx-multi-builder
 
 ## --- Docker: ingress (K8s controller, read-only admin API) ---
 docker-ingress:
-	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 
 docker-ingress-push:
-	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 	docker push $(HARBOR_INGRESS_IMAGE):$(VERSION)
 	docker push $(HARBOR_INGRESS_IMAGE):latest 2>/dev/null || docker tag $(HARBOR_INGRESS_IMAGE):$(VERSION) $(HARBOR_INGRESS_IMAGE):latest && docker push $(HARBOR_INGRESS_IMAGE):latest
 
 docker-ingress-multi: docker-buildx-multi-builder
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
@@ -141,13 +156,13 @@ docker-ingress-multi: docker-buildx-multi-builder
 
 ## Back-compat (was single IMAGE; now use docker-ingress-multi for ingress chart)
 docker-release:
-	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-build:
-	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-push:
-	docker buildx build $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
 		-t $(HARBOR_PROXY_IMAGE):$(VERSION) \
 		-t $(HARBOR_PROXY_IMAGE):latest \
 		.
@@ -160,8 +175,8 @@ docker-harbor-multi: docker-proxy-multi docker-ingress-multi
 run: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
-run-ingress: compile
-	PERTISK_MODE=ingress PERTISK_CONFIG_FILE=config/ingress.json \
+run-ingress: compile admin-build
+	KUBECONFIG=$(KUBECONFIG) PERTISK_MODE=ingress PERTISK_AUTH_MODE=$(PERTISK_AUTH_MODE) PERTISK_ADMIN=$(PERTISK_ADMIN) PERTISK_PASSWORD=$(PERTISK_PASSWORD) PERTISK_CONFIG_FILE=config/ingress.json \
 		COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
 reload:

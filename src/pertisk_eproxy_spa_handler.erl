@@ -16,7 +16,12 @@ init(Req, State) ->
             Headers = pertisk_eproxy_alt_svc:merge_response_headers(
                 Req,
                 Host,
-                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"text/html; charset=utf-8">>})
+                pertisk_eproxy_response_headers:merge(#{
+                    <<"content-type">> => <<"text/html; charset=utf-8">>,
+                    <<"cache-control">> => <<"no-store, no-cache, must-revalidate">>,
+                    <<"pragma">> => <<"no-cache">>,
+                    <<"expires">> => <<"0">>
+                })
             ),
             {OutHeaders, OutBody} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Html),
@@ -32,7 +37,12 @@ init(Req, State) ->
             Headers = pertisk_eproxy_alt_svc:merge_response_headers(
                 Req,
                 Host,
-                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"text/html; charset=utf-8">>})
+                pertisk_eproxy_response_headers:merge(#{
+                    <<"content-type">> => <<"text/html; charset=utf-8">>,
+                    <<"cache-control">> => <<"no-store, no-cache, must-revalidate">>,
+                    <<"pragma">> => <<"no-cache">>,
+                    <<"expires">> => <<"0">>
+                })
             ),
             {OutHeaders, OutBody} =
                 pertisk_eproxy_compression:maybe_compress_cowboy(200, Req, Headers, Body),

@@ -841,6 +841,25 @@ function isHttpStatusError(error: unknown, status: number): boolean {
   return error.message.startsWith(`${status}:`);
 }
 
+function isExpectedK8sListError(error: unknown): boolean {
+  return (
+    isHttpStatusError(error, 400) ||
+    isHttpStatusError(error, 403) ||
+    isHttpStatusError(error, 404) ||
+    isHttpStatusError(error, 503)
+  );
+}
+
+async function getK8sListOrEmpty<T>(path: string): Promise<T[]> {
+  try {
+    return await get<T[]>(path);
+  } catch (error) {
+    // Local ingress runs may not have a reachable/authenticated Kubernetes API.
+    if (isExpectedK8sListError(error)) return [];
+    throw error;
+  }
+}
+
 function normalizeDnsProviderKey(value: unknown): string {
   return String(value ?? '')
     .trim()
@@ -881,6 +900,7 @@ export const api = {
   },
 
   config: () => get<ProxyConfig>('/config'),
+  configAll: () => get<ProxyConfig>('/config?show_all=1'),
   putConfig: (c: ProxyConfig) => put<{ status: string }>('/config', c),
 
   sites: () => get<Site[]>('/sites'),
@@ -1099,19 +1119,19 @@ export const api = {
   },
 
   kubernetes: {
-    namespaces: () => get<K8sNamespaceRow[]>('/kubernetes/namespaces'),
+    namespaces: () => getK8sListOrEmpty<K8sNamespaceRow>('/kubernetes/namespaces'),
     pods: (params?: { namespace?: string }) => {
       const search = new URLSearchParams();
       if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
       const q = search.toString();
-      return get<K8sPodRow[]>(q ? `/kubernetes/pods?${q}` : '/kubernetes/pods');
+      return getK8sListOrEmpty<K8sPodRow>(q ? `/kubernetes/pods?${q}` : '/kubernetes/pods');
     },
     deployments: () => k8sUnavailable('deployments'),
     services: (params?: { namespace?: string }) => {
       const search = new URLSearchParams();
       if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
       const q = search.toString();
-      return get<K8sServiceRow[]>(q ? `/kubernetes/services?${q}` : '/kubernetes/services');
+      return getK8sListOrEmpty<K8sServiceRow>(q ? `/kubernetes/services?${q}` : '/kubernetes/services');
     },
     configmaps: () => k8sUnavailable('configmaps'),
     secrets: () => k8sUnavailable('secrets'),
@@ -1119,9 +1139,9 @@ export const api = {
       const search = new URLSearchParams();
       if (params?.namespace?.trim()) search.set('namespace', params.namespace.trim());
       const q = search.toString();
-      return get<K8sTlsSecretRow[]>(q ? `/kubernetes/tls-secrets?${q}` : '/kubernetes/tls-secrets');
+      return getK8sListOrEmpty<K8sTlsSecretRow>(q ? `/kubernetes/tls-secrets?${q}` : '/kubernetes/tls-secrets');
     },
-    ingresses: () => get<K8sIngressListRow[]>('/kubernetes/ingresses'),
+    ingresses: () => getK8sListOrEmpty<K8sIngressListRow>('/kubernetes/ingresses'),
     createIngress: (body: CreateIngressBody) =>
       post<CreateIngressResponse>('/kubernetes/ingresses', body),
     getIngress: (namespace: string, name: string) =>
