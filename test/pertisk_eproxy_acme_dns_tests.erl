@@ -1201,7 +1201,7 @@ scan_cloudflare_find_zone_issue_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1323,7 +1323,7 @@ scan_lego_obtain_certificate_success_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_lego, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
@@ -1636,7 +1636,7 @@ scan_wildcard_site_identifiers_test() ->
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
                 gen_server:cast(Pid, scan),
-                timer:sleep(?SCAN_SLEEP_MS)
+                assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
                 pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
             end
