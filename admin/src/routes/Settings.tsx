@@ -123,6 +123,7 @@ export default function Settings() {
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [configData, setConfigData] = useState<ConfigMap | null>(null);
+  const [configEndpoint, setConfigEndpoint] = useState('/api/config?show_all=1');
 
   const loadConfig = async (silent = false) => {
     if (!silent) {
@@ -130,6 +131,7 @@ export default function Settings() {
       setMsg(null);
     }
     try {
+      setConfigEndpoint('/api/config?show_all=1');
       const cfg = await api.configAll();
       setConfigData(asRecord(cfg));
       if (!silent) {
@@ -147,7 +149,7 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    void loadConfig(true);
+    void loadConfig(false);
   }, []);
 
   const reload = async () => {
@@ -190,6 +192,7 @@ export default function Settings() {
       <div className="card">
         <h2 style={{ marginBottom: 12 }}>Config View</h2>
         <p className={styles.helpText}>Structured full config for both proxy and ingress modes.</p>
+        <div className={styles.endpointLine}>Loading from {configEndpoint}</div>
         <div className={styles.actionsRow}>
           <button className="btn btn-primary" type="button" onClick={() => void loadConfig()} disabled={loadingConfig}>
             {loadingConfig ? (

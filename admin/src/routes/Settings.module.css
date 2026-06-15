@@ -33,6 +33,12 @@
   margin-top: 0.8rem;
 }
 
+.endpointLine {
+  margin-top: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
 .sectionsWrap {
   margin-top: 0.8rem;
   display: grid;
