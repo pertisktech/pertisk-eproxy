@@ -105,7 +105,10 @@ header_value(Name, Headers) ->
     ).
 
 %% WebSocket realtime stays on the TCP management listener only (HTTP/3 cannot upgrade).
+%% SSE must stream on the real :9080 listener; the Cowboy stub only captures buffered replies.
 h3_local_management_path(<<"/api/realtime">>) ->
+    false;
+h3_local_management_path(<<"/api/realtime-sse">>) ->
     false;
 h3_local_management_path(_) ->
     true.

@@ -39,6 +39,7 @@ is_event_stream_accept_test() ->
 is_sse_proxy_path_test() ->
     ?assert(pertisk_eproxy_handler:is_sse_proxy_path(<<"/api/v1/stream/foo">>)),
     ?assert(pertisk_eproxy_handler:is_sse_proxy_path(<<"/user/events">>)),
+    ?assert(pertisk_eproxy_handler:is_sse_proxy_path(<<"/api/realtime-sse">>)),
     ?assertNot(pertisk_eproxy_handler:is_sse_proxy_path(<<"/api/health">>)).
 
 is_sse_proxy_request_test() ->

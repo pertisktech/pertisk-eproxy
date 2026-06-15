@@ -49,52 +49,74 @@ init(Req, _State) ->
                     end,
                     IsK8sRemoteCmd = is_k8s_remote_command_path(FullPath),
                     SelectedProto = selected_ws_subprotocol(Req, FullPath),
-                    WsHeaders = ws_forward_headers(Req, Host, ClientIp, FullPath, SelectedProto),
+                    WsHeaders = ws_forward_headers(
+                        Req, Host, ClientIp, FullPath, SelectedProto, UpstreamAddr
+                    ),
                     ReqWs = maybe_set_ws_subprotocol(Req, SelectedProto),
                     IdleTimeout =
                         case IsK8sRemoteCmd of
                             true -> ?K8S_REMOTE_CMD_IDLE_TIMEOUT;
                             false -> ?DEFAULT_IDLE_TIMEOUT
                         end,
-                    WsState = #{
-                        host                => Host,
-                        backend             => BackendName,
-                        upstream_addr       => UpstreamAddr,
-                        upstream_path       => FullPath,
-                        ws_headers          => WsHeaders,
-                        conn_pid            => undefined,
-                        stream_ref          => undefined,
-                        upstream_ws_ready   => false,
-                        ws_out_buffer       => [],
-                        k8s_remote_cmd      => IsK8sRemoteCmd
-                    },
                     WsOpts = #{idle_timeout => IdleTimeout, compress => false},
-                    %% Upgrade the cowboy connection to WebSocket.
-                    {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
-                        WsState, WsOpts}
+                    case IsK8sRemoteCmd of
+                        true ->
+                            case connect_upstream_ws(UpstreamAddr, FullPath, WsHeaders) of
+                                {ok, ConnPid, StreamRef} ->
+                                    lager:info(
+                                        "WS k8s upstream ready upstream=~s path=~s",
+                                        [UpstreamAddr, ws_log_path(FullPath)]
+                                    ),
+                                    WsState = #{
+                                        host => Host,
+                                        backend => BackendName,
+                                        upstream_addr => UpstreamAddr,
+                                        upstream_path => FullPath,
+                                        ws_headers => WsHeaders,
+                                        conn_pid => ConnPid,
+                                        stream_ref => StreamRef,
+                                        upstream_ws_ready => true,
+                                        ws_out_buffer => [],
+                                        k8s_remote_cmd => true
+                                    },
+                                    {cowboy_websocket,
+                                        pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
+                                        WsState, WsOpts};
+                                {error, Reason} ->
+                                    lager:error(
+                                        "WS k8s upstream handshake failed upstream=~s path=~s reason=~p",
+                                        [UpstreamAddr, ws_log_path(FullPath), Reason]
+                                    ),
+                                    Req2 = cowboy_req:reply(
+                                        502,
+                                        pertisk_eproxy_response_headers:merge(#{}),
+                                        <<"Upstream websocket handshake failed">>,
+                                        Req
+                                    ),
+                                    {ok, Req2, #{}}
+                            end;
+                        false ->
+                            WsState = #{
+                                host => Host,
+                                backend => BackendName,
+                                upstream_addr => UpstreamAddr,
+                                upstream_path => FullPath,
+                                ws_headers => WsHeaders,
+                                conn_pid => undefined,
+                                stream_ref => undefined,
+                                upstream_ws_ready => false,
+                                ws_out_buffer => [],
+                                k8s_remote_cmd => false
+                            },
+                            {cowboy_websocket,
+                                pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
+                                WsState, WsOpts}
+                    end
             end
     end.
 
-websocket_init(State = #{k8s_remote_cmd := true, upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
-    case connect_upstream_ws(UpAddr, UpPath, Headers) of
-        {ok, ConnPid, StreamRef} ->
-            lager:info(
-                "WS k8s upstream ready upstream=~s path=~s",
-                [UpAddr, UpPath]
-            ),
-            {ok, State#{
-                conn_pid => ConnPid,
-                stream_ref => StreamRef,
-                upstream_ws_ready => true,
-                ws_out_buffer => []
-            }};
-        {error, Reason} ->
-            lager:error(
-                "WS k8s upstream handshake failed upstream=~s path=~s reason=~p",
-                [UpAddr, UpPath, Reason]
-            ),
-            {stop, State}
-    end;
+websocket_init(#{k8s_remote_cmd := true, upstream_ws_ready := true} = State) ->
+    {ok, State};
 websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
     GunOpts = ws_gun_opts(UpHost, Transport),
@@ -272,6 +294,9 @@ connect_upstream_ws(UpAddr, UpPath, Headers) ->
     end.
 
 await_upstream_ws_handshake(ConnPid, StreamRef) ->
+    await_upstream_ws_handshake(ConnPid, StreamRef, ?CONNECT_TIMEOUT).
+
+await_upstream_ws_handshake(ConnPid, StreamRef, TimeoutMs) ->
     receive
         {gun_upgrade, ConnPid, StreamRef, Protocols, Headers} ->
             case is_ws_upgrade_protocols(Protocols) of
@@ -280,15 +305,16 @@ await_upstream_ws_handshake(ConnPid, StreamRef) ->
                 false ->
                     {error, {bad_protocol, Protocols, Headers}}
             end;
-        {gun_response, ConnPid, StreamRef, _, 101, _Headers} ->
+        {gun_response, ConnPid, StreamRef, _, 101, Headers} ->
+            lager:debug("WS upstream 101 response headers=~p", [Headers]),
             ok;
         {gun_response, ConnPid, StreamRef, _, Status, Headers} when Status =/= 101 ->
             {error, {bad_status, Status, Headers}};
         {gun_error, ConnPid, StreamRef, Reason} ->
             {error, Reason};
-        {gun_down, ConnPid, _, Reason, _} ->
-            {error, {down, Reason}}
-    after ?CONNECT_TIMEOUT ->
+        {gun_down, ConnPid, Proto, Reason, Killed} ->
+            {error, {down, Proto, Reason, Killed}}
+    after TimeoutMs ->
         {error, timeout}
     end.
 
@@ -378,7 +404,37 @@ client_ip(Req) ->
             hd(binary:split(XFF, [<<", ">>, <<",">>]))
     end.
 
-ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto) ->
+ws_forward_headers(Req, OrigHost, ClientIp, UpPath, SelectedProto, UpstreamAddr) ->
+    case is_k8s_remote_command_path(UpPath) of
+        true ->
+            ws_forward_headers_k8s(Req, OrigHost, ClientIp);
+        false ->
+            ws_forward_headers_default(Req, OrigHost, ClientIp, UpPath, SelectedProto)
+    end.
+
+%% Match pertisk_eproxy_handler:forward_headers/5 for kubectl exec/attach so Omni
+%% loopback upstream (127.0.0.1:8100) sees the same virtual-host headers as HTTP.
+ws_forward_headers_k8s(Req, OrigHost, ClientIp) ->
+    InHeaders = cowboy_req:headers(Req),
+    Proto = forwarded_proto(Req, InHeaders),
+    ProtoVsn = version_to_bin(cowboy_req:version(Req)),
+    Stripped = maps:without(ws_hop_by_hop_headers(), InHeaders),
+    XFF =
+        case maps:get(<<"x-forwarded-for">>, InHeaders, undefined) of
+            undefined -> ClientIp;
+            Existing -> <<Existing/binary, ", ", ClientIp/binary>>
+        end,
+    maps:to_list(
+        Stripped#{
+            <<"host">> => OrigHost,
+            <<"x-forwarded-host">> => OrigHost,
+            <<"x-forwarded-proto">> => Proto,
+            <<"x-forwarded-proto-version">> => ProtoVsn,
+            <<"x-forwarded-for">> => XFF
+        }
+    ).
+
+ws_forward_headers_default(Req, OrigHost, ClientIp, UpPath, SelectedProto) ->
     InHeaders = cowboy_req:headers(Req),
     Proto = forwarded_proto(Req, InHeaders),
     ProtoVsn = version_to_bin(cowboy_req:version(Req)),
@@ -491,6 +547,24 @@ is_k8s_remote_command_path(Path) when is_binary(Path) ->
     end;
 is_k8s_remote_command_path(_) ->
     false.
+
+ws_hop_by_hop_headers() ->
+    [
+        <<"connection">>,
+        <<"keep-alive">>,
+        <<"te">>,
+        <<"trailers">>,
+        <<"transfer-encoding">>,
+        <<"upgrade">>,
+        <<"sec-websocket-key">>,
+        <<"sec-websocket-version">>,
+        <<"sec-websocket-extensions">>
+    ].
+
+ws_log_path(Path) when is_binary(Path), byte_size(Path) > 180 ->
+    <<(binary:part(Path, 0, 180))/binary, "...">>;
+ws_log_path(Path) ->
+    Path.
 
 forwarded_proto(Req, InHeaders) ->
     case maps:get(<<"x-forwarded-proto">>, InHeaders, undefined) of

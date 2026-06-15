@@ -143,25 +143,14 @@ websocket_init_success_test() ->
     ?assertMatch({ok, #{conn_pid := gun_pid}}, pertisk_eproxy_ws_handler:websocket_init(State)),
     pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
-websocket_init_k8s_sync_handshake_test() ->
-    unload_mocks([gun]),
-    meck:new(gun, [unstick]),
-    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
-    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
-    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, _Headers) ->
-        self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
-        stream1
-    end),
+websocket_init_k8s_already_ready_test() ->
     State = (ws_state())#{
-        upstream_addr => <<"127.0.0.1:8080">>,
         k8s_remote_cmd => true,
-        upstream_path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>
+        upstream_ws_ready => true,
+        conn_pid => gun_pid,
+        stream_ref => stream1
     },
-    ?assertMatch(
-        {ok, #{conn_pid := _, stream_ref := stream1, upstream_ws_ready := true}},
-        pertisk_eproxy_ws_handler:websocket_init(State)
-    ),
-    pertisk_eproxy_test_helpers:unload_mocks([gun]).
+    ?assertMatch({ok, #{upstream_ws_ready := true}}, pertisk_eproxy_ws_handler:websocket_init(State)).
 
 websocket_init_open_failure_test() ->
     unload_mocks([gun]),
@@ -294,6 +283,13 @@ init_k8s_exec_forwarded_headers_test() ->
     meck:expect(pertisk_eproxy_backend, pick_upstream, fun(_, _) ->
         {ok, <<"omni.internal:443">>}
     end),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, _Headers) ->
+        self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
+        stream1
+    end),
     K8sProto =
         <<"v5.channel.k8s.io, v4.channel.k8s.io, v3.channel.k8s.io, channel.k8s.io">>,
     with_mock_req(#{
@@ -302,13 +298,14 @@ init_k8s_exec_forwarded_headers_test() ->
         qs => <<"command=sh&stdin=1&stdout=1&stderr=1&tty=1">>,
         headers => #{
             <<"authorization">> => <<"Bearer cluster-token">>,
-            <<"sec-websocket-protocol">> => K8sProto
+            <<"sec-websocket-protocol">> => K8sProto,
+            <<"user-agent">> => <<"kubectl/v1.36.2">>
         },
         subproto => K8sProto
     }, fun(Req) ->
         Result = pertisk_eproxy_ws_handler:init(Req, #{}),
         ?assertMatch(
-            {cowboy_websocket, _, #{k8s_remote_cmd := true}, #{idle_timeout := infinity, compress := false}},
+            {cowboy_websocket, _, #{k8s_remote_cmd := true, upstream_ws_ready := true}, _},
             Result
         ),
         {cowboy_websocket, _, #{ws_headers := Hdrs}, _} = Result,
@@ -317,12 +314,97 @@ init_k8s_exec_forwarded_headers_test() ->
             lists:keyfind(<<"host">>, 1, Hdrs)
         ),
         ?assertEqual(
-            false,
-            lists:keymember(<<"x-forwarded-for">>, 1, Hdrs)
+            {<<"x-forwarded-host">>, <<"kube.omni.example">>},
+            lists:keyfind(<<"x-forwarded-host">>, 1, Hdrs)
+        ),
+        ?assertEqual(
+            {<<"x-forwarded-proto">>, <<"http">>},
+            lists:keyfind(<<"x-forwarded-proto">>, 1, Hdrs)
+        ),
+        ?assertMatch(
+            {<<"x-forwarded-for">>, _},
+            lists:keyfind(<<"x-forwarded-for">>, 1, Hdrs)
+        ),
+        ?assertEqual(
+            {<<"authorization">>, <<"Bearer cluster-token">>},
+            lists:keyfind(<<"authorization">>, 1, Hdrs)
         ),
         ?assertEqual(
             {<<"sec-websocket-protocol">>, K8sProto},
             lists:keyfind(<<"sec-websocket-protocol">>, 1, Hdrs)
         )
     end),
-    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).
+
+init_k8s_loopback_forwarded_headers_test() ->
+    unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
+    meck:new(pertisk_eproxy_router, [unstick]),
+    meck:expect(pertisk_eproxy_router, route, fun(_, _) ->
+        {ok, #{
+            upstream_path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+            backend => <<"omni">>
+        }}
+    end),
+    meck:new(pertisk_eproxy_backend, [unstick]),
+    meck:expect(pertisk_eproxy_backend, pick_upstream, fun(_, _) ->
+        {ok, <<"http://127.0.0.1:8100">>}
+    end),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs) ->
+        ?assertMatch(
+            {<<"x-forwarded-proto">>, <<"https">>},
+            lists:keyfind(<<"x-forwarded-proto">>, 1, Hdrs)
+        ),
+        ?assertMatch(
+            {<<"x-forwarded-host">>, <<"kube.omni.example">>},
+            lists:keyfind(<<"x-forwarded-host">>, 1, Hdrs)
+        ),
+        self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
+        stream1
+    end),
+    with_mock_req(#{
+        host => <<"kube.omni.example">>,
+        path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+        scheme => https,
+        headers => #{<<"authorization">> => <<"Bearer cluster-token">>}
+    }, fun(Req) ->
+        ?assertMatch(
+            {cowboy_websocket, _, #{upstream_ws_ready := true}, _},
+            pertisk_eproxy_ws_handler:init(Req, #{})
+        )
+    end),
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).
+
+init_k8s_upstream_handshake_failure_test() ->
+    unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
+    meck:new(pertisk_eproxy_router, [unstick]),
+    meck:expect(pertisk_eproxy_router, route, fun(_, _) ->
+        {ok, #{
+            upstream_path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+            backend => <<"omni">>
+        }}
+    end),
+    meck:new(pertisk_eproxy_backend, [unstick]),
+    meck:expect(pertisk_eproxy_backend, pick_upstream, fun(_, _) ->
+        {ok, <<"http://127.0.0.1:8100">>}
+    end),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, ws_upgrade, fun(_, _, _) ->
+        self() ! {gun_down, self(), http, {closed, normal}, []},
+        stream1
+    end),
+    meck:expect(gun, close, fun(_) -> ok end),
+    with_mock_req(#{
+        path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>,
+        headers => #{<<"authorization">> => <<"Bearer x">>}
+    }, fun(Req) ->
+        ?assertMatch(
+            {ok, #{reply := {502, _}}, _},
+            pertisk_eproxy_ws_handler:init(Req, #{})
+        )
+    end),
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).

@@ -2042,7 +2042,8 @@ is_sse_proxy_request(_, _) ->
 
 is_sse_proxy_path(ReqPath) ->
     is_stream_endpoint_path(ReqPath)
-        orelse is_gitea_events_path(ReqPath).
+        orelse is_gitea_events_path(ReqPath)
+        orelse ReqPath =:= <<"/api/realtime-sse">>.
 
 is_stream_endpoint_path(ReqPath) ->
     case ReqPath of
