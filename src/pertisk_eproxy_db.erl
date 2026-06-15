@@ -1086,16 +1086,17 @@ update_dns_provider(DbPath, Id, Name0, ProviderType0, Credentials) ->
 delete_dns_provider(DbPath, Id) ->
     case ensure_dns_providers_table(DbPath) of
         ok ->
-            SQL = "DELETE FROM dns_providers WHERE id = " ++ integer_to_list(Id),
-            case sqlite_exec(DbPath, SQL) of
-                ok ->
-                    case sqlite_query(DbPath, "SELECT changes() AS n") of
-                        {ok, [Row | _]} ->
-                            case maps:get(<<"n">>, Row, 0) > 0 of
-                                true -> ok;
-                                false -> {error, not_found}
-                            end;
-                        _ -> {error, not_found}
+            ExistsSQL = "SELECT id FROM dns_providers WHERE id = " ++ integer_to_list(Id) ++ " LIMIT 1",
+            case sqlite_query(DbPath, ExistsSQL) of
+                {ok, []} ->
+                    {error, not_found};
+                {ok, [_ | _]} ->
+                    SQL = "DELETE FROM dns_providers WHERE id = " ++ integer_to_list(Id),
+                    sqlite_exec(DbPath, SQL);
+                {error, {sqlite3_cli, Msg}} ->
+                    case string:str(string:trim(Msg), "Error:") of
+                        1 -> {error, {sqlite_error, Msg}};
+                        _ -> {error, {sqlite3_cli, Msg}}
                     end;
                 {error, Reason} ->
                     {error, Reason}
@@ -1113,18 +1114,21 @@ delete_dns_provider_by_name(DbPath, Name0) ->
         _ ->
             case ensure_dns_providers_table(DbPath) of
                 ok ->
-                    SQL =
-                        "DELETE FROM dns_providers WHERE lower(trim(name)) = lower(trim('" ++
-                        sql_escape(Name) ++ "'))",
-                    case sqlite_exec(DbPath, SQL) of
-                        ok ->
-                            case sqlite_query(DbPath, "SELECT changes() AS n") of
-                                {ok, [Row | _]} ->
-                                    case maps:get(<<"n">>, Row, 0) > 0 of
-                                        true -> ok;
-                                        false -> {error, not_found}
-                                    end;
-                                _ -> {error, not_found}
+                    ExistsSQL =
+                        "SELECT id FROM dns_providers WHERE lower(trim(name)) = lower(trim('" ++
+                        sql_escape(Name) ++ "')) LIMIT 1",
+                    case sqlite_query(DbPath, ExistsSQL) of
+                        {ok, []} ->
+                            {error, not_found};
+                        {ok, [_ | _]} ->
+                            SQL =
+                                "DELETE FROM dns_providers WHERE lower(trim(name)) = lower(trim('" ++
+                                sql_escape(Name) ++ "'))",
+                            sqlite_exec(DbPath, SQL);
+                        {error, {sqlite3_cli, Msg}} ->
+                            case string:str(string:trim(Msg), "Error:") of
+                                1 -> {error, {sqlite_error, Msg}};
+                                _ -> {error, {sqlite3_cli, Msg}}
                             end;
                         {error, Reason} ->
                             {error, Reason}
