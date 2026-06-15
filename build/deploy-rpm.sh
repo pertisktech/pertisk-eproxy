@@ -12,6 +12,7 @@ PACKAGE_VERSION="${PACKAGE_VERSION#V}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
+FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL:-}"
 
 RPM_FILE="${PACKAGE_NAME}-${PACKAGE_VERSION}-${RPM_RELEASE}.x86_64.rpm"
 
@@ -27,6 +28,9 @@ log_err() { echo -e "${RED}$*${NC}"; }
 
 echo -e "${GREEN}Starting RPM deployment of ${PACKAGE_NAME} version ${PACKAGE_VERSION}${NC}"
 echo -e "${YELLOW}Remote: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}${NC}"
+if [[ -n "${FORCE_LOG_LEVEL}" ]]; then
+  echo -e "${YELLOW}Force runtime log level: ${FORCE_LOG_LEVEL}${NC}"
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -62,6 +66,7 @@ log_info "Installing/updating package on remote server..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" <<EOF
 set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${RPM_FILE}"
+FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL}"
 
 if command -v dnf >/dev/null 2>&1; then
   if rpm -q "${PACKAGE_NAME}" >/dev/null 2>&1; then
@@ -114,6 +119,7 @@ fi
 echo "Refreshing systemd override with release \${REL_VSN} (erts \${ERTS_VSN}, boot \${BOOT_BASE})..." >&2
 DROPIN_DIR="/etc/systemd/system/${PACKAGE_NAME}.service.d"
 MANAGED_DROPIN="\${DROPIN_DIR}/10-execstart-compat.conf"
+LOG_LEVEL_DROPIN="\${DROPIN_DIR}/10-log-level.conf"
 sudo mkdir -p "\${DROPIN_DIR}"
 
 # Remove stale release-pinned drop-ins from previous deploy logic.
@@ -137,6 +143,15 @@ Environment=LD_LIBRARY_PATH=\${PACKAGE_ROOT}/lib/runtime:\${PACKAGE_ROOT}/lib/op
 ExecStart=
 ExecStart=\${PACKAGE_ROOT}/erts-\${ERTS_VSN}/bin/erlexec -noinput +Bd -boot \${PACKAGE_ROOT}/releases/\${REL_VSN}/\${BOOT_BASE} -mode embedded -boot_var SYSTEM_LIB_DIR \${PACKAGE_ROOT}/lib -config \${PACKAGE_ROOT}/releases/\${REL_VSN}/sys.config -args_file \${PACKAGE_ROOT}/releases/\${REL_VSN}/vm.args -- foreground
 UNITEOF
+
+if [ -n "\${FORCE_LOG_LEVEL}" ]; then
+  sudo tee "\${LOG_LEVEL_DROPIN}" >/dev/null <<LOGEOF
+[Service]
+Environment=PERTISK_LOG_LEVEL=\${FORCE_LOG_LEVEL}
+LOGEOF
+else
+  sudo rm -f "\${LOG_LEVEL_DROPIN}"
+fi
 
 sudo systemctl daemon-reload
 sudo systemctl enable "${PACKAGE_NAME}" --now
