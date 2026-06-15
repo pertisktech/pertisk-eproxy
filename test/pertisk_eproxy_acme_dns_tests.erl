@@ -129,44 +129,46 @@ backend() ->
     }.
 
 with_scan_env(Fun) ->
-    pertisk_eproxy_test_helpers:ensure_config(),
-    OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
-    OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
-    OldDb = application:get_env(pertisk_eproxy, db_file),
-    application:set_env(pertisk_eproxy, acme_terms_agreed, true),
-    AcmeDir = filename:join([
-        os:getenv("TMPDIR", "/tmp"),
-        "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))
-    ]),
-    case file:make_dir(AcmeDir) of
-        ok -> ok;
-        {error, eexist} -> ok;
-        {error, Reason} -> error({make_dir, AcmeDir, Reason})
-    end,
-    application:set_env(pertisk_eproxy, acme_data_dir, AcmeDir),
-    DbPath = pertisk_eproxy_test_helpers:tmp_db(),
-    file:delete(DbPath),
-    application:set_env(pertisk_eproxy, db_file, DbPath),
-    try
-        ?assertMatch({ok, _}, init_scan_db(DbPath)),
-        Fun(#{db => DbPath, acme_dir => AcmeDir})
-    after
-        stop_acme_dns(),
-        case OldDb of
-            {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
-            undefined -> application:unset_env(pertisk_eproxy, db_file)
+    pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        pertisk_eproxy_test_helpers:ensure_config(),
+        OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
+        OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, acme_terms_agreed, true),
+        AcmeDir = filename:join([
+            os:getenv("TMPDIR", "/tmp"),
+            "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))
+        ]),
+        case file:make_dir(AcmeDir) of
+            ok -> ok;
+            {error, eexist} -> ok;
+            {error, Reason} -> error({make_dir, AcmeDir, Reason})
         end,
-        case OldTerms of
-            {ok, TermsVal} -> application:set_env(pertisk_eproxy, acme_terms_agreed, TermsVal);
-            undefined -> application:unset_env(pertisk_eproxy, acme_terms_agreed)
-        end,
-        case OldAcmeDir of
-            {ok, DirVal} -> application:set_env(pertisk_eproxy, acme_data_dir, DirVal);
-            undefined -> application:unset_env(pertisk_eproxy, acme_data_dir)
-        end,
-        _ = os:cmd("rm -rf " ++ AcmeDir),
-        file:delete(DbPath)
-    end.
+        application:set_env(pertisk_eproxy, acme_data_dir, AcmeDir),
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        try
+            ?assertMatch({ok, _}, init_scan_db(DbPath)),
+            Fun(#{db => DbPath, acme_dir => AcmeDir})
+        after
+            stop_acme_dns(),
+            case OldDb of
+                {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            case OldTerms of
+                {ok, TermsVal} -> application:set_env(pertisk_eproxy, acme_terms_agreed, TermsVal);
+                undefined -> application:unset_env(pertisk_eproxy, acme_terms_agreed)
+            end,
+            case OldAcmeDir of
+                {ok, DirVal} -> application:set_env(pertisk_eproxy, acme_data_dir, DirVal);
+                undefined -> application:unset_env(pertisk_eproxy, acme_data_dir)
+            end,
+            _ = os:cmd("rm -rf " ++ AcmeDir),
+            file:delete(DbPath)
+        end
+    end).
 
 run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupFun) ->
     pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
