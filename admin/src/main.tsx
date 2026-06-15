@@ -11,6 +11,11 @@ import './styles/typography.css';
 import './index.css';
 import './styles/theme.css';
 
+declare const __APP_BUILD_ID__: string;
+
+const BUILD_ID = __APP_BUILD_ID__;
+document.documentElement.setAttribute('data-build-id', BUILD_ID);
+
 function GuestBootstrap({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   useEffect(() => {

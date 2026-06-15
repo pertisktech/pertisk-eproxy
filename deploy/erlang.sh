@@ -5,6 +5,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 VERSION="${VERSION:-}"
+FRONTEND_BUILD_ID="${FRONTEND_BUILD_ID:-$(date +%s)}"
+FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
@@ -30,9 +32,14 @@ if [[ -z "$VERSION" ]]; then
   exit 2
 fi
 
-echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT})"
+DOCKER_NO_CACHE=false
+if [[ "$FORCE_DEPLOY" == "true" ]]; then
+  DOCKER_NO_CACHE=true
+fi
 
-make docker-ingress-multi VERSION="$VERSION"
+echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT}, frontend_build_id=${FRONTEND_BUILD_ID}, force_deploy=${FORCE_DEPLOY})"
+
+make docker-ingress-multi VERSION="$VERSION" FRONTEND_BUILD_ID="$FRONTEND_BUILD_ID" DOCKER_NO_CACHE="$DOCKER_NO_CACHE"
 
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --create-namespace \

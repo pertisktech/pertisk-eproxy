@@ -19,10 +19,16 @@ PERTISK_ADMIN ?= admin
 PERTISK_PASSWORD ?= admin
 VERSION ?= x.x.x
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
+FRONTEND_BUILD_ID ?= $(shell date +%s)
+DOCKER_NO_CACHE ?= false
 ifeq ($(PACKAGE_VERSION),x.x.x)
 PACKAGE_VERSION := 0.1.0
 endif
-DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION)
+DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION) --build-arg FRONTEND_BUILD_ID=$(FRONTEND_BUILD_ID)
+DOCKER_NO_CACHE_ARG :=
+ifeq ($(DOCKER_NO_CACHE),true)
+DOCKER_NO_CACHE_ARG := --no-cache
+endif
 BUILD_PLATFORMS ?= linux/amd64,linux/arm64
 BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
@@ -115,6 +121,7 @@ docker-proxy-push: docker-push
 
 docker-proxy-multi: docker-buildx-multi-builder
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
@@ -127,15 +134,16 @@ docker-proxy-multi: docker-buildx-multi-builder
 
 ## --- Docker: ingress (K8s controller, read-only admin API) ---
 docker-ingress:
-	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 
 docker-ingress-push:
-	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE_INGRESS) -t $(HARBOR_INGRESS_IMAGE):$(VERSION) .
 	docker push $(HARBOR_INGRESS_IMAGE):$(VERSION)
 	docker push $(HARBOR_INGRESS_IMAGE):latest 2>/dev/null || docker tag $(HARBOR_INGRESS_IMAGE):$(VERSION) $(HARBOR_INGRESS_IMAGE):latest && docker push $(HARBOR_INGRESS_IMAGE):latest
 
 docker-ingress-multi: docker-buildx-multi-builder
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
 		--platform "$(BUILD_PLATFORMS)" \
 		--provenance=$(BUILD_PROVENANCE) \
@@ -148,13 +156,13 @@ docker-ingress-multi: docker-buildx-multi-builder
 
 ## Back-compat (was single IMAGE; now use docker-ingress-multi for ingress chart)
 docker-release:
-	docker build $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-build:
-	docker buildx build $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
 docker-push:
-	docker buildx build $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
+	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
 		-t $(HARBOR_PROXY_IMAGE):$(VERSION) \
 		-t $(HARBOR_PROXY_IMAGE):latest \
 		.
