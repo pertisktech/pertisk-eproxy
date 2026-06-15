@@ -7,12 +7,13 @@ main([ChunkDir, OutFile, MinStr, "gate"]) ->
     Min = list_to_integer(MinStr),
     Ebin = ebin_dir(),
     Excl = cover_excl_mods(),
-    ChunkFiles = lists:sort(filelib:wildcard(filename:join(ChunkDir, "*.coverdata"))),
-    case ChunkFiles of
+    ChunkFiles0 = lists:sort(filelib:wildcard(filename:join(ChunkDir, "*.coverdata"))),
+    case ChunkFiles0 of
         [] ->
             io:format(standard_error, "no chunk files in ~s~n", [ChunkDir]),
             halt(1);
         _ ->
+            ChunkFiles = sanitize_chunk_files(ChunkFiles0, Ebin),
             Best = filter_excl(best_per_module(ChunkFiles, Ebin), Excl),
             {TotalCovered, TotalLines, Modules, Below} = gate_stats(Best, Min),
             TotalPct =
@@ -31,12 +32,13 @@ main([ChunkDir, OutFile, MinStr, "gate"]) ->
     end;
 main([ChunkDir, OutFile, "merge"]) ->
     Ebin = ebin_dir(),
-    ChunkFiles = lists:sort(filelib:wildcard(filename:join(ChunkDir, "*.coverdata"))),
-    case ChunkFiles of
+    ChunkFiles0 = lists:sort(filelib:wildcard(filename:join(ChunkDir, "*.coverdata"))),
+    case ChunkFiles0 of
         [] ->
             io:format(standard_error, "no chunk files in ~s~n", [ChunkDir]),
             halt(1);
         _ ->
+            ChunkFiles = sanitize_chunk_files(ChunkFiles0, Ebin),
             ok = filelib:ensure_dir(OutFile),
             cover:compile_beam_directory(Ebin),
             lists:foreach(fun(F) -> cover:import(F) end, ChunkFiles),
@@ -136,6 +138,28 @@ export_ebin_only(OutFile, Ebin) ->
     end,
     _ = file:delete(TmpFile),
     Res.
+
+sanitize_chunk_files(ChunkFiles, Ebin) ->
+    EbinBeams = filelib:wildcard(filename:join(Ebin, "*.beam")),
+    EbinSet = sets:from_list(
+        [list_to_atom(filename:basename(F, ".beam")) || F <- EbinBeams]
+    ),
+    TmpDir = filename:join([filename:dirname(hd(ChunkFiles)), ".sanitized"]),
+    ok = filelib:ensure_dir(filename:join(TmpDir, "placeholder")),
+    lists:map(
+        fun(F) ->
+            Target = filename:join(TmpDir, filename:basename(F)),
+            case file:read_file(F) of
+                {ok, Bin} ->
+                    Filtered = filter_coverdata_bin(Bin, EbinSet, <<>>),
+                    ok = file:write_file(Target, Filtered),
+                    Target;
+                {error, _} ->
+                    F
+            end
+        end,
+        ChunkFiles
+    ).
 
 %% Walk the .coverdata binary format: <<Sz:32/big, Term:Sz/binary>>* chunks.
 %% Keep only chunks whose decoded {Module, _} Module is in EbinSet.
