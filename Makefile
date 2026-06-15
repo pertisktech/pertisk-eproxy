@@ -13,6 +13,10 @@ COVER_MIN ?= 80
 HARBOR_REGISTRY ?= harbor.tools.thaidevops.co
 HARBOR_PROXY_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/proxy
 HARBOR_INGRESS_IMAGE ?= $(HARBOR_REGISTRY)/pertisksoft/pertisk-eproxy/ingress
+KUBECONFIG ?= /Users/nat/.kube/talos-255-prod-cluster-kubeconfig.yaml
+PERTISK_AUTH_MODE ?= both
+PERTISK_ADMIN ?= admin
+PERTISK_PASSWORD ?= admin
 VERSION ?= x.x.x
 PACKAGE_VERSION := $(patsubst v%,%,$(VERSION))
 ifeq ($(PACKAGE_VERSION),x.x.x)
@@ -161,7 +165,7 @@ run: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
 run-ingress: compile
-	PERTISK_MODE=ingress PERTISK_CONFIG_FILE=config/ingress.json \
+	KUBECONFIG=$(KUBECONFIG) PERTISK_MODE=ingress PERTISK_AUTH_MODE=$(PERTISK_AUTH_MODE) PERTISK_ADMIN=$(PERTISK_ADMIN) PERTISK_PASSWORD=$(PERTISK_PASSWORD) PERTISK_CONFIG_FILE=config/ingress.json \
 		COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
 reload:
