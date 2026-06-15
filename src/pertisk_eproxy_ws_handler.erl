@@ -167,6 +167,10 @@ websocket_info(
     ),
     {[close], State};
 
+websocket_info({gun_error, _ConnPid, _SRef, {closed, normal}}, State) ->
+    lager:info("WS upstream closed normally"),
+    {[close], State};
+
 websocket_info({gun_error, _ConnPid, _SRef, Reason}, State) ->
     lager:warning("WS upstream error: ~p", [Reason]),
     {[close], State};

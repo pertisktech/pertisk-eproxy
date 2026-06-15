@@ -218,6 +218,8 @@ websocket_info_paths_test() ->
     ?assertMatch({[close], _},
         pertisk_eproxy_ws_handler:websocket_info({gun_error, self(), stream1, timeout}, State)),
     ?assertMatch({[close], _},
+        pertisk_eproxy_ws_handler:websocket_info({gun_error, self(), stream1, {closed, normal}}, State)),
+    ?assertMatch({[close], _},
         pertisk_eproxy_ws_handler:websocket_info({gun_down, self(), http, normal, []}, State)),
     ?assertMatch({ok, _},
         pertisk_eproxy_ws_handler:websocket_info(ignored, State)),
