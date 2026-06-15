@@ -143,6 +143,26 @@ websocket_init_success_test() ->
     ?assertMatch({ok, #{conn_pid := gun_pid}}, pertisk_eproxy_ws_handler:websocket_init(State)),
     pertisk_eproxy_test_helpers:unload_mocks([gun]).
 
+websocket_init_k8s_sync_handshake_test() ->
+    unload_mocks([gun]),
+    meck:new(gun, [unstick]),
+    meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
+    meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
+    meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, _Headers) ->
+        self() ! {gun_upgrade, self(), stream1, [<<"websocket">>], []},
+        stream1
+    end),
+    State = (ws_state())#{
+        upstream_addr => <<"127.0.0.1:8080">>,
+        k8s_remote_cmd => true,
+        upstream_path => <<"/api/v1/namespaces/default/pods/nginx-pod/exec">>
+    },
+    ?assertMatch(
+        {ok, #{conn_pid := _, stream_ref := stream1, upstream_ws_ready := true}},
+        pertisk_eproxy_ws_handler:websocket_init(State)
+    ),
+    pertisk_eproxy_test_helpers:unload_mocks([gun]).
+
 websocket_init_open_failure_test() ->
     unload_mocks([gun]),
     meck:new(gun, [unstick]),
@@ -288,7 +308,7 @@ init_k8s_exec_forwarded_headers_test() ->
     }, fun(Req) ->
         Result = pertisk_eproxy_ws_handler:init(Req, #{}),
         ?assertMatch(
-            {cowboy_websocket, _, #{k8s_remote_cmd := true}, #{idle_timeout := infinity}},
+            {cowboy_websocket, _, #{k8s_remote_cmd := true}, #{idle_timeout := infinity, compress := false}},
             Result
         ),
         {cowboy_websocket, _, #{ws_headers := Hdrs}, _} = Result,

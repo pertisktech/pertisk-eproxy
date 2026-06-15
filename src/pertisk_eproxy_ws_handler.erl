@@ -16,6 +16,7 @@
 -define(CONNECT_TIMEOUT, 10000).
 %% Gun keeps protocol=gun_http until the WS handshake finishes; ws_send goes to gun_ws only after.
 -define(MAX_WS_OUT_BUFFER, 64).
+-define(K8S_MAX_WS_OUT_BUFFER, 1024).
 %% kubectl exec/attach/port-forward sessions can stay idle for a long time.
 -define(K8S_REMOTE_CMD_IDLE_TIMEOUT, infinity).
 -define(DEFAULT_IDLE_TIMEOUT, 300000).
@@ -67,12 +68,33 @@ init(Req, _State) ->
                         ws_out_buffer       => [],
                         k8s_remote_cmd      => IsK8sRemoteCmd
                     },
+                    WsOpts = #{idle_timeout => IdleTimeout, compress => false},
                     %% Upgrade the cowboy connection to WebSocket.
                     {cowboy_websocket, pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
-                        WsState, #{idle_timeout => IdleTimeout}}
+                        WsState, WsOpts}
             end
     end.
 
+websocket_init(State = #{k8s_remote_cmd := true, upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
+    case connect_upstream_ws(UpAddr, UpPath, Headers) of
+        {ok, ConnPid, StreamRef} ->
+            lager:info(
+                "WS k8s upstream ready upstream=~s path=~s",
+                [UpAddr, UpPath]
+            ),
+            {ok, State#{
+                conn_pid => ConnPid,
+                stream_ref => StreamRef,
+                upstream_ws_ready => true,
+                ws_out_buffer => []
+            }};
+        {error, Reason} ->
+            lager:error(
+                "WS k8s upstream handshake failed upstream=~s path=~s reason=~p",
+                [UpAddr, UpPath, Reason]
+            ),
+            {stop, State}
+    end;
 websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
     {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
     GunOpts = ws_gun_opts(UpHost, Transport),
@@ -115,6 +137,19 @@ websocket_handle(Frame, State = #{conn_pid := ConnPid, stream_ref := SRef, upstr
     when ConnPid =/= undefined ->
     gun:ws_send(ConnPid, SRef, Frame),
     {ok, State};
+websocket_handle(Frame, State = #{conn_pid := ConnPid, ws_out_buffer := Buf, k8s_remote_cmd := true})
+    when ConnPid =/= undefined ->
+    MaxBuf = ?K8S_MAX_WS_OUT_BUFFER,
+    case length(Buf) >= MaxBuf of
+        true ->
+            lager:error(
+                "WS k8s outbound buffer full during upstream upgrade (~p frames)",
+                [MaxBuf]
+            ),
+            {[close], State};
+        false ->
+            {ok, State#{ws_out_buffer => Buf ++ [Frame]}}
+    end;
 websocket_handle(Frame, State = #{conn_pid := ConnPid, ws_out_buffer := Buf})
     when ConnPid =/= undefined ->
     case length(Buf) >= ?MAX_WS_OUT_BUFFER of
@@ -206,6 +241,56 @@ is_ws_upgrade_protocols([websocket | _]) ->
     true;
 is_ws_upgrade_protocols(_) ->
     false.
+
+connect_upstream_ws(UpAddr, UpPath, Headers) ->
+    {UpHost, UpPort, Transport} = pertisk_eproxy_handler:parse_upstream(UpAddr),
+    GunOpts = ws_gun_opts(UpHost, Transport),
+    case gun:open(UpHost, UpPort, GunOpts) of
+        {ok, ConnPid} ->
+            try
+                case gun:await_up(ConnPid, ?CONNECT_TIMEOUT) of
+                    {ok, _} ->
+                        StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers),
+                        case await_upstream_ws_handshake(ConnPid, StreamRef) of
+                            ok ->
+                                {ok, ConnPid, StreamRef};
+                            {error, Reason} ->
+                                gun:close(ConnPid),
+                                {error, Reason}
+                        end;
+                    {error, Reason} ->
+                        gun:close(ConnPid),
+                        {error, Reason}
+                end
+            catch
+                Class:CrashReason:Stack ->
+                    gun:close(ConnPid),
+                    {error, {Class, CrashReason, Stack}}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+await_upstream_ws_handshake(ConnPid, StreamRef) ->
+    receive
+        {gun_upgrade, ConnPid, StreamRef, Protocols, Headers} ->
+            case is_ws_upgrade_protocols(Protocols) of
+                true ->
+                    ok;
+                false ->
+                    {error, {bad_protocol, Protocols, Headers}}
+            end;
+        {gun_response, ConnPid, StreamRef, _, 101, _Headers} ->
+            ok;
+        {gun_response, ConnPid, StreamRef, _, Status, Headers} when Status =/= 101 ->
+            {error, {bad_status, Status, Headers}};
+        {gun_error, ConnPid, StreamRef, Reason} ->
+            {error, Reason};
+        {gun_down, ConnPid, _, Reason, _} ->
+            {error, {down, Reason}}
+    after ?CONNECT_TIMEOUT ->
+        {error, timeout}
+    end.
 
 ws_gun_opts(tls) ->
     #{
