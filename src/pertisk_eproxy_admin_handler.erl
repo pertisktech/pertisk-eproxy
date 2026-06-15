@@ -1180,10 +1180,19 @@ kubernetes_error_status(#{<<"code">> := 403}) -> 403;
 kubernetes_error_status(#{<<"reason">> := <<"Forbidden">>}) -> 403;
 kubernetes_error_status(#{<<"status">> := #{<<"code">> := 403}}) -> 403;
 kubernetes_error_status(#{<<"status">> := #{<<"code">> := 404}}) -> 404;
-kubernetes_error_status(_) -> 500.
+kubernetes_error_status(Reason) when is_map(Reason) -> 500;
+kubernetes_error_status(_) -> 400.
 
 kubernetes_error_message(Reason) when is_binary(Reason) ->
     Reason;
+kubernetes_error_message(econnrefused) ->
+    <<"Kubernetes API connection refused">>;
+kubernetes_error_message(timeout) ->
+    <<"Kubernetes API request timed out">>;
+kubernetes_error_message({failed_connect, _}) ->
+    <<"Failed to connect to Kubernetes API">>;
+kubernetes_error_message({conn_failed, _}) ->
+    <<"Failed to connect to Kubernetes API">>;
 kubernetes_error_message(#{<<"message">> := Msg}) when is_binary(Msg) ->
     Msg;
 kubernetes_error_message(#{<<"status">> := #{<<"message">> := Msg}}) when is_binary(Msg) ->

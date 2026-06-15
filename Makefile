@@ -1,4 +1,4 @@
-.PHONY: all compile patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
+.PHONY: all compile admin-build patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -57,6 +57,9 @@ patch-hackney:
 
 compile: patch-ekub patch-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
+
+admin-build:
+	cd admin && npm run -s build
 
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
@@ -164,7 +167,7 @@ docker-harbor-multi: docker-proxy-multi docker-ingress-multi
 run: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 
-run-ingress: compile
+run-ingress: compile admin-build
 	KUBECONFIG=$(KUBECONFIG) PERTISK_MODE=ingress PERTISK_AUTH_MODE=$(PERTISK_AUTH_MODE) PERTISK_ADMIN=$(PERTISK_ADMIN) PERTISK_PASSWORD=$(PERTISK_PASSWORD) PERTISK_CONFIG_FILE=config/ingress.json \
 		COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
 

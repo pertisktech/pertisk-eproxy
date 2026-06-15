@@ -110,6 +110,8 @@ function LayoutShell() {
   const [currentPicture, setCurrentPicture] = useState<string>(getPicture() || '');
   const [authMethod, setCurrentAuthMethod] = useState(getAuthMethod());
   const [mode, setMode] = useState<ApiMode | undefined>(undefined);
+  const [guestModeAllowed, setGuestModeAllowed] = useState(false);
+  const [authConfigResolved, setAuthConfigResolved] = useState(false);
   const [appVersion, setAppVersion] = useState<string>('');
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -242,12 +244,19 @@ function LayoutShell() {
       .authConfig()
       .then((cfg) => {
         if (cancelled) return;
+        setGuestModeAllowed(!!cfg.guest_mode);
+        setAuthConfigResolved(true);
         const dm = cfg.deployment_mode;
         if (dm === 'proxy' || dm === 'ingress') {
           setMode(dm);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setGuestModeAllowed(false);
+          setAuthConfigResolved(true);
+        }
+      });
 
     api
       .version()
@@ -263,6 +272,14 @@ function LayoutShell() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!authConfigResolved) return;
+    if (loggedIn) return;
+    if (guestModeAllowed) return;
+    if (pathname === '/login') return;
+    navigate('/login', { replace: true });
+  }, [authConfigResolved, guestModeAllowed, loggedIn, navigate, pathname]);
 
   useEffect(() => {
     if (!loggedIn || !sessionVerified) return;
@@ -617,7 +634,7 @@ function LayoutShell() {
           <div className={styles.mainContent}>
             <div className={styles.mainContentInner}>
               <AuthProvider value={{ openPasswordModal }}>
-                {sessionVerified ? <Outlet /> : <div className={styles.authGate}>Checking session…</div>}
+                {sessionVerified && authConfigResolved ? <Outlet /> : <div className={styles.authGate}>Checking session…</div>}
               </AuthProvider>
             </div>
           </div>
