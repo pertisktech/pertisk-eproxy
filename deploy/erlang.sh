@@ -31,6 +31,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --create-namespace \
   --wait \
   --timeout "$HELM_TIMEOUT" \
+  --force-conflicts \
   --set image.tag="$VERSION" \
   --set image.pullPolicy=Always \
   --set auth.username=admin \

@@ -22,7 +22,7 @@ main([ChunkDir, OutFile, MinStr, "gate"]) ->
             ok = filelib:ensure_dir(OutFile),
             cover:compile_beam_directory(Ebin),
             lists:foreach(fun(F) -> cover:import(F) end, ChunkFiles),
-            ok = cover:export(OutFile),
+            ok = export_ebin_only(OutFile, Ebin),
             print_summary(Modules, Best, TotalPct, Min, Below, Excl),
             case Below of
                 [] when TotalPct >= Min -> halt(0);
@@ -40,7 +40,7 @@ main([ChunkDir, OutFile, "merge"]) ->
             ok = filelib:ensure_dir(OutFile),
             cover:compile_beam_directory(Ebin),
             lists:foreach(fun(F) -> cover:import(F) end, ChunkFiles),
-            ok = cover:export(OutFile),
+            ok = export_ebin_only(OutFile, Ebin),
             Best = best_per_module(ChunkFiles, Ebin),
             Modules = lists:sort(maps:keys(Best)),
             TotalCovered = lists:sum([C || {C, _} <- maps:values(Best)]),
@@ -117,6 +117,48 @@ best_per_module(ChunkFiles, Ebin) ->
 
 pct(C, T) when T > 0 -> 100.0 * C / T;
 pct(_, _) -> 0.0.
+
+%% Export only ebin modules to OutFile, stripping *_meck_original entries
+%% that meck leaves in cover's tracking and that rebar3 cover can't load.
+export_ebin_only(OutFile, Ebin) ->
+    TmpFile = OutFile ++ ".meck_filter_tmp",
+    ok = cover:export(TmpFile),
+    EbinBeams = filelib:wildcard(filename:join(Ebin, "*.beam")),
+    EbinSet = sets:from_list(
+        [list_to_atom(filename:basename(F, ".beam")) || F <- EbinBeams]
+    ),
+    Res = case file:read_file(TmpFile) of
+        {ok, Bin} ->
+            Filtered = filter_coverdata_bin(Bin, EbinSet, <<>>),
+            file:write_file(OutFile, Filtered);
+        {error, _} = Err ->
+            Err
+    end,
+    _ = file:delete(TmpFile),
+    Res.
+
+%% Walk the .coverdata binary format: <<Sz:32/big, Term:Sz/binary>>* chunks.
+%% Keep only chunks whose decoded {Module, _} Module is in EbinSet.
+filter_coverdata_bin(<<>>, _Set, Acc) ->
+    Acc;
+filter_coverdata_bin(<<Sz:32/big, Chunk:Sz/binary, Rest/binary>>, Set, Acc) ->
+    NewAcc =
+        try binary_to_term(Chunk) of
+            {Mod, _} ->
+                case sets:is_element(Mod, Set) of
+                    true  -> <<Acc/binary, Sz:32/big, Chunk/binary>>;
+                    false -> Acc
+                end;
+            _ ->
+                %% Unknown term shape – keep to be safe
+                <<Acc/binary, Sz:32/big, Chunk/binary>>
+        catch _:_ ->
+            <<Acc/binary, Sz:32/big, Chunk/binary>>
+        end,
+    filter_coverdata_bin(Rest, Set, NewAcc);
+filter_coverdata_bin(Trailing, _Set, Acc) when byte_size(Trailing) > 0 ->
+    %% Trailing bytes that don't form a complete chunk – pass through unchanged
+    <<Acc/binary, Trailing/binary>>.
 
 print_summary(Modules, Best, TotalPct, Min, Below, Excl) ->
     io:format("~n  |--------------------------------------------|------------|~n"),
