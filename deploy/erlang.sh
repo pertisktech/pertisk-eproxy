@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION="${VERSION:-0.5.47}"
+VERSION="${VERSION:-}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
@@ -22,6 +22,11 @@ SERVICEMONITOR_ENABLED="${SERVICEMONITOR_ENABLED:-true}"
 SERVICEMONITOR_RELEASE_LABEL="${SERVICEMONITOR_RELEASE_LABEL:-kube-prometheus-stack}"
 # HTTP/3 (QUIC) needs one pod or node-local UDP; 3 replicas + cloud LB breaks QUIC and tanks k6 TPS.
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
+
+if [[ -z "$VERSION" ]]; then
+  echo "ERROR: VERSION is required (example: VERSION=0.5.61 ./deploy/erlang.sh)" >&2
+  exit 2
+fi
 
 echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT})"
 

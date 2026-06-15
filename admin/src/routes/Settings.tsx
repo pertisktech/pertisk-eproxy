@@ -217,30 +217,32 @@ export default function Settings() {
           </button>
         </div>
 
+        <div className={styles.sectionsWrap}>
+          <section>
+            <h3 className={styles.sectionTitle}>Mode</h3>
+            <table className={styles.kvTable}>
+              <tbody>
+                <tr>
+                  <th>runtime_mode</th>
+                  <td>{modeInfo.runtimeMode ?? '-'}</td>
+                </tr>
+                <tr>
+                  <th>deployment_mode</th>
+                  <td>{modeInfo.deploymentMode ?? '-'}</td>
+                </tr>
+                <tr>
+                  <th>supported_mode</th>
+                  <td>{modeInfo.supportedMode ?? '-'}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+
         {!configData ? (
           <div className={styles.emptyText}>No config loaded yet.</div>
         ) : (
           <div className={styles.sectionsWrap}>
-            <section>
-              <h3 className={styles.sectionTitle}>Mode</h3>
-              <table className={styles.kvTable}>
-                <tbody>
-                  <tr>
-                    <th>runtime_mode</th>
-                    <td>{modeInfo.runtimeMode ?? '-'}</td>
-                  </tr>
-                  <tr>
-                    <th>deployment_mode</th>
-                    <td>{modeInfo.deploymentMode ?? '-'}</td>
-                  </tr>
-                  <tr>
-                    <th>supported_mode</th>
-                    <td>{modeInfo.supportedMode ?? '-'}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </section>
-
             <section>
               <h3 className={styles.sectionTitle}>General</h3>
               {renderKeyValueTable(configData, ['mode', 'log_level'])}

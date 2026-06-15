@@ -45,7 +45,8 @@ RUN chmod +x \
     && rebar3 as prod release \
     && /src/scripts/verify-release-build.sh /src \
     && /src/scripts/verify-release-quic.sh /src \
-    && test -n "$(find /src/_build/prod/rel/pertisk_eproxy/lib -path '*/priv/admin/index.html' -print -quit)"
+    && test -n "$(find /src/_build/prod/rel/pertisk_eproxy/lib -path '*/priv/admin/index.html' -print -quit)" \
+    && grep -R -q '/config?show_all=1' /src/_build/prod/rel/pertisk_eproxy/lib/*/priv/admin/assets/*.js
 
 FROM alpine:3.20
 
