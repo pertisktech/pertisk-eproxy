@@ -16,6 +16,8 @@
     "upstream_request_timeout_ms": 180000,
     "upstream_pool_size": 256,
     "upstream_pool_idle_timeout_secs": 90,
+    "proxy_access_log": false,
+    "health_access_log": false,
     "health_cache_refresh_ms": 3000,
     "h3_api_gateway_enabled": true,
     "h3_probe_enabled": false,
