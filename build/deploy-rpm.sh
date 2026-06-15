@@ -12,7 +12,8 @@ PACKAGE_VERSION="${PACKAGE_VERSION#V}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
-FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL:-}"
+FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL:-warn}"
+FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG:-false}"
 
 RPM_FILE="${PACKAGE_NAME}-${PACKAGE_VERSION}-${RPM_RELEASE}.x86_64.rpm"
 
@@ -31,6 +32,7 @@ echo -e "${YELLOW}Remote: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}${NC}"
 if [[ -n "${FORCE_LOG_LEVEL}" ]]; then
   echo -e "${YELLOW}Force runtime log level: ${FORCE_LOG_LEVEL}${NC}"
 fi
+echo -e "${YELLOW}Force proxy access log: ${FORCE_PROXY_ACCESS_LOG}${NC}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -67,6 +69,7 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" <<EOF
 set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${RPM_FILE}"
 FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL}"
+FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG}"
 
 if command -v dnf >/dev/null 2>&1; then
   if rpm -q "${PACKAGE_NAME}" >/dev/null 2>&1; then
@@ -120,6 +123,7 @@ echo "Refreshing systemd override with release \${REL_VSN} (erts \${ERTS_VSN}, b
 DROPIN_DIR="/etc/systemd/system/${PACKAGE_NAME}.service.d"
 MANAGED_DROPIN="\${DROPIN_DIR}/10-execstart-compat.conf"
 LOG_LEVEL_DROPIN="\${DROPIN_DIR}/10-log-level.conf"
+PROXY_ACCESS_DROPIN="\${DROPIN_DIR}/11-proxy-access-log.conf"
 sudo mkdir -p "\${DROPIN_DIR}"
 
 # Remove stale release-pinned drop-ins from previous deploy logic.
@@ -151,6 +155,15 @@ Environment=PERTISK_LOG_LEVEL=\${FORCE_LOG_LEVEL}
 LOGEOF
 else
   sudo rm -f "\${LOG_LEVEL_DROPIN}"
+fi
+
+if [ -n "\${FORCE_PROXY_ACCESS_LOG}" ]; then
+  sudo tee "\${PROXY_ACCESS_DROPIN}" >/dev/null <<LOGEOF
+[Service]
+Environment=PERTISK_PROXY_ACCESS_LOG=\${FORCE_PROXY_ACCESS_LOG}
+LOGEOF
+else
+  sudo rm -f "\${PROXY_ACCESS_DROPIN}"
 fi
 
 sudo systemctl daemon-reload
