@@ -64,7 +64,31 @@ init(Req, _State) ->
                             case connect_upstream_ws_k8s(
                                 UpstreamAddr, FullPath, Req, Host, WsHeaders, #{compress => false}
                             ) of
-                                {ok, ConnPid, StreamRef} ->
+                                {ok, raw, RawSocket, InitialBuf} ->
+                                    lager:info(
+                                        "WS k8s raw upstream ready upstream=~s path=~s",
+                                        [UpstreamAddr, ws_log_path(FullPath)]
+                                    ),
+                                    WsState = #{
+                                        host => Host,
+                                        backend => BackendName,
+                                        upstream_addr => UpstreamAddr,
+                                        upstream_path => FullPath,
+                                        ws_headers => WsHeaders,
+                                        upstream_mode => raw,
+                                        raw_socket => RawSocket,
+                                        raw_initial_buf => InitialBuf,
+                                        raw_reader => undefined,
+                                        conn_pid => undefined,
+                                        stream_ref => undefined,
+                                        upstream_ws_ready => false,
+                                        ws_out_buffer => [],
+                                        k8s_remote_cmd => true
+                                    },
+                                    {cowboy_websocket,
+                                        pertisk_eproxy_response_headers:apply_cowboy_req(ReqWs),
+                                        WsState, WsOpts};
+                                {ok, gun, ConnPid, StreamRef} ->
                                     lager:info(
                                         "WS k8s upstream ready upstream=~s path=~s",
                                         [UpstreamAddr, ws_log_path(FullPath)]
@@ -75,6 +99,7 @@ init(Req, _State) ->
                                         upstream_addr => UpstreamAddr,
                                         upstream_path => FullPath,
                                         ws_headers => WsHeaders,
+                                        upstream_mode => gun,
                                         conn_pid => ConnPid,
                                         stream_ref => StreamRef,
                                         upstream_ws_ready => true,
@@ -122,6 +147,16 @@ init(Req, _State) ->
             end
     end.
 
+websocket_init(#{k8s_remote_cmd := true, upstream_mode := raw} = State) ->
+    #{raw_socket := RawSocket, raw_initial_buf := InitialBuf, ws_out_buffer := Buf} = State,
+    Parent = self(),
+    {ok, ReaderPid} = pertisk_eproxy_ws_raw:start_reader(Parent, RawSocket, InitialBuf),
+    lists:foreach(fun(F) -> pertisk_eproxy_ws_raw:send_frame(RawSocket, F) end, Buf),
+    {ok, State#{
+        raw_reader => ReaderPid,
+        upstream_ws_ready => true,
+        ws_out_buffer => []
+    }};
 websocket_init(#{k8s_remote_cmd := true, upstream_ws_ready := true} = State) ->
     {ok, State};
 websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_headers := Headers}) ->
@@ -161,7 +196,26 @@ websocket_init(State = #{upstream_addr := UpAddr, upstream_path := UpPath, ws_he
             {stop, State}
     end.
 
-%% Frame from client → forward to upstream (only after Gun has switched to gun_ws).
+%% Frame from client → forward to upstream (only after upstream WS is ready).
+websocket_handle(Frame, State = #{upstream_mode := raw, upstream_ws_ready := false, ws_out_buffer := Buf}) ->
+    case length(Buf) >= ?K8S_MAX_WS_OUT_BUFFER of
+        true ->
+            lager:error(
+                "WS k8s raw outbound buffer full during reader start (~p frames)",
+                [?K8S_MAX_WS_OUT_BUFFER]
+            ),
+            {[close], State};
+        false ->
+            {ok, State#{ws_out_buffer => Buf ++ [Frame]}}
+    end;
+websocket_handle(Frame, State = #{upstream_mode := raw, raw_socket := RawSocket, upstream_ws_ready := true}) ->
+    case pertisk_eproxy_ws_raw:send_frame(RawSocket, Frame) of
+        ok ->
+            {ok, State};
+        {error, Reason} ->
+            lager:warning("WS raw upstream send failed: ~p", [Reason]),
+            {[close], State}
+    end;
 websocket_handle(Frame, State = #{conn_pid := ConnPid, stream_ref := SRef, upstream_ws_ready := true})
     when ConnPid =/= undefined ->
     gun:ws_send(ConnPid, SRef, Frame),
@@ -191,7 +245,24 @@ websocket_handle(Frame, State = #{conn_pid := ConnPid, ws_out_buffer := Buf})
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
-%% Message from gun (upstream) → forward to client, or handle close/errors.
+%% Message from raw upstream reader or gun (upstream) → forward to client.
+
+websocket_info({ws_raw, close}, State = #{host := Host, upstream_path := UpPath}) ->
+    lager:warning(
+        "WS raw upstream sent close host=~s path=~s (kubernetes remote command)",
+        [Host, UpPath]
+    ),
+    {[close], State};
+
+websocket_info({ws_raw, ping}, State = #{raw_socket := RawSocket}) ->
+    pertisk_eproxy_ws_raw:send_frame(RawSocket, pong),
+    {ok, State};
+
+websocket_info({ws_raw, pong}, State) ->
+    {ok, State};
+
+websocket_info({ws_raw, Frame}, State) ->
+    {[raw_to_cowboy_frame(Frame)], State};
 
 websocket_info({gun_ws, _ConnPid, _SRef, close}, State = #{host := Host, upstream_path := UpPath}) ->
   case maps:get(k8s_remote_cmd, State, false) of
@@ -271,28 +342,76 @@ is_ws_upgrade_protocols([websocket | _]) ->
 is_ws_upgrade_protocols(_) ->
     false.
 
-connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts) ->
-    connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, once).
-
-connect_upstream_ws_k8s(UpAddr, UpPath, Req, _OrigHost, DefaultHeaders, GunWsOpts) ->
+connect_upstream_ws_k8s(UpAddr, UpPath, Req, OrigHost, DefaultHeaders, GunWsOpts) ->
     case is_loopback_upstream_addr(UpAddr) of
         true ->
             {UpHost, UpPort, _} = pertisk_eproxy_handler:parse_upstream(UpAddr),
             LoopbackHost = iolist_to_binary([UpHost, <<":">>, integer_to_list(UpPort)]),
-            Candidates = [
+            HeaderCandidates = [
                 DefaultHeaders,
+                ws_forward_headers_k8s_loopback(Req, OrigHost),
                 ws_forward_headers_k8s_loopback(Req, LoopbackHost)
             ],
-            connect_upstream_ws_candidates(UpAddr, UpPath, Candidates, GunWsOpts);
+            case connect_upstream_ws_raw_candidates(UpAddr, UpPath, HeaderCandidates) of
+                {ok, _, _} = RawOk ->
+                    RawOk;
+                {error, RawReason} ->
+                    lager:info(
+                        "WS k8s raw handshake failed upstream=~s reason=~p, trying gun",
+                        [UpAddr, ws_handshake_error_reason(RawReason)]
+                    ),
+                    connect_upstream_ws_candidates(UpAddr, UpPath, HeaderCandidates, GunWsOpts)
+            end;
         false ->
             connect_upstream_ws(UpAddr, UpPath, DefaultHeaders, GunWsOpts, once)
     end.
+
+connect_upstream_ws_raw_candidates(UpAddr, UpPath, HeaderCandidates) ->
+    Addrs = loopback_upstream_addr_candidates(UpAddr),
+    connect_upstream_ws_raw_addr_candidates(Addrs, UpPath, HeaderCandidates).
+
+connect_upstream_ws_raw_addr_candidates([], _UpPath, _HeaderCandidates) ->
+    {error, {closed, normal}};
+connect_upstream_ws_raw_addr_candidates([Addr | AddrRest], UpPath, HeaderCandidates) ->
+    case connect_upstream_ws_raw_header_candidates(Addr, UpPath, HeaderCandidates) of
+        {ok, _, _} = Ok ->
+            Ok;
+        {error, Reason} ->
+            lager:info(
+                "WS k8s raw handshake failed upstream=~s reason=~p",
+                [Addr, ws_handshake_error_reason(Reason)]
+            ),
+            connect_upstream_ws_raw_addr_candidates(AddrRest, UpPath, HeaderCandidates)
+    end.
+
+connect_upstream_ws_raw_header_candidates(_UpAddr, _UpPath, []) ->
+    {error, {closed, normal}};
+connect_upstream_ws_raw_header_candidates(UpAddr, UpPath, [Headers | Rest]) ->
+    case pertisk_eproxy_ws_raw:connect_handshake(UpAddr, UpPath, Headers) of
+        {ok, RawSocket, InitialBuf} ->
+            {ok, raw, RawSocket, InitialBuf};
+        {error, Reason} ->
+            lager:info(
+                "WS k8s raw handshake attempt failed upstream=~s host_hdr=~s reason=~p",
+                [
+                    UpAddr,
+                    proplists:get_value(<<"host">>, Headers, <<>>),
+                    ws_handshake_error_reason(Reason)
+                ]
+            ),
+            connect_upstream_ws_raw_header_candidates(UpAddr, UpPath, Rest)
+    end.
+
+loopback_upstream_addr_candidates(<<"http://", Rest/binary>> = Addr) ->
+    [Addr, <<"https://", Rest/binary>>];
+loopback_upstream_addr_candidates(Addr) ->
+    [Addr].
 
 connect_upstream_ws_candidates(_UpAddr, _UpPath, [], _GunWsOpts) ->
     {error, {closed, normal}};
 connect_upstream_ws_candidates(UpAddr, UpPath, [Headers | Rest], GunWsOpts) ->
     case connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, once) of
-        {ok, _, _} = Ok ->
+        {ok, gun, _, _} = Ok ->
             Ok;
         {error, Reason} ->
             lager:info(
@@ -317,7 +436,7 @@ connect_upstream_ws(UpAddr, UpPath, Headers, GunWsOpts, _Mode) ->
                         StreamRef = gun:ws_upgrade(ConnPid, UpPath, Headers, GunWsOpts),
                         case await_upstream_ws_handshake(ConnPid, StreamRef) of
                             ok ->
-                                {ok, ConnPid, StreamRef};
+                                {ok, gun, ConnPid, StreamRef};
                             {error, Reason} ->
                                 gun:close(ConnPid),
                                 {error, Reason}
@@ -407,6 +526,17 @@ maybe_sni_opt(UpHost) when is_binary(UpHost) ->
 maybe_sni_opt(_) ->
     [{server_name_indication, disable}].
 
+terminate(_Reason, _Req, #{upstream_mode := raw, raw_socket := RawSocket,
+                                   raw_reader := Reader, backend := BackendName,
+                                   upstream_addr := Addr, host := Host,
+                                   upstream_path := UpPath}) ->
+    lager:info(
+        "WS terminate reason=~p host=~s path=~s backend=~s upstream=~s (raw)",
+        [_Reason, Host, UpPath, BackendName, Addr]
+    ),
+    pertisk_eproxy_ws_raw:close_upstream(RawSocket, Reader),
+    pertisk_eproxy_backend:done_upstream(BackendName, Addr, ok),
+    ok;
 terminate(_Reason, _Req, #{conn_pid := ConnPid, backend := BackendName,
                              upstream_addr := Addr, host := Host,
                              upstream_path := UpPath})
@@ -668,6 +798,19 @@ ws_handshake_error_reason({bad_status, Status, _Headers}) ->
     {bad_status, Status};
 ws_handshake_error_reason(Reason) ->
     Reason.
+
+raw_to_cowboy_frame({text, Data}) ->
+    {text, Data};
+raw_to_cowboy_frame({binary, Data}) ->
+    {binary, Data};
+raw_to_cowboy_frame(ping) ->
+    ping;
+raw_to_cowboy_frame(pong) ->
+    pong;
+raw_to_cowboy_frame(close) ->
+    close;
+raw_to_cowboy_frame(Frame) ->
+    Frame.
 
 ws_header_names(Headers) when is_list(Headers) ->
     [K || {K, _} <- Headers, is_binary(K)].

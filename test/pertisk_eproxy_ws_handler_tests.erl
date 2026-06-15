@@ -284,6 +284,10 @@ init_k8s_exec_forwarded_headers_test() ->
         {ok, <<"omni.internal:443">>}
     end),
     meck:new(gun, [unstick]),
+    meck:new(pertisk_eproxy_ws_raw, [unstick]),
+    meck:expect(pertisk_eproxy_ws_raw, connect_handshake, fun(_, _, _) ->
+        {error, econnrefused}
+    end),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
     meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, #{compress := false}) ->
@@ -338,10 +342,10 @@ init_k8s_exec_forwarded_headers_test() ->
             lists:keyfind(<<"sec-websocket-protocol">>, 1, Hdrs)
         )
     end),
-    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun, pertisk_eproxy_ws_raw]).
 
 init_k8s_loopback_forwarded_headers_test() ->
-    unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
+    unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun, pertisk_eproxy_ws_raw]),
     meck:new(pertisk_eproxy_router, [unstick]),
     meck:expect(pertisk_eproxy_router, route, fun(_, _) ->
         {ok, #{
@@ -354,6 +358,10 @@ init_k8s_loopback_forwarded_headers_test() ->
         {ok, <<"http://127.0.0.1:8100">>}
     end),
     meck:new(gun, [unstick]),
+    meck:new(pertisk_eproxy_ws_raw, [unstick]),
+    meck:expect(pertisk_eproxy_ws_raw, connect_handshake, fun(_, _, _) ->
+        {error, econnrefused}
+    end),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
     meck:expect(gun, ws_upgrade, fun(_ConnPid, _Path, Hdrs, #{compress := false}) ->
@@ -386,7 +394,7 @@ init_k8s_loopback_forwarded_headers_test() ->
             pertisk_eproxy_ws_handler:init(Req, #{})
         )
     end),
-    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun, pertisk_eproxy_ws_raw]).
 
 init_k8s_upstream_handshake_failure_test() ->
     unload_mocks([pertisk_eproxy_router, pertisk_eproxy_backend, cowboy_req, gun]),
@@ -402,6 +410,10 @@ init_k8s_upstream_handshake_failure_test() ->
         {ok, <<"http://127.0.0.1:8100">>}
     end),
     meck:new(gun, [unstick]),
+    meck:new(pertisk_eproxy_ws_raw, [unstick]),
+    meck:expect(pertisk_eproxy_ws_raw, connect_handshake, fun(_, _, _) ->
+        {error, econnrefused}
+    end),
     meck:expect(gun, open, fun(_, _, _) -> {ok, self()} end),
     meck:expect(gun, await_up, fun(_, _) -> {ok, http} end),
     meck:expect(gun, ws_upgrade, fun(_, _, _, #{compress := false}) ->
@@ -418,4 +430,4 @@ init_k8s_upstream_handshake_failure_test() ->
             pertisk_eproxy_ws_handler:init(Req, #{})
         )
     end),
-    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun]).
+    pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_backend, pertisk_eproxy_router, gun, pertisk_eproxy_ws_raw]).
