@@ -1,4 +1,4 @@
-.PHONY: all compile admin-build patch-ekub patch-quic patch-hackney shell test cover cover-local docs docs-clean clean release \
+.PHONY: all compile admin-build patch-ekub patch-quic patch-hackney shell test test-acme-dns test-acme-dns-one cover cover-local docs docs-clean clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -72,6 +72,17 @@ shell: compile
 
 test:
 	bash scripts/run-eunit.sh
+
+# Focused eunit for pertisk_eproxy_acme_dns_tests (~60s after timing fixes).
+# One test: make test-acme-dns-one TEST=scan_wildcard_site_identifiers_test
+test-acme-dns:
+	$(REBAR) as test compile
+	scripts/eunit-job.escript --module=pertisk_eproxy_acme_dns_tests
+
+test-acme-dns-one:
+	@test -n "$(TEST)" || (echo "usage: make test-acme-dns-one TEST=scan_wildcard_site_identifiers_test" >&2; exit 1)
+	$(REBAR) as test compile
+	scripts/eunit-job.escript --test=pertisk_eproxy_acme_dns_tests:$(TEST)
 
 cover:
 	@find . -maxdepth 1 -name '*.coverdata' -delete

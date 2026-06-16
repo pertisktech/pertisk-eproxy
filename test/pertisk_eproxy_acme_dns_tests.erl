@@ -3,7 +3,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(SCAN_SLEEP_MS, 900).
--define(SCAN_WAIT_MS, 45000).
+%% Upper bound for async scan / meck call polling (init schedules scan at 4s).
+-define(SCAN_WAIT_MS, 15000).
+-define(SCAN_STABLE_MS, 6000).
 -define(SCAN_POLL_MS, 100).
 
 assert_meck_calls_at_least(Mod, Fun, Min) ->
@@ -30,7 +32,7 @@ assert_meck_calls_at_least_loop(Mod, Fun, Min, Deadline) ->
 
 assert_meck_calls_zero(Mod, Fun) ->
     timer:sleep(?SCAN_SLEEP_MS),
-    Deadline = erlang:monotonic_time(millisecond) + ?SCAN_WAIT_MS,
+    Deadline = erlang:monotonic_time(millisecond) + ?SCAN_STABLE_MS,
     assert_meck_calls_zero_loop(Mod, Fun, Deadline).
 
 assert_meck_calls_zero_loop(Mod, Fun, Deadline) ->
@@ -44,33 +46,14 @@ assert_meck_calls_zero_loop(Mod, Fun, Deadline) ->
             assert_meck_calls_zero_loop(Mod, Fun, Deadline)
     end.
 
-wait_for_site_in_config(HostBin) ->
-    wait_for_site_in_config(HostBin, ?SCAN_WAIT_MS).
-
-wait_for_site_in_config(HostBin, TimeoutMs) ->
-    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
-    wait_for_site_in_config_loop(HostBin, Deadline).
-
-wait_for_site_in_config_loop(HostBin, Deadline) ->
+site_present_in_config(HostBin) ->
     Sites = pertisk_eproxy_config:get_sites(),
-    HasHost = lists:any(
+    lists:any(
         fun(S) ->
             site_host_to_binary(maps:get(host, S, undefined)) =:= HostBin
         end,
         Sites
-    ),
-    case HasHost of
-        true ->
-            ok;
-        false ->
-            case erlang:monotonic_time(millisecond) >= Deadline of
-                true ->
-                    ?assert(HasHost);
-                false ->
-                    timer:sleep(?SCAN_POLL_MS),
-                    wait_for_site_in_config_loop(HostBin, Deadline)
-            end
-    end.
+    ).
 
 site_host_to_binary(H) when is_binary(H) -> H;
 site_host_to_binary(H) when is_list(H) -> unicode:characters_to_binary(H, utf8);
@@ -102,7 +85,7 @@ safe_meck_unload_all(Mods) ->
     lists:foreach(fun safe_meck_unload/1, Mods).
 
 init_scan_db(DbPath) ->
-    init_scan_db(DbPath, 60).
+    init_scan_db(DbPath, 24).
 
 init_scan_db(DbPath, 0) ->
     pertisk_eproxy_db:init(DbPath);
@@ -130,8 +113,12 @@ init_scan_db(DbPath, Retries) ->
 
 stop_acme_dns() ->
     case whereis(pertisk_eproxy_acme_dns) of
-        undefined -> ok;
-        Pid -> pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
+        undefined ->
+            ok;
+        Pid ->
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
+            %% scan is spawned unlinked; allow in-flight scan_and_issue/0 to finish.
+            timer:sleep(?SCAN_SLEEP_MS)
     end.
 
 mock_acme_client_ok() ->
@@ -1661,7 +1648,7 @@ scan_wildcard_site_identifiers_test() ->
         mock_dns_cloudflare(),
         mock_acme_client_ok(),
         try
-            wait_for_site_in_config(<<"*.example.com">>),
+            ?assert(site_present_in_config(<<"*.example.com">>)),
             {ok, _} = pertisk_eproxy_db:insert_dns_provider(
                 DbPath,
                 <<"cf-wc">>,
