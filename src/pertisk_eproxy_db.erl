@@ -193,7 +193,15 @@ sqlite_exec(DbPath, SQL) ->
             E;
         {ok, Sqlite3} ->
             EscapedSQL = escape_shell(SQL),
-            Cmd = escape_shell(Sqlite3) ++ " " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
+            BusyMs = integer_to_list(sqlite_busy_timeout_ms()),
+            Cmd =
+                escape_shell(Sqlite3)
+                    ++ " -cmd "
+                    ++ escape_shell(".timeout " ++ BusyMs)
+                    ++ " "
+                    ++ escape_shell(DbPath)
+                    ++ " "
+                    ++ EscapedSQL,
             Output = os:cmd(Cmd),
             case Output of
                 "" ->
@@ -218,7 +226,15 @@ sqlite_query(DbPath, SQL) ->
             E;
         {ok, Sqlite3} ->
             EscapedSQL = escape_shell(SQL),
-            Cmd = escape_shell(Sqlite3) ++ " -json " ++ escape_shell(DbPath) ++ " " ++ EscapedSQL,
+            BusyMs = integer_to_list(sqlite_busy_timeout_ms()),
+            Cmd =
+                escape_shell(Sqlite3)
+                    ++ " -cmd "
+                    ++ escape_shell(".timeout " ++ BusyMs)
+                    ++ " -json "
+                    ++ escape_shell(DbPath)
+                    ++ " "
+                    ++ EscapedSQL,
             Output = os:cmd(Cmd),
             Trimmed = string:trim(Output),
             case Trimmed of
@@ -277,6 +293,14 @@ sqlite3_shell_failure_output(Output) when is_list(Output) ->
                 nomatch -> string:str(Output, "No such file") > 0;
                 _ -> true
             end
+    end.
+
+sqlite_busy_timeout_ms() ->
+    case application:get_env(pertisk_eproxy, sqlite_busy_timeout_ms) of
+        {ok, Ms} when is_integer(Ms), Ms > 0 ->
+            Ms;
+        _ ->
+            5000
     end.
 
 %% Escape for shell with double quotes.

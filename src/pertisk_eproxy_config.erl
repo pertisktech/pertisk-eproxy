@@ -830,7 +830,7 @@ read_config_file(File) ->
 persist_runtime_config(Config) ->
     case ingress_mode() of
         true -> ok;
-        false -> persist_runtime_config(db_file(), Config)
+        false -> persist_runtime_config_with_retry(db_file(), Config)
     end.
 
 persist_runtime_config(DbPath, Config) ->
@@ -845,6 +845,49 @@ persist_runtime_config(DbPath, Config) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+persist_runtime_config_with_retry(DbPath, Config) ->
+    persist_runtime_config_with_retry(DbPath, Config, 5, 75).
+
+persist_runtime_config_with_retry(DbPath, Config, 0, _SleepMs) ->
+    persist_runtime_config(DbPath, Config);
+persist_runtime_config_with_retry(DbPath, Config, RetriesLeft, SleepMs) ->
+    case persist_runtime_config(DbPath, Config) of
+        {error, Reason} = Err ->
+            case config_locked_error(Reason) of
+                true ->
+                    timer:sleep(SleepMs),
+                    persist_runtime_config_with_retry(DbPath, Config, RetriesLeft - 1, SleepMs + 75);
+                false ->
+                    Err
+            end;
+        Ok ->
+            Ok
+    end.
+
+config_locked_error({persist_dns_providers, Inner}) ->
+    config_locked_error(Inner);
+config_locked_error({sqlite_error, Msg, _}) ->
+    sqlite_locked_msg(Msg);
+config_locked_error({sqlite_error, Msg}) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error({sqlite3_cli, Msg}) when is_binary(Msg) ->
+    sqlite_locked_msg(Msg);
+config_locked_error(Msg) when is_binary(Msg) ->
+    sqlite_locked_msg(Msg);
+config_locked_error(Msg) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+config_locked_error(_) ->
+    false.
+
+sqlite_locked_msg(Msg) when is_binary(Msg) ->
+    binary:match(Msg, <<"locked">>) =/= nomatch;
+sqlite_locked_msg(Msg) when is_list(Msg) ->
+    string:find(Msg, "locked") =/= nomatch;
+sqlite_locked_msg(_) ->
+    false.
 
 db_file() ->
     case application:get_env(pertisk_eproxy, db_file) of

@@ -2252,13 +2252,24 @@ site_tls_health_row(Site, CertRows) ->
                                         <<"presented_hosts">> => Hosts
                                     });
                                 false ->
-                                    maps:merge(BaseWithId, #
-                                    {
-                                        <<"valid">> => false,
-                                        <<"status">> => <<"mismatch">>,
-                                        <<"reason">> => <<"certificate_host_mismatch">>,
-                                        <<"presented_hosts">> => Hosts
-                                    })
+                                    case cert_hosts_pending_localhost(Host, Hosts) of
+                                        true ->
+                                            maps:merge(BaseWithId, #
+                                            {
+                                                <<"valid">> => false,
+                                                <<"status">> => <<"pending">>,
+                                                <<"reason">> => <<"localhost_tls_not_public">>,
+                                                <<"presented_hosts">> => Hosts
+                                            });
+                                        false ->
+                                            maps:merge(BaseWithId, #
+                                            {
+                                                <<"valid">> => false,
+                                                <<"status">> => <<"mismatch">>,
+                                                <<"reason">> => <<"certificate_host_mismatch">>,
+                                                <<"presented_hosts">> => Hosts
+                                            })
+                                    end
                             end
                     end;
                 error ->
@@ -2436,6 +2447,31 @@ cert_hosts_cover_site_host(Host, Hosts) when is_binary(Host), is_list(Hosts) ->
     CheckHost = cert_check_host_for_health(Host),
     lists:any(fun(Pattern) -> cert_pattern_matches_host(CheckHost, Pattern) end, Hosts);
 cert_hosts_cover_site_host(_, _) ->
+    false.
+
+cert_hosts_pending_localhost(Host, Hosts) when is_binary(Host), is_list(Hosts) ->
+    case is_localhost_name(Host) of
+        true ->
+            false;
+        false ->
+            NonEmpty = [H || H <- Hosts, is_binary(H), H =/= <<>>],
+            case NonEmpty of
+                [] ->
+                    false;
+                _ ->
+                    lists:all(fun is_localhost_name/1, NonEmpty)
+            end
+    end;
+cert_hosts_pending_localhost(_, _) ->
+    false.
+
+is_localhost_name(<<"localhost">>) -> true;
+is_localhost_name(<<"127.0.0.1">>) -> true;
+is_localhost_name(<<"::1">>) -> true;
+is_localhost_name(Bin) when is_binary(Bin) ->
+    Lower = string:lowercase(Bin),
+    Lower =:= <<"localhost">> orelse Lower =:= <<"127.0.0.1">> orelse Lower =:= <<"::1">>;
+is_localhost_name(_) ->
     false.
 
 cert_check_host_for_health(<<"*.", Rest/binary>>) when Rest =/= <<>> ->

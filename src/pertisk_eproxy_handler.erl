@@ -485,7 +485,7 @@ proxy_request_impl_upstream(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamA
         {error, Reason} ->
             {error, Reason};
         {ok, ConnPid} ->
-            do_proxy(
+            case do_proxy(
                 Req,
                 ConnPid,
                 Method,
@@ -502,8 +502,104 @@ proxy_request_impl_upstream(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamA
                 GunOpts,
                 0,
                 UseEphemeralConn
+            ) of
+                {error, Reason} = Err ->
+                    case should_retry_http1_fallback(Reason, ReqKind, Transport, GunOpts) of
+                        true ->
+                            lager:warning(
+                                "Upstream protocol fallback to HTTP/1.1 for ~s~s -> ~s (reason=~p)",
+                                [Host, UpstreamPath, UpstreamAddr, Reason]
+                            ),
+                            retry_with_http1(
+                                Req,
+                                Method,
+                                Host,
+                                Site,
+                                FullPath,
+                                ClientIp,
+                                TrackingId,
+                                Body,
+                                UpHost,
+                                UpPort,
+                                ReqKind,
+                                GunOpts
+                            );
+                        false ->
+                            Err
+                    end;
+                Ok ->
+                    Ok
+            end
+    end.
+
+retry_with_http1(
+    Req,
+    Method,
+    Host,
+    Site,
+    FullPath,
+    ClientIp,
+    TrackingId,
+    Body,
+    UpHost,
+    UpPort,
+    ReqKind,
+    GunOpts
+) ->
+    GunOptsHttp1 = GunOpts#{protocols => [http]},
+    case checkout_or_open_connection(true, UpHost, UpPort, tcp, ReqKind, GunOptsHttp1) of
+        {error, Reason2} ->
+            {error, Reason2};
+        {ok, ConnPid2} ->
+            do_proxy(
+                Req,
+                ConnPid2,
+                Method,
+                Host,
+                Site,
+                FullPath,
+                ClientIp,
+                TrackingId,
+                Body,
+                UpHost,
+                UpPort,
+                tcp,
+                ReqKind,
+                GunOptsHttp1,
+                1,
+                true
             )
     end.
+
+should_retry_http1_fallback(Reason, ReqKind, Transport, GunOpts) ->
+    ReqKind =/= grpc
+        andalso Transport =:= tcp
+        andalso lists:member(http2, maps:get(protocols, GunOpts, []))
+        andalso is_http2_preface_error(Reason).
+
+is_http2_preface_error({connection_error, {protocol_error, Msg}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error({await_up, {connection_error, {protocol_error, Msg}}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error({await_up, {error, {protocol_error, Msg}}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error({connect, {protocol_error, Msg}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error({await_response, {connection_error, {protocol_error, Msg}}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error({stream_error, {connection_error, {protocol_error, Msg}}}) ->
+    is_invalid_preface_text(Msg);
+is_http2_preface_error(_) ->
+    false.
+
+is_invalid_preface_text(Msg) when is_list(Msg) ->
+    string:find(Msg, "Invalid connection preface") =/= nomatch;
+is_invalid_preface_text(Msg) when is_binary(Msg) ->
+    binary:match(Msg, <<"Invalid connection preface">>) =/= nomatch;
+is_invalid_preface_text(Msg) when is_atom(Msg) ->
+    is_invalid_preface_text(atom_to_list(Msg));
+is_invalid_preface_text(_) ->
+    false.
 
 checkout_or_open_connection(true, UpHost, UpPort, _Transport, _ReqKind, GunOpts) ->
     open_direct_connection(UpHost, UpPort, GunOpts);
