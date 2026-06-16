@@ -11,6 +11,10 @@
 -define(BACKEND_NAMESPACES_ANNOTATION_LEGACY, <<"pertisk.tech/backend-namespaces">>).
 -define(ADVERTISE_HTTP3_ANNOTATION, <<"pertisk.io/advertise-http3">>).
 -define(ADVERTISE_HTTP3_ANNOTATION_LEGACY, <<"pertisk.tech/advertise-http3">>).
+-define(GRPC_UPSTREAM_ANNOTATION, <<"pertisk.io/grpc-upstream">>).
+-define(GRPC_UPSTREAM_ANNOTATION_LEGACY, <<"pertisk.tech/grpc-upstream">>).
+-define(GRPC_MIXED_ANNOTATION, <<"pertisk.io/grpc-mixed">>).
+-define(GRPC_MIXED_ANNOTATION_LEGACY, <<"pertisk.tech/grpc-mixed">>).
 -define(SSE_EARLY_FLUSH_ANNOTATION, <<"pertisk.io/sse-early-flush">>).
 -define(SSE_EARLY_FLUSH_ANNOTATION_LEGACY, <<"pertisk.tech/sse-early-flush">>).
 -define(SSE_EARLY_FLUSH_PATHS_ANNOTATION, <<"pertisk.io/sse-early-flush-paths">>).
@@ -66,7 +70,12 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
     Ns = namespace_of(Meta),
     BackendNsDefault = backend_namespace_of(Meta, Ns),
     BackendNsByService = backend_namespace_map_of(Meta),
-    AdvertiseHttp3 = advertise_http3_of(Meta),
+    GrpcUpstream = grpc_upstream_of(Meta),
+    AdvertiseHttp3 =
+        case grpc_mixed_of(Meta) orelse GrpcUpstream of
+            true -> false;
+            false -> advertise_http3_of(Meta)
+        end,
     SseEarlyFlush = sse_early_flush_of(Meta),
     SseEarlyFlushPaths = sse_early_flush_paths_of(Meta),
     RewriteTarget = rewrite_target_of(Meta),
@@ -95,6 +104,7 @@ reconcile_one_ingress(Ingress, Backends, Sites, TlsRefs) ->
                                 BackendNsDefault,
                                 BackendNsByService,
                                 AdvertiseHttp3,
+                                GrpcUpstream,
                                 SseEarlyFlush,
                                 SseEarlyFlushPaths,
                                 RewriteTarget,
@@ -129,6 +139,7 @@ reconcile_path(
     BackendNsDefault,
     BackendNsByService,
     AdvertiseHttp3,
+    GrpcUpstream,
     SseEarlyFlush,
     SseEarlyFlushPaths,
     RewriteTarget,
@@ -156,7 +167,8 @@ reconcile_path(
                     algorithm => BackendAlgorithm,
                     upstreams => Upstreams,
                     health_path => BackendHealthPath,
-                    health_interval_secs => 10
+                    health_interval_secs => 10,
+                    grpc_upstream => GrpcUpstream
                 }
                 | Backends
             ]
@@ -313,6 +325,24 @@ advertise_http3_of(Meta) ->
             maps:get(?ADVERTISE_HTTP3_ANNOTATION_LEGACY, Annotations, undefined)
         ),
         true
+    ).
+
+grpc_upstream_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    parse_annotation_bool(
+        maps:get(?GRPC_UPSTREAM_ANNOTATION, Annotations,
+            maps:get(?GRPC_UPSTREAM_ANNOTATION_LEGACY, Annotations, undefined)
+        ),
+        false
+    ).
+
+grpc_mixed_of(Meta) ->
+    Annotations = maps:get(<<"annotations">>, Meta, #{}),
+    parse_annotation_bool(
+        maps:get(?GRPC_MIXED_ANNOTATION, Annotations,
+            maps:get(?GRPC_MIXED_ANNOTATION_LEGACY, Annotations, undefined)
+        ),
+        false
     ).
 
 sse_early_flush_of(Meta) ->

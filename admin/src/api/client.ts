@@ -70,6 +70,8 @@ export interface Backend {
   upstreams: Upstream[];
   health_path?: string | null;
   health_interval_secs: number;
+  /** Force HTTP/2 gRPC to upstream (e.g. Talos SideroLink on :8090). */
+  grpc_upstream?: boolean | null;
 }
 
 export interface BackendStatus {
@@ -100,6 +102,8 @@ export interface ProxyConfig {
   https_port?: number | null;
   quic_enabled?: boolean | null;
   quic_port?: number | null;
+  /** erlang_quic HTTP/3 gateway (default true when TLS is configured). */
+  h3_api_gateway_enabled?: boolean | null;
   tls_cert_file?: string | null;
   tls_key_file?: string | null;
 }
@@ -498,16 +502,6 @@ function reconnectDelayMs(attempt: number): number {
   return base + jitter;
 }
 
-function isChromiumBrowser(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent;
-  return /Chrome\//.test(ua) && !/Edg\//.test(ua) && !/OPR\//.test(ua);
-}
-
-function preferSseRealtimeForChromium(): boolean {
-  return globalThis.window?.location.protocol === 'https:' && isChromiumBrowser();
-}
-
 type RealtimeTransportMode = 'auto' | 'sse' | 'ws';
 
 function realtimeTransportMode(): RealtimeTransportMode {
@@ -643,11 +637,9 @@ function openRealtimeSse(
   onMessage: (snapshot: RealtimeSnapshot) => void,
   onError?: (event: Event) => void
 ): () => void {
-  const token = getToken();
+  // Same-origin cookies only — do not pass ?token= (leaks via logs, history, Referer).
+  // Prefer WebSocket (default); set VITE_REALTIME_TRANSPORT=sse only when WS is unavailable.
   const url = new URL(`${API}/realtime-sse`, globalThis.window.location.origin);
-  if (token) {
-    url.searchParams.set('token', token);
-  }
   let source: EventSource | null = null;
   let closedManually = false;
 
@@ -815,7 +807,9 @@ function openRealtimeWebSocket(
 }
 
 /**
- * Live admin snapshots via WebSocket.
+ * Live admin snapshots. Default transport is WebSocket (token sent in the first
+ * frame over wss://, not in the URL). Set VITE_REALTIME_TRANSPORT=sse to force SSE
+ * (session cookie auth only; no query token).
  */
 export function openRealtimeStream(
   onMessage: (snapshot: RealtimeSnapshot) => void,
@@ -823,11 +817,7 @@ export function openRealtimeStream(
   onSslJobPush?: (ev: SslJobPush) => void
 ): () => void {
   const mode = realtimeTransportMode();
-  // HTTP/3 cannot upgrade WebSocket; prefer SSE on HTTPS unless WS is forced.
-  const useSse =
-    mode === 'sse' ||
-    (mode === 'auto' &&
-      (globalThis.window?.location.protocol === 'https:' || preferSseRealtimeForChromium()));
+  const useSse = mode === 'sse';
   if (useSse) {
     return openRealtimeSse(onMessage, onError);
   }

@@ -1360,10 +1360,9 @@ advertise_http3_disabled_clears_alt_svc_test() ->
     pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
     try
         with_quic_h3_mock(fun() ->
-            meck:expect(quic_h3, send_response, fun(_, _, _, Hdrs) -> put(h3_resp_hdrs, Hdrs), ok end),
-            with_gun_h3_proxy_mock(fun() ->
+            capture_h3_status(fun() ->
                 ?assertEqual(ok, h3(self(), 1, <<"GET">>, <<"/">>, auth(<<"no-h3.test">>))),
-                ?assertEqual({<<"alt-svc">>, <<"clear">>}, lists:keyfind(<<"alt-svc">>, 1, get(h3_resp_hdrs)))
+                ?assertEqual(421, get(h3_sent_status))
             end)
         end)
     after

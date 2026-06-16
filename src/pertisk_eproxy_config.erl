@@ -1124,7 +1124,8 @@ parse_backend(B) ->
         algorithm            => parse_algorithm(maps:get(<<"algorithm">>, B, <<"round_robin">>)),
         upstreams            => parse_upstreams(maps:get(<<"upstreams">>, B, undefined)),
         health_path          => parse_opt_str(maps:get(<<"health_path">>, B, null)),
-        health_interval_secs => maps:get(<<"health_interval_secs">>, B, 30)
+        health_interval_secs => maps:get(<<"health_interval_secs">>, B, 30),
+        grpc_upstream        => parse_opt_bool(maps:get(<<"grpc_upstream">>, B, null))
     }.
 
 parse_algorithm(<<"round_robin">>)      -> round_robin;

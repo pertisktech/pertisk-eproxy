@@ -56,6 +56,24 @@ function routeLabel(route: PathRewrite): string {
   return `${ptDisp} ${route.path}${route.rewrite != null && route.rewrite !== '' ? ` → ${route.rewrite}` : ''}`;
 }
 
+function makeSiteBackend(name: string, addr: string, grpcUpstream: boolean): Backend {
+  const base: Backend = {
+    name,
+    upstreams: [{ addr, weight: 1 }],
+    algorithm: 'round_robin',
+    health_interval_secs: 30,
+  };
+  return grpcUpstream ? { ...base, grpc_upstream: true } : base;
+}
+
+function patchSiteBackend(backend: Backend, addr: string, grpcUpstream: boolean): Backend {
+  return {
+    ...backend,
+    upstreams: [{ addr, weight: 1 }],
+    grpc_upstream: grpcUpstream,
+  };
+}
+
 function normalizeUpstream(url: string): string {
   const s = url.trim();
   if (!s) return s;
@@ -194,6 +212,7 @@ export default function Sites() {
   const [formChallengeType, setFormChallengeType] = useState<ChallengeType>('http-01');
   const [formWildcard, setFormWildcard] = useState(false);
   const [formAdvertiseHttp3, setFormAdvertiseHttp3] = useState(true);
+  const [formGrpcUpstream, setFormGrpcUpstream] = useState(false);
   const [formOverrideSecurityHeaders, setFormOverrideSecurityHeaders] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() =>
@@ -837,6 +856,7 @@ export default function Sites() {
     setFormChallengeType('http-01');
     setFormWildcard(false);
     setFormAdvertiseHttp3(true);
+    setFormGrpcUpstream(false);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowIngressForm(false);
@@ -872,6 +892,7 @@ export default function Sites() {
     setFormChallengeType(site.challenge_type === 'dns-01' ? 'dns-01' : 'http-01');
     setFormWildcard(Boolean(site.wildcard));
     setFormAdvertiseHttp3(site.advertise_http3 !== false);
+    setFormGrpcUpstream(be?.grpc_upstream === true);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
@@ -899,7 +920,8 @@ export default function Sites() {
     setFormContactEmail('');
     setFormChallengeType('http-01');
     setFormWildcard(false);
-    setFormAdvertiseHttp3(true);
+    setFormAdvertiseHttp3(site.advertise_http3 !== false);
+    setFormGrpcUpstream(be?.grpc_upstream === true);
     setFormOverrideSecurityHeaders(false);
     setFormError(null);
     setShowForm(true);
@@ -1008,42 +1030,20 @@ export default function Sites() {
       const existingBackend = existingSite && newBackends.find((b) => b.name === existingSite.backend);
       if (existingBackend?.upstreams?.length === 1) {
         newBackends = newBackends.map((b) =>
-          b.name === existingSite!.backend
-            ? {
-                ...b,
-                upstreams: [{ ...b.upstreams[0], addr }],
-                algorithm: b.algorithm ?? 'round_robin',
-              }
-            : b,
+          b.name === existingSite!.backend ? patchSiteBackend(b, addr, formGrpcUpstream) : b,
         );
         backendName = existingSite!.backend;
       } else {
         backendName = baseName;
         let n = 1;
         while (newBackends.some((b) => b.name === backendName)) backendName = `${baseName}-${n++}`;
-        newBackends = [
-          ...newBackends,
-          {
-            name: backendName,
-            upstreams: [{ addr, weight: 1 }],
-            algorithm: 'round_robin',
-            health_interval_secs: 30,
-          },
-        ];
+        newBackends = [...newBackends, makeSiteBackend(backendName, addr, formGrpcUpstream)];
       }
     } else {
       backendName = baseName;
       let n = 1;
       while (newBackends.some((b) => b.name === backendName)) backendName = `${baseName}-${n++}`;
-      newBackends = [
-        ...newBackends,
-        {
-          name: backendName,
-          upstreams: [{ addr, weight: 1 }],
-          algorithm: 'round_robin',
-          health_interval_secs: 30,
-        },
-      ];
+      newBackends = [...newBackends, makeSiteBackend(backendName, addr, formGrpcUpstream)];
     }
 
     const certificate = formSslMode === 'existing_cert' ? formCertName.trim() || null : null;
@@ -1069,7 +1069,7 @@ export default function Sites() {
       challenge_type,
       wildcard,
       acme_wildcard_base,
-      advertise_http3: formAdvertiseHttp3,
+      advertise_http3: formGrpcUpstream ? false : formAdvertiseHttp3,
       acme_contact_email,
     };
 
@@ -1083,7 +1083,8 @@ export default function Sites() {
       existingSite != null &&
       backendName === existingSite.backend &&
       existingBackend?.upstreams?.length === 1 &&
-      existingBackend.upstreams[0]?.addr === addr;
+      existingBackend.upstreams[0]?.addr === addr &&
+      (existingBackend.grpc_upstream === true) === formGrpcUpstream;
 
     setSaving(true);
     try {
@@ -1218,6 +1219,9 @@ export default function Sites() {
                 const healthRows = healthRowsForItem(item);
                 const routes = routesForItem(item);
                 const ssl = sslLabelForSite(site);
+                const siteBackend = config?.backends?.find((b) => b.name === site.backend);
+                const grpcUpstream = siteBackend?.grpc_upstream === true;
+                const h3Advertised = !grpcUpstream && site.advertise_http3 !== false;
                 return (
                   <div key={item.key} className={styles.siteCard}>
                     <div className={styles.siteCardHeader}>
@@ -1325,6 +1329,26 @@ export default function Sites() {
                           <span className={styles.metaValue}>{site.dns_provider}</span>
                         </div>
                       )}
+                      <div className={styles.siteCardMeta}>
+                        <span className={styles.metaLabel}>Protocol</span>
+                        <div className={styles.routes}>
+                          {grpcUpstream ? (
+                            <span className={styles.routeChip} title="Backend uses gRPC over HTTP/2">
+                              gRPC upstream
+                            </span>
+                          ) : null}
+                          <span
+                            className={styles.routeChip}
+                            title={
+                              h3Advertised
+                                ? 'Alt-Svc advertises HTTP/3 for this host'
+                                : 'HTTP/3 Alt-Svc disabled for this host'
+                            }
+                          >
+                            {h3Advertised ? 'H3 Alt-Svc on' : 'H3 Alt-Svc off'}
+                          </span>
+                        </div>
+                      </div>
                       <div className={styles.siteCardActions}>
                         {readOnly && !(site.ingress_namespace && site.ingress_name) ? (
                           <span className={styles.readOnlyHint} title="View only (no Ingress ref)">
@@ -1428,6 +1452,9 @@ export default function Sites() {
                     const routes = routesForItem(item);
                     const ssl = sslLabelForSite(site);
                     const sslLive = jobsByHost[hostPrimary];
+                    const siteBackend = config?.backends?.find((b) => b.name === site.backend);
+                    const grpcUpstream = siteBackend?.grpc_upstream === true;
+                    const h3Advertised = !grpcUpstream && site.advertise_http3 !== false;
                     return (
                       <tr key={item.key} className={styles.tableRow}>
                         <td className={styles.host}>
@@ -1447,6 +1474,9 @@ export default function Sites() {
                                   </span>
                                 )}
                                 <span className={styles.cellSubtle}>Cert {ssl}</span>
+                                <span className={styles.cellSubtle}>
+                                  {grpcUpstream ? 'gRPC' : h3Advertised ? 'H3 on' : 'H3 off'}
+                                </span>
                               </span>
                             </div>
                             {!isWildcardHost(hostPrimary) && domainUrl(hostPrimary) && (
@@ -1847,11 +1877,32 @@ export default function Sites() {
                   <label className={styles.securityOption}>
                     <input
                       type="checkbox"
+                      checked={formGrpcUpstream}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setFormGrpcUpstream(checked);
+                        if (checked) setFormAdvertiseHttp3(false);
+                      }}
+                    />
+                    <span className={styles.securityOptionTitle}>gRPC upstream (HTTP/2 to backend)</span>
+                  </label>
+                  <p className={styles.securityHintText}>
+                    Enable for Talos SideroLink and other gRPC backends. Automatically disables HTTP/3
+                    advertisement for this site.
+                  </p>
+                  <label className={styles.securityOption}>
+                    <input
+                      type="checkbox"
                       checked={formAdvertiseHttp3}
+                      disabled={formGrpcUpstream}
                       onChange={(e) => setFormAdvertiseHttp3(e.target.checked)}
                     />
                     <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
                   </label>
+                  <p className={styles.securityHintText}>
+                    Uncheck for Omni-style gRPC hosts or when clients must stay on HTTP/2. The global HTTP/3
+                    listener can remain enabled while per-site Alt-Svc is off.
+                  </p>
                   <label className={styles.securityOption}>
                     <input
                       type="checkbox"

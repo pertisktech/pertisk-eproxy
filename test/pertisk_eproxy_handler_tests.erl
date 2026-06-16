@@ -92,6 +92,20 @@ upstream_req_kind_grpc_metadata_test() ->
     H = #{<<"grpc-metadata-x">> => <<"1">>},
     ?assertEqual(grpc, pertisk_eproxy_handler:upstream_req_kind(<<"/">>, H)).
 
+is_connect_service_path_omni_test() ->
+  ?assert(pertisk_eproxy_handler:is_connect_service_path(
+      <<"/api/omni.resources.ResourceService/Watch">>
+  )),
+  ?assertNot(pertisk_eproxy_handler:is_connect_service_path(<<"/api/health">>)).
+
+upstream_req_kind_connect_path_test() ->
+    ?assertEqual(
+        grpc,
+        pertisk_eproxy_handler:upstream_req_kind(
+            <<"/api/omni.resources.ResourceService/Get">>, #{}
+        )
+    ).
+
 upstream_gun_opts_grpc_test() ->
     Opts = pertisk_eproxy_handler:upstream_gun_opts_with_port("host", 443, tls, grpc),
     ?assertEqual([http2], maps:get(protocols, Opts)).

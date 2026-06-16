@@ -60,12 +60,14 @@ function renderSites(cfg: ConfigMap) {
         const backend = formatValue(site?.backend);
         const cert = formatValue(site?.certificate);
         const routes = Array.isArray(site?.routes) ? site?.routes.length : 0;
+        const h3 = formatValue(site?.advertise_http3);
         return (
           <div key={`${host}-${idx}`} className={styles.itemCard}>
             <div className={styles.itemTitle}>{host}</div>
             <div className={styles.itemMeta}>backend: {backend}</div>
             <div className={styles.itemMeta}>certificate: {cert}</div>
             <div className={styles.itemMeta}>routes: {routes}</div>
+            <div className={styles.itemMeta}>advertise_http3: {h3}</div>
           </div>
         );
       })}
@@ -83,11 +85,13 @@ function renderBackends(cfg: ConfigMap) {
         const name = formatValue(backend?.name);
         const algorithm = formatValue(backend?.algorithm);
         const upstreams = Array.isArray(backend?.upstreams) ? backend?.upstreams.length : 0;
+        const grpc = formatValue(backend?.grpc_upstream);
         return (
           <div key={`${name}-${idx}`} className={styles.itemCard}>
             <div className={styles.itemTitle}>{name}</div>
             <div className={styles.itemMeta}>algorithm: {algorithm}</div>
             <div className={styles.itemMeta}>upstreams: {upstreams}</div>
+            <div className={styles.itemMeta}>grpc_upstream: {grpc}</div>
           </div>
         );
       })}
@@ -270,6 +274,7 @@ export default function Settings() {
             <section>
               <h3 className={styles.sectionTitle}>HTTP/3 / QUIC</h3>
               {renderKeyValueTable(configData, [
+                'h3_api_gateway_enabled',
                 'quic_enabled',
                 'quic_port',
                 'h3_udp_bind',

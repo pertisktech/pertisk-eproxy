@@ -188,6 +188,87 @@ bearer_from_x_eproxy_header_test() ->
     Req = #{headers => #{<<"x-eproxy-bearer">> => <<"Bearer mytoken">>}},
     ?assertMatch({ok, <<"mytoken">>}, pertisk_eproxy_auth:bearer_from_request(Req)).
 
+authorize_realtime_sse_disabled_ok_test() ->
+    Old = application:get_env(pertisk_eproxy, admin_auth),
+    application:set_env(pertisk_eproxy, admin_auth, disabled),
+    try
+        ?assertEqual(ok, pertisk_eproxy_auth:authorize_realtime_sse(<<>>, #{}))
+    after
+        case Old of
+            {ok, V} -> application:set_env(pertisk_eproxy, admin_auth, V);
+            undefined -> application:unset_env(pertisk_eproxy, admin_auth)
+        end
+    end.
+
+authorize_realtime_sse_missing_token_test() ->
+    with_local_auth(fun() ->
+        ?assertEqual({error, unauthorized}, pertisk_eproxy_auth:authorize_realtime_sse(<<>>, #{}))
+    end).
+
+authorize_realtime_sse_qs_token_test() ->
+    with_local_auth(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            {ok, #{token := Token}} = pertisk_eproxy_auth:login(<<"admin">>, <<"admin">>),
+            Qs = iolist_to_binary([<<"token=">>, Token]),
+            ?assertEqual(ok, pertisk_eproxy_auth:authorize_realtime_sse(Qs, #{}))
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
+
+authorize_realtime_sse_bearer_header_test() ->
+    with_local_auth(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            {ok, #{token := Token}} = pertisk_eproxy_auth:login(<<"admin">>, <<"admin">>),
+            Hdrs = [{<<"authorization">>, <<"Bearer ", Token/binary>>}],
+            ?assertEqual(ok, pertisk_eproxy_auth:authorize_realtime_sse(<<>>, Hdrs))
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
+
+authorize_realtime_sse_session_cookie_test() ->
+    with_local_auth(fun() ->
+        DbPath = pertisk_eproxy_test_helpers:tmp_db(),
+        file:delete(DbPath),
+        OldDb = application:get_env(pertisk_eproxy, db_file),
+        application:set_env(pertisk_eproxy, db_file, DbPath),
+        pertisk_eproxy_test_helpers:ensure_config(),
+        try
+            ?assertMatch({ok, _}, pertisk_eproxy_db:init(DbPath)),
+            {ok, #{token := Token}} = pertisk_eproxy_auth:login(<<"admin">>, <<"admin">>),
+            Cookie = iolist_to_binary([<<"pertisk_token=">>, Token]),
+            Hdrs = #{<<"cookie">> => Cookie},
+            ?assertEqual(ok, pertisk_eproxy_auth:authorize_realtime_sse(<<>>, Hdrs))
+        after
+            case OldDb of
+                {ok, V} -> application:set_env(pertisk_eproxy, db_file, V);
+                undefined -> application:unset_env(pertisk_eproxy, db_file)
+            end,
+            file:delete(DbPath)
+        end
+    end).
+
 logout_non_binary_ok_test() ->
     ?assertEqual(ok, pertisk_eproxy_auth:logout(123)).
 

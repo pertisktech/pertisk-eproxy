@@ -19,6 +19,7 @@
     init/2,
     parse_upstream/1,
     site_advertise_http3/1,
+    site_http3_enabled/1,
     is_sse_proxy_path/1,
     is_event_stream_accept/1,
     is_sse_proxy_request/2,
@@ -31,6 +32,9 @@
     headers_have_sse_auth/1,
     upstream_gun_opts_with_port/4,
     upstream_req_kind/2,
+    upstream_req_kind/3,
+    is_connect_service_path/1,
+    site_backend_grpc_upstream/1,
     websocket_init/1,
     websocket_handle/2,
     websocket_info/2,
@@ -308,10 +312,46 @@ proxy_local_management(Req, Method, Host, _Site, UpstreamPath, Qs, ClientIp, Tra
             Req2 = cowboy_req:reply(Status, OutHeaders, OutBody, Req),
             {ok, Status, Req2};
         {error, unsupported} ->
-            Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
-            proxy_request(Req, Method, Host, Host, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId);
+            case is_admin_realtime_sse_path(UpstreamPath) of
+                true ->
+                    proxy_admin_realtime_sse(Req, Host, TrackingId);
+                false ->
+                    Mgmt = pertisk_eproxy_config:management_loopback_upstream_bin(),
+                    proxy_request(Req, Method, Host, Host, UpstreamPath, Qs, Mgmt, ClientIp, TrackingId)
+            end;
         {error, Reason} ->
             {error, Reason}
+    end.
+
+is_admin_realtime_sse_path(<<"/api/realtime-sse">>) ->
+    true;
+is_admin_realtime_sse_path(<<"/api/realtime-sse/", _/binary>>) ->
+    true;
+is_admin_realtime_sse_path(_) ->
+    false.
+
+proxy_admin_realtime_sse(Req, Host, TrackingId) ->
+    case pertisk_eproxy_admin_sse_handler:authorize(Req) of
+        {error, unauthorized} ->
+            Headers = with_tracking_id_header(
+                TrackingId,
+                pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"application/json">>})
+            ),
+            Req2 = cowboy_req:reply(401, Headers, <<"{\"error\":\"Unauthorized\"}">>, Req),
+            {ok, 401, Req2};
+        ok ->
+            case pertisk_eproxy_admin_sse_handler:stream_authorized(Req) of
+                {ok, Req2} ->
+                    {ok, 200, Req2};
+                {error, Reason} ->
+                    lager:warning("admin realtime-sse stream error for ~s: ~p", [Host, Reason]),
+                    Headers = with_tracking_id_header(
+                        TrackingId,
+                        pertisk_eproxy_response_headers:merge(#{<<"content-type">> => <<"text/plain">>})
+                    ),
+                    Req2 = cowboy_req:reply(500, Headers, <<"Internal Server Error">>, Req),
+                    {ok, 500, Req2}
+            end
     end.
 
 cowboy_headers_to_h3(Headers) when is_map(Headers) ->
@@ -349,7 +389,7 @@ inc_request_metrics(Host, Site, StatusCode, Proto) ->
 %% -------------------------------------------------------------------------
 
 proxy_request(Req, Method, Host, Site, UpstreamPath, Qs, UpstreamAddr, ClientIp, TrackingId) ->
-    ReqKind = detect_request_kind(Req),
+    ReqKind = detect_request_kind(Req, Site),
     case ReqKind of
         eventstream ->
             proxy_eventstream_request(
@@ -1198,7 +1238,7 @@ forward_headers(Req, OrigHost, ClientIp, FullPath, TrackingId) ->
     InHeaders = cowboy_req:headers(Req),
     Proto     = forwarded_proto(Req, InHeaders),
     ProtoVsn  = version_to_bin(cowboy_req:version(Req)),
-    ReqKind   = detect_request_kind(Req),
+    ReqKind   = detect_request_kind(Req, OrigHost),
 
     %% Start from original headers, drop hop-by-hop
     Filtered0 = maps:without([<<"connection">>, <<"keep-alive">>, <<"te">>,
@@ -1485,23 +1525,35 @@ has_ws_handshake_headers(Req) ->
     end.
 
 request_proto_metric(Req) ->
-    case detect_request_kind(Req) of
+    Host = cowboy_req:host(Req),
+    case detect_request_kind(Req, Host) of
         grpc -> <<"grpc">>;
         _ -> cowboy_req_proto_metric(Req)
     end.
 
 %% Path + header map variant for HTTP/3 gateway (no cowboy_req).
 -spec upstream_req_kind(binary(), map()) -> http | eventstream | grpc.
-upstream_req_kind(Path, HeadersMap) when is_binary(Path), is_map(HeadersMap) ->
-    case is_sse_proxy_request(Path, HeadersMap) of
+upstream_req_kind(Path, HeadersMap) ->
+    upstream_req_kind(Path, HeadersMap, undefined).
+
+-spec upstream_req_kind(binary(), map(), binary() | undefined) -> http | eventstream | grpc.
+upstream_req_kind(Path, HeadersMap, SiteHost) when is_binary(Path), is_map(HeadersMap) ->
+    case site_backend_grpc_upstream(SiteHost) of
         true ->
-            eventstream;
+            grpc;
         false ->
-            case is_grpc_headers_map(HeadersMap) of
-                true -> grpc;
-                false -> http
+            case is_sse_proxy_request(Path, HeadersMap) of
+                true ->
+                    eventstream;
+                false ->
+                    case is_grpc_headers_map(HeadersMap) orelse is_connect_service_path(Path) of
+                        true -> grpc;
+                        false -> http
+                    end
             end
-    end.
+    end;
+upstream_req_kind(_Path, _HeadersMap, _SiteHost) ->
+    http.
 
 is_grpc_headers_map(HMap) ->
     Ct = string:lowercase(maps:get(<<"content-type">>, HMap, <<>>)),
@@ -1525,23 +1577,70 @@ is_grpc_headers_map(HMap) ->
             )
     end.
 
-detect_request_kind(Req) ->
-    case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
+detect_request_kind(Req, SiteHost) ->
+    case site_backend_grpc_upstream(SiteHost) of
         true ->
-            %% EventSource/watch endpoints are client-facing HTTP streams.
-            %% Route them through the HTTP streaming path and prefer upstream
-            %% HTTP/1.1 for compatibility with long-lived SSE streams.
-            eventstream;
+            grpc;
         false ->
-            case is_websocket_upgrade(Req) of
-                true -> websocket;
+            Path = cowboy_req:path(Req),
+            case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
+                true ->
+                    %% EventSource/watch endpoints are client-facing HTTP streams.
+                    %% Route them through the HTTP streaming path and prefer upstream
+                    %% HTTP/1.1 for compatibility with long-lived SSE streams.
+                    eventstream;
                 false ->
-                    case is_grpc_request(Req) of
-                        true -> grpc;
-                        false -> http
+                    case is_websocket_upgrade(Req) of
+                        true -> websocket;
+                        false ->
+                            case is_grpc_request(Req) orelse is_connect_service_path(Path) of
+                                true -> grpc;
+                                false -> http
+                            end
                     end
             end
     end.
+
+%% Connect / gRPC service paths (Talos Omni, Connect RPC): /api/pkg.Service/Method.
+-spec is_connect_service_path(binary()) -> boolean().
+is_connect_service_path(Path) when is_binary(Path) ->
+    connect_service_path_suffix(Path);
+is_connect_service_path(_) ->
+    false.
+
+connect_service_path_suffix(<<"/api/", Rest/binary>>) ->
+    connect_service_path_has_dot_service(Rest);
+connect_service_path_suffix(Path) ->
+    connect_service_path_has_dot_service(Path).
+
+connect_service_path_has_dot_service(Bin) ->
+    case binary:match(Bin, <<".">>) of
+        nomatch ->
+            false;
+        _ ->
+            case binary:match(Bin, <<"/">>) of
+                {Pos, _} when Pos > 0 ->
+                    ServicePart = binary:part(Bin, 0, Pos),
+                    binary:match(ServicePart, <<".">>) =/= nomatch;
+                _ ->
+                    false
+            end
+    end.
+
+site_backend_grpc_upstream(SiteHost) when is_binary(SiteHost), SiteHost =/= <<>> ->
+    Config = pertisk_eproxy_config:get_config(),
+    Sites = maps:get(sites, Config, []),
+    case find_site_for_host(Sites, normalize_host(SiteHost)) of
+        undefined ->
+            false;
+        #{backend := BackendName} ->
+            case pertisk_eproxy_config:get_backend(BackendName) of
+                {ok, #{grpc_upstream := true}} -> true;
+                _ -> false
+            end
+    end;
+site_backend_grpc_upstream(_) ->
+    false.
 
 is_grpc_request(Req) ->
     Ct = cowboy_req:header(<<"content-type">>, Req, <<>>),
@@ -1940,6 +2039,16 @@ site_advertise_http3(Host) ->
     Sites = maps:get(sites, Config, []),
     case find_site_for_host(Sites, normalize_host(Host)) of
         undefined -> false;
+        Site -> maps:get(advertise_http3, Site, true) =/= false
+    end.
+
+%% Whether the HTTP/3 listener should serve traffic for this host.
+%% Unknown hosts stay enabled (404/no-route path); explicit advertise_http3=false opts out.
+site_http3_enabled(Host) ->
+    Config = pertisk_eproxy_config:get_config(),
+    Sites = maps:get(sites, Config, []),
+    case find_site_for_host(Sites, normalize_host(Host)) of
+        undefined -> true;
         Site -> maps:get(advertise_http3, Site, true) =/= false
     end.
 

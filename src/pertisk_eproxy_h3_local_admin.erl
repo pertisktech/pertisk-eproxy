@@ -105,7 +105,11 @@ header_value(Name, Headers) ->
     ).
 
 %% WebSocket realtime stays on the TCP management listener only (HTTP/3 cannot upgrade).
+%% SSE realtime is handled by pertisk_eproxy_h3_api_gateway:h3_handle_admin_realtime_sse/7
+%% on HTTP/3, or proxied to :9080 over TCP when in-process dispatch is unsupported.
 h3_local_management_path(<<"/api/realtime">>) ->
+    false;
+h3_local_management_path(<<"/api/realtime-sse">>) ->
     false;
 h3_local_management_path(_) ->
     true.
@@ -301,7 +305,7 @@ run_handler_init(pertisk_eproxy_admin_handler, Req, Opts) ->
 run_handler_init(pertisk_eproxy_spa_handler, Req, Opts) ->
     _ = pertisk_eproxy_spa_handler:init(Req, Opts);
 run_handler_init(Handler, Req, Opts) ->
-    lager:warning("h3 local management: unsupported handler ~p", [Handler]),
+    lager:debug("local management: delegating to handler ~p", [Handler]),
     _ = Handler:init(Req, Opts).
 
 await_response() ->

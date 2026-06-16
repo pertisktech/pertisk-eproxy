@@ -5,7 +5,7 @@
 
 -export([start_link/0]).
 -export([auth_mode/0, auth_config_map/0, login/2, verify_request/1, verify_token/1, logout/1, refresh/1,
-         bearer_from_request/1]).
+         bearer_from_request/1, authorize_realtime_sse/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -190,6 +190,154 @@ trim_bin(B) when is_binary(B) ->
 strip_bearer_prefix(<<"Bearer ", R/binary>>) -> trim_bin(R);
 strip_bearer_prefix(<<"bearer ", R/binary>>) -> trim_bin(R);
 strip_bearer_prefix(B) -> trim_bin(B).
+
+%% EventSource cannot set Authorization; prefer WebSocket for realtime auth.
+%% SSE fallback: session cookie (pertisk_token) or optional ?token= query param.
+-spec authorize_realtime_sse(binary(), map() | list()) -> ok | {error, unauthorized}.
+authorize_realtime_sse(Qs, Headers) ->
+    case auth_mode() of
+        disabled ->
+            ok;
+        local ->
+            case realtime_sse_token(Qs, Headers) of
+                {ok, Token} ->
+                    case verify_token(Token) of
+                        {ok, _} -> ok;
+                        _ -> {error, unauthorized}
+                    end;
+                error ->
+                    {error, unauthorized}
+            end
+    end.
+
+realtime_sse_token(Qs, Headers) ->
+    HMap = realtime_sse_headers_map(Headers),
+    case qs_lookup_token(Qs) of
+        {ok, Token} ->
+            {ok, Token};
+        error ->
+            case bearer_from_header_map(HMap) of
+                {ok, Token} ->
+                    {ok, Token};
+                error ->
+                    token_from_session_cookie(HMap)
+            end
+    end.
+
+token_from_session_cookie(HMap) when is_map(HMap) ->
+    case maps:get(<<"cookie">>, HMap, <<>>) of
+        <<>> ->
+            error;
+        Cookie when is_binary(Cookie) ->
+            cookie_lookup_token(Cookie, <<"pertisk_token">>)
+    end;
+token_from_session_cookie(_) ->
+    error.
+
+cookie_lookup_token(Cookie, Name) when is_binary(Cookie), is_binary(Name) ->
+    case cookie_value_parts(Cookie, Name) of
+        {ok, Val} when byte_size(Val) > 0 -> {ok, Val};
+        _ -> error
+    end.
+
+cookie_value_parts(Cookie, Name) ->
+    NamePrefix = <<Name/binary, "=">>,
+    case binary:split(Cookie, <<";">>) of
+        Parts when is_list(Parts) ->
+            cookie_value_from_parts(Parts, NamePrefix);
+        _ ->
+            error
+    end.
+
+cookie_value_from_parts([], _NamePrefix) ->
+    error;
+cookie_value_from_parts([Part | Rest], NamePrefix) ->
+    Trimmed = trim_bin(Part),
+    PrefixSize = byte_size(NamePrefix),
+    case Trimmed of
+        <<>> ->
+            cookie_value_from_parts(Rest, NamePrefix);
+        <<NamePrefix:PrefixSize/binary, Val/binary>> when byte_size(Val) > 0 ->
+            {ok, qs_percent_decode(Val)};
+        _ ->
+            cookie_value_from_parts(Rest, NamePrefix)
+    end.
+
+realtime_sse_headers_map(Headers) when is_map(Headers) ->
+    Headers;
+realtime_sse_headers_map(Headers) when is_list(Headers) ->
+    maps:from_list([
+        {string:lowercase(K), V}
+     || {K, V} <- Headers,
+        is_binary(K),
+        is_binary(V)
+    ]);
+realtime_sse_headers_map(_) ->
+    #{}.
+
+bearer_from_header_map(HMap) when is_map(HMap) ->
+    case maps:get(<<"authorization">>, HMap, <<>>) of
+        <<"Bearer ", T/binary>> when byte_size(T) > 0 ->
+            {ok, trim_bin(T)};
+        <<"bearer ", T/binary>> when byte_size(T) > 0 ->
+            {ok, trim_bin(T)};
+        <<>> ->
+            bearer_from_x_eproxy_map(HMap);
+        _ ->
+            bearer_from_x_eproxy_map(HMap)
+    end;
+bearer_from_header_map(_) ->
+    error.
+
+bearer_from_x_eproxy_map(HMap) ->
+    case maps:get(<<"x-eproxy-bearer">>, HMap, <<>>) of
+        <<>> ->
+            error;
+        Raw ->
+            T = strip_bearer_prefix(trim_bin(Raw)),
+            case T of
+                <<>> -> error;
+                _ -> {ok, T}
+            end
+    end.
+
+qs_lookup_token(Qs) when is_binary(Qs) ->
+    case maps:get(<<"token">>, qs_to_map(Qs), <<>>) of
+        <<>> -> error;
+        T -> {ok, T}
+    end;
+qs_lookup_token(_) ->
+    error.
+
+qs_to_map(<<>>) ->
+    #{};
+qs_to_map(Qs) when is_binary(Qs) ->
+    maps:from_list([
+        {qs_key(K), qs_value(V)}
+     || Part <- binary:split(Qs, <<"&">>, [global]),
+        Part =/= <<>>,
+        {K, V} <- [qs_split_pair(Part)]
+    ]).
+
+qs_split_pair(Part) ->
+    case binary:split(Part, <<"=">>, []) of
+        [K, V] -> {K, V};
+        [K] -> {K, <<>>}
+    end.
+
+qs_key(K) ->
+    string:lowercase(qs_percent_decode(K)).
+
+qs_value(V) ->
+    qs_percent_decode(V).
+
+qs_percent_decode(Bin) when is_binary(Bin) ->
+    try uri_string:percent_decode(Bin) of
+        Dec when is_binary(Dec) -> Dec;
+        _ -> Bin
+    catch
+        _:_ -> Bin
+    end.
 
 verify_token(Token) when is_binary(Token) ->
     try

@@ -152,6 +152,26 @@ reconcile_legacy_annotations_test() ->
     Addr = maps:get(addr, hd(maps:get(upstreams, Backend))),
     ?assertNotEqual(nomatch, binary:match(Addr, <<"web.legacy-ns.svc.cluster.local:8080">>)).
 
+reconcile_omni_grpc_annotations_test() ->
+    Ingress = sample_ingress(#{
+        annotations => #{
+            <<"pertisk.io/grpc-mixed">> => <<"true">>
+        }
+    }),
+    {ok, Mixed} = pertisk_ingress_reconciler:reconcile([Ingress], []),
+    [MixedSite] = maps:get(sites, Mixed),
+    ?assertEqual(false, maps:get(advertise_http3, MixedSite)),
+    GrpcIngress = sample_ingress(#{
+        annotations => #{
+            <<"pertisk.io/grpc-upstream">> => <<"true">>
+        }
+    }),
+    {ok, Grpc} = pertisk_ingress_reconciler:reconcile([GrpcIngress], []),
+    [GrpcSite] = maps:get(sites, Grpc),
+    ?assertEqual(false, maps:get(advertise_http3, GrpcSite)),
+    [GrpcBackend] = maps:get(backends, Grpc),
+    ?assertEqual(true, maps:get(grpc_upstream, GrpcBackend)).
+
 reconcile_resource_backend_test() ->
     Ingress = sample_ingress(#{
         paths => [

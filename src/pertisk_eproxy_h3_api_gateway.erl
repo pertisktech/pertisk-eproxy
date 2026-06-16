@@ -197,41 +197,43 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
 
 h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, PathOnly, Qs) ->
     try
-        case is_grpc_h3_request(Headers) of
-            true ->
-                %% Workaround: keep gRPC on HTTPS/H2 so watch streams do not
-                %% hang behind fixed await_body timeouts on the H3 gateway path.
-                Hdrs = [
-                    {<<"content-type">>, <<"text/plain">>},
-                    {<<"alt-svc">>, <<"clear">>}
-                ],
-                _ = h3_reply_status(
+        case pertisk_eproxy_handler:site_http3_enabled(LogHost) of
+            false ->
+                h3_redirect_to_http2(
                     H3Conn,
                     StreamId,
-                    421,
-                    Hdrs,
+                    LogHost,
+                    <<"HTTP/3 is disabled for this host; retry over HTTPS/HTTP/2">>
+                );
+            true ->
+                h3_handle_request_inner_enabled(
+                    H3Conn, StreamId, Method, Path, Headers, T0, LogHost, PathOnly, Qs
+                )
+        end
+    catch
+        Class:Reason:Stack ->
+            h3_handle_request_catch(Class, Reason, Stack, H3Conn, StreamId, Method, Path, T0, LogHost, PathOnly)
+    end.
+
+h3_handle_request_inner_enabled(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, PathOnly, Qs) ->
+    try
+        case is_grpc_h3_request(Headers, PathOnly) of
+            true ->
+                h3_redirect_to_http2(
+                    H3Conn,
+                    StreamId,
+                    LogHost,
                     <<"gRPC over HTTP/3 is disabled on this listener; retry over HTTPS/HTTP/2">>
-                ),
-                inc_h3_metrics(LogHost, LogHost, <<"421">>),
-                log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
-                ok;
+                );
             false ->
                 case is_h3_websocket_upgrade(Headers) of
                     true ->
-                        WsHdrs = [
-                            {<<"content-type">>, <<"text/plain">>},
-                            {<<"alt-svc">>, <<"clear">>}
-                        ],
-                        _ = h3_reply_status(
+                        h3_redirect_to_http2(
                             H3Conn,
                             StreamId,
-                            421,
-                            WsHdrs,
+                            LogHost,
                             <<"WebSocket over HTTP/3 is not supported; retry over HTTPS/HTTP/1.1">>
-                        ),
-                        inc_h3_metrics(LogHost, LogHost, <<"421">>),
-                        log_h3_access(LogHost, LogHost, Method, PathOnly, 421, T0, <<>>),
-                        ok;
+                        );
                     false ->
                         Body = read_request_body(H3Conn, StreamId, Method, Headers, PathOnly),
                         case pertisk_eproxy_router:route(LogHost, PathOnly) of
@@ -286,26 +288,38 @@ h3_handle_request_inner(H3Conn, StreamId, Method, Path, Headers, T0, LogHost, Pa
         end
     catch
         Class:Reason:Stack ->
-            case h3_send_failed_reason(Reason) of
-                connection_gone ->
-                    log_h3_access(LogHost, LogHost, Method, PathOnly, 0, T0, <<>>),
-                    ok;
-                _ ->
-                    lager:error(
-                        "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
-                        [Class, Reason, LogHost, Path, Stack]
-                    ),
-                    _ = h3_reply_status(
-                        H3Conn,
-                        StreamId,
-                        500,
-                        [{<<"content-type">>, <<"text/plain">>}],
-                        <<"Internal Server Error">>
-                    ),
-                    log_h3_access(LogHost, LogHost, Method, PathOnly, 500, T0, <<>>),
-                    ok
-            end
+            h3_handle_request_catch(Class, Reason, Stack, H3Conn, StreamId, Method, Path, T0, LogHost, PathOnly)
     end.
+
+h3_handle_request_catch(Class, Reason, Stack, H3Conn, StreamId, Method, Path, T0, LogHost, PathOnly) ->
+    case h3_send_failed_reason(Reason) of
+        connection_gone ->
+            log_h3_access(LogHost, LogHost, Method, PathOnly, 0, T0, <<>>),
+            ok;
+        _ ->
+            lager:error(
+                "h3 handle_request crash class=~p reason=~p host=~s path=~s stack=~p",
+                [Class, Reason, LogHost, Path, Stack]
+            ),
+            _ = h3_reply_status(
+                H3Conn,
+                StreamId,
+                500,
+                [{<<"content-type">>, <<"text/plain">>}],
+                <<"Internal Server Error">>
+            ),
+            log_h3_access(LogHost, LogHost, Method, PathOnly, 500, T0, <<>>),
+            ok
+    end.
+
+h3_redirect_to_http2(H3Conn, StreamId, LogHost, Body) ->
+    Hdrs = [
+        {<<"content-type">>, <<"text/plain">>},
+        {<<"alt-svc">>, <<"clear">>}
+    ],
+    _ = h3_reply_status(H3Conn, StreamId, 421, Hdrs, Body),
+    inc_h3_metrics(LogHost, LogHost, <<"421">>),
+    ok.
 
 h3_authorize_request(SiteHost, Method, PathOnly, Qs, Headers, ClientIp) ->
     pertisk_eproxy_external_auth:authorize(
@@ -330,12 +344,12 @@ h3_route_after_auth_body(
     H3Conn, StreamId, Method, Headers, T0, LogHost,
     PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
 ) ->
-    case PathOnly of
-        <<"/api/realtime-sse">> ->
+    case is_admin_realtime_sse_path(PathOnly) of
+        true ->
             h3_handle_admin_realtime_sse(
-                H3Conn, StreamId, Method, Qs, T0, LogHost, SiteHost
+                H3Conn, StreamId, Method, Qs, Headers, T0, LogHost, SiteHost
             );
-        _ ->
+        false ->
             h3_route_after_auth_body_continue(
                 H3Conn, StreamId, Method, Headers, T0, LogHost,
                 PathOnly, Qs, UpPath, BackendName, SiteHost, Body, ClientIp
@@ -477,7 +491,7 @@ authority_host(Headers) ->
         _ -> <<"-">>
     end.
 
-is_grpc_h3_request(Headers) when is_list(Headers) ->
+is_grpc_h3_request(Headers, PathOnly) when is_list(Headers) ->
     HMap = h3_req_headers_map(Headers),
     Ct = string:lowercase(maps:get(<<"content-type">>, HMap, <<>>)),
     case Ct of
@@ -487,7 +501,13 @@ is_grpc_h3_request(Headers) when is_list(Headers) ->
         _ ->
             %% Do not classify by `te: trailers` alone; some non-gRPC clients can send it.
             h3_has_grpc_metadata_headers(HMap)
+                orelse pertisk_eproxy_handler:is_connect_service_path(PathOnly)
     end;
+is_grpc_h3_request(Headers, _PathOnly) ->
+    is_grpc_h3_request(Headers).
+
+is_grpc_h3_request(Headers) when is_list(Headers) ->
+    is_grpc_h3_request(Headers, <<>>);
 is_grpc_h3_request(_) ->
     false.
 
@@ -1278,12 +1298,27 @@ sse_heartbeat_ms() ->
         _ -> ?DEFAULT_EVENT_STREAM_HEARTBEAT_MS
     end.
 
-should_try_local_admin_fallback(_Host, <<"/api/realtime">>) ->
+should_try_local_admin_fallback(_Host, Path) ->
+    case is_admin_realtime_sse_path(Path) of
+        true ->
+            false;
+        false ->
+            should_try_local_admin_fallback_api(_Host, Path)
+    end.
+
+is_admin_realtime_sse_path(<<"/api/realtime-sse">>) ->
+    true;
+is_admin_realtime_sse_path(<<"/api/realtime-sse/", _/binary>>) ->
+    true;
+is_admin_realtime_sse_path(_) ->
+    false.
+
+should_try_local_admin_fallback_api(_Host, <<"/api/realtime">>) ->
     false;
-should_try_local_admin_fallback(Host, <<"/api/", _/binary>>) ->
+should_try_local_admin_fallback_api(Host, <<"/api/", _/binary>>) ->
     LowerHost = string:lowercase(Host),
     binary:match(LowerHost, <<"admin.">>) =:= {0, byte_size(<<"admin.">>)};
-should_try_local_admin_fallback(_Host, _Path) ->
+should_try_local_admin_fallback_api(_Host, _Path) ->
     false.
 
 -define(ADMIN_SSE_TICK_MS, 2000).
@@ -1301,16 +1336,39 @@ is_h3_websocket_upgrade(Headers) when is_list(Headers) ->
 is_h3_websocket_upgrade(_) ->
     false.
 
-h3_handle_admin_realtime_sse(H3Conn, StreamId, Method, Qs, T0, LogHost, SiteHost) ->
+h3_handle_admin_realtime_sse(H3Conn, StreamId, Method, Qs, Headers, T0, LogHost, SiteHost) ->
+    try
+        h3_handle_admin_realtime_sse_inner(
+            H3Conn, StreamId, Method, Qs, Headers, T0, LogHost, SiteHost
+        )
+    catch
+        Class:Reason:Stack ->
+            lager:error(
+                "h3 admin realtime-sse crash class=~p reason=~p host=~s stack=~p",
+                [Class, Reason, LogHost, Stack]
+            ),
+            inc_h3_metrics(LogHost, SiteHost, <<"500">>),
+            _ = h3_reply_status(
+                H3Conn,
+                StreamId,
+                500,
+                [{<<"content-type">>, <<"text/plain">>}],
+                <<"Internal Server Error">>
+            ),
+            log_h3_access(LogHost, SiteHost, <<"GET">>, <<"/api/realtime-sse">>, 500, T0, <<>>),
+            ok
+    end.
+
+h3_handle_admin_realtime_sse_inner(H3Conn, StreamId, Method, Qs, Headers, T0, LogHost, SiteHost) ->
     case normalize_h3_method(Method) of
         <<"GET">> ->
-            case authorize_admin_sse(Qs) of
+            case pertisk_eproxy_auth:authorize_realtime_sse(Qs, Headers) of
                 ok ->
-                    Headers = pertisk_eproxy_response_headers:merge_h3([
+                    RespHeaders = pertisk_eproxy_response_headers:merge_h3([
                         {<<"content-type">>, <<"text/event-stream; charset=utf-8">>},
                         {<<"cache-control">>, <<"no-cache, no-transform">>}
                     ]),
-                    case h3_send_response(H3Conn, StreamId, 200, Headers) of
+                    case h3_send_response(H3Conn, StreamId, 200, RespHeaders) of
                         ok ->
                             inc_h3_metrics(LogHost, SiteHost, <<"200">>),
                             log_h3_access(LogHost, SiteHost, <<"GET">>, <<"/api/realtime-sse">>, 200, T0, <<>>),
@@ -1349,53 +1407,26 @@ h3_handle_admin_realtime_sse(H3Conn, StreamId, Method, Qs, T0, LogHost, SiteHost
 h3_admin_sse_loop(_H3Conn, _StreamId, Tick) when Tick >= ?ADMIN_SSE_MAX_TICKS ->
     ok;
 h3_admin_sse_loop(H3Conn, StreamId, Tick) ->
-    Json = pertisk_eproxy_admin_sse_handler:snapshot_json(),
-    Payload = iolist_to_binary([<<"event: snapshot\ndata: ">>, Json, <<"\n\n">>]),
-    case h3_send_data(H3Conn, StreamId, Payload, false) of
-        ok ->
-            receive
-            after ?ADMIN_SSE_TICK_MS ->
-                h3_admin_sse_loop(H3Conn, StreamId, Tick + 1)
-            end;
-        {error, connection_gone} ->
-            ok;
-        {error, _} ->
+    try
+        Json = pertisk_eproxy_admin_sse_handler:snapshot_json(),
+        Payload = iolist_to_binary([<<"event: snapshot\ndata: ">>, Json, <<"\n\n">>]),
+        case h3_send_data(H3Conn, StreamId, Payload, false) of
+            ok ->
+                receive
+                after ?ADMIN_SSE_TICK_MS ->
+                    h3_admin_sse_loop(H3Conn, StreamId, Tick + 1)
+                end;
+            {error, connection_gone} ->
+                ok;
+            {error, _} ->
+                _ = h3_send_data(H3Conn, StreamId, <<>>, true),
+                ok
+        end
+    catch
+        Class:Reason ->
+            lager:warning("h3 admin sse tick failed: ~p:~p", [Class, Reason]),
             _ = h3_send_data(H3Conn, StreamId, <<>>, true),
             ok
-    end.
-
-authorize_admin_sse(Qs) ->
-    case pertisk_eproxy_auth:auth_mode() of
-        disabled ->
-            ok;
-        local ->
-            case h3_qs_lookup(Qs, <<"token">>) of
-                <<>> ->
-                    {error, unauthorized};
-                Token ->
-                    case pertisk_eproxy_auth:verify_token(Token) of
-                        {ok, _User} -> ok;
-                        {error, _} -> {error, unauthorized}
-                    end
-            end
-    end.
-
-h3_qs_lookup(<<>>, _Key) ->
-    <<>>;
-h3_qs_lookup(Qs, Key) when is_binary(Qs), is_binary(Key) ->
-    maps:get(Key, h3_qs_map(Qs), <<>>);
-h3_qs_lookup(_, _) ->
-    <<>>.
-
-h3_qs_map(<<>>) ->
-    #{};
-h3_qs_map(Qs) when is_binary(Qs) ->
-    maps:from_list([h3_qs_pair(Part) || Part <- binary:split(Qs, <<"&">>, [global]), Part =/= <<>>]).
-
-h3_qs_pair(Part) ->
-    case binary:split(Part, <<"=">>, []) of
-        [K, V] -> {K, V};
-        [K] -> {K, <<>>}
     end.
 
 h3_quic_int_opt(Config, Key, Default, Min, Max) ->
@@ -1526,7 +1557,7 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
     HeadersMap = forward_headers_h3(HMap, OrigHost, ClientIp, FullPath),
     HeadersList = maps:to_list(HeadersMap),
     GunMethod = method_to_gun(MethodBin),
-    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, HMap),
+    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, HMap, OrigHost),
     GunOpts = pertisk_eproxy_handler:upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind),
     UseEphemeralConn = should_use_ephemeral_connection_h3(UpHost, FullPath, H3Headers),
     case checkout_or_open_connection_h3(UseEphemeralConn, UpHost, UpPort, Transport, ReqKind, GunOpts) of
@@ -1540,6 +1571,7 @@ proxy_via_gun(MethodBin, OrigHost, UpstreamPath, Qs, UpstreamAddr, H3Headers, Bo
                 HeadersList,
                 Body,
                 HMap,
+                OrigHost,
                 UpHost,
                 UpPort,
                 Transport,
@@ -1588,6 +1620,7 @@ do_proxy_via_gun(
     HeadersList,
     Body,
     ReqHeadersMap,
+    OrigHost,
     UpHost,
     UpPort,
     Transport,
@@ -1597,7 +1630,7 @@ do_proxy_via_gun(
 ) ->
     TimeoutMs = request_timeout_ms(),
     BodyTimeoutMs = response_body_timeout_ms(FullPath, ReqHeadersMap, TimeoutMs),
-    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, ReqHeadersMap),
+    ReqKind = pertisk_eproxy_handler:upstream_req_kind(FullPath, ReqHeadersMap, OrigHost),
     Result =
         try
             StreamRef = gun:request(ConnPid, GunMethod, FullPath, HeadersList, Body),
@@ -1645,6 +1678,7 @@ do_proxy_via_gun(
                                 HeadersList,
                                 Body,
                                 ReqHeadersMap,
+                                OrigHost,
                                 UpHost,
                                 UpPort,
                                 Transport,

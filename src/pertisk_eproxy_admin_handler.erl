@@ -1638,7 +1638,7 @@ route_to_json(R) ->
     end.
 
 backend_to_json(B) ->
-    #{
+    Base = #{
         name      => json_text(maps:get(name, B)),
         algorithm => atom_to_binary(maps:get(algorithm, B, round_robin), utf8),
         upstreams => [#{addr => json_text(maps:get(addr, U)), weight => maps:get(weight, U, 1)}
@@ -1648,7 +1648,12 @@ backend_to_json(B) ->
             P -> json_text(P)
         end,
         health_interval_secs => maps:get(health_interval_secs, B, 30)
-    }.
+    },
+    case maps:get(grpc_upstream, B, undefined) of
+        true -> Base#{grpc_upstream => true};
+        false -> Base#{grpc_upstream => false};
+        _ -> Base
+    end.
 
 status_to_json(#{name := Name, algorithm := Algo, upstreams := Ups}) ->
     #{
@@ -1685,7 +1690,7 @@ parse_site(Body) ->
     }.
 
 parse_backend(Body) ->
-    #{
+    Base = #{
         name      => maps:get(<<"name">>, Body),
         algorithm => parse_algorithm(maps:get(<<"algorithm">>, Body, <<"round_robin">>)),
         upstreams => [#{addr   => maps:get(<<"addr">>, U),
@@ -1693,7 +1698,11 @@ parse_backend(Body) ->
                       || U <- maps:get(<<"upstreams">>, Body, [])],
         health_path          => maps:get(<<"health_path">>, Body, undefined),
         health_interval_secs => maps:get(<<"health_interval_secs">>, Body, 30)
-    }.
+    },
+    case optional_bool(maps:get(<<"grpc_upstream">>, Body, null)) of
+        undefined -> Base;
+        V -> Base#{grpc_upstream => V}
+    end.
 
 parse_path_type(<<"exact">>)  -> exact;
 parse_path_type(<<"prefix">>) -> prefix;

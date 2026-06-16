@@ -24,9 +24,14 @@ management_dispatch_compiles_test() ->
 
 api_routes_all_use_admin_handler_or_ws_test() ->
     Routes = pertisk_eproxy_admin_routes:api_routes(),
+    Allowed = [
+        pertisk_eproxy_admin_handler,
+        pertisk_eproxy_admin_ws_handler,
+        pertisk_eproxy_admin_sse_handler
+    ],
     lists:foreach(
         fun({_Path, Mod, _}) ->
-            ?assert(lists:member(Mod, [pertisk_eproxy_admin_handler, pertisk_eproxy_admin_ws_handler]))
+            ?assert(lists:member(Mod, Allowed))
         end,
         Routes
     ).

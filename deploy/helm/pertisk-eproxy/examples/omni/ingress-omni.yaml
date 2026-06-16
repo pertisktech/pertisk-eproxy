@@ -1,0 +1,109 @@
+# Talos Omni behind pertisk-eproxy (ingress mode).
+#
+# Mirrors Sidero Labs nginx layout:
+#   https://docs.siderolabs.com/omni/self-hosted/expose-omni-with-nginx-https
+#
+# Omni container flags (example):
+#   --bind-addr=127.0.0.1:8080
+#   --advertised-api-url=https://omni.example.com/
+#   --siderolink-api-bind-addr=127.0.0.1:8090
+#   --siderolink-api-advertised-url=https://api.omni.example.com:443
+#   --k8s-proxy-bind-addr=127.0.0.1:8100
+#   --advertised-kubernetes-proxy-url=https://kube.omni.example.com/
+#
+# pertisk.io/grpc-mixed disables HTTP/3 (gRPC + UI on same host).
+# pertisk.io/grpc-upstream forces gRPC for SideroLink api.* host.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni
+  namespace: omni
+spec:
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+    - name: siderolink
+      port: 8090
+      targetPort: 8090
+    - name: k8s-proxy
+      port: 8100
+      targetPort: 8100
+  selector:
+    app: omni
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-ui
+  namespace: omni
+  annotations:
+    pertisk.io/grpc-mixed: "true"
+spec:
+  ingressClassName: pertisk-eproxy
+  tls:
+    - hosts:
+        - omni.example.com
+      secretName: omni-tls
+  rules:
+    - host: omni.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omni
+                port:
+                  number: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-siderolink
+  namespace: omni
+  annotations:
+    pertisk.io/grpc-upstream: "true"
+spec:
+  ingressClassName: pertisk-eproxy
+  tls:
+    - hosts:
+        - api.omni.example.com
+      secretName: omni-api-tls
+  rules:
+    - host: api.omni.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omni
+                port:
+                  number: 8090
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-kube
+  namespace: omni
+  annotations:
+    pertisk.io/advertise-http3: "false"
+spec:
+  ingressClassName: pertisk-eproxy
+  tls:
+    - hosts:
+        - kube.omni.example.com
+      secretName: omni-kube-tls
+  rules:
+    - host: kube.omni.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omni
+                port:
+                  number: 8100

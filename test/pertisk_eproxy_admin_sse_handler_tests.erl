@@ -4,6 +4,7 @@
 
 ensure_env() ->
     pertisk_eproxy_test_helpers:ensure_config(),
+    application:set_env(pertisk_eproxy, admin_sse_max_ticks, 0),
     case whereis(pertisk_eproxy_access_log) of
         undefined -> {ok, _} = pertisk_eproxy_access_log:start_link();
         _ -> ok
@@ -63,13 +64,27 @@ restore_auth_mode(Old) ->
     end.
 
 with_mock_req(Opts, Fun) ->
+    QsVals = maps:get(qs_vals, Opts, []),
+    QsBin =
+        iolist_to_binary(
+            lists:join(
+                <<"&">>,
+                [
+                    iolist_to_binary([K, <<"=">>, V])
+                 || {K, V} <- QsVals, is_binary(K), is_binary(V)
+                ]
+            )
+        ),
+    HeadersMap = maps:get(headers, Opts, #{}),
     meck:new(cowboy_req, [unstick]),
     meck:new(pertisk_eproxy_response_headers, [unstick]),
     meck:new(pertisk_eproxy_alt_svc, [unstick]),
     meck:expect(pertisk_eproxy_response_headers, merge, fun(H) -> H end),
     meck:expect(pertisk_eproxy_alt_svc, merge_response_headers, fun(_Req, _Host, H) -> H end),
     meck:expect(cowboy_req, host, fun(_) -> maps:get(host, Opts, <<"localhost">>) end),
-    meck:expect(cowboy_req, parse_qs, fun(_) -> maps:get(qs_vals, Opts, []) end),
+    meck:expect(cowboy_req, qs, fun(_) -> QsBin end),
+    meck:expect(cowboy_req, headers, fun(_) -> HeadersMap end),
+    meck:expect(cowboy_req, parse_qs, fun(_) -> QsVals end),
     meck:expect(cowboy_req, reply, fun(_Status, _Hdrs, _Body, Req) ->
         Req#{reply => unauthorized}
     end),
@@ -95,18 +110,14 @@ init_auth_disabled_starts_stream_test() ->
 
 init_authorized_with_valid_token_test() ->
     ensure_env(),
-    Old = application:get_env(pertisk_eproxy, admin_auth),
-    application:set_env(pertisk_eproxy, admin_auth, local),
     meck:new(pertisk_eproxy_auth, [unstick]),
-    meck:expect(pertisk_eproxy_auth, auth_mode, fun() -> local end),
-    meck:expect(pertisk_eproxy_auth, verify_token, fun(<<"good-token">>) -> {ok, <<"user">>} end),
+    meck:expect(pertisk_eproxy_auth, authorize_realtime_sse, fun(_, _) -> ok end),
     try
-        with_mock_req(#{qs_vals => [{<<"token">>, <<"good-token">>}]}, fun(Req) ->
+        with_mock_req(#{headers => #{}}, fun(Req) ->
             ?assertMatch({ok, #{stream := started}, _}, pertisk_eproxy_admin_sse_handler:init(Req, #{}))
         end)
     after
-        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth]),
-        restore_auth_mode(Old)
+        pertisk_eproxy_test_helpers:unload_mocks([pertisk_eproxy_auth])
     end.
 
 init_invalid_token_unauthorized_test() ->

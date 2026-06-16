@@ -1,0 +1,40 @@
+{
+  "backends": [
+    {
+      "name": "omni-ui",
+      "algorithm": "round_robin",
+      "upstreams": [{ "addr": "127.0.0.1:8080", "weight": 1 }]
+    },
+    {
+      "name": "omni-siderolink",
+      "algorithm": "round_robin",
+      "grpc_upstream": true,
+      "upstreams": [{ "addr": "127.0.0.1:8090", "weight": 1 }]
+    },
+    {
+      "name": "omni-kube",
+      "algorithm": "round_robin",
+      "upstreams": [{ "addr": "127.0.0.1:8100", "weight": 1 }]
+    }
+  ],
+  "sites": [
+    {
+      "host": "omni.example.com",
+      "backend": "omni-ui",
+      "advertise_http3": false,
+      "routes": [{ "path": "/", "path_type": "prefix" }]
+    },
+    {
+      "host": "api.omni.example.com",
+      "backend": "omni-siderolink",
+      "advertise_http3": false,
+      "routes": [{ "path": "/", "path_type": "prefix" }]
+    },
+    {
+      "host": "kube.omni.example.com",
+      "backend": "omni-kube",
+      "advertise_http3": false,
+      "routes": [{ "path": "/", "path_type": "prefix" }]
+    }
+  ]
+}
