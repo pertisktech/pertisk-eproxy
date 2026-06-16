@@ -20,7 +20,7 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.0.1",
     "recharts": "^2.15.0",
-    "swagger-ui-react": "^5.28.1"
+    "swagger-ui-react": "^5.32.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.0",

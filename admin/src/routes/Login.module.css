@@ -1,4 +1,4 @@
-/* Adminator-inspired split-screen auth */
+/* Kube-web inspired split-screen auth */
 
 .wrap {
   display: grid;
@@ -19,9 +19,9 @@
 }
 
 .brandPanel {
-  --brand-fg: #f8f6ff;
-  --brand-muted: rgba(248, 246, 255, 0.8);
-  --brand-soft: rgba(248, 246, 255, 0.68);
+  --brand-fg: #e6e7f0;
+  --brand-muted: rgba(230, 231, 240, 0.8);
+  --brand-soft: rgba(230, 231, 240, 0.68);
   --brand-logo-bg: rgba(255, 255, 255, 0.14);
   --brand-logo-border: rgba(255, 255, 255, 0.22);
   position: relative;
@@ -32,17 +32,17 @@
   overflow: hidden;
   background: linear-gradient(
     152deg,
-    color-mix(in srgb, var(--color-primary) 84%, #1f1d2c) 0%,
-    color-mix(in srgb, var(--color-primary-hover) 58%, #262837) 50%,
-    #1f1d2c 100%
+    color-mix(in srgb, var(--color-primary) 72%, #0c0d18) 0%,
+    color-mix(in srgb, var(--color-primary-hover) 42%, #10111e) 52%,
+    #0c0d18 100%
   );
   color: var(--brand-fg);
 }
 
 html.light .brandPanel {
-  --brand-fg: #2f2660;
-  --brand-muted: rgba(47, 38, 96, 0.84);
-  --brand-soft: rgba(47, 38, 96, 0.68);
+  --brand-fg: #2e2f52;
+  --brand-muted: rgba(46, 47, 82, 0.84);
+  --brand-soft: rgba(46, 47, 82, 0.68);
   --brand-logo-bg: rgba(255, 255, 255, 0.46);
   --brand-logo-border: rgba(111, 88, 255, 0.22);
   background: linear-gradient(
@@ -153,8 +153,8 @@ html.light .brandPanel::before {
   min-height: 100vh;
   min-height: 100dvh;
   background:
-    radial-gradient(90rem 40rem at 10% -10%, var(--color-primary-soft), transparent 45%),
-    var(--color-bg);
+    radial-gradient(90rem 40rem at 10% -10%, color-mix(in srgb, var(--color-primary) 14%, transparent), transparent 45%),
+    linear-gradient(180deg, var(--color-bg), var(--color-surface));
 }
 
 html.light .formPanel {
@@ -201,12 +201,12 @@ html.light .formPanel {
 
 .card {
   width: 100%;
-  max-width: 26rem;
-  background: var(--color-surface);
+  max-width: 27rem;
+  background: color-mix(in srgb, var(--color-surface) 96%, transparent);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   padding: 2rem 2rem 1.75rem;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
 }
 
 html.light .card {
@@ -220,7 +220,7 @@ html.light .card {
 .title {
   margin: 0 0 0.35rem;
   font-family: var(--font-display);
-  font-size: 1.5rem;
+  font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--color-text);
@@ -228,7 +228,7 @@ html.light .card {
 
 .subtitle {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
   line-height: 1.5;
 }
@@ -243,7 +243,7 @@ html.light .card {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--color-text);
 }
@@ -283,12 +283,12 @@ html.light .card {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: background var(--transition-fast), box-shadow var(--transition-fast);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-primary) 35%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
 .button:hover:not(:disabled) {
   background: var(--color-primary-hover);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 35%, transparent);
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--color-primary) 34%, transparent);
 }
 
 .button:disabled {
@@ -324,7 +324,7 @@ html.light .card {
 .error {
   margin: 0;
   padding: 0.65rem 0.75rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-red);
   background: var(--color-red-dim);
   border: 1px solid color-mix(in srgb, var(--color-red) 20%, transparent);
@@ -333,7 +333,7 @@ html.light .card {
 
 .hint {
   margin: 0.5rem 0 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--color-muted);
   text-align: center;
   line-height: 1.5;
