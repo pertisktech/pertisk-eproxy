@@ -12,6 +12,7 @@
 # Env:
 #   EUNIT_PARALLEL                 max concurrent jobs (default: 4 with --cover, else min(8, CPU))
 #   ADMIN_HANDLER_EUNIT_BATCH_SIZE tests per admin_handler batch (default: 80)
+#   PERTISK_EUNIT_COVER_LOCAL_ONLY when --cover (default: 1 for single-node runs)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -156,6 +157,7 @@ eunit_cover_env() {
   local safe_id="$1"
   if [ "$COVER" -eq 1 ]; then
     export PERTISK_EUNIT_COVER=1
+    export PERTISK_EUNIT_COVER_LOCAL_ONLY="${PERTISK_EUNIT_COVER_LOCAL_ONLY:-1}"
     local cover_base
     cover_base="$(job_cover_base "$safe_id")"
     mkdir -p "$(dirname "$cover_base")"

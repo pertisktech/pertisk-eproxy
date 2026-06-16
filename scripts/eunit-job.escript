@@ -12,6 +12,7 @@
 %%   ROOT_DIR                    project root (default: parent of scripts/)
 %%   PERTISK_EUNIT_COVER=1       start cover and export after the run
 %%   PERTISK_EUNIT_COVER_EXPORT  base path for cover export (no .coverdata suffix)
+%%   PERTISK_EUNIT_COVER_LOCAL_ONLY=1  prefer local-only cover mode (single node)
 -mode(compile).
 
 -define(EUNIT_OPTS, [{scale_timeouts, 12.0}, {timeout, 300}]).
@@ -87,11 +88,26 @@ maybe_start_cover() ->
                 {ok, _} -> ok;
                 {error, {already_started, _}} -> ok
             end,
+            maybe_cover_local_only(),
             Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
             _ = cover:compile_beam_directory(Ebin),
             ok;
         _ ->
             ok
+    end.
+
+maybe_cover_local_only() ->
+    case os:getenv("PERTISK_EUNIT_COVER_LOCAL_ONLY") of
+        "0" ->
+            ok;
+        _ ->
+            case erlang:function_exported(cover, local_only, 0) of
+                true ->
+                    _ = catch cover:local_only(),
+                    ok;
+                false ->
+                    ok
+            end
     end.
 
 maybe_export_cover() ->

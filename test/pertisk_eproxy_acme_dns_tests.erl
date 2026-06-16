@@ -8,7 +8,7 @@
 -define(SCAN_STABLE_MS, 6000).
 -define(SCAN_POLL_MS, 100).
 
--define(SCAN_DRAIN_MS, 3000).
+-define(SCAN_DRAIN_MS, 2000).
 
 assert_meck_calls_at_least(Mod, Fun, Min) ->
     assert_meck_calls_at_least(Mod, Fun, Min, ?SCAN_WAIT_MS).
@@ -116,10 +116,9 @@ init_scan_db(DbPath, Retries) ->
 stop_acme_dns() ->
     case whereis(pertisk_eproxy_acme_dns) of
         undefined ->
-            drain_scan_workers();
+            ok;
         Pid ->
-            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
-            drain_scan_workers()
+            pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
     end.
 
 drain_scan_workers() ->
@@ -156,6 +155,7 @@ backend() ->
 with_scan_env(Fun) ->
     pertisk_eproxy_test_helpers:with_db_lock(fun() ->
         stop_acme_dns(),
+        drain_scan_workers(),
         pertisk_eproxy_test_helpers:ensure_config(),
         OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
         OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
@@ -181,6 +181,7 @@ with_scan_env(Fun) ->
             Fun(#{db => DbPath, acme_dir => AcmeDir})
         after
             stop_acme_dns(),
+            drain_scan_workers(),
             case OldDb of
                 {ok, DbVal} -> application:set_env(pertisk_eproxy, db_file, DbVal);
                 undefined -> application:unset_env(pertisk_eproxy, db_file)
