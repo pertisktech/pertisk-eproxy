@@ -7,6 +7,11 @@ cd "$REPO_ROOT"
 VERSION="${VERSION:-}"
 FRONTEND_BUILD_ID="${FRONTEND_BUILD_ID:-$(date +%s)}"
 FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
+# Optional: DOCKER_NO_CACHE=true to bust BuildKit cache (heavy; can OOM Docker Desktop on multi-arch).
+DOCKER_NO_CACHE="${DOCKER_NO_CACHE:-false}"
+# Optional: BUILD_SEQUENTIAL=1 builds each platform separately (lower peak RAM on macOS).
+BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-}"
+BUILD_PLATFORMS="${BUILD_PLATFORMS:-linux/amd64,linux/arm64}"
 NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
@@ -32,14 +37,18 @@ if [[ -z "$VERSION" ]]; then
   exit 2
 fi
 
-DOCKER_NO_CACHE=false
-if [[ "$FORCE_DEPLOY" == "true" ]]; then
-  DOCKER_NO_CACHE=true
+if [[ -z "$BUILD_SEQUENTIAL" && "$(uname -s)" == "Darwin" ]]; then
+  BUILD_SEQUENTIAL=1
 fi
 
-echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT}, frontend_build_id=${FRONTEND_BUILD_ID}, force_deploy=${FORCE_DEPLOY})"
+echo "Deploying ${RELEASE_NAME} version ${VERSION} to namespace ${NAMESPACE} (replicas=${REPLICA_COUNT}, frontend_build_id=${FRONTEND_BUILD_ID}, force_deploy=${FORCE_DEPLOY}, docker_no_cache=${DOCKER_NO_CACHE}, build_sequential=${BUILD_SEQUENTIAL}, platforms=${BUILD_PLATFORMS})"
 
-make docker-ingress-multi VERSION="$VERSION" FRONTEND_BUILD_ID="$FRONTEND_BUILD_ID" DOCKER_NO_CACHE="$DOCKER_NO_CACHE"
+make docker-ingress-multi \
+  VERSION="$VERSION" \
+  FRONTEND_BUILD_ID="$FRONTEND_BUILD_ID" \
+  DOCKER_NO_CACHE="$DOCKER_NO_CACHE" \
+  BUILD_SEQUENTIAL="$BUILD_SEQUENTIAL" \
+  BUILD_PLATFORMS="$BUILD_PLATFORMS"
 
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --create-namespace \

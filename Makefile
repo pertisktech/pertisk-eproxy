@@ -30,6 +30,7 @@ ifeq ($(DOCKER_NO_CACHE),true)
 DOCKER_NO_CACHE_ARG := --no-cache
 endif
 BUILD_PLATFORMS ?= linux/amd64,linux/arm64
+BUILD_SEQUENTIAL ?= 0
 BUILD_PROVENANCE ?= false
 BUILD_SBOM ?= false
 BUILDX_MULTI_BUILDER ?= pertisk-multiarch
@@ -153,6 +154,27 @@ docker-ingress-push:
 	docker push $(HARBOR_INGRESS_IMAGE):latest 2>/dev/null || docker tag $(HARBOR_INGRESS_IMAGE):$(VERSION) $(HARBOR_INGRESS_IMAGE):latest && docker push $(HARBOR_INGRESS_IMAGE):latest
 
 docker-ingress-multi: docker-buildx-multi-builder
+ifeq ($(BUILD_SEQUENTIAL),1)
+	@set -e; \
+	PLATFORMS="$$(echo '$(BUILD_PLATFORMS)' | tr ',' ' ')"; \
+	TAG="$(HARBOR_INGRESS_IMAGE):$(VERSION)"; \
+	LATEST="$(HARBOR_INGRESS_IMAGE):latest"; \
+	SRCS=""; \
+	for p in $$PLATFORMS; do \
+	  SUFFIX="$${p#linux/}"; \
+	  PTAG="$(HARBOR_INGRESS_IMAGE):$(VERSION)-$$SUFFIX"; \
+	  echo "==> docker buildx (sequential) platform=$$p tag=$$PTAG"; \
+	  docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+	    $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) \
+	    --platform "$$p" \
+	    --provenance=$(BUILD_PROVENANCE) --sbom=$(BUILD_SBOM) \
+	    --push -f $(DOCKERFILE_INGRESS) -t "$$PTAG" .; \
+	  SRCS="$$SRCS $$PTAG"; \
+	done; \
+	echo "==> docker buildx imagetools create $$TAG"; \
+	docker buildx imagetools create -t "$$TAG" $$SRCS; \
+	docker buildx imagetools create -t "$$LATEST" $$SRCS
+else
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
 		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
@@ -164,6 +186,7 @@ docker-ingress-multi: docker-buildx-multi-builder
 		-t $(HARBOR_INGRESS_IMAGE):$(VERSION) \
 		-t $(HARBOR_INGRESS_IMAGE):latest \
 		.
+endif
 
 ## Back-compat (was single IMAGE; now use docker-ingress-multi for ingress chart)
 docker-release:
