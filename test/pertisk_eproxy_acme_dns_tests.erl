@@ -8,7 +8,7 @@
 -define(SCAN_STABLE_MS, 6000).
 -define(SCAN_POLL_MS, 100).
 
--define(SCAN_DRAIN_MS, 3000).
+-define(SCAN_DRAIN_MS, 2000).
 
 assert_meck_calls_at_least(Mod, Fun, Min) ->
     assert_meck_calls_at_least(Mod, Fun, Min, ?SCAN_WAIT_MS).
@@ -119,7 +119,10 @@ stop_acme_dns() ->
             ok;
         Pid ->
             pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000)
-    end,
+    end.
+
+finish_scan_job() ->
+    stop_acme_dns(),
     drain_scan_workers().
 
 drain_scan_workers() ->
@@ -250,7 +253,7 @@ run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupF
             gen_server:cast(Pid, scan),
             timer:sleep(?SCAN_SLEEP_MS)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     after
         safe_meck_unload_all([pertisk_eproxy_acme_client | MockMods]),
@@ -717,7 +720,7 @@ handle_call_unknown_returns_error_test() ->
                 try
                     ?assertMatch({error, unknown_call}, gen_server:call(Pid, foo, 1000))
                 after
-                    stop_acme_dns()
+                stop_acme_dns()
                 end;
             Pid ->
                 ?assertMatch({error, unknown_call}, gen_server:call(Pid, foo, 1000))
@@ -733,7 +736,7 @@ schedule_scan_with_running_server_test() ->
                     ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan()),
                     timer:sleep(50)
                 after
-                    stop_acme_dns()
+                stop_acme_dns()
                 end;
             _ ->
                 ?assertEqual(ok, pertisk_eproxy_acme_dns:schedule_scan())
@@ -747,7 +750,7 @@ handle_info_scan_casts_scan_test() ->
             ?assertEqual({noreply, #{}}, pertisk_eproxy_acme_dns:handle_info(scan, #{})),
             timer:sleep(50)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     end).
 
@@ -874,7 +877,7 @@ scan_terms_not_agreed_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(500)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_dns_cloudflare),
@@ -917,7 +920,7 @@ scan_missing_dns_provider_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(200)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     after
         pertisk_eproxy_test_helpers:sync_router([], []),
@@ -986,7 +989,7 @@ scan_mocked_successful_issue_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(800)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     after
         safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1051,7 +1054,7 @@ scan_triggers_with_configured_site_test() ->
             gen_server:cast(Pid, scan),
             timer:sleep(200)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     after
         safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1296,7 +1299,7 @@ scan_cloudflare_find_zone_issue_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1326,7 +1329,7 @@ scan_acme_client_failure_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1364,7 +1367,7 @@ scan_lego_missing_warning_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(500)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             case OldLego of
@@ -1418,7 +1421,7 @@ scan_lego_obtain_certificate_success_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_lego, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -1449,7 +1452,7 @@ scan_lego_not_found_obtain_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -1498,7 +1501,7 @@ scan_lego_provider_env_error_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -1532,7 +1535,7 @@ scan_acme_client_csr_failure_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -1576,7 +1579,7 @@ scan_skips_site_with_production_cert_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -1619,7 +1622,7 @@ scan_reissues_staging_cert_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -1639,7 +1642,7 @@ handle_cast_scan_spawns_worker_test() ->
             ?assertEqual({noreply, #{}}, pertisk_eproxy_acme_dns:handle_cast(scan, #{})),
             timer:sleep(100)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     end).
 
@@ -1670,7 +1673,7 @@ scan_skips_http01_challenge_site_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_client),
@@ -1698,7 +1701,7 @@ scan_dynamic_lego_provider_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_lego, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -1734,7 +1737,7 @@ scan_wildcard_site_identifiers_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1780,7 +1783,7 @@ scan_drop_staging_kid_for_production_test() ->
                         ok
                 end
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             application:unset_env(pertisk_eproxy, acme_directory_url),
@@ -1815,7 +1818,7 @@ scan_cloudflare_create_txt_error_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -1848,7 +1851,7 @@ scan_cert_ref_acme_name_without_disk_pem_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -1878,7 +1881,7 @@ run_scan_lego_issue(DbPath, Host, ProviderName, ProviderType, Creds) ->
             gen_server:cast(Pid, scan),
             timer:sleep(?SCAN_SLEEP_MS)
         after
-            stop_acme_dns()
+            finish_scan_job()
         end
     after
         safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -2066,7 +2069,7 @@ scan_lego_failed_humanize_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -2090,7 +2093,7 @@ scan_cloudflare_missing_token_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2120,7 +2123,7 @@ scan_cloudflare_zone_resolve_error_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -2142,7 +2145,7 @@ scan_digitalocean_missing_token_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2163,7 +2166,7 @@ scan_vultr_missing_token_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2186,7 +2189,7 @@ scan_porkbun_missing_keys_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2219,7 +2222,7 @@ scan_site_skips_missing_acme_email_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_zero(pertisk_eproxy_acme_client, obtain_certificate)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_client),
@@ -2262,7 +2265,7 @@ scan_cert_id_ref_from_db_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -2294,7 +2297,7 @@ scan_cloudflare_delete_txt_fallback_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -2332,7 +2335,7 @@ scan_dns_provider_not_found_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2378,7 +2381,7 @@ scan_acme_order_invalid_humanize_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -2428,7 +2431,7 @@ scan_site_host_list_form_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -2515,7 +2518,7 @@ scan_powerdns_missing_api_url_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             pertisk_eproxy_test_helpers:sync_router([], [])
@@ -2554,7 +2557,7 @@ scan_cloudflare_global_key_issue_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
@@ -2597,7 +2600,7 @@ scan_cert_pem_from_db_row_test() ->
                 gen_server:cast(Pid, scan),
                 assert_meck_calls_at_least(pertisk_eproxy_acme_client, obtain_certificate, 1)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([
@@ -2633,7 +2636,7 @@ scan_lego_failed_empty_output_humanize_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload(pertisk_eproxy_acme_lego),
@@ -2664,7 +2667,7 @@ scan_acme_order_invalid_empty_failures_test() ->
                 gen_server:cast(Pid, scan),
                 timer:sleep(?SCAN_SLEEP_MS)
             after
-                stop_acme_dns()
+                finish_scan_job()
             end
         after
             safe_meck_unload_all([pertisk_eproxy_acme_client, pertisk_eproxy_dns_cloudflare]),
