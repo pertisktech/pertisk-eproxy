@@ -227,14 +227,16 @@ snapshot_ingress_mode_config_test() ->
         ensure_config()
     end.
 
-snapshot_custom_mode_atom_test() ->
+snapshot_runtime_mode_proxy_not_custom_config_atom_test() ->
     ensure_config(),
     C = pertisk_eproxy_config:get_config(),
     C2 = maps:put(mode, edge, C),
     ok = pertisk_eproxy_test_helpers:put_config_retry(C2),
     try
+        %% put_config normalizes proxy deployments to mode=proxy; snapshot reports runtime mode only.
+        ?assertEqual(proxy, maps:get(mode, pertisk_eproxy_config:get_config())),
         S = pertisk_eproxy_admin_management_snapshot:snapshot(),
-        ?assertEqual(<<"edge">>, maps:get(<<"mode">>, S))
+        ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, S))
     after
         ok = pertisk_eproxy_test_helpers:put_config_retry(C)
     end.
