@@ -18,8 +18,13 @@ schedule_scan() ->
     end.
 
 init([]) ->
-    _ = timer:send_after(4000, scan),
-    {ok, #{}}.
+    case application:get_env(pertisk_eproxy, acme_dns_disable_init_scan, false) of
+        true ->
+            {ok, #{}};
+        false ->
+            _ = timer:send_after(4000, scan),
+            {ok, #{}}
+    end.
 
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown_call}, State}.

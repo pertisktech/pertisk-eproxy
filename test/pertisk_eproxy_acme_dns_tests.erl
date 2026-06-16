@@ -8,6 +8,8 @@
 -define(SCAN_STABLE_MS, 6000).
 -define(SCAN_POLL_MS, 100).
 
+-define(SCAN_DRAIN_MS, 3000).
+
 assert_meck_calls_at_least(Mod, Fun, Min) ->
     assert_meck_calls_at_least(Mod, Fun, Min, ?SCAN_WAIT_MS).
 
@@ -114,12 +116,15 @@ init_scan_db(DbPath, Retries) ->
 stop_acme_dns() ->
     case whereis(pertisk_eproxy_acme_dns) of
         undefined ->
-            ok;
+            drain_scan_workers();
         Pid ->
             pertisk_eproxy_test_helpers:safe_gen_server_stop(Pid, normal, 5000),
-            %% scan is spawned unlinked; allow in-flight scan_and_issue/0 to finish.
-            timer:sleep(?SCAN_SLEEP_MS)
+            drain_scan_workers()
     end.
+
+drain_scan_workers() ->
+    %% scan_and_issue/0 is spawned unlinked; wait for in-flight work to finish.
+    timer:sleep(?SCAN_DRAIN_MS).
 
 mock_acme_client_ok() ->
     meck:new(pertisk_eproxy_acme_client, [unstick, no_link]),
@@ -150,11 +155,14 @@ backend() ->
 
 with_scan_env(Fun) ->
     pertisk_eproxy_test_helpers:with_db_lock(fun() ->
+        stop_acme_dns(),
         pertisk_eproxy_test_helpers:ensure_config(),
         OldTerms = application:get_env(pertisk_eproxy, acme_terms_agreed),
         OldAcmeDir = application:get_env(pertisk_eproxy, acme_data_dir),
         OldDb = application:get_env(pertisk_eproxy, db_file),
+        OldInitScan = application:get_env(pertisk_eproxy, acme_dns_disable_init_scan),
         application:set_env(pertisk_eproxy, acme_terms_agreed, true),
+        application:set_env(pertisk_eproxy, acme_dns_disable_init_scan, true),
         AcmeDir = filename:join([
             os:getenv("TMPDIR", "/tmp"),
             "pertisk-acme-" ++ integer_to_list(erlang:unique_integer([positive]))
@@ -185,18 +193,22 @@ with_scan_env(Fun) ->
                 {ok, DirVal} -> application:set_env(pertisk_eproxy, acme_data_dir, DirVal);
                 undefined -> application:unset_env(pertisk_eproxy, acme_data_dir)
             end,
+            case OldInitScan of
+                {ok, InitVal} -> application:set_env(pertisk_eproxy, acme_dns_disable_init_scan, InitVal);
+                undefined -> application:unset_env(pertisk_eproxy, acme_dns_disable_init_scan)
+            end,
             _ = os:cmd("rm -rf " ++ AcmeDir),
             file:delete(DbPath)
         end
     end).
 
 run_scan_issue(DbPath, Host, ProviderName, ProviderType, Creds, MockMods, SetupFun) ->
+    {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
     pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
     lists:foreach(fun(M) -> meck:new(M, [unstick, no_link]) end, MockMods),
     SetupFun(),
     mock_acme_client_ok(),
     try
-        {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
         stop_acme_dns(),
         {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
         try
@@ -1635,26 +1647,26 @@ scan_dynamic_lego_provider_test() ->
 
 scan_wildcard_site_identifiers_test() ->
     with_scan_env(fun(#{db := DbPath}) ->
-        pertisk_eproxy_test_helpers:sync_router(
-            [
-                maps:merge(site(<<"*.example.com">>, <<"cf-wc">>), #{
-                    wildcard => true,
-                    acme_wildcard_base => <<"example.com">>
-                })
-            ],
-            [backend()]
-        ),
         meck:new(pertisk_eproxy_dns_cloudflare, [unstick, no_link]),
         mock_dns_cloudflare(),
         mock_acme_client_ok(),
         try
-            ?assert(site_present_in_config(<<"*.example.com">>)),
-            {ok, _} = pertisk_eproxy_db:insert_dns_provider(
+            {ok, _} = insert_dns_provider_ready(
                 DbPath,
                 <<"cf-wc">>,
                 <<"cloudflare">>,
                 #{<<"api_token">> => <<"secret">>, <<"zone_id">> => <<"zone-id">>}
             ),
+            pertisk_eproxy_test_helpers:sync_router(
+                [
+                    maps:merge(site(<<"*.example.com">>, <<"cf-wc">>), #{
+                        wildcard => true,
+                        acme_wildcard_base => <<"example.com">>
+                    })
+                ],
+                [backend()]
+            ),
+            ?assert(site_present_in_config(<<"*.example.com">>)),
             stop_acme_dns(),
             {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
             try
@@ -1787,13 +1799,13 @@ validate_dns_provider_provider_type_other_test() ->
         pertisk_eproxy_acme_dns:validate_dns_provider([], #{<<"api_token">> => <<"tok">>})).
 
 run_scan_lego_issue(DbPath, Host, ProviderName, ProviderType, Creds) ->
+    {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
     pertisk_eproxy_test_helpers:sync_router([site(Host, ProviderName)], [backend()]),
     meck:new(pertisk_eproxy_acme_lego, [unstick, no_link, passthrough]),
     meck:expect(pertisk_eproxy_acme_lego, obtain_certificate, fun(_, _, _, _, _, _, _, _) ->
         {ok, <<"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----">>, <<"key">>}
     end),
     try
-        {ok, _} = pertisk_eproxy_db:insert_dns_provider(DbPath, ProviderName, ProviderType, Creds),
         stop_acme_dns(),
         {ok, Pid} = pertisk_eproxy_acme_dns:start_link(),
         try
