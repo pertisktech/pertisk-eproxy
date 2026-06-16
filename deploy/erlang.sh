@@ -86,13 +86,24 @@ if [[ "$VERIFY_ADMIN_UI" == "true" ]]; then
     exit 3
   fi
 
-  MARKERS="$(curl -sk "${ADMIN_URL}${ASSET_PATH}" | grep -ao 'Config View\|show_all=1\|runtime_mode' | sort -u || true)"
-  if [[ -z "$MARKERS" ]]; then
-    echo "ERROR: Admin bundle verification failed (expected Settings markers missing)" >&2
-    echo "       host=${ADMIN_HOST} asset=${ASSET_PATH}" >&2
+  # Normalize relative asset paths such as ./assets/*.js to avoid accidental host trailing-dot URLs.
+  ASSET_URL="${ADMIN_URL}/${ASSET_PATH#./}"
+  ASSET_CONTENT="$(curl -sk "$ASSET_URL")"
+
+  if ! grep -Fq "$FRONTEND_BUILD_ID" <<< "$ASSET_CONTENT"; then
+    echo "ERROR: Admin bundle verification failed (frontend build id missing in JS asset)" >&2
+    echo "       host=${ADMIN_HOST} asset=${ASSET_PATH} expected_build_id=${FRONTEND_BUILD_ID}" >&2
     exit 4
   fi
 
-  echo "Admin bundle markers found:"
-  echo "$MARKERS"
+  MARKERS="$(grep -ao 'Config View\|show_all=1\|runtime_mode' <<< "$ASSET_CONTENT" | sort -u || true)"
+  if [[ -z "$MARKERS" ]]; then
+    echo "WARN: Settings markers missing in minified bundle; build-id verification succeeded" >&2
+  fi
+
+  echo "Admin bundle verification passed: build_id=${FRONTEND_BUILD_ID} asset=${ASSET_PATH}"
+  if [[ -n "$MARKERS" ]]; then
+    echo "Admin bundle markers found:"
+    echo "$MARKERS"
+  fi
 fi

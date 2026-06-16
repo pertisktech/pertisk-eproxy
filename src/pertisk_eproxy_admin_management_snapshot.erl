@@ -20,12 +20,11 @@ snapshot() ->
     HttpPort = maps:get(http_port, C, 80),
     MgmtPort = maps:get(management_port, C, 9080),
     MgmtAddr = maps:get(management_addr, C, {0, 0, 0, 0}),
-    Mode0 = maps:get(mode, C, proxy),
-    ModeBin = case Mode0 of
-        proxy -> <<"proxy">>;
-        ingress -> <<"ingress">>;
-        M -> atom_to_binary(M, utf8)
-    end,
+    ModeBin =
+        case pertisk_eproxy_config:ingress_mode() of
+            true -> <<"ingress">>;
+            false -> <<"proxy">>
+        end,
     HttpsAddr = case maps:find(https_port, C) of
         {ok, Hp} -> iolist_to_binary(io_lib:format("0.0.0.0:~w", [Hp]));
         _ -> <<>>

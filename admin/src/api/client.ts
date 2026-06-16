@@ -8,6 +8,15 @@ export type {
 
 const API = '/api';
 
+/** Map common API errors to actionable UI text. */
+export function formatApiError(error: unknown, fallback = 'Request failed'): string {
+  const msg = error instanceof Error ? error.message : fallback;
+  if (msg.includes('403:') && /read-only in ingress mode/i.test(msg)) {
+    return 'Server is in ingress read-only mode. Use `make run` for proxy/SQLite site edits, or log in and use the Kubernetes Ingress form when running `make run-ingress`.';
+  }
+  return msg || fallback;
+}
+
 function isLocalRealtimeLogEnabled(): boolean {
   if (import.meta.env.DEV) return true;
   const host = globalThis.window.location.hostname;

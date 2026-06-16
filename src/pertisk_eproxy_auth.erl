@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([auth_mode/0, auth_config_map/0, login/2, verify_request/1, verify_token/1, logout/1, refresh/1,
+-export([auth_mode/0, auth_config_map/0, admin_login_required/0, login/2, verify_request/1, verify_token/1, logout/1, refresh/1,
          bearer_from_request/1, authorize_realtime_sse/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -22,11 +22,20 @@ auth_mode() ->
 
 auth_config_map() ->
     Dm = deployment_mode_bin(),
-    case pertisk_ingress_env:enabled() of
+    case pertisk_ingress_env:ingress_mode() of
         true ->
             ingress_auth_config_map(Dm);
         false ->
             proxy_auth_config_map(Dm)
+    end.
+
+%% True when mutating admin API calls require a valid bearer (proxy SQLite or ingress env/SSO).
+admin_login_required() ->
+    case pertisk_ingress_env:ingress_mode() of
+        true ->
+            pertisk_eproxy_env_auth:login_required();
+        false ->
+            auth_mode() =/= disabled
     end.
 
 proxy_auth_config_map(Dm) ->
@@ -76,10 +85,9 @@ ingress_auth_config_map(Dm) ->
     maps:merge(Base, SsoCfg).
 
 deployment_mode_bin() ->
-    C = pertisk_eproxy_config:get_config(),
-    case maps:get(mode, C, proxy) of
-        proxy -> <<"proxy">>;
-        M -> atom_to_binary(M, utf8)
+    case pertisk_eproxy_config:ingress_mode() of
+        true -> <<"ingress">>;
+        false -> <<"proxy">>
     end.
 
 login(User, Pass) ->
@@ -101,14 +109,14 @@ login(User, Pass) ->
     end.
 
 ingress_local_login_allowed() ->
-    case pertisk_ingress_env:enabled() of
+    case pertisk_ingress_env:ingress_mode() of
         true -> pertisk_eproxy_env_auth:supports_local();
         false -> true
     end.
 
 use_env_login() ->
     %% Env credentials are ingress-only; proxy mode should authenticate against SQLite admin_users.
-    pertisk_ingress_env:enabled().
+    pertisk_ingress_env:ingress_mode().
 
 sqlite_login(User, Pass) ->
     UBin = as_bin(User),

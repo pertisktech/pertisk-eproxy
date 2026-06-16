@@ -19,6 +19,9 @@ ingress_mode_from_env_test() ->
     with_env("PERTISK_MODE", {set, "ingress"}, fun() ->
         ?assert(pertisk_ingress_env:ingress_mode())
     end),
+    with_env("PERTISK_MODE", {set, "proxy"}, fun() ->
+        ?assertNot(pertisk_ingress_env:ingress_mode())
+    end),
     with_env("PERTISK_MODE", unset, fun() ->
         ?assertNot(pertisk_ingress_env:ingress_mode())
     end).

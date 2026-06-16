@@ -32,8 +32,8 @@ start(_StartType, _StartArgs) ->
     ok = bootstrap_first_start_artifacts(),
     ok = pertisk_eproxy_metrics:setup(),
     ok = pertisk_eproxy_admin_management_snapshot:init_cpu_sample(),
-    {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = maybe_set_ingress_mode(),
+    {ok, Sup} = pertisk_eproxy_sup:start_link(),
     ok = start_listeners(),
     ok = pertisk_eproxy_auth0:maybe_prefetch_jwks(),
     {ok, Sup}.
@@ -869,6 +869,7 @@ maybe_set_ingress_mode() ->
             application:set_env(pertisk_eproxy, mode, ingress),
             pertisk_eproxy_env_auth:configure();
         false ->
+            application:set_env(pertisk_eproxy, mode, proxy),
             ok
     end.
 

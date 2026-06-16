@@ -1568,8 +1568,9 @@ ingress_mode_from_config_map_test() ->
                 dns_providers => []
             },
             ok = put_config_retry(Config),
-            ?assert(pertisk_eproxy_config:ingress_mode()),
-            ?assertNot(pertisk_eproxy_config:proxy_mode())
+            ?assertNot(pertisk_eproxy_config:ingress_mode()),
+            ?assert(pertisk_eproxy_config:proxy_mode()),
+            ?assertEqual(proxy, maps:get(mode, pertisk_eproxy_config:get_config()))
         end)
     end).
 

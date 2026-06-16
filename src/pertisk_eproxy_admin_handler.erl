@@ -47,7 +47,7 @@ init(Req, Resource) ->
 
 ingress_viewer_blocked(Method, Resource) ->
     pertisk_eproxy_config:ingress_mode()
-        andalso (not pertisk_eproxy_env_auth:login_required())
+        andalso (not pertisk_eproxy_auth:admin_login_required())
         andalso ingress_mutating(Method, Resource).
 
 ingress_mutating(_, kubernetes_pods) -> false;
@@ -1297,8 +1297,13 @@ normalize_key_bin(K) ->
     string:lowercase(iolist_to_binary(io_lib:format("~p", [K]))).
 
 config_to_json(Config) ->
+    RuntimeMode =
+        case pertisk_eproxy_config:ingress_mode() of
+            true -> ingress;
+            false -> proxy
+        end,
     Base = #{
-        mode            => mode_to_json(maps:get(mode, Config, proxy)),
+        mode            => mode_to_json(RuntimeMode),
         http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
         log_level       => iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())),

@@ -15,6 +15,7 @@ import {
   type IngressFormRouteRow,
   type CreateIngressBody,
   normalizeDnsProviders,
+  formatApiError,
 } from '@/api/client';
 import { getCookieValue, setCookieValue } from '@/auth';
 import { useMode } from '@/context/ModeContext';
@@ -1116,7 +1117,7 @@ export default function Sites() {
       setEditingIndex(null);
       toast.success(editingIndex !== null ? 'Site updated.' : 'Site added.');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to save';
+      const msg = formatApiError(err, 'Failed to save');
       setFormError(msg);
       toast.error(msg);
     } finally {
@@ -1137,7 +1138,7 @@ export default function Sites() {
       toast.success('Site removed.');
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove site');
+      toast.error(formatApiError(err, 'Failed to remove site'));
     } finally {
       setSaving(false);
     }

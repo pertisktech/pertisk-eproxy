@@ -30,10 +30,16 @@ enabled() ->
 ingress_mode() ->
     case application:get_env(pertisk_eproxy, mode) of
         {ok, ingress} -> true;
+        {ok, proxy} -> false;
         _ ->
             case os:getenv("PERTISK_MODE") of
                 false -> false;
-                V -> string:equal(V, "ingress", true)
+                V ->
+                    case string:lowercase(string:trim(V)) of
+                        "ingress" -> true;
+                        "proxy" -> false;
+                        _ -> false
+                    end
             end
     end.
 

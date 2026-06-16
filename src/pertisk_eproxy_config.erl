@@ -233,8 +233,7 @@ sync_ingress(Sites, Backends) ->
 
 -spec ingress_mode() -> boolean().
 ingress_mode() ->
-    pertisk_ingress_env:ingress_mode()
-        orelse maps:get(mode, get_config(), proxy) =:= ingress.
+    pertisk_ingress_env:ingress_mode().
 
 -spec proxy_mode() -> boolean().
 proxy_mode() ->
@@ -311,14 +310,15 @@ code_change(_OldVsn, State, _Extra) ->
 %% ---------------------------------------------------------------------------
 
 put_config_proxy(Config, State) ->
+    ProxyConfig = normalize_proxy_config(Config),
     PrevConfig = get_config(),
     T0 = erlang:monotonic_time(millisecond),
-    case validate_proxy_tls_site_bindings(Config, PrevConfig) of
+    case validate_proxy_tls_site_bindings(ProxyConfig, PrevConfig) of
         ok ->
-            case persist_runtime_config(Config) of
+            case persist_runtime_config(ProxyConfig) of
                 ok ->
                     T1 = erlang:monotonic_time(millisecond),
-                    apply_config(Config),
+                    apply_config(ProxyConfig),
                     T2 = erlang:monotonic_time(millisecond),
                     PersistMs = T1 - T0,
                     ApplyMs = T2 - T1,
@@ -332,7 +332,7 @@ put_config_proxy(Config, State) ->
                         false ->
                             ok
                     end,
-                    maybe_schedule_acme_scan(PrevConfig, Config),
+                    maybe_schedule_acme_scan(PrevConfig, ProxyConfig),
                     {reply, ok, State};
                 {error, R} ->
                     lager:error("put_config persist_runtime_config failed: ~p", [R]),
@@ -577,7 +577,7 @@ config_file() ->
     end.
 
 load_config() ->
-    case ingress_mode() of
+    case pertisk_ingress_env:ingress_mode() of
         true -> load_ingress_config();
         false -> load_proxy_config()
     end.
@@ -610,7 +610,8 @@ load_proxy_config() ->
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
             CfgA = sanitize_runtime_tls_paths(Cfg0),
-            Cfg = cleanup_redacted_dns_providers(DbPath, CfgA),
+            CfgB = cleanup_redacted_dns_providers(DbPath, CfgA),
+            Cfg = normalize_proxy_config(CfgB),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
@@ -652,7 +653,7 @@ load_proxy_config_from_file_and_seed(DbPath) ->
     File = config_file(),
     case read_config_file(File) of
         {ok, Cfg0} ->
-            Cfg = cleanup_redacted_dns_providers(DbPath, Cfg0),
+            Cfg = normalize_proxy_config(cleanup_redacted_dns_providers(DbPath, Cfg0)),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, maps:get(dns_providers, Cfg, [])),
             _ = persist_runtime_config(DbPath, Cfg),
@@ -677,7 +678,7 @@ rebuild_runtime_config_from_db(DbPath) ->
                 dns_providers => Dns,
                 certificates => Certs
             },
-            Cfg = cleanup_redacted_dns_providers(DbPath, Cfg0),
+            Cfg = normalize_proxy_config(cleanup_redacted_dns_providers(DbPath, Cfg0)),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, Certs),
             _ = pertisk_eproxy_db:ensure_dns_providers_seeded(DbPath, Dns),
             _ = pertisk_eproxy_db:ensure_admin_users(DbPath),
@@ -833,7 +834,8 @@ persist_runtime_config(Config) ->
     end.
 
 persist_runtime_config(DbPath, Config) ->
-    case pertisk_eproxy_db:put_runtime_config(DbPath, Config) of
+    ProxyConfig = normalize_proxy_config(Config),
+    case pertisk_eproxy_db:put_runtime_config(DbPath, ProxyConfig) of
         ok ->
             DnsProviders = maps:get(dns_providers, Config, []),
             case pertisk_eproxy_db:replace_dns_providers(DbPath, DnsProviders) of
@@ -1137,6 +1139,9 @@ parse_mode(<<"proxy">>) -> proxy;
 parse_mode(<<"proxy_admin">>) -> proxy;
 parse_mode(<<"ingress">>) -> ingress;
 parse_mode(_) -> proxy.
+
+normalize_proxy_config(Config) when is_map(Config) ->
+    Config#{mode => proxy}.
 
 parse_upstreams(In) ->
     [#{addr => maps:get(<<"addr">>, U), weight => maps:get(<<"weight">>, U, 1)}

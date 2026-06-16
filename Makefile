@@ -173,7 +173,9 @@ docker-harbor-multi: docker-proxy-multi docker-ingress-multi
 
 ## --- Local run ---
 run: compile
-	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell --apps pertisk_eproxy
+	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) \
+		PERTISK_MODE=proxy PERTISK_CONFIG_FILE=config/proxy.json PERTISK_K8S_INGRESS_ENABLED=0 \
+		$(REBAR) shell --apps pertisk_eproxy
 
 run-ingress: compile admin-build
 	KUBECONFIG=$(KUBECONFIG) PERTISK_MODE=ingress PERTISK_AUTH_MODE=$(PERTISK_AUTH_MODE) PERTISK_ADMIN=$(PERTISK_ADMIN) PERTISK_PASSWORD=$(PERTISK_PASSWORD) PERTISK_CONFIG_FILE=config/ingress.json \
