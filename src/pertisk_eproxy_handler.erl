@@ -1636,7 +1636,10 @@ upstream_req_kind(Path, HeadersMap) ->
 upstream_req_kind(Path, HeadersMap, SiteHost) when is_binary(Path), is_map(HeadersMap) ->
     case site_backend_grpc_upstream(SiteHost) of
         true ->
-            grpc;
+            case is_grpc_headers_map(HeadersMap) orelse is_connect_service_path(Path) of
+                true -> grpc;
+                false -> http
+            end;
         false ->
             case is_sse_proxy_request(Path, HeadersMap) of
                 true ->
@@ -1676,7 +1679,14 @@ is_grpc_headers_map(HMap) ->
 detect_request_kind(Req, SiteHost) ->
     case site_backend_grpc_upstream(SiteHost) of
         true ->
-            grpc;
+            %% grpc_upstream means the backend supports gRPC, but do not force every
+            %% request to gRPC. Harbor-style REST endpoints on the same host should
+            %% remain plain HTTP unless request signals gRPC semantics.
+            Path0 = cowboy_req:path(Req),
+            case is_grpc_request(Req) orelse is_connect_service_path(Path0) of
+                true -> grpc;
+                false -> http
+            end;
         false ->
             Path = cowboy_req:path(Req),
             case is_event_stream_request(Req) orelse is_stream_endpoint_request(Req) of
@@ -1717,11 +1727,25 @@ connect_service_path_has_dot_service(Bin) ->
             case binary:match(Bin, <<"/">>) of
                 {Pos, _} when Pos > 0 ->
                     ServicePart = binary:part(Bin, 0, Pos),
-                    binary:match(ServicePart, <<".">>) =/= nomatch;
+                    binary:match(ServicePart, <<".">>) =/= nomatch
+                        andalso not looks_like_version_segment(ServicePart);
                 _ ->
                     false
             end
     end.
+
+%% Avoid false-positive matching for REST paths like "/api/v2.0/systeminfo".
+looks_like_version_segment(<<"v", Rest/binary>>) ->
+    Rest =/= <<>> andalso all_digits_or_dot(Rest);
+looks_like_version_segment(_) ->
+    false.
+
+all_digits_or_dot(<<>>) ->
+    true;
+all_digits_or_dot(<<C, Rest/binary>>) when (C >= $0 andalso C =< $9) orelse C =:= $. ->
+    all_digits_or_dot(Rest);
+all_digits_or_dot(_) ->
+    false.
 
 site_backend_grpc_upstream(SiteHost) when is_binary(SiteHost), SiteHost =/= <<>> ->
     Config = pertisk_eproxy_config:get_config(),
