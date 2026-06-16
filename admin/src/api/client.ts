@@ -79,7 +79,7 @@ export interface Backend {
   upstreams: Upstream[];
   health_path?: string | null;
   health_interval_secs: number;
-  /** Force HTTP/2 gRPC to upstream (e.g. Talos SideroLink on :8090). */
+  /** Force HTTP/2 gRPC to upstream (CONNECT or native gRPC services). */
   grpc_upstream?: boolean | null;
 }
 

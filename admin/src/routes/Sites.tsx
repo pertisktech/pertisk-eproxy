@@ -1888,8 +1888,8 @@ export default function Sites() {
                     <span className={styles.securityOptionTitle}>gRPC upstream (HTTP/2 to backend)</span>
                   </label>
                   <p className={styles.securityHintText}>
-                    Enable for Talos SideroLink and other gRPC backends. Automatically disables HTTP/3
-                    advertisement for this site.
+                    Use when the backend speaks gRPC over HTTP/2 (CONNECT or native gRPC). Automatically
+                    disables HTTP/3 Alt-Svc advertisement for this site.
                   </p>
                   <label className={styles.securityOption}>
                     <input
@@ -1901,7 +1901,7 @@ export default function Sites() {
                     <span className={styles.securityOptionTitle}>Advertise HTTP/3 (Alt-Svc) for this site</span>
                   </label>
                   <p className={styles.securityHintText}>
-                    Uncheck for Omni-style gRPC hosts or when clients must stay on HTTP/2. The global HTTP/3
+                    Uncheck when clients must stay on HTTP/2 (for example gRPC upstreams). The global HTTP/3
                     listener can remain enabled while per-site Alt-Svc is off.
                   </p>
                   <label className={styles.securityOption}>
