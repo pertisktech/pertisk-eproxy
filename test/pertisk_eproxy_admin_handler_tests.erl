@@ -3049,6 +3049,21 @@ api_config_get_includes_tls_quic_fields_test() ->
         ?assertEqual(9443, maps:get(<<"h3_probe_port">>, Updated))
     end).
 
+api_config_get_includes_mode_and_effective_h3_quic_pool_size_test() ->
+    with_proxy_db(fun(_Db) ->
+        {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/config">>),
+        {ok, Config} = thoas:decode(Body),
+        ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, Config)),
+        ?assert(is_integer(maps:get(<<"h3_quic_pool_size">>, Config))),
+        {ok, 200, _, AllBody} = dispatch(<<"GET">>, <<"/api/config">>, <<"show_all=1">>, <<>>),
+        {ok, AllConfig} = thoas:decode(AllBody),
+        ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, AllConfig)),
+        ?assertEqual(
+            maps:get(<<"h3_quic_pool_size">>, Config),
+            maps:get(<<"h3_quic_pool_size">>, AllConfig)
+        )
+    end).
+
 api_backup_export_includes_tls_key_paths_test() ->
     with_tls_data_dir(fun(_Dir) ->
         Cert = read_priv_pem("listener.pem"),

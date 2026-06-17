@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '@/api/client';
 import FaIcon from '@/components/FaIcon';
+import { useMode } from '@/context/ModeContext';
 import { useToast } from '@/context/ToastContext';
 import styles from './Settings.module.css';
 
@@ -366,6 +367,7 @@ function ConfigSection({
 }
 
 export default function Settings() {
+  const contextMode = useMode();
   const toast = useToast();
   const [reloading, setReloading] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -387,9 +389,15 @@ export default function Settings() {
       }
       const cfgMap = asRecord(cfg);
       setConfigData(cfgMap);
+      const runtimeMode =
+        typeof cfgMap?.mode === 'string'
+          ? cfgMap.mode
+          : contextMode === 'proxy' || contextMode === 'ingress'
+            ? contextMode
+            : undefined;
       setModeInfo((prev) => ({
         ...prev,
-        runtimeMode: typeof cfgMap?.mode === 'string' ? cfgMap.mode : prev.runtimeMode,
+        runtimeMode: runtimeMode ?? prev.runtimeMode,
       }));
       if (!silent) toast.success('Configuration refreshed.');
     } catch (e: unknown) {
@@ -406,8 +414,16 @@ export default function Settings() {
       .then((authCfg) => {
         setModeInfo((prev) => ({
           ...prev,
-          deploymentMode: authCfg.deployment_mode,
+          deploymentMode:
+            authCfg.deployment_mode === 'proxy' || authCfg.deployment_mode === 'ingress'
+              ? authCfg.deployment_mode
+              : prev.deploymentMode,
           supportedMode: authCfg.mode,
+          runtimeMode:
+            prev.runtimeMode ??
+            (authCfg.deployment_mode === 'proxy' || authCfg.deployment_mode === 'ingress'
+              ? authCfg.deployment_mode
+              : undefined),
         }));
       })
       .catch(() => undefined);
@@ -425,13 +441,13 @@ export default function Settings() {
     else if (h3Gw === false && quic === false) h3Label = 'Disabled';
 
     return {
-      mode: modeInfo.runtimeMode ?? modeInfo.deploymentMode ?? '—',
+      mode: modeInfo.runtimeMode ?? modeInfo.deploymentMode ?? contextMode ?? '—',
       sites,
       backends,
       h3Label,
       quicPort: configData?.quic_port != null ? String(configData.quic_port) : null,
     };
-  }, [configData, modeInfo.deploymentMode, modeInfo.runtimeMode]);
+  }, [configData, contextMode, modeInfo.deploymentMode, modeInfo.runtimeMode]);
 
   const toggleSection = (id: SectionId) => {
     setExpanded((prev) => {
@@ -478,8 +494,16 @@ export default function Settings() {
         return (
           <KeyValueGrid
             rows={[
-              { key: 'runtime_mode', label: 'Runtime mode', value: modeInfo.runtimeMode ?? null },
-              { key: 'deployment_mode', label: 'Deployment mode', value: modeInfo.deploymentMode ?? null },
+              {
+                key: 'runtime_mode',
+                label: 'Runtime mode',
+                value: modeInfo.runtimeMode ?? contextMode ?? null,
+              },
+              {
+                key: 'deployment_mode',
+                label: 'Deployment mode',
+                value: modeInfo.deploymentMode ?? contextMode ?? null,
+              },
               { key: 'supported_mode', label: 'Supported mode', value: modeInfo.supportedMode ?? null },
             ]}
           />

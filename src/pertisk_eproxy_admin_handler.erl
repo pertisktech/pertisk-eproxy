@@ -1303,7 +1303,7 @@ config_to_json(Config) ->
             false -> proxy
         end,
     Base = #{
-        mode            => mode_to_json(RuntimeMode),
+        <<"mode">>        => mode_to_json(RuntimeMode),
         http_port       => maps:get(http_port, Config, 80),
         management_port => maps:get(management_port, Config, 9080),
         log_level       => iolist_to_binary(pertisk_eproxy_log_level:label(pertisk_eproxy_log_level:configured())),
@@ -1327,7 +1327,8 @@ config_to_json(Config) ->
     end,
     WithH3Gw = WithQuicPort#{
         <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
-        <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true)
+        <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true),
+        <<"h3_quic_pool_size">> => pertisk_eproxy_h3_api_gateway:h3_quic_pool_size(Config)
     },
     WithTlsH2 = case maps:get(tls_http2_enabled, Config, undefined) of
         Vh2 when is_boolean(Vh2) -> WithH3Gw#{<<"tls_http2_enabled">> => Vh2};
@@ -1360,7 +1361,6 @@ config_to_json_all(Config) ->
         {<<"health_cache_refresh_ms">>, health_cache_refresh_ms},
         {<<"h3_idle_timeout_secs">>, h3_idle_timeout_secs},
         {<<"h3_keepalive_interval_secs">>, h3_keepalive_interval_secs},
-        {<<"h3_quic_pool_size">>, h3_quic_pool_size},
         {<<"h3_max_udp_payload_size">>, h3_max_udp_payload_size},
         {<<"h3_max_streams">>, h3_max_streams},
         {<<"h3_stream_receive_window">>, h3_stream_receive_window},

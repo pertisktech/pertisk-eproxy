@@ -7,15 +7,15 @@
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: admin-arm-tls
+  name: admin-orion-tls
   namespace: pertisk-eproxy
 spec:
-  secretName: admin-arm-tls
+  secretName: admin-orion-tls
   issuerRef:
     name: letsencrypt-cloudflare
     kind: Issuer
   dnsNames:
-    - "*.arm.thaidevops.co"
+    - "*.orion.pertisk.com"
   secretTemplate:
     annotations:
       reflector.v1.k8s.emberstack.com/reflection-allowed: "true"

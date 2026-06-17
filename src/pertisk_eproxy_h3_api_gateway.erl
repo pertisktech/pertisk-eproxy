@@ -6,7 +6,7 @@
 -module(pertisk_eproxy_h3_api_gateway).
 
 -export([start/1, stop/0, start_probe/1, stop_probe/0, handle_request/5]).
--export([management_listener_bind_stack/0]).
+-export([management_listener_bind_stack/0, h3_quic_pool_size/1]).
 
 -define(SERVER, pertisk_eproxy_h3_api).
 -define(PROBE_SERVER, pertisk_eproxy_h3_probe).
