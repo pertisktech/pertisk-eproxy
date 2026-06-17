@@ -1,28 +1,27 @@
 /*
- * Shared type + spacing scale — use var(--text-*) and var(--space-*) across pages.
- * Base: 14px body; headings step up modestly; labels/captions step down one notch.
+ * Shared type + spacing scale — aligned with pertisk-kube-web (15px base).
  */
 
 :root,
 html.dark,
 html.light {
-  --text-2xs: 0.6875rem;  /* 11px — table headers, micro labels */
-  --text-xs:  0.75rem;    /* 12px — captions, badges, KPI labels */
-  --text-sm:  0.8125rem;  /* 13px — nav, secondary, buttons */
-  --text-base: 0.875rem;  /* 14px — body default */
-  --text-md:  0.9375rem;  /* 15px — emphasized body */
-  --text-lg:  1rem;       /* 16px — card values, section lead */
-  --text-xl:  1.125rem;   /* 18px — page / panel titles */
-  --text-2xl: 1.25rem;    /* 20px — hero titles */
+  --text-2xs: 0.6875rem;
+  --text-xs:  0.75rem;
+  --text-sm:  0.8125rem;
+  --text-base: 0.875rem;
+  --text-md:  0.9375rem;
+  --text-lg:  1rem;
+  --text-xl:  1.125rem;
+  --text-2xl: 1.25rem;
 
   --leading-tight: 1.25;
   --leading-normal: 1.5;
   --leading-relaxed: 1.6;
 
   --space-page-x: 1rem;
-  --space-page-y: 0.875rem;
-  --space-section: 0.875rem;
-  --space-card: 0.875rem;
+  --space-page-y: 1rem;
+  --space-section: 1rem;
+  --space-card: 1rem;
   --space-gap: 0.75rem;
   --space-gap-sm: 0.5rem;
 }
@@ -46,9 +45,8 @@ html.light {
 
 .text-section-title {
   margin: 0;
-  font-family: var(--font-display);
   font-size: var(--text-sm);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--color-text);
@@ -57,9 +55,8 @@ html.light {
 
 .text-page-title {
   margin: 0;
-  font-family: var(--font-display);
   font-size: var(--text-xl);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--color-text);
   line-height: var(--leading-tight);
