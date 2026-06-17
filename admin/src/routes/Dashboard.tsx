@@ -11,7 +11,7 @@ import {
   type K8sPodRow,
 } from '@/api/client';
 import { getUsername } from '@/auth';
-import { formatBeamCpuPct, formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
+import { formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
 import {
   buildTlsSiteValidationRows,
   tlsValidationDetail,
@@ -205,17 +205,21 @@ export default function Dashboard() {
       : null;
   const cpuSummary =
     containerCpuSummary ??
-    (beamCpu != null && Number.isFinite(beamCpu) ? formatBeamCpuPct(beamCpu) : null);
+    (beamCpu != null && Number.isFinite(beamCpu)
+      ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
+      : null);
   const cpuSummarySub =
     containerCpuSummary != null
       ? 'metrics-server (this pod)'
-      : beamCpu != null && Number.isFinite(beamCpu)
-        ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
-        : null;
+      : beamCpu != null && Number.isFinite(beamCpu) && pi?.logical_processors
+        ? `Erlang VM · ${pi.logical_processors} logical CPUs`
+        : beamCpu != null && Number.isFinite(beamCpu)
+          ? 'Erlang VM'
+          : null;
   const cpuTileTitle =
     containerCpuSummary != null
       ? containerCpuTooltip()
-      : pertiskVmCpuTooltip(pi?.logical_processors);
+      : pertiskVmCpuTooltip(pi?.logical_processors, beamCpu);
   const processCount = typeof pi?.process_count === 'number' ? pi.process_count : null;
   const processLimit = typeof pi?.process_limit === 'number' ? pi.process_limit : null;
   const processUsagePct =
@@ -395,18 +399,9 @@ export default function Dashboard() {
                       <>
                         <div>{containerCpuSummary}</div>
                         <div className={styles.kvMuted}>metrics-server (this pod)</div>
-                        {beamCpu != null && Number.isFinite(beamCpu) ? (
-                          <div className={styles.kvMuted}>
-                            BEAM scheduler sample: {formatBeamCpuPct(beamCpu)} —{' '}
-                            {formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)}
-                          </div>
-                        ) : null}
                       </>
                     ) : beamCpu != null && Number.isFinite(beamCpu) ? (
-                      <>
-                        <div>{formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)}</div>
-                        <div className={styles.kvMuted}>Scheduler sample (internal): {formatBeamCpuPct(beamCpu)}</div>
-                      </>
+                      formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
                     ) : (
                       '—'
                     )}

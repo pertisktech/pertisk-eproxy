@@ -1,7 +1,7 @@
 %% @doc Configuration manager for pertisk_eproxy.
 %%
-%% **Proxy:** runtime config and sites/backends are stored in SQLite
-%% ('data/proxy.db'); JSON file seeds the DB only when that file does not exist yet.
+%% **Proxy:** sites/backends/DNS live in SQLite; listener tuning (ports, HTTP/3, QUIC pool,
+%% etc.) is re-read from `proxy.json` on every {@link reload/0} and overrides stored values.
 %%
 %% **Ingress:** listener settings come from 'config/ingress.json' (or 'PERTISK_CONFIG_FILE');
 %% sites/backends are applied only via {@link sync_ingress/2} from Kubernetes manifests
@@ -263,12 +263,26 @@ init([]) ->
 handle_call(reload, _From, State) ->
     Reply = case ingress_mode() of
         true ->
-            pertisk_ingress_watcher:trigger_reconcile(),
-            ok;
+            Prev = get_config(),
+            case load_ingress_config() of
+                {ok, FileCfg} ->
+                    Config = FileCfg#{
+                        sites => maps:get(sites, Prev, []),
+                        backends => maps:get(backends, Prev, [])
+                    },
+                    apply_config(Config),
+                    maybe_reload_proxy_tls_listeners(Prev, Config),
+                    pertisk_ingress_watcher:trigger_reconcile(),
+                    ok;
+                {error, R} ->
+                    {error, R}
+            end;
         false ->
             case load_config() of
                 {ok, Config} ->
+                    Prev = get_config(),
                     apply_config(Config),
+                    maybe_reload_proxy_tls_listeners(Prev, Config),
                     _ = spawn(fun() -> pertisk_eproxy_acme_dns:schedule_scan() end),
                     ok;
                 {error, R} -> {error, R}
@@ -320,6 +334,7 @@ put_config_proxy(Config, State) ->
                     T1 = erlang:monotonic_time(millisecond),
                     apply_config(ProxyConfig),
                     T2 = erlang:monotonic_time(millisecond),
+                    maybe_reload_proxy_tls_listeners(PrevConfig, ProxyConfig),
                     PersistMs = T1 - T0,
                     ApplyMs = T2 - T1,
                     TotalMs = T2 - T0,
@@ -827,8 +842,8 @@ read_config_file(File) ->
             {error, {file_read, Reason}}
     end.
 
-%% SQLite owns sites/backends/DNS; listener tuning from proxy.json still applies when
-%% missing from the persisted runtime_config row (e.g. after adding new JSON keys).
+%% SQLite owns sites/backends/DNS; listener tuning from proxy.json is re-applied on
+%% every load/reload (file wins over the persisted runtime_config row).
 merge_proxy_file_defaults(Cfg) when is_map(Cfg) ->
     case ingress_mode() of
         true ->
@@ -841,12 +856,12 @@ merge_proxy_file_defaults(Cfg) when is_map(Cfg) ->
                         FileCfg
                     ),
                     maps:fold(
-                        fun(K, V, Acc) ->
-                            case maps:find(K, Acc) of
-                                {ok, undefined} when V =/= undefined -> Acc#{K => V};
-                                error when V =/= undefined -> Acc#{K => V};
-                                _ -> Acc
-                            end
+                        fun(_K, undefined, Acc) ->
+                            Acc;
+                           (_K, _V = null, Acc) ->
+                            Acc;
+                           (K, V, Acc) ->
+                            Acc#{K => V}
                         end,
                         Cfg,
                         FileDefaults
@@ -855,6 +870,44 @@ merge_proxy_file_defaults(Cfg) when is_map(Cfg) ->
                     Cfg
             end
     end.
+
+maybe_reload_proxy_tls_listeners(Prev, New) when is_map(Prev), is_map(New) ->
+    case listener_tuning_changed(Prev, New) of
+        true ->
+            case catch pertisk_eproxy_app:reload_proxy_tls_listeners() of
+                ok ->
+                    lager:info("Proxy TLS/HTTP/3 listeners restarted after config change"),
+                    ok;
+                {'EXIT', Reason} ->
+                    lager:warning("reload_proxy_tls_listeners failed: ~p", [Reason]),
+                    ok
+            end;
+        false ->
+            ok
+    end.
+
+listener_tuning_changed(Prev, New) ->
+    lists:any(
+        fun(Key) ->
+            maps:get(Key, Prev, undefined) =/= maps:get(Key, New, undefined)
+        end,
+        listener_tuning_keys()
+    ).
+
+listener_tuning_keys() ->
+    [
+        http_addr, http_port, http_num_acceptors,
+        https_port, https_num_acceptors,
+        quic_enabled, quic_port, quic_num_acceptors,
+        proxy_max_connections,
+        tls_cert_file, tls_key_file, tls_http2_enabled,
+        h3_api_gateway_enabled, h3_probe_enabled, h3_probe_port,
+        h3_idle_timeout_secs, h3_keepalive_interval_secs,
+        h3_udp_bind, h3_qpack_static, h3_quic_pool_size,
+        h3_max_udp_payload_size, h3_pmtu_enabled,
+        h3_max_streams, h3_stream_receive_window, h3_conn_receive_window,
+        alt_svc_port, alt_svc_ma_secs, alt_svc_persist
+    ].
 
 persist_runtime_config(Config) ->
     case ingress_mode() of

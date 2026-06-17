@@ -49,12 +49,19 @@ export function formatPertiskVmCpuLine(pct: number, logicalProcessors?: number |
 }
 
 /** Short tooltip: explains the raw scheduler metric. */
-export function pertiskVmCpuTooltip(logicalProcessors?: number | null): string {
+export function pertiskVmCpuTooltip(
+  logicalProcessors?: number | null,
+  schedulerPct?: number | null,
+): string {
   const base =
     'Average CPU used by the Erlang VM in the last sample: scheduler runtime ÷ wall time. ' +
-    'That percentage is not “% of all cores”; we show ~cores and % of host logical CPUs when known.';
+    'Shown as equivalent cores and share of host logical CPUs — not cgroup or kubectl top.';
+  const sched =
+    schedulerPct != null && Number.isFinite(schedulerPct)
+      ? ` Raw scheduler sample: ${formatBeamCpuPct(schedulerPct)} (≈ ${beamCpuEquivalentCores(schedulerPct).toFixed(2)} cores).`
+      : '';
   if (logicalProcessors != null && logicalProcessors > 0) {
-    return `${base} This host reports ${logicalProcessors} logical CPUs.`;
+    return `${base}${sched} This host reports ${logicalProcessors} logical CPUs.`;
   }
-  return base;
+  return `${base}${sched}`;
 }

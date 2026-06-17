@@ -1785,7 +1785,17 @@ reload_merges_h3_quic_pool_size_from_proxy_json_test() ->
             ok = pertisk_eproxy_db:put_runtime_config(DbPath, Stored),
             ok = pertisk_eproxy_config:reload(),
             C = pertisk_eproxy_config:get_config(),
-            ?assertEqual(32, maps:get(h3_quic_pool_size, C))
+            ?assertEqual(32, maps:get(h3_quic_pool_size, C)),
+            ok = file:write_file(
+                Tmp,
+                thoas:encode(#{
+                    <<"mode">> => <<"proxy">>,
+                    <<"http_port">> => 80,
+                    <<"h3_quic_pool_size">> => 64
+                })
+            ),
+            ok = pertisk_eproxy_config:reload(),
+            ?assertEqual(64, maps:get(h3_quic_pool_size, pertisk_eproxy_config:get_config()))
         end)
     after
         file:delete(Tmp),
