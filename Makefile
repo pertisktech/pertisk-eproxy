@@ -5,7 +5,8 @@
 	docker-eproxy-multi docker-harbor-multi \
 	tls-smoke package-deb-amd64 package-rpm-amd64 \
 	helm-release helm-upload helm-release-upload \
-	run run-ingress reload config health metrics test-dns-provider-validate
+	run run-ingress reload config health metrics test-dns-provider-validate \
+	bench bench-shell bench-compare
 
 REBAR = rebar3
 # All src/ modules are in scope ({cover_excl_mods, []}); raise as unit tests grow.
@@ -70,6 +71,15 @@ admin-build:
 
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
+
+bench: patch-ekub patch-quic patch-hackney
+	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) as bench compile
+
+bench-shell: bench
+	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) as bench shell
+
+bench-compare: bench
+	bash bench/compare.sh
 
 test:
 	bash scripts/run-eunit.sh
