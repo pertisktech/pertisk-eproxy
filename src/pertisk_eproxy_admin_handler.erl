@@ -1328,7 +1328,7 @@ config_to_json(Config) ->
     WithH3Gw = WithQuicPort#{
         <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
         <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true),
-        <<"h3_quic_pool_size">> => pertisk_eproxy_h3_api_gateway:h3_quic_pool_size(Config)
+        <<"h3_quic_pool_size">> => config_json_h3_quic_pool_size(Config)
     },
     WithTlsH2 = case maps:get(tls_http2_enabled, Config, undefined) of
         Vh2 when is_boolean(Vh2) -> WithH3Gw#{<<"tls_http2_enabled">> => Vh2};
@@ -1743,6 +1743,14 @@ mode_to_json(V) when is_atom(V) -> atom_to_binary(V, utf8);
 mode_to_json(V) when is_binary(V) -> V;
 mode_to_json(V) when is_list(V) -> list_to_binary(V);
 mode_to_json(_) -> <<"proxy">>.
+
+config_json_h3_quic_pool_size(Config) ->
+    case maps:get(h3_quic_pool_size, Config, undefined) of
+        V when is_integer(V) ->
+            V;
+        _ ->
+            pertisk_eproxy_h3_api_gateway:h3_quic_pool_size(Config)
+    end.
 
 safe_sites_list(V) ->
     [S || S <- safe_list(V), is_map(S)].

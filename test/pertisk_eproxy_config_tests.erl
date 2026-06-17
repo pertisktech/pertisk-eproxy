@@ -1758,6 +1758,43 @@ get_dns_providers_legacy_binary_entry_test() ->
         ?assertEqual(["legacy"], pertisk_eproxy_config:get_dns_providers())
     end).
 
+reload_merges_h3_quic_pool_size_from_proxy_json_test() ->
+    Tmp = filename:join([
+        os:getenv("TMPDIR", "/tmp"),
+        "proxy-pool-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".json"
+    ]),
+    ProxyJson = thoas:encode(#{
+        <<"mode">> => <<"proxy">>,
+        <<"http_port">> => 80,
+        <<"h3_quic_pool_size">> => 32
+    }),
+    ok = file:write_file(Tmp, ProxyJson),
+    OldFile = application:get_env(pertisk_eproxy, config_file),
+    application:set_env(pertisk_eproxy, config_file, Tmp),
+    try
+        with_tmp_db_config(fun() ->
+            DbPath = pertisk_eproxy_config:db_file(),
+            Stored = #{
+                mode => proxy,
+                http_port => 80,
+                sites => [],
+                backends => [],
+                certificates => [],
+                dns_providers => []
+            },
+            ok = pertisk_eproxy_db:put_runtime_config(DbPath, Stored),
+            ok = pertisk_eproxy_config:reload(),
+            C = pertisk_eproxy_config:get_config(),
+            ?assertEqual(32, maps:get(h3_quic_pool_size, C))
+        end)
+    after
+        file:delete(Tmp),
+        case OldFile of
+            {ok, V} -> application:set_env(pertisk_eproxy, config_file, V);
+            undefined -> application:unset_env(pertisk_eproxy, config_file)
+        end
+    end.
+
 rebuild_runtime_config_from_db_test() ->
     with_tmp_db_config(fun() ->
         DbPath = pertisk_eproxy_config:db_file(),

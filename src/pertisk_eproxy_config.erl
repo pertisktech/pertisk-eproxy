@@ -609,7 +609,7 @@ load_proxy_config() ->
     DbExistedBefore = pertisk_eproxy_db:db_file_exists(DbPath),
     case pertisk_eproxy_db:get_runtime_config(DbPath) of
         {ok, Cfg0} when is_map(Cfg0) ->
-            CfgA = sanitize_runtime_tls_paths(Cfg0),
+            CfgA = merge_proxy_file_defaults(sanitize_runtime_tls_paths(Cfg0)),
             CfgB = cleanup_redacted_dns_providers(DbPath, CfgA),
             Cfg = normalize_proxy_config(CfgB),
             _ = pertisk_eproxy_db:ensure_certificates_seeded(DbPath, maps:get(certificates, Cfg, [])),
@@ -825,6 +825,35 @@ read_config_file(File) ->
             end;
         {error, Reason} ->
             {error, {file_read, Reason}}
+    end.
+
+%% SQLite owns sites/backends/DNS; listener tuning from proxy.json still applies when
+%% missing from the persisted runtime_config row (e.g. after adding new JSON keys).
+merge_proxy_file_defaults(Cfg) when is_map(Cfg) ->
+    case ingress_mode() of
+        true ->
+            Cfg;
+        false ->
+            case read_config_file(config_file()) of
+                {ok, FileCfg} ->
+                    FileDefaults = maps:without(
+                        [sites, backends, dns_providers, certificates, certificate_records],
+                        FileCfg
+                    ),
+                    maps:fold(
+                        fun(K, V, Acc) ->
+                            case maps:find(K, Acc) of
+                                {ok, undefined} when V =/= undefined -> Acc#{K => V};
+                                error when V =/= undefined -> Acc#{K => V};
+                                _ -> Acc
+                            end
+                        end,
+                        Cfg,
+                        FileDefaults
+                    );
+                {error, _} ->
+                    Cfg
+            end
     end.
 
 persist_runtime_config(Config) ->
