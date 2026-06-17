@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, ChangeEvent, useMemo } from 'react';
 import { api, type CertificateRow } from '@/api/client';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import DataTable from '@/components/DataTable';
 import { useToast } from '@/context/ToastContext';
 import { useSslJobs, formatAcmeSslPhase } from '@/context/SslJobContext';
 import styles from './Certificates.module.css';
@@ -292,83 +293,99 @@ export default function Certificates() {
           </button>
         </div>
       ) : (
-        <div className={styles.tableWrap}>
-          <div style={{ overflowX: 'auto' }}>
-              <table className={styles.certTable}>
-              <thead>
-                <tr>
-                  <th scope="col">Id</th>
-                  <th scope="col">Domain</th>
-                  <th scope="col">Names</th>
-                  <th scope="col">Issuer</th>
-                  <th scope="col">Challenge</th>
-                  <th scope="col">Valid from</th>
-                  <th scope="col">Expires</th>
-                  <th scope="col">Next renew</th>
-                  <th scope="col">Sites</th>
-                  <th scope="col" className={styles.actionsCol}>
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, idx) => (
-                  <tr key={row.id}>
-                    <td className="mono">{idx + 1}</td>
-                    <td className={styles.names}>{em(row.domain ?? row.hosts?.[0])}</td>
-                    <td className={styles.names}>
-                      {row.hosts?.length ? row.hosts.join(', ') : '—'}
-                    </td>
-                    <td>{em(row.issuer)}</td>
-                    <td>{em(row.challenge)}</td>
-                    <td className={styles.mono}>{em(row.created_at)}</td>
-                    <td className={styles.mono}>{em(row.expires_at)}</td>
-                    <td>{em(row.next_renew)}</td>
-                    <td>{!row.sites?.length ? '—' : row.sites.join(', ')}</td>
-                    <td className={styles.actionsCell}>
-                      <div className={styles.rowActions}>
-                        {row.source_type === 'tls_listener' ? (
-                          <button
-                            type="button"
-                            className={styles.rowActionBtn}
-                            onClick={() => openImportModal('listener')}
-                            title="Replace TLS certificate"
-                            aria-label={`Replace TLS certificate ${row.id}`}
-                          >
-                            <i className="fas fa-file-import" aria-hidden />
-                          </button>
-                        ) : row.source_type === 'imported_pem' ? (
-                          <button
-                            type="button"
-                            className={styles.rowActionBtn}
-                            onClick={() => openImportModal('existing', row.id)}
-                            title="Replace certificate PEM"
-                            aria-label={`Replace certificate PEM ${row.id}`}
-                          >
-                            <i className="fas fa-file-import" aria-hidden />
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
-                          onClick={() =>
-                            setDeleteTarget(
-                              row.source_type === 'tls_listener' ? { type: 'listener' } : { type: 'cert', row },
-                            )
-                          }
-                          title="Delete"
-                          aria-label={`Delete certificate ${row.id}`}
-                        >
-                          <i className="fas fa-trash" aria-hidden />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              </table>
-        </div>
-        </div>
+        <DataTable
+          columns={[
+            {
+              header: 'Id',
+              render: (_row, index) => <span className="mono">{index + 1}</span>,
+            },
+            {
+              header: 'Domain',
+              render: (row) => em(row.domain ?? row.hosts?.[0]),
+              cellClassName: styles.names,
+            },
+            {
+              header: 'Names',
+              render: (row) => (row.hosts?.length ? row.hosts.join(', ') : '—'),
+              cellClassName: styles.names,
+            },
+            {
+              header: 'Issuer',
+              render: (row) => em(row.issuer),
+            },
+            {
+              header: 'Challenge',
+              render: (row) => em(row.challenge),
+            },
+            {
+              header: 'Valid from',
+              render: (row) => em(row.created_at),
+              cellClassName: styles.mono,
+            },
+            {
+              header: 'Expires',
+              render: (row) => em(row.expires_at),
+              cellClassName: styles.mono,
+            },
+            {
+              header: 'Next renew',
+              render: (row) => em(row.next_renew),
+            },
+            {
+              header: 'Sites',
+              render: (row) => (!row.sites?.length ? '—' : row.sites.join(', ')),
+            },
+            {
+              header: 'Actions',
+              headerClassName: styles.actionsCol,
+              cellClassName: styles.actionsCell,
+              render: (row) => (
+                <div className={styles.rowActions}>
+                  {row.source_type === 'tls_listener' ? (
+                    <button
+                      type="button"
+                      className={styles.rowActionBtn}
+                      onClick={() => openImportModal('listener')}
+                      title="Replace TLS certificate"
+                      aria-label={`Replace TLS certificate ${row.id}`}
+                    >
+                      <i className="fas fa-file-import" aria-hidden />
+                    </button>
+                  ) : row.source_type === 'imported_pem' ? (
+                    <button
+                      type="button"
+                      className={styles.rowActionBtn}
+                      onClick={() => openImportModal('existing', row.id)}
+                      title="Replace certificate PEM"
+                      aria-label={`Replace certificate PEM ${row.id}`}
+                    >
+                      <i className="fas fa-file-import" aria-hidden />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                    onClick={() =>
+                      setDeleteTarget(
+                        row.source_type === 'tls_listener' ? { type: 'listener' } : { type: 'cert', row },
+                      )
+                    }
+                    title="Delete"
+                    aria-label={`Delete certificate ${row.id}`}
+                  >
+                    <i className="fas fa-trash" aria-hidden />
+                  </button>
+                </div>
+              ),
+            },
+          ]}
+          data={rows}
+          rowKey={(row) => row.id}
+          isLoading={loading}
+          error={loadError}
+          emptyMessage="No certificates"
+          totalLabel={`Total: ${rows.length} certificate${rows.length === 1 ? '' : 's'}`}
+        />
       )}
 
       {showImportModal && (

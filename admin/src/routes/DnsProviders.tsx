@@ -10,6 +10,7 @@ import {
 import { getCookieValue, setCookieValue } from '@/auth';
 import { formatDateTime } from '@/utils/dateFormat';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import DataTable, { type SortState } from '@/components/DataTable';
 import Pagination from '@/components/Pagination';
 import { usePageSize } from '@/utils/usePageSize';
 import { useToast } from '@/context/ToastContext';
@@ -59,30 +60,16 @@ export default function DnsProviders() {
   const pageSize = usePageSize();
   const [page, setPage] = useState(1);
   type SortKey = 'name' | 'type' | 'created';
-  const [sortKey, setSortKey] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [sortState, setSortState] = useState<SortState | null>(null);
   const [deleteConfirmRow, setDeleteConfirmRow] = useState<DnsProviderRow | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const toast = useToast();
 
   const selectedProvider = supported.find((p) => p.id === formType);
 
-  function toggleSort(nextKey: SortKey) {
+  function handleSortChange(next: SortState) {
     setPage(1);
-    setSortKey((prev) => {
-      if (prev === nextKey) {
-        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-        return prev;
-      }
-      setSortDir('asc');
-      return nextKey;
-    });
-  }
-
-  function sortIcon(key: SortKey) {
-    const active = sortKey === key;
-    const cls = !active ? 'fas fa-sort' : sortDir === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down';
-    return <FaIcon className={cls} aria-hidden />;
+    setSortState(next);
   }
 
   function compareStrings(a: string, b: string): number {
@@ -101,16 +88,16 @@ export default function DnsProviders() {
 
   const startIndex = (page - 1) * pageSize;
   const endIndexExclusive = startIndex + pageSize;
-  const sortedList = sortKey
+  const sortedList = sortState
     ? [...list].sort((a, b) => {
-        const dir = sortDir === 'asc' ? 1 : -1;
+        const dir = sortState.direction === 'asc' ? 1 : -1;
+        const sortKey = sortState.key as SortKey;
         if (sortKey === 'name') return dir * compareStrings(a.name ?? '', b.name ?? '');
         if (sortKey === 'type') {
           const ad = getProviderDisplayName(a.provider_type ?? '');
           const bd = getProviderDisplayName(b.provider_type ?? '');
           return dir * compareStrings(ad, bd);
         }
-        // created
         const at = new Date(a.created_at).getTime();
         const bt = new Date(b.created_at).getTime();
         const safeAt = Number.isFinite(at) ? at : 0;
@@ -433,74 +420,77 @@ export default function DnsProviders() {
           ))}
         </div>
       ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th aria-sort={sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('name')}>
-                    Name {sortIcon('name')}
+        <DataTable
+          columns={[
+            {
+              header: 'Name',
+              sortKey: 'name',
+              sortable: true,
+              cellClassName: styles.name,
+              render: (row) => (
+                <div className={styles.primaryCell}>
+                  <div className={styles.providerIdentity}>
+                    <span className={styles.providerBadge}>
+                      <FaIcon className="fas fa-server" aria-hidden />
+                    </span>
+                    <span className={styles.nameText}>{row.name}</span>
+                  </div>
+                </div>
+              ),
+            },
+            {
+              header: 'Type',
+              sortKey: 'type',
+              sortable: true,
+              render: (row) => (
+                <span className={styles.typeText}>{getProviderDisplayName(row.provider_type)}</span>
+              ),
+            },
+            {
+              header: 'Created',
+              sortKey: 'created',
+              sortable: true,
+              render: (row) => (
+                <span className={styles.datePrimary}>{formatDateTime(row.created_at)}</span>
+              ),
+            },
+            {
+              header: '',
+              headerClassName: styles.actionsCol,
+              cellClassName: styles.actionsCell,
+              render: (row) => (
+                <div className={styles.rowActions}>
+                  <button
+                    type="button"
+                    className={styles.rowActionBtn}
+                    onClick={() => loadFullThenEdit(row.id)}
+                    title={`Edit DNS provider ${row.name}`}
+                    aria-label={`Edit DNS provider ${row.name}`}
+                  >
+                    <FaIcon className="fas fa-pen-to-square" aria-hidden />
                   </button>
-                </th>
-                <th aria-sort={sortKey === 'type' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('type')}>
-                    Type {sortIcon('type')}
+                  <button
+                    type="button"
+                    className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
+                    onClick={() => openDeleteConfirm(row)}
+                    title={`Remove DNS provider ${row.name}`}
+                    aria-label={`Remove DNS provider ${row.name}`}
+                  >
+                    <FaIcon className="fas fa-trash" aria-hidden />
                   </button>
-                </th>
-                <th aria-sort={sortKey === 'created' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" className={styles.sortBtn} onClick={() => toggleSort('created')}>
-                    Created {sortIcon('created')}
-                  </button>
-                </th>
-                <th className={styles.actionsCol} />
-              </tr>
-            </thead>
-            <tbody>
-              {pagedList.map((row) => (
-                <tr key={row.id} className={styles.tableRow}>
-                  <td className={styles.name}>
-                    <div className={styles.primaryCell}>
-                      <div className={styles.providerIdentity}>
-                        <span className={styles.providerBadge}>
-                          <FaIcon className="fas fa-server" aria-hidden />
-                        </span>
-                        <span className={styles.nameText}>{row.name}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <span className={styles.typeText}>{getProviderDisplayName(row.provider_type)}</span>
-                  </td>
-                  <td>
-                    <span className={styles.datePrimary}>{formatDateTime(row.created_at)}</span>
-                  </td>
-                  <td className={styles.actionsCell}>
-                    <div className={styles.rowActions}>
-                      <button
-                        type="button"
-                        className={styles.rowActionBtn}
-                        onClick={() => loadFullThenEdit(row.id)}
-                        title={`Edit DNS provider ${row.name}`}
-                        aria-label={`Edit DNS provider ${row.name}`}
-                      >
-                        <FaIcon className="fas fa-pen-to-square" aria-hidden />
-                      </button>
-                      <button
-                        type="button"
-                        className={`${styles.rowActionBtn} ${styles.rowActionDanger}`}
-                        onClick={() => openDeleteConfirm(row)}
-                        title={`Remove DNS provider ${row.name}`}
-                        aria-label={`Remove DNS provider ${row.name}`}
-                      >
-                        <FaIcon className="fas fa-trash" aria-hidden />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                </div>
+              ),
+            },
+          ]}
+          data={pagedList}
+          rowKey={(row) => row.id}
+          isLoading={loading}
+          error={error}
+          emptyMessage="No DNS providers configured."
+          sortState={sortState}
+          onSortChange={handleSortChange}
+          totalLabel={`Total: ${list.length} provider${list.length === 1 ? '' : 's'}`}
+        />
       )}
 
       <Pagination

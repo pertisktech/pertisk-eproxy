@@ -1503,15 +1503,13 @@ export default function Sites() {
                           </div>
                         </td>
                         <td>
-                          <div className={styles.cellStack}>
-                            <div className={styles.routeListModern}>
-                              {routes.slice(0, 3).map((route, routeIndex) => (
-                                <span key={`${routeLabel(route)}-${routeIndex}`} className={styles.routeChip}>
-                                  {routeLabel(route)}
-                                </span>
-                              ))}
-                              {routes.length > 3 && <span className={styles.routeMore}>+{routes.length - 3}</span>}
-                            </div>
+                          <div className={styles.routeListModern}>
+                            {routes.slice(0, 3).map((route, routeIndex) => (
+                              <span key={`${routeLabel(route)}-${routeIndex}`} className={styles.routeChip}>
+                                {routeLabel(route)}
+                              </span>
+                            ))}
+                            {routes.length > 3 && <span className={styles.routeMore}>+{routes.length - 3}</span>}
                           </div>
                         </td>
                         <td className={styles.sslCol}>

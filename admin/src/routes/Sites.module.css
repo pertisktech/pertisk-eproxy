@@ -363,9 +363,9 @@
 
 .table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1120px;
   border-collapse: separate;
-  border-spacing: 0 0.7rem;
+  border-spacing: 0 0.35rem;
   font-size: 0.875rem;
 }
 
@@ -381,9 +381,10 @@
 }
 
 .table td {
-  padding: 0.95rem 1rem;
+  padding: 0.55rem 0.85rem;
   text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
   background: color-mix(in srgb, var(--color-surface-elevated) 82%, transparent);
   border-top: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
@@ -425,6 +426,64 @@
 .table tbody tr:hover td {
   background: color-mix(in srgb, var(--color-hover) 70%, var(--color-surface-elevated));
   border-color: color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+}
+
+.table .primaryCell {
+  flex-wrap: nowrap;
+}
+
+.table .cellStack {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.table .cellStack .cellSubtle::before {
+  content: '·';
+  margin-right: 0.45rem;
+  color: var(--color-muted);
+}
+
+.table .hostTextGroup {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.table .hostTextGroup .cellSubtle {
+  flex-shrink: 0;
+}
+
+.table .routeListModern {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  max-width: 18rem;
+}
+
+.table .sslColStack {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: nowrap;
+}
+
+.table .host,
+.table .upstream {
+  max-width: none;
+}
+
+.table .hostText,
+.table .monoPrimary {
+  max-width: 14rem;
+}
+
+.table .sslAcmeLive,
+.table .sslAcmeLiveErr {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
 }
 
 .primaryCell {

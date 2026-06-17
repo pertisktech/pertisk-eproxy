@@ -1,4 +1,5 @@
 import FaIcon from "@/components/FaIcon";
+import DataTable from '@/components/DataTable';
 import { useEffect, useState } from 'react';
 import { openRealtimeStream, type LogEntry, type RealtimeSnapshot } from '@/api/client';
 import { formatDateTime } from '@/utils/dateFormat';
@@ -233,56 +234,60 @@ export default function Logs({ initialLogType = 'all' }: LogsProps) {
           </label>
         </div>
       </div>
-      <div className={styles.wrap}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Level</th>
-              <th>Method</th>
-              <th className={styles.colProtoEnc}>Protocol</th>
-              <th>Domain</th>
-              <th>Path</th>
-              <th>Upstream</th>
-              <th>Status</th>
-              <th>Duration</th>
-              <th>Message</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && entries.length === 0 ? (
-              <tr>
-                <td colSpan={10} className={styles.loading}>
-                  Loading…
-                </td>
-              </tr>
-            ) : entries.length === 0 ? (
-              <tr>
-                <td colSpan={10} className={styles.loading}>
-                  No log entries yet.
-                </td>
-              </tr>
-            ) : (
-              entries.map((e, i) => (
-                <tr key={i}>
-                  <td className={styles.ts}>
-                    {e.timestamp ? formatDateTime(e.timestamp) : '—'}
-                  </td>
-                  <td className={levelClass(e.level)}>{e.level ?? '—'}</td>
-                  <td className={styles.method}>{e.method ?? '—'}</td>
-                  <td className={`${styles.protoEnc} ${protoColorClass(e)}`}>{protoEncDisplay(e)}</td>
-                  <td>{(domainSource === 'site' ? e.site : e.host) ?? '—'}</td>
-                  <td>{e.path ?? '—'}</td>
-                  <td>{e.upstream ?? '—'}</td>
-                  <td>{e.status ?? '—'}</td>
-                  <td>{e.duration_ms != null ? `${e.duration_ms} ms` : '—'}</td>
-                  <td>{e.message || '—'}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        columns={[
+          {
+            header: 'Time',
+            render: (e) => (e.timestamp ? formatDateTime(e.timestamp) : '—'),
+            cellClassName: styles.ts,
+          },
+          {
+            header: 'Level',
+            render: (e) => <span className={levelClass(e.level)}>{e.level ?? '—'}</span>,
+          },
+          {
+            header: 'Method',
+            render: (e) => e.method ?? '—',
+            cellClassName: styles.method,
+          },
+          {
+            header: 'Protocol',
+            headerClassName: styles.colProtoEnc,
+            render: (e) => (
+              <span className={`${styles.protoEnc} ${protoColorClass(e)}`}>{protoEncDisplay(e)}</span>
+            ),
+          },
+          {
+            header: 'Domain',
+            render: (e) => (domainSource === 'site' ? e.site : e.host) ?? '—',
+          },
+          {
+            header: 'Path',
+            render: (e) => e.path ?? '—',
+          },
+          {
+            header: 'Upstream',
+            render: (e) => e.upstream ?? '—',
+          },
+          {
+            header: 'Status',
+            render: (e) => (e.status != null ? String(e.status) : '—'),
+          },
+          {
+            header: 'Duration',
+            render: (e) => (e.duration_ms != null ? `${e.duration_ms} ms` : '—'),
+          },
+          {
+            header: 'Message',
+            render: (e) => e.message || '—',
+          },
+        ]}
+        data={entries}
+        rowKey={(e) => `${e.timestamp ?? ''}|${e.path ?? ''}|${e.status ?? ''}|${e.message ?? ''}`}
+        isLoading={loading && entries.length === 0}
+        emptyMessage="No log entries yet."
+        totalLabel={`Total: ${entries.length} log${entries.length === 1 ? '' : 's'}`}
+      />
     </section>
   );
 }
