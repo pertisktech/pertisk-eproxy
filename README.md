@@ -324,3 +324,8 @@ In addition, it verifies reverse-proxy protocol behavior on localhost mapping:
 
 - Required HTTP/3 routes: `/`, `/login`, `/api/auth/config`, `/api/version`, `/api/health`
 - Required WebSocket handshake over HTTP/1.1: `/api/realtime` returns `101 Switching Protocols`
+
+## benchmakr
+```sh
+CONN=32 STREAMS=8 DUR=10 bash bench/compare.sh
+```
