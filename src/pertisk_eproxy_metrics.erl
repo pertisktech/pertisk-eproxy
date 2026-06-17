@@ -17,13 +17,15 @@
 -module(pertisk_eproxy_metrics).
 -behaviour(gen_server).
 
--export([setup/0, start_link/0]).
+-export([setup/0, start_link/0, refresh_active_flag/0]).
 -export([inc_request/3, inc_site_request/3,
          observe_duration/2, observe_duration/3,
          record_proxy_bytes/3, record_site_bytes/3,
          set_upstream_conn/3,
          set_upstream_conns/2, set_upstream_healthy/2,
          inc_rate_limit_denied/2]).
+
+-define(METRICS_ACTIVE_KEY, {pertisk_eproxy, metrics_active}).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -95,52 +97,97 @@ setup() ->
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+%% @doc Cache `metrics_enabled' in persistent_term (hot-path proxy requests).
+-spec refresh_active_flag() -> ok.
+refresh_active_flag() ->
+    persistent_term:put(?METRICS_ACTIVE_KEY, pertisk_eproxy_config:metrics_enabled()),
+    ok.
+
+metrics_active() ->
+    case persistent_term:get(?METRICS_ACTIVE_KEY, undefined) of
+        undefined ->
+            refresh_active_flag(),
+            metrics_active();
+        Flag ->
+            Flag
+    end.
+
 -spec inc_request(binary(), binary(), binary()) -> ok.
 inc_request(Host, StatusCode, Proto) when is_binary(Proto) ->
-    prometheus_counter:inc(pertisk_eproxy_requests_total, [Host, StatusCode, Proto]).
+    case metrics_active() of
+        true ->
+            prometheus_counter:inc(pertisk_eproxy_requests_total, [Host, StatusCode, Proto]);
+        false ->
+            ok
+    end.
 
 -spec inc_site_request(binary(), binary(), binary()) -> ok.
 inc_site_request(Site, StatusCode, Proto) when is_binary(Proto) ->
-    prometheus_counter:inc(pertisk_eproxy_site_requests_total, [Site, StatusCode, Proto]).
+    case metrics_active() of
+        true ->
+            prometheus_counter:inc(pertisk_eproxy_site_requests_total, [Site, StatusCode, Proto]);
+        false ->
+            ok
+    end.
 
 %% @doc Add proxied byte volumes for admin '/api/stats' throughput (per virtual host).
 -spec record_proxy_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
 record_proxy_bytes(Host, Recv, Sent) when is_binary(Host), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
-    case Recv of
-        0 -> ok;
-        _ -> prometheus_counter:inc(pertisk_eproxy_bytes_received_total, [Host], Recv)
-    end,
-    case Sent of
-        0 -> ok;
-        _ -> prometheus_counter:inc(pertisk_eproxy_bytes_sent_total, [Host], Sent)
-    end,
-    ok.
+    case metrics_active() of
+        false ->
+            ok;
+        true ->
+            case Recv of
+                0 -> ok;
+                _ -> prometheus_counter:inc(pertisk_eproxy_bytes_received_total, [Host], Recv)
+            end,
+            case Sent of
+                0 -> ok;
+                _ -> prometheus_counter:inc(pertisk_eproxy_bytes_sent_total, [Host], Sent)
+            end,
+            ok
+    end.
 
 -spec inc_rate_limit_denied(binary(), binary() | undefined) -> ok.
 inc_rate_limit_denied(Host, Site) ->
-    SiteLabel =
-        case Site of
-            S when is_binary(S), byte_size(S) > 0 -> S;
-            _ -> <<"-">>
-        end,
-    _ = catch prometheus_counter:inc(pertisk_eproxy_rate_limit_denied_total, [Host, SiteLabel]),
-    ok.
+    case metrics_active() of
+        false ->
+            ok;
+        true ->
+            SiteLabel =
+                case Site of
+                    S when is_binary(S), byte_size(S) > 0 -> S;
+                    _ -> <<"-">>
+                end,
+            _ = catch prometheus_counter:inc(pertisk_eproxy_rate_limit_denied_total, [Host, SiteLabel]),
+            ok
+    end.
 
 -spec record_site_bytes(binary(), non_neg_integer(), non_neg_integer()) -> ok.
 record_site_bytes(Site, Recv, Sent)
 when is_binary(Site), is_integer(Recv), Recv >= 0, is_integer(Sent), Sent >= 0 ->
-    case Recv of
-        0 -> ok;
-        _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_received_total, [Site], Recv)
-    end,
-    case Sent of
-        0 -> ok;
-        _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_sent_total, [Site], Sent)
-    end,
-    ok.
+    case metrics_active() of
+        false ->
+            ok;
+        true ->
+            case Recv of
+                0 -> ok;
+                _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_received_total, [Site], Recv)
+            end,
+            case Sent of
+                0 -> ok;
+                _ -> prometheus_counter:inc(pertisk_eproxy_site_bytes_sent_total, [Site], Sent)
+            end,
+            ok
+    end.
 
 observe_duration(Host, DurationMs) ->
-    prometheus_histogram:observe(pertisk_eproxy_request_duration_ms, [Host], DurationMs).
+    case metrics_active() of
+        true ->
+            prometheus_histogram:observe(pertisk_eproxy_request_duration_ms, [Host], DurationMs);
+        false ->
+            ok
+    end.
 
 observe_duration(Host, _Site, DurationMs) ->
     observe_duration(Host, DurationMs).
@@ -150,8 +197,12 @@ observe_duration(Host, _Site, DurationMs) ->
 -spec set_upstream_conn(binary(), binary(), non_neg_integer()) -> ok.
 set_upstream_conn(Backend, Addr, Count) when is_binary(Backend), is_binary(Addr),
                                                is_integer(Count), Count >= 0 ->
-    prometheus_gauge:set(pertisk_eproxy_upstream_connections, [Backend, Addr], Count),
-    ok.
+    case metrics_active() of
+        true ->
+            prometheus_gauge:set(pertisk_eproxy_upstream_connections, [Backend, Addr], Count);
+        false ->
+            ok
+    end.
 
 -spec set_upstream_conns(binary(), [{binary(), non_neg_integer()}]) -> ok.
 set_upstream_conns(Backend, UpstreamConns) ->

@@ -845,6 +845,41 @@ init_loopback_uses_ephemeral_connection_test() ->
         end
     end).
 
+init_loopback_uses_pooled_connection_when_enabled_test() ->
+    with_handler_req(#{
+        route => {ok, #{
+            upstream_path => <<"/">>,
+            backend => <<"web">>,
+            site_host => <<"example.com">>
+        }},
+        pick => {ok, <<"127.0.0.1:8080">>}
+    }, fun(Req) ->
+        Config0 = pertisk_eproxy_config:get_config(),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            maps:merge(Config0, #{upstream_loopback_pool_enabled => true})
+        end),
+        add_body_mocks(Req),
+        meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),
+        meck:expect(pertisk_eproxy_backend, done_upstream, fun(_, _, _) -> ok end),
+        unload_mocks([gun, pertisk_eproxy_upstream_pool]),
+        meck:new(gun, [unstick, no_link]),
+        meck:new(pertisk_eproxy_upstream_pool, [unstick, no_link]),
+        meck:expect(pertisk_eproxy_upstream_pool, checkout, fun(_, _, _, _, _) ->
+            {ok, gun_pid}
+        end),
+        meck:expect(pertisk_eproxy_upstream_pool, invalidate, fun(_) -> ok end),
+        meck:expect(gun, request, fun(_, _, _, _, _) -> stream_ref end),
+        meck:expect(gun, await, fun(_, _, _) -> {response, fin, 204, []} end),
+        try
+            ?assertMatch({ok, #{reply := {204, _}}, _}, pertisk_eproxy_handler:init(Req, #{})),
+            ?assertEqual(1, meck:num_calls(pertisk_eproxy_upstream_pool, checkout, '_')),
+            ?assertEqual(0, meck:num_calls(gun, open, '_'))
+        after
+            unload_mocks([gun, pertisk_eproxy_upstream_pool])
+        end
+    end).
+
 init_eventstream_upstream_success_test() ->
     with_handler_req(#{
         headers => #{<<"accept">> => <<"text/event-stream">>},

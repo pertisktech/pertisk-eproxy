@@ -90,14 +90,28 @@ init(Backend = #{name := Name}) ->
 
 handle_call({pick, ClientIp}, _From, State = #{lb := LbState, algorithm := Algo, name := Name}) ->
     LbState1 = maybe_recover_transient_down(LbState),
-    case pertisk_eproxy_lb:next(LbState1, Algo, ClientIp) of
-        {ok, #{addr := Addr}, NewLb} ->
-            %% Increment active connection count
-            NewLb2 = increment_conns(Addr, NewLb),
-            ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb2, Addr)),
-            {reply, {ok, Addr}, State#{lb => NewLb2}};
-        {error, _} = Err ->
-            {reply, Err, State#{lb => LbState1}}
+    Healthy = [U || U = #{healthy := true} <- maps:get(upstreams, LbState1, [])],
+    case Healthy of
+        [#{addr := Addr}] ->
+            {reply, {ok, Addr}, State#{lb => LbState1}};
+        _ ->
+            case pertisk_eproxy_lb:next(LbState1, Algo, ClientIp) of
+                {ok, #{addr := Addr}, NewLb} ->
+                    NewState =
+                        case track_connections(Algo) of
+                            true ->
+                                NewLb2 = increment_conns(Addr, NewLb),
+                                ok = pertisk_eproxy_metrics:set_upstream_conn(
+                                    Name, Addr, conn_for_addr(NewLb2, Addr)
+                                ),
+                                State#{lb => NewLb2};
+                            false ->
+                                State#{lb => NewLb}
+                        end,
+                    {reply, {ok, Addr}, NewState};
+                {error, _} = Err ->
+                    {reply, Err, State#{lb => LbState1}}
+            end
     end;
 
 handle_call(status, _From, State = #{lb := #{upstreams := Ups}, name := Name}) ->
@@ -111,15 +125,24 @@ handle_call(status, _From, State = #{lb := #{upstreams := Ups}, name := Name}) -
 handle_call(_Req, _From, State) ->
     {reply, {error, unknown}, State}.
 
-handle_cast({done, Addr, Result}, State = #{lb := LbState, name := Name}) ->
-    NewLb0 = decrement_conns(Addr, LbState),
+handle_cast({done, Addr, Result}, State = #{lb := LbState, algorithm := Algo, name := Name}) ->
+    NewLb0 =
+        case track_connections(Algo) of
+            true -> decrement_conns(Addr, LbState);
+            false -> LbState
+        end,
     NewLb =
         case Result of
             ok -> clear_transient_down(Addr, NewLb0);
             error -> mark_transient_down(Addr, NewLb0);
             _ -> NewLb0
         end,
-    ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb, Addr)),
+    case track_connections(Algo) of
+        true ->
+            ok = pertisk_eproxy_metrics:set_upstream_conn(Name, Addr, conn_for_addr(NewLb, Addr));
+        false ->
+            ok
+    end,
     {noreply, State#{lb => NewLb}};
 
 handle_cast({update, NewBackend}, State) ->
@@ -423,3 +446,8 @@ merge_update(OldState = #{lb := #{upstreams := OldUps}},
             rr_index  => maps:get(rr_index, maps:get(lb, OldState), 0)
         }
     }.
+
+track_connections(least_connections) ->
+    true;
+track_connections(_) ->
+    false.
