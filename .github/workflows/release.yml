@@ -96,6 +96,11 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           ARCH="${{ matrix.goarch }}"
           TAR="${{ env.PACKAGE_NAME }}-v${VERSION}-linux-${ARCH}.tar.gz"
+          if [ ! -d _build/prod/rel/pertisk_eproxy ]; then
+            echo "release missing at _build/prod/rel/pertisk_eproxy (build step may have failed to install on host)" >&2
+            ls -la _build 2>/dev/null || echo "_build/ missing"
+            exit 1
+          fi
           tar -C _build/prod/rel -czf "$TAR" pertisk_eproxy
           ls -lh "$TAR"
 
@@ -105,7 +110,6 @@ jobs:
           set -euo pipefail
           bash scripts/build-deb-amd64.sh "${{ env.PACKAGE_NAME }}" "${{ steps.version.outputs.VERSION }}"
           bash scripts/build-rpm-amd64.sh "${{ env.PACKAGE_NAME }}" "${{ steps.version.outputs.VERSION }}"
-          bash scripts/ci-workspace-cleanup.sh || true
 
       - name: Upload tarball
         uses: actions/upload-artifact@v4
@@ -282,10 +286,22 @@ jobs:
             helm version
             exit 0
           fi
+          HELM_VERSION="${HELM_VERSION:-3.21.1}"
           HELM_INSTALL_DIR="${HOME}/.local/bin"
           mkdir -p "$HELM_INSTALL_DIR"
-          USE_SUDO=false HELM_INSTALL_DIR="$HELM_INSTALL_DIR" \
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          case "$(uname -m)" in
+            x86_64|amd64) HELM_ARCH=amd64 ;;
+            aarch64|arm64) HELM_ARCH=arm64 ;;
+            *)
+              echo "unsupported architecture for helm: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${HELM_ARCH}.tar.gz" -o "$TMP/helm.tgz"
+          tar -xzf "$TMP/helm.tgz" -C "$TMP"
+          install -m 755 "$TMP/linux-${HELM_ARCH}/helm" "$HELM_INSTALL_DIR/helm"
           echo "$HELM_INSTALL_DIR" >> "$GITHUB_PATH"
           helm version
 

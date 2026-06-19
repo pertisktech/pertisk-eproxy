@@ -211,8 +211,9 @@ build_docker() {
   fi
   docker_build_release
   install_staged_release_on_host
-  if [ -f "$ROOT_DIR/scripts/ci-workspace-cleanup.sh" ]; then
-    bash "$ROOT_DIR/scripts/ci-workspace-cleanup.sh" "$ROOT_DIR" || true
+  if [ ! -d "$ROOT_DIR/_build/prod/rel/pertisk_eproxy" ]; then
+    echo "build_docker: release missing at _build/prod/rel/pertisk_eproxy after install" >&2
+    exit 1
   fi
 }
 
