@@ -21,7 +21,26 @@ jobs:
     name: Unit tests
     runs-on: [self-hosted, linux]
     steps:
-      - uses: ./.github/actions/prepare-workspace
+      - name: Prepare workspace
+        run: |
+          set -u
+          WS="${GITHUB_WORKSPACE}"
+          mkdir -p "$WS"
+          needs=0
+          for p in _build deps _release_export release; do
+            [ -e "$WS/$p" ] && needs=1
+          done
+          [ "$needs" -eq 1 ] || exit 0
+          if [ "$(id -u)" -eq 0 ]; then
+            rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
+          elif sudo -n true 2>/dev/null; then
+            sudo rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$WS:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          else
+            echo "::warning::cannot remove root-owned build dirs without sudo or docker"
+          fi
 
       - uses: actions/checkout@v5
         with:
@@ -69,7 +88,26 @@ jobs:
     name: Coverage (80% gate)
     runs-on: [self-hosted, linux]
     steps:
-      - uses: ./.github/actions/prepare-workspace
+      - name: Prepare workspace
+        run: |
+          set -u
+          WS="${GITHUB_WORKSPACE}"
+          mkdir -p "$WS"
+          needs=0
+          for p in _build deps _release_export release; do
+            [ -e "$WS/$p" ] && needs=1
+          done
+          [ "$needs" -eq 1 ] || exit 0
+          if [ "$(id -u)" -eq 0 ]; then
+            rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
+          elif sudo -n true 2>/dev/null; then
+            sudo rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$WS:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          else
+            echo "::warning::cannot remove root-owned build dirs without sudo or docker"
+          fi
 
       - uses: actions/checkout@v5
         with:
