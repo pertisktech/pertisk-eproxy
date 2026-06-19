@@ -41,19 +41,31 @@ cpu_count() {
 }
 
 default_parallel() {
-  local n cover_cap
-  n="$(cpu_count)"
-  if [ "$n" -gt 8 ]; then
-    n=8
+  local n cpus cover_cap
+  cpus="$(cpu_count)"
+  n="$cpus"
+  if [ "$COVER" -eq 1 ]; then
+    # Cover + compile_beam_directory per job is heavy; cap on small self-hosted runners.
+    if [ "$cpus" -le 2 ]; then
+      n=1
+    elif [ "$cpus" -le 4 ]; then
+      n=2
+    elif [ "$cpus" -le 8 ]; then
+      n=4
+    else
+      n=6
+    fi
+    cover_cap="${PERTISK_EUNIT_COVER_PARALLEL:-}"
+    if [ -n "$cover_cap" ] && [ "$n" -gt "$cover_cap" ]; then
+      n="$cover_cap"
+    fi
+  else
+    if [ "$n" -gt 8 ]; then
+      n=8
+    fi
   fi
   if [ "$n" -lt 1 ]; then
     n=1
-  fi
-  if [ "$COVER" -eq 1 ]; then
-    cover_cap="${PERTISK_EUNIT_COVER_PARALLEL:-4}"
-    if [ "$n" -gt "$cover_cap" ]; then
-      n="$cover_cap"
-    fi
   fi
   printf '%s' "$n"
 }
@@ -413,6 +425,14 @@ bash "${ROOT_DIR}/scripts/ensure-test-admin.sh"
 echo "==> compile test profile (once before parallel eunit)"
 $REBAR as test compile
 
+if [ "$COVER" -eq 1 ]; then
+  EBIN="${ROOT_DIR}/_build/test/lib/pertisk_eproxy/ebin"
+  echo "==> instrument beams for cover (once; parallel jobs reuse instrumented ebin)"
+  erl -noshell -pa "$EBIN" \
+    -eval 'cover:start(), cover:compile_beam_directory("'$EBIN'"), halt(0).'
+  export PERTISK_EUNIT_COVER_PRECOMPILED=1
+fi
+
 MODULES=()
 while IFS= read -r mod; do
   MODULES+=("$mod")
@@ -431,9 +451,9 @@ JOB_TOTAL=$(( ${#MODULES[@]} + admin_batches ))
 
 cover_note=""
 if [ "$COVER" -eq 1 ]; then
-  cover_note=" (cover workers capped at ${PERTISK_EUNIT_COVER_PARALLEL:-4}; set PERTISK_EUNIT_COVER_PARALLEL to override)"
+  cover_note=" (cover workers=$(default_parallel); set PERTISK_EUNIT_COVER_PARALLEL to cap)"
 fi
-echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))${cover_note}"
+echo "==> eunit parallel: ${EUNIT_PARALLEL} workers on $(cpu_count) CPU(s), ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))${cover_note}"
 echo "==> per-job logs: ${LOG_DIR}/"
 
 set +e

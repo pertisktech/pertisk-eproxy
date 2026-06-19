@@ -951,7 +951,8 @@ host_metric_bin(H) -> iolist_to_binary(io_lib:format("~s", [H])).
 %% Minimal JSON for HTTP/3 fast path when cache is cold (rare).
 -spec h3_light_health_json() -> binary().
 h3_light_health_json() ->
-    thoas:encode(#{<<"status">> => <<"ok">>}).
+    %% Pre-encoded; matches pertisk_eproxy_h3_api_gateway ?H3_BENCHMARK_BODY fast path.
+    <<"{\"status\":\"ok\"}">>.
 
 -spec build_health_json() -> binary().
 build_health_json() ->

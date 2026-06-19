@@ -15,13 +15,24 @@
 %%   PERTISK_EUNIT_COVER_LOCAL_ONLY=1  prefer local-only cover mode (single node)
 -mode(compile).
 
--define(EUNIT_OPTS, [{scale_timeouts, 12.0}, {timeout, 300}]).
+eunit_opts() ->
+    Base =
+        case os:getenv("EUNIT_BASE_TIMEOUT") of
+            false -> 300;
+            S -> list_to_integer(S)
+        end,
+    Scale =
+        case os:getenv("EUNIT_SCALE_TIMEOUTS") of
+            false -> 12.0;
+            S -> list_to_float(S)
+        end,
+    [{scale_timeouts, Scale}, {timeout, Base}].
 
 main(Args) ->
     ok = maybe_start_cover(),
     _ = load_code_paths(),
     Spec = parse_spec(Args),
-    Result = eunit:test(Spec, ?EUNIT_OPTS),
+    Result = eunit:test(Spec, eunit_opts()),
     ok = maybe_export_cover(),
     case Result of
         ok -> halt(0);
@@ -89,9 +100,14 @@ maybe_start_cover() ->
                 {error, {already_started, _}} -> ok
             end,
             maybe_cover_local_only(),
-            Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
-            _ = cover:compile_beam_directory(Ebin),
-            ok;
+            case os:getenv("PERTISK_EUNIT_COVER_PRECOMPILED") of
+                "1" ->
+                    ok;
+                _ ->
+                    Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
+                    _ = cover:compile_beam_directory(Ebin),
+                    ok
+            end;
         _ ->
             ok
     end.

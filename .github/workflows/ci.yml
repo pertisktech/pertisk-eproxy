@@ -17,17 +17,16 @@ env:
   PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   COVER_MIN: "80"
   REBAR3_VERSION: "3.24.0"
-  # One parallel eunit+cover run (~77 jobs); avoid running the suite twice.
-  EUNIT_PARALLEL: "8"
-  PERTISK_EUNIT_COVER_PARALLEL: "6"
+  # Self-hosted runners: cover is CPU-heavy; cap parallel jobs (see scripts/run-eunit.sh).
+  PERTISK_EUNIT_COVER_PARALLEL: "2"
+  EUNIT_JOB_TIMEOUT: "1200"
   ADMIN_HANDLER_EUNIT_BATCH_SIZE: "100"
-  EUNIT_JOB_TIMEOUT: "900"
 
 jobs:
   test-and-coverage:
     name: Unit tests & coverage
     runs-on: [self-hosted, linux]
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - name: Prepare workspace
         run: |
@@ -76,12 +75,36 @@ jobs:
           bash scripts/patch-hackney.sh
 
       - name: Run unit tests with coverage
+        id: eunit
         run: |
           set -euo pipefail
           find . -maxdepth 1 -name '*.coverdata' -delete
           bash scripts/run-eunit.sh --cover
           ROOT_DIR=. scripts/merge-cover.escript \
             _build/test/cover/chunks _build/test/cover/eunit.coverdata "${COVER_MIN}" gate
+
+      - name: Print eunit failure logs
+        if: failure() && steps.eunit.conclusion == 'failure'
+        run: |
+          set +e
+          shopt -s nullglob
+          for f in _build/test/logs/*.log; do
+            exitf="${f%.log}.exit"
+            rc=0
+            [ -f "$exitf" ] && rc="$(tr -d '[:space:]' <"$exitf")"
+            [ "$rc" = "0" ] && continue
+            echo "::group::$(basename "$f") (exit ${rc})"
+            tail -60 "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Upload eunit logs
+        if: failure() && steps.eunit.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eunit-logs-${{ github.run_id }}
+          path: _build/test/logs/
+          retention-days: 7
 
       - name: Verify H3 param script (syntax)
         run: bash -n scripts/verify_h3_params.sh

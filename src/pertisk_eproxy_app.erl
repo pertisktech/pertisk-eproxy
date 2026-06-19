@@ -12,6 +12,10 @@
 -define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 300000).
 -define(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS, 180000).
 -define(DOWNSTREAM_IDLE_SAFETY_MARGIN_MS, 5000).
+%% Cowboy 2.13+: dynamic_buffer on proxy TCP listeners only (H2c/large bodies).
+%% Skip on :9080 management and metrics — tiny responses; buffer scaling adds overhead.
+%% HTTP/3 API gateway (erlang_quic) does not use these Cowboy proto opts.
+-define(COWBOY_DYNAMIC_BUFFER, {1024, 131072}).
 -define(ANSI_RESET, "\e[0m").
 -define(ANSI_CYAN, "\e[1;36m").
 -define(ANSI_GREEN, "\e[1;32m").
@@ -217,7 +221,7 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
     TlsSocketOpts4 = [{ip, {0,0,0,0}}, {port, HttpsPort} | TlsOpts],
     TlsSocketOpts6 = [{ip, {0,0,0,0,0,0,0,0}}, inet6, {ipv6_v6only, true}, {port, HttpsPort} | TlsOpts],
-    HttpsProtoOpts = #{
+    HttpsProtoOpts = merge_cowboy_proxy_perf_opts(#{
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
         logger => pertisk_eproxy_cowboy_logger,
         idle_timeout => DownstreamIdleTimeoutMs,
@@ -228,7 +232,7 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
         request_timeout => DownstreamIdleTimeoutMs,
         %% RFC 8441: allow WebSocket to tunnel inside an HTTP/2 CONNECT stream.
         enable_connect_protocol => true
-    },
+    }),
     case cowboy:start_tls(https4,
         #{num_acceptors => HttpsAcceptors, max_connections => ProxyMaxConns, socket_opts => TlsSocketOpts4},
         HttpsProtoOpts
@@ -876,12 +880,12 @@ maybe_set_ingress_mode() ->
 start_clear_listener(Name, Port, Ip, Routes, NumAcceptors, ExtraSocketOpts) ->
     Config = pertisk_eproxy_config:get_config(),
     DownstreamIdleTimeoutMs = downstream_idle_timeout_ms(Config),
-    ProtoOpts = #{
+    ProtoOpts = merge_cowboy_proxy_perf_opts(#{
         env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
         logger => pertisk_eproxy_cowboy_logger,
         idle_timeout => DownstreamIdleTimeoutMs,
         request_timeout => DownstreamIdleTimeoutMs
-    },
+    }),
     start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts).
 
 start_clear_listener_opts(Name, Port, Ip, NumAcceptors, ExtraSocketOpts, ProtoOpts) ->
@@ -1001,3 +1005,10 @@ downstream_idle_timeout_ms(Config) ->
             ),
             MinSafe
     end.
+
+merge_cowboy_perf_opts(ProtoOpts) when is_map(ProtoOpts) ->
+    maps:merge(#{dynamic_buffer => ?COWBOY_DYNAMIC_BUFFER}, ProtoOpts).
+
+%% @doc Proxy-facing HTTP/1.1 + HTTPS listeners only.
+merge_cowboy_proxy_perf_opts(ProtoOpts) when is_map(ProtoOpts) ->
+    merge_cowboy_perf_opts(ProtoOpts).

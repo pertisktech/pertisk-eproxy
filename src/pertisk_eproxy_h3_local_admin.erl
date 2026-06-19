@@ -133,7 +133,7 @@ serve_static_h3(Method, Host, Path) ->
 read_static_file(Host, Path, HeadOnly) ->
     case static_disk_path(Path) of
         {ok, FilePath} ->
-            case file:read_file(FilePath) of
+            case read_admin_file(FilePath) of
                 {ok, Content} ->
                     Body = case HeadOnly of
                         true -> <<>>;
@@ -180,7 +180,7 @@ serve_spa_h3(Method, Host, Path) ->
 
 read_spa_index(Host, HeadOnly) ->
     IndexFile = filename:join([admin_dir(), "index.html"]),
-    case file:read_file(IndexFile) of
+    case read_admin_file(IndexFile) of
         {ok, Html} ->
             Body = case HeadOnly of
                 true -> <<>>;
@@ -207,6 +207,10 @@ spa_response_headers(Host) ->
 
 admin_dir() ->
     filename:join([code:priv_dir(pertisk_eproxy), ?ADMIN_PRIV]).
+
+%% Bypass file_server_2 for hot static reads (see cowboy_static / file_server_2 bottleneck).
+read_admin_file(Path) ->
+    file:read_file(Path, [read, raw]).
 
 %% Reject path traversal (same rules as cowboy_static validate_reserved).
 safe_asset_relative(Rel) ->

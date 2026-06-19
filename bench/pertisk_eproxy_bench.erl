@@ -292,7 +292,8 @@ bench_ref(Kind) ->
 
 -define(BENCH_PROTO_OPTS, #{
     idle_timeout => 60000,
-    request_timeout => 60000
+    request_timeout => 60000,
+    dynamic_buffer => {1024, 131072}
 }).
 
 start_upstream(Port) ->

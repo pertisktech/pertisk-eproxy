@@ -37,9 +37,37 @@ done
 
 echo "Compiling bench profile..."
 COWBOY_QUICER="${COWBOY_QUICER:-1}" COWBOY_QUIC="${COWBOY_QUIC:-1}" \
-  rebar3 as bench compile >/dev/null
+  rebar3 get-deps >/dev/null
+bash scripts/patch-ekub.sh
+bash scripts/patch-quic.sh
+bash scripts/patch-hackney.sh
+if ! COWBOY_QUICER="${COWBOY_QUICER:-1}" COWBOY_QUIC="${COWBOY_QUIC:-1}" \
+  rebar3 as bench compile; then
+  echo "bench compile failed" >&2
+  exit 1
+fi
 BENCH_LIBS="$PWD/_build/bench/lib"
 BENCH_PA="$BENCH_LIBS/pertisk_eproxy/bench"
+
+if [ ! -f "$BENCH_PA/pertisk_eproxy_bench.beam" ]; then
+  echo "missing $BENCH_PA/pertisk_eproxy_bench.beam (rebar3 as bench compile)" >&2
+  exit 1
+fi
+
+# extra_src_dirs beams live under pertisk_eproxy/bench/, not ebin/. Use separate -pa
+# entries (colon-separated -pa is not honored by the Erlang loader).
+if ! ERL_LIBS="$BENCH_LIBS" erl -noshell -pa "$BENCH_PA" \
+  -eval 'case code:ensure_loaded(pertisk_eproxy_bench) of
+             {module, pertisk_eproxy_bench} ->
+                 case erlang:function_exported(pertisk_eproxy_bench, serve, 2) of
+                     true -> halt(0);
+                     false -> halt(1)
+                 end;
+             _ -> halt(1)
+         end.'; then
+  echo "pertisk_eproxy_bench:serve/2 not available (check rebar3 as bench compile)" >&2
+  exit 1
+fi
 
 TMP="$(mktemp -d)"
 RESULTS="$TMP/results"
@@ -144,7 +172,9 @@ start_server_wait() { # mode port
     echo "warning: port $port still in use before $mode bench" >&2
   fi
   rm -f "$READY_FILE"
-  PERTISK_BENCH_READY_FILE="$READY_FILE" ERL_CRASH_DUMP_SECONDS=0 ERL_LIBS="$BENCH_LIBS" \
+  PERTISK_BENCH_READY_FILE="$READY_FILE" ERL_CRASH_DUMP_SECONDS=0 \
+    COWBOY_QUICER="${COWBOY_QUICER:-1}" COWBOY_QUIC="${COWBOY_QUIC:-1}" \
+    ERL_LIBS="$BENCH_LIBS" \
     erl -noshell -pa "$BENCH_PA" \
     -eval "pertisk_eproxy_bench:serve($(serve_proto "$mode"), $port)" \
     >/dev/null 2>>"$SERVE_LOG" &
@@ -205,7 +235,8 @@ drive_rps() { # mode port method path workload conns
     read -r threads conns streams <<<"$(h2_bench_opts "$workload" "$conns")"
     if [ "$method" = POST ]; then
       out=$(h2load -t"$threads" -c"$conns" -m"$streams" --warm-up-time=2s -D"$DUR" \
-        -H "Host: $BENCH_HOST" -d "$TMP/body.json" "https://127.0.0.1:$port$path" 2>&1) || true
+        -H "Host: $BENCH_HOST" -H "Content-Type: application/json" \
+        -d "$TMP/body.json" "https://127.0.0.1:$port$path" 2>&1) || true
     else
       out=$(h2load -t"$threads" -c"$conns" -m"$streams" --warm-up-time=2s -D"$DUR" \
         -H "Host: $BENCH_HOST" "https://127.0.0.1:$port$path" 2>&1) || true
@@ -245,7 +276,8 @@ run_matrix() { # mode base_port
       printf '%-4s %-10s %12s req/s\n' "$mode" "$name" "-"
       echo "$mode $name -" >>"$RESULTS"
       if [ -s "$SERVE_LOG" ]; then
-        tail -3 "$SERVE_LOG" >&2
+        echo "  serve log ($mode $name):" >&2
+        tail -8 "$SERVE_LOG" >&2
       fi
       continue
     fi
@@ -278,9 +310,16 @@ run_matrix h2 19400
 sleep 1
 echo
 echo "##### HTTP/3 (in-VM quic_h3 driver, ${CONN} conns, ${DUR}s) #####"
-ERL_CRASH_DUMP_SECONDS=0 ERL_LIBS="$BENCH_LIBS" erl -noshell -pa "$BENCH_PA" \
+H3_LOG="$TMP/h3.log"
+: >"$H3_LOG"
+COWBOY_QUICER="${COWBOY_QUICER:-1}" COWBOY_QUIC="${COWBOY_QUIC:-1}" \
+  ERL_CRASH_DUMP_SECONDS=0 ERL_LIBS="$BENCH_LIBS" erl -noshell -pa "$BENCH_PA" \
   -eval "pertisk_eproxy_bench:run(#{protocol => h3, connections => $CONN, duration_ms => $((DUR * 1000)), warmup_ms => 500})" \
-  -eval "halt()" 2>/dev/null | grep -E "throughput|latency p50|latency p99" || echo "H3 bench produced no output (check serve log / retry)" >&2
+  -eval "halt()" >"$H3_LOG" 2>&1 || true
+grep -E "throughput|latency p50|latency p99" "$H3_LOG" || {
+  echo "H3 bench produced no output (see $H3_LOG)" >&2
+  tail -15 "$H3_LOG" >&2
+}
 
 if [ "$SWEEP" = 1 ]; then
   echo

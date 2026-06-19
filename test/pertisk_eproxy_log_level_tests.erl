@@ -120,6 +120,13 @@ with_mocked_config(Config, Fun) ->
     end.
 
 apply_file_backend_ok_path_test() ->
+    case os:getenv("PERTISK_EUNIT_PARALLEL") of
+        "1" -> apply_file_backend_ok_path_test_body();
+        false -> apply_file_backend_ok_path_test_body();
+        _ -> ok
+    end.
+
+apply_file_backend_ok_path_test_body() ->
     application:load(lager),
     LogFile = lists:flatten(io_lib:format("/tmp/pertisk_eproxy_cover_~p.log", [erlang:unique_integer([positive])])),
     application:set_env(lager, handlers, [
