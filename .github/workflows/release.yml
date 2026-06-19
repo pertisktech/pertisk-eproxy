@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   PACKAGE_NAME: pertisk-eproxy
   HARBOR_REGISTRY: harbor.tools.thaidevops.co
   HARBOR_PROXY_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy

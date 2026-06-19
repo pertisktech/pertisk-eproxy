@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
   unit-tests:

@@ -74,15 +74,67 @@ stage_linux_release_export() {
   echo "stage_linux_release_export: ok ($REL_TAR)"
 }
 
+# Docker release builds run as root; a leftover host _build/ stub is often root-owned and
+# blocks mkdir when unpacking the staged tarball onto the workspace bind mount.
+reclaim_root_owned_path() {
+  local rel="${1#./}"
+  local path="$ROOT_DIR/$rel"
+  [ -e "$path" ] || return 0
+  if [ -w "$path" ]; then
+    rm -rf "$path" 2>/dev/null || true
+    return 0
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    rm -rf "$path"
+    return 0
+  fi
+  if sudo -n true 2>/dev/null; then
+    sudo rm -rf "$path"
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
+      sh -c "rm -rf /work/$rel 2>/dev/null; exit 0"
+    return 0
+  fi
+  echo "reclaim_root_owned_path: cannot reclaim $path (permission denied)" >&2
+  return 1
+}
+
+host_mkdir_p() {
+  local rel="${1#./}"
+  local path="$ROOT_DIR/$rel"
+  if mkdir -p "$path" 2>/dev/null; then
+    return 0
+  fi
+  reclaim_root_owned_path "_build" || true
+  if mkdir -p "$path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
+      sh -c "mkdir -p /work/$rel && chown -R $(id -u):$(id -g) /work/_build"
+    return 0
+  fi
+  echo "host_mkdir_p: cannot create $path" >&2
+  return 1
+}
+
 install_staged_release_on_host() {
   local REL_TAR="$ROOT_DIR/_release_export/pertisk_eproxy.tgz"
   local REL_DST="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
+  local REL_PARENT="_build/prod/rel"
   if [ ! -f "$REL_TAR" ]; then
     echo "install_staged_release_on_host: staged tarball missing at $REL_TAR" >&2
     exit 1
   fi
-  mkdir -p "$(dirname "$REL_DST")"
+  reclaim_root_owned_path "_build" || true
+  host_mkdir_p "$REL_PARENT"
   rm -rf "$REL_DST"
+  if [ ! -r "$REL_TAR" ] && command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
+      sh -c "chown $(id -u):$(id -g) /work/_release_export/pertisk_eproxy.tgz 2>/dev/null || true"
+  fi
   tar --no-same-owner -xzf "$REL_TAR" -C "$(dirname "$REL_DST")"
   rm -rf "$ROOT_DIR/_release_export"
   echo "install_staged_release_on_host: ok ($REL_DST)"
