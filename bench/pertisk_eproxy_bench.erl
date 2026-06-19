@@ -204,14 +204,22 @@ ensure_bench_env() ->
     _ = application:ensure_all_started(quic),
     ok = pertisk_eproxy_metrics:setup(),
     ensure_config_process(),
-    ensure_child(pertisk_eproxy_backend_sup),
-    ensure_child(pertisk_eproxy_upstream_pool),
     patch_bench_config(#{
         proxy_access_log => false,
         health_access_log => false,
         metrics_enabled => false,
-        upstream_pool_size => 128
+        upstream_pool_size => 256,
+        upstream_pool_idle_timeout_secs => 90,
+        %% Bench upstream is loopback; pool keep-alive matches real remote backends.
+        upstream_loopback_pool_enabled => true,
+        rate_limit_enabled => false,
+        otel_enabled => false,
+        h3_max_streams => 4096,
+        h3_stream_receive_window => 16777216,
+        h3_conn_receive_window => 134217728
     }),
+    ensure_child(pertisk_eproxy_backend_sup),
+    ensure_child(pertisk_eproxy_upstream_pool),
     ok.
 
 ensure_child(Mod) ->

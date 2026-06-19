@@ -1602,8 +1602,11 @@ open_direct_connection_h3(UpHost, UpPort, GunOpts) ->
     end.
 
 should_use_ephemeral_connection_h3(UpHost, FullPath, Headers) ->
-    is_loopback_host_h3(UpHost)
+    (is_loopback_host_h3(UpHost) andalso not loopback_pool_enabled_h3())
         orelse pertisk_eproxy_handler:is_sse_proxy_request(FullPath, h3_req_headers_map(Headers)).
+
+loopback_pool_enabled_h3() ->
+    maps:get(upstream_loopback_pool_enabled, pertisk_eproxy_config:get_config(), false).
 
 is_loopback_host_h3(Host) when is_binary(Host) ->
     is_loopback_host_h3(binary_to_list(Host));

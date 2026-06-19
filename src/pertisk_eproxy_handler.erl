@@ -631,9 +631,13 @@ should_use_ephemeral_connection(_ReqKind, _Host, UpHost, _UpPort, _Transport) ->
     %% Loopback HTTP upstreams are sensitive to stale pooled sockets and can
     %% fall into the 15s loopback timeout path before Gun retries kick in.
     %% Use a fresh connection for any non-gRPC loopback request, while keeping
-    %% gRPC on the shared pool for stream reuse.
+    %% gRPC on the shared pool for stream reuse. Bench mode sets
+    %% `upstream_loopback_pool_enabled' to measure pooled keep-alive throughput.
     %%
-    is_loopback_host(UpHost).
+    is_loopback_host(UpHost) andalso not loopback_pool_enabled().
+
+loopback_pool_enabled() ->
+    maps:get(upstream_loopback_pool_enabled, pertisk_eproxy_config:get_config(), false).
 
 is_loopback_host(Host) when is_binary(Host) ->
     is_loopback_host(binary_to_list(Host));
@@ -665,7 +669,7 @@ upstream_gun_opts_with_port(UpHost, UpPort, Transport, ReqKind) ->
 
 connect_timeout_ms(UpHost, ReqKind) ->
     Config = pertisk_eproxy_config:get_config(),
-    case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+    case ReqKind =/= grpc andalso is_loopback_host(UpHost) andalso not loopback_pool_enabled() of
         true ->
             case maps:get(upstream_loopback_connect_timeout_ms, Config, 3000) of
                 N when is_integer(N), N > 0 -> N;
@@ -2135,10 +2139,7 @@ request_tracking_id(Req) ->
     end.
 
 generate_tracking_id() ->
-    hex_bin(crypto:strong_rand_bytes(16)).
-
-hex_bin(Bin) when is_binary(Bin) ->
-    iolist_to_binary([io_lib:format("~2.16.0b", [B]) || <<B:8>> <= Bin]).
+    integer_to_binary(erlang:unique_integer([positive, monotonic])).
 
 %% Delegate websocket callbacks when this handler upgrades requests to websocket
 %% (Cowboy invokes callbacks on the original route module).
@@ -2226,7 +2227,7 @@ request_timeout_ms(Req, ReqKind, _Host, UpHost) ->
             %% Stream timeout is configurable; defaults to infinity.
             stream_request_timeout(Config, GlobalTimeout);
         false ->
-            case ReqKind =/= grpc andalso is_loopback_host(UpHost) of
+            case ReqKind =/= grpc andalso is_loopback_host(UpHost) andalso not loopback_pool_enabled() of
                 true ->
                     LoopbackTimeout = case maps:get(upstream_loopback_request_timeout_ms,
                                                     Config,

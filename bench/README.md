@@ -60,6 +60,8 @@ Requires `wrk`, `h2load`, `curl`, `rebar3`, and `openssl` on the PATH.
 
 Heavy workloads (`bytes10k`, `bytes100k`, `echo`) use lower client concurrency and
 a 2s h2load warm-up to avoid flaky connection storms through the TLS proxy.
+Bench mode enables `upstream_loopback_pool_enabled` and production-aligned pool/H3
+settings so loopback upstreams reuse Gun keep-alive (matching remote-backend behavior).
 If a row reports `0` req/s, retry once; persistent zeros usually mean the
 listener did not become ready (see stderr tail from `serve.log`).
 
