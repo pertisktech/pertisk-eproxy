@@ -1,4 +1,4 @@
-# CI on main: unit tests + coverage gate.
+# CI on main: unit tests + coverage gate (single test run).
 # Release (deb/rpm/docker/helm) runs only on version tags — see release.yml.
 
 name: CI
@@ -17,11 +17,17 @@ env:
   PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   COVER_MIN: "80"
   REBAR3_VERSION: "3.24.0"
+  # One parallel eunit+cover run (~77 jobs); avoid running the suite twice.
+  EUNIT_PARALLEL: "8"
+  PERTISK_EUNIT_COVER_PARALLEL: "6"
+  ADMIN_HANDLER_EUNIT_BATCH_SIZE: "100"
+  EUNIT_JOB_TIMEOUT: "900"
 
 jobs:
-  unit-tests:
-    name: Unit tests
+  test-and-coverage:
+    name: Unit tests & coverage
     runs-on: [self-hosted, linux]
+    timeout-minutes: 45
     steps:
       - name: Prepare workspace
         run: |
@@ -48,65 +54,15 @@ jobs:
         with:
           clean: false
 
-      - name: Verify Erlang toolchain
-        run: bash scripts/ci-verify-erlang.sh
-
-      - name: Patch dependencies
-        run: |
-          set -euo pipefail
-          rebar3 get-deps
-          bash scripts/patch-ekub.sh
-          bash scripts/patch-quic.sh
-          bash scripts/patch-hackney.sh
-
-      - name: Compile
-        run: rebar3 compile
-
-      - name: Run unit tests
-        run: bash scripts/run-eunit.sh
-
-      - name: Verify H3 param script (syntax)
-        run: bash -n scripts/verify_h3_params.sh
-
-      - name: Cleanup workspace permissions
-        if: always()
-        run: |
-          if [ -f scripts/ci-workspace-cleanup.sh ]; then
-            bash scripts/ci-workspace-cleanup.sh || true
-          elif command -v docker >/dev/null 2>&1; then
-            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
-              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
-          fi
-
-  coverage:
-    name: Coverage (80% gate)
-    needs: unit-tests
-    runs-on: [self-hosted, linux]
-    steps:
-      - name: Prepare workspace
-        run: |
-          set -u
-          WS="${GITHUB_WORKSPACE}"
-          mkdir -p "$WS"
-          needs=0
-          for p in _build deps _release_export release; do
-            [ -e "$WS/$p" ] && needs=1
-          done
-          [ "$needs" -eq 1 ] || exit 0
-          if [ "$(id -u)" -eq 0 ]; then
-            rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
-          elif sudo -n true 2>/dev/null; then
-            sudo rm -rf "$WS/_build" "$WS/deps" "$WS/_release_export" "$WS/release" 2>/dev/null || true
-          elif command -v docker >/dev/null 2>&1; then
-            docker run --rm -v "$WS:/work" alpine:3.20 \
-              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
-          else
-            echo "::warning::cannot remove root-owned build dirs without sudo or docker"
-          fi
-
-      - uses: actions/checkout@v4
+      - name: Cache rebar deps
+        uses: actions/cache@v4
         with:
-          clean: false
+          path: |
+            deps
+            _build/default
+          key: rebar-deps-${{ runner.os }}-${{ hashFiles('rebar.lock') }}
+          restore-keys: |
+            rebar-deps-${{ runner.os }}-
 
       - name: Verify Erlang toolchain
         run: bash scripts/ci-verify-erlang.sh
@@ -119,13 +75,16 @@ jobs:
           bash scripts/patch-quic.sh
           bash scripts/patch-hackney.sh
 
-      - name: Check line coverage
+      - name: Run unit tests with coverage
         run: |
           set -euo pipefail
           find . -maxdepth 1 -name '*.coverdata' -delete
           bash scripts/run-eunit.sh --cover
           ROOT_DIR=. scripts/merge-cover.escript \
             _build/test/cover/chunks _build/test/cover/eunit.coverdata "${COVER_MIN}" gate
+
+      - name: Verify H3 param script (syntax)
+        run: bash -n scripts/verify_h3_params.sh
 
       - name: Cleanup workspace permissions
         if: always()

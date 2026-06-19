@@ -28,6 +28,7 @@ COVER_LOCK="${CHUNK_DIR}/.archive.lock.dir"
 ADMIN_MOD="pertisk_eproxy_admin_handler_tests"
 JOB_TOTAL=0
 JOBS_STARTED=0
+EUNIT_JOB_TIMEOUT="${EUNIT_JOB_TIMEOUT:-900}"
 
 cpu_count() {
   if command -v nproc >/dev/null 2>&1; then
@@ -49,7 +50,7 @@ default_parallel() {
     n=1
   fi
   if [ "$COVER" -eq 1 ]; then
-    cover_cap=4
+    cover_cap="${PERTISK_EUNIT_COVER_PARALLEL:-4}"
     if [ "$n" -gt "$cover_cap" ]; then
       n="$cover_cap"
     fi
@@ -233,7 +234,11 @@ run_job() {
     export ROOT_DIR="$ROOT_DIR"
     cd "$ROOT_DIR"
     eunit_cover_env "$safe_id"
-    "${ROOT_DIR}/scripts/eunit-job.escript" ${rebar_args}
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${EUNIT_JOB_TIMEOUT}" "${ROOT_DIR}/scripts/eunit-job.escript" ${rebar_args}
+    else
+      "${ROOT_DIR}/scripts/eunit-job.escript" ${rebar_args}
+    fi
     rc=$?
     end=$(date +%s)
     elapsed=$((end - start))
@@ -426,7 +431,7 @@ JOB_TOTAL=$(( ${#MODULES[@]} + admin_batches ))
 
 cover_note=""
 if [ "$COVER" -eq 1 ]; then
-  cover_note=" (cover capped at 4 workers; set EUNIT_PARALLEL to override)"
+  cover_note=" (cover workers capped at ${PERTISK_EUNIT_COVER_PARALLEL:-4}; set PERTISK_EUNIT_COVER_PARALLEL to override)"
 fi
 echo "==> eunit parallel: ${EUNIT_PARALLEL} workers, ${JOB_TOTAL} job(s) (${#MODULES[@]} modules + ${admin_batches} admin batch(es))${cover_note}"
 echo "==> per-job logs: ${LOG_DIR}/"
