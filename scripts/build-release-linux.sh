@@ -83,7 +83,7 @@ install_staged_release_on_host() {
   fi
   mkdir -p "$(dirname "$REL_DST")"
   rm -rf "$REL_DST"
-  tar -xzf "$REL_TAR" -C "$(dirname "$REL_DST")"
+  tar --no-same-owner -xzf "$REL_TAR" -C "$(dirname "$REL_DST")"
   rm -rf "$ROOT_DIR/_release_export"
   echo "install_staged_release_on_host: ok ($REL_DST)"
 }

@@ -1,6 +1,7 @@
-# Release on push tag v* — Erlang release packages, Harbor images, Helm chart, GitHub Release.
+# Release on version tag v* only: deb/rpm packages, Docker (buildx), Helm chart, GitHub Release.
+# CI (unit tests + coverage) runs on main — see ci.yml.
 
-name: Release Packages
+name: Release
 
 on:
   push:
@@ -23,11 +24,12 @@ env:
   HELM_CHART_DIR: deploy/helm/pertisk-eproxy
 
 jobs:
-  build:
-    name: Build ${{ matrix.goarch }}
+  packages:
+    name: Packages (${{ matrix.goarch }})
     runs-on: [self-hosted, linux]
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - goarch: amd64
@@ -41,6 +43,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Prepare workspace
+        run: bash scripts/ci-workspace-cleanup.sh
+
+      - name: Verify release toolchain
+        run: |
+          set -euo pipefail
+          for cmd in bash docker make tar gzip; do
+            command -v "$cmd" >/dev/null || { echo "missing required command: $cmd" >&2; exit 127; }
+          done
+          docker info >/dev/null
+
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
@@ -51,6 +64,7 @@ jobs:
       - name: Build Erlang release (linux/${{ matrix.goarch }})
         run: |
           set -euo pipefail
+          RELEASE_BUILD_FORCE_DOCKER=1 \
           RELEASE_BUILD_PLATFORM="linux/${{ matrix.goarch }}" \
           COWBOY_QUICER=1 COWBOY_QUIC=1 \
             bash scripts/build-release-linux.sh
@@ -89,12 +103,19 @@ jobs:
             release/*.rpm
           retention-days: 1
 
-  docker-harbor:
-    name: Docker images (multi-arch)
+      - name: Cleanup workspace permissions
+        if: always()
+        run: bash scripts/ci-workspace-cleanup.sh
+
+  docker:
+    name: Docker (multi-arch buildx)
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Prepare workspace
+        run: bash scripts/ci-workspace-cleanup.sh
 
       - name: Get version from tag
         id: version
@@ -156,9 +177,13 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Platforms:** linux/amd64, linux/arm64 (buildx + imagetools manifest)" >> "$GITHUB_STEP_SUMMARY"
 
-  helm-publish:
-    name: Publish Helm chart
-    needs: docker-harbor
+      - name: Cleanup workspace permissions
+        if: always()
+        run: bash scripts/ci-workspace-cleanup.sh
+
+  helm:
+    name: Helm chart
+    needs: docker
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout code
@@ -201,9 +226,9 @@ jobs:
           echo "  --version ${{ steps.version.outputs.VERSION }} -n pertisk-eproxy --create-namespace" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  release:
-    name: Create Release
-    needs: [build, helm-publish]
+  github-release:
+    name: GitHub Release
+    needs: [packages, helm]
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout code
