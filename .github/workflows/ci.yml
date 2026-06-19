@@ -16,6 +16,7 @@ concurrency:
 env:
   PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   COVER_MIN: "80"
+  REBAR3_VERSION: "3.24.0"
 
 jobs:
   unit-tests:
