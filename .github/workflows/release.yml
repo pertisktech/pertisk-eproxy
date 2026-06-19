@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PACKAGE_NAME: pertisk-eproxy
   HARBOR_REGISTRY: harbor.tools.thaidevops.co
@@ -95,6 +99,9 @@ jobs:
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set application version
+        run: bash scripts/set-app-version.sh "${{ steps.version.outputs.VERSION }}"
 
       - name: Disable Docker keychain (macOS CI)
         run: |
@@ -196,7 +203,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, helm-publish]
     runs-on: [self-hosted, linux]
     steps:
       - name: Checkout code

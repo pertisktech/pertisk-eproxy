@@ -2,10 +2,27 @@
 # Proxy + admin image (proxy mode via config/proxy.json).
 # Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
 
+ARG VERSION=0.1.0
+ARG FRONTEND_BUILD_ID=dev
+
+FROM node:20-alpine AS admin-builder
+
+ARG VERSION
+ARG FRONTEND_BUILD_ID
+ENV VITE_BUILD_ID=${FRONTEND_BUILD_ID}
+
+WORKDIR /app/admin
+
+COPY admin/package.json admin/package-lock.json* ./
+RUN npm ci --ignore-scripts 2>/dev/null || npm install
+
+COPY admin/ ./
+RUN npm run build
+
 # buildx sets the platform per matrix leg; do not use empty BUILDPLATFORM on FROM
 FROM erlang:29-alpine AS builder
 
-ARG VERSION=0.1.0
+ARG VERSION
 # +JMsingle: required when linux/amd64 is built under QEMU (e.g. Apple Silicon);
 # without it prim_tty NIF fails and kernel exits with nouser during rebar3.
 ENV ERL_FLAGS="+JMsingle true -noshell -noinput"
@@ -16,6 +33,7 @@ WORKDIR /src
 RUN apk add --no-cache bash git build-base cmake ninja perl patch linux-headers openssl openssl-dev ncurses-dev ncurses-libs
 
 COPY . .
+COPY --from=admin-builder /app/priv/admin ./priv/admin
 
 # ekub 0.2.0 sets fail_if_no_peer_cert (server-only) on K8s API client SSL — patch before compile.
 RUN chmod +x \
