@@ -42,7 +42,7 @@ jobs:
             echo "::warning::cannot remove root-owned build dirs without sudo or docker"
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           clean: false
 
@@ -109,7 +109,7 @@ jobs:
             echo "::warning::cannot remove root-owned build dirs without sudo or docker"
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           clean: false
 
