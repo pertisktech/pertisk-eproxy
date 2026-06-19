@@ -277,11 +277,17 @@ jobs:
 
       - name: Install Helm
         run: |
+          set -euo pipefail
           if command -v helm >/dev/null 2>&1; then
             helm version
             exit 0
           fi
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          HELM_INSTALL_DIR="${HOME}/.local/bin"
+          mkdir -p "$HELM_INSTALL_DIR"
+          USE_SUDO=false HELM_INSTALL_DIR="$HELM_INSTALL_DIR" \
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          echo "$HELM_INSTALL_DIR" >> "$GITHUB_PATH"
+          helm version
 
       - name: Publish pertisk-eproxy chart
         env:
