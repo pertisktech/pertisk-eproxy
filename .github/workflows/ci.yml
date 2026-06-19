@@ -13,12 +13,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 jobs:
   unit-tests:
     name: Unit tests
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-workspace
+
+      - uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Verify Erlang toolchain
         run: |
@@ -48,11 +55,25 @@ jobs:
       - name: Verify H3 param script (syntax)
         run: bash -n scripts/verify_h3_params.sh
 
+      - name: Cleanup workspace permissions
+        if: always()
+        run: |
+          if [ -f scripts/ci-workspace-cleanup.sh ]; then
+            bash scripts/ci-workspace-cleanup.sh || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          fi
+
   coverage:
     name: Coverage (80% gate)
     runs-on: [self-hosted, linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-workspace
+
+      - uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Verify Erlang toolchain
         run: |
@@ -77,3 +98,13 @@ jobs:
         run: make cover
         env:
           COVER_MIN: "80"
+
+      - name: Cleanup workspace permissions
+        if: always()
+        run: |
+          if [ -f scripts/ci-workspace-cleanup.sh ]; then
+            bash scripts/ci-workspace-cleanup.sh || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          fi

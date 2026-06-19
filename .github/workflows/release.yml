@@ -16,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   PACKAGE_NAME: pertisk-eproxy
   HARBOR_REGISTRY: harbor.tools.thaidevops.co
   HARBOR_PROXY_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
@@ -40,16 +41,17 @@ jobs:
             rpm_arch: aarch64
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-workspace
 
-      - name: Prepare workspace
-        run: bash scripts/ci-workspace-cleanup.sh
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Verify release toolchain
         run: |
           set -euo pipefail
-          for cmd in bash docker make tar gzip; do
+          for cmd in bash docker tar gzip; do
             command -v "$cmd" >/dev/null || { echo "missing required command: $cmd" >&2; exit 127; }
           done
           docker info >/dev/null
@@ -82,9 +84,9 @@ jobs:
         if: matrix.goarch == 'amd64'
         run: |
           set -euo pipefail
-          make package-deb-amd64 package-rpm-amd64 \
-            PACKAGE_NAME="${{ env.PACKAGE_NAME }}" \
-            PACKAGE_VERSION="${{ steps.version.outputs.VERSION }}"
+          bash scripts/build-deb-amd64.sh "${{ env.PACKAGE_NAME }}" "${{ steps.version.outputs.VERSION }}"
+          bash scripts/build-rpm-amd64.sh "${{ env.PACKAGE_NAME }}" "${{ steps.version.outputs.VERSION }}"
+          bash scripts/ci-workspace-cleanup.sh || true
 
       - name: Upload tarball
         uses: actions/upload-artifact@v4
@@ -105,17 +107,24 @@ jobs:
 
       - name: Cleanup workspace permissions
         if: always()
-        run: bash scripts/ci-workspace-cleanup.sh
+        run: |
+          if [ -f scripts/ci-workspace-cleanup.sh ]; then
+            bash scripts/ci-workspace-cleanup.sh || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          fi
 
   docker:
     name: Docker (multi-arch buildx)
     runs-on: [self-hosted, linux]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare-workspace
 
-      - name: Prepare workspace
-        run: bash scripts/ci-workspace-cleanup.sh
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Get version from tag
         id: version
@@ -151,16 +160,22 @@ jobs:
           echo "{\"auths\":{\"$REGISTRY\":{\"auth\":\"$AUTH\"}},\"credsStore\":\"\",\"credHelpers\":{}}" > "$DOCKER_CONFIG/config.json"
 
       - name: Build and push proxy + ingress images (buildx)
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          BUILD_PLATFORMS: linux/amd64,linux/arm64
+          BUILD_SEQUENTIAL: "1"
+          BUILD_PROVENANCE: "false"
+          BUILD_SBOM: "false"
+          HARBOR_PROXY_IMAGE: ${{ env.HARBOR_PROXY_IMAGE }}
+          HARBOR_INGRESS_IMAGE: ${{ env.HARBOR_INGRESS_IMAGE }}
+          HARBOR_REGISTRY: ${{ env.HARBOR_REGISTRY }}
+          BUILDX_MULTI_BUILDER: pertisk-multiarch
+          FRONTEND_BUILD_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           export DOCKER_CONFIG="${{ env.DOCKER_CONFIG }}"
-          docker buildx inspect --bootstrap
-          make docker-harbor-multi \
-            VERSION="${{ steps.version.outputs.VERSION }}" \
-            BUILD_PLATFORMS=linux/amd64,linux/arm64 \
-            BUILD_SEQUENTIAL=1 \
-            BUILD_PROVENANCE=false \
-            BUILD_SBOM=false
+          docker buildx inspect --bootstrap pertisk-multiarch
+          bash build/docker-harbor.sh "${{ steps.version.outputs.VERSION }}"
 
       - name: Summary
         run: |
@@ -179,15 +194,25 @@ jobs:
 
       - name: Cleanup workspace permissions
         if: always()
-        run: bash scripts/ci-workspace-cleanup.sh
+        run: |
+          if [ -f scripts/ci-workspace-cleanup.sh ]; then
+            bash scripts/ci-workspace-cleanup.sh || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          fi
 
   helm:
     name: Helm chart
     needs: docker
     runs-on: [self-hosted, linux]
     steps:
+      - uses: ./.github/actions/prepare-workspace
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Get version from tag
         id: version
@@ -226,13 +251,27 @@ jobs:
           echo "  --version ${{ steps.version.outputs.VERSION }} -n pertisk-eproxy --create-namespace" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Cleanup workspace permissions
+        if: always()
+        run: |
+          if [ -f scripts/ci-workspace-cleanup.sh ]; then
+            bash scripts/ci-workspace-cleanup.sh || true
+          elif command -v docker >/dev/null 2>&1; then
+            docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
+              sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+          fi
+
   github-release:
     name: GitHub Release
     needs: [packages, helm]
     runs-on: [self-hosted, linux]
     steps:
+      - uses: ./.github/actions/prepare-workspace
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          clean: false
 
       - name: Get version from tag
         id: version

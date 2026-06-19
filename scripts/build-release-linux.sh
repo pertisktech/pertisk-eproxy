@@ -146,6 +146,9 @@ build_docker() {
   fi
   docker_build_release
   install_staged_release_on_host
+  if [ -f "$ROOT_DIR/scripts/ci-workspace-cleanup.sh" ]; then
+    bash "$ROOT_DIR/scripts/ci-workspace-cleanup.sh" "$ROOT_DIR" || true
+  fi
 }
 
 if [ "${1:-}" = "docker-inner" ]; then
