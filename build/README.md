@@ -7,6 +7,7 @@ Scripts run from repo root (each script `cd`s to root automatically).
 | `docker-harbor.sh` | Multi-arch proxy + ingress push via `make docker-harbor-multi` |
 | `deploy-deb.sh` | Build Debian package, copy to remote host, install systemd unit |
 | `deploy-rpm.sh` | Build RPM package, copy to remote host, install systemd unit |
+| `publish-helm-eproxy.sh` | Package and upload `pertisk-eproxy` chart to [chart.cloud.pertisksoft.net](https://chart.cloud.pertisksoft.net/) |
 
 Package internals live under `scripts/` (`build-release-linux.sh`, `build-deb-amd64.sh`, `build-rpm-amd64.sh`).
 

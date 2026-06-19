@@ -133,7 +133,7 @@ release-amd64:
 
 docker-buildx-multi-builder:
 	@if ! docker buildx inspect $(BUILDX_MULTI_BUILDER) >/dev/null 2>&1; then \
-		docker buildx create --name $(BUILDX_MULTI_BUILDER) --driver docker-container >/dev/null; \
+		docker buildx create --name $(BUILDX_MULTI_BUILDER) --driver docker-container --driver-opt network=host >/dev/null; \
 	fi
 	@docker buildx inspect --bootstrap $(BUILDX_MULTI_BUILDER) >/dev/null
 
@@ -143,6 +143,27 @@ docker-proxy: docker-release
 docker-proxy-push: docker-push
 
 docker-proxy-multi: docker-buildx-multi-builder
+ifeq ($(BUILD_SEQUENTIAL),1)
+	@set -e; \
+	PLATFORMS="$$(echo '$(BUILD_PLATFORMS)' | tr ',' ' ')"; \
+	TAG="$(HARBOR_PROXY_IMAGE):$(VERSION)"; \
+	LATEST="$(HARBOR_PROXY_IMAGE):latest"; \
+	SRCS=""; \
+	for p in $$PLATFORMS; do \
+	  SUFFIX="$${p#linux/}"; \
+	  PTAG="$(HARBOR_PROXY_IMAGE):$(VERSION)-$$SUFFIX"; \
+	  echo "==> docker buildx (sequential) platform=$$p tag=$$PTAG"; \
+	  docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
+	    $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) \
+	    --platform "$$p" \
+	    --provenance=$(BUILD_PROVENANCE) --sbom=$(BUILD_SBOM) \
+	    --push -f $(DOCKERFILE) -t "$$PTAG" .; \
+	  SRCS="$$SRCS $$PTAG"; \
+	done; \
+	echo "==> docker buildx imagetools create $$TAG"; \
+	docker buildx imagetools create -t "$$TAG" $$SRCS; \
+	docker buildx imagetools create -t "$$LATEST" $$SRCS
+else
 	docker buildx build --builder $(BUILDX_MULTI_BUILDER) \
 		$(DOCKER_NO_CACHE_ARG) \
 		$(DOCKER_BUILD_ARGS) \
@@ -154,6 +175,7 @@ docker-proxy-multi: docker-buildx-multi-builder
 		-t $(HARBOR_PROXY_IMAGE):$(VERSION) \
 		-t $(HARBOR_PROXY_IMAGE):latest \
 		.
+endif
 
 ## --- Docker: ingress (K8s controller, read-only admin API) ---
 docker-ingress:
@@ -203,11 +225,11 @@ endif
 docker-release:
 	docker build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
-docker-build:
-	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
+docker-build: docker-buildx-multi-builder
+	docker buildx build --builder $(BUILDX_MULTI_BUILDER) $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --load -f $(DOCKERFILE) -t $(HARBOR_PROXY_IMAGE):$(VERSION) .
 
-docker-push:
-	docker buildx build $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
+docker-push: docker-buildx-multi-builder
+	docker buildx build --builder $(BUILDX_MULTI_BUILDER) $(DOCKER_NO_CACHE_ARG) $(DOCKER_BUILD_ARGS) --push -f $(DOCKERFILE) \
 		-t $(HARBOR_PROXY_IMAGE):$(VERSION) \
 		-t $(HARBOR_PROXY_IMAGE):latest \
 		.

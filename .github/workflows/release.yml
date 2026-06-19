@@ -15,7 +15,7 @@ env:
   HARBOR_REGISTRY: harbor.tools.thaidevops.co
   HARBOR_PROXY_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
   HARBOR_INGRESS_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
-  HELM_OCI_REPO: oci://harbor.tools.thaidevops.co/pertisksoft/helm
+  HELM_CHART_REPO_URL: https://chart.cloud.pertisksoft.net
   HELM_CHART_DIR: deploy/helm/pertisk-eproxy
 
 jobs:
@@ -96,12 +96,22 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Configure Docker
+      - name: Disable Docker keychain (macOS CI)
         run: |
-          DOCKER_TEMP_DIR="$RUNNER_TEMP/.docker"
-          mkdir -p "$DOCKER_TEMP_DIR"
-          echo '{"auths":{},"credsStore":"","credHelpers":{}}' > "$DOCKER_TEMP_DIR/config.json"
-          echo "DOCKER_CONFIG=$DOCKER_TEMP_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/.docker"
+          echo '{"credsStore":""}' > "$RUNNER_TEMP/.docker/config.json"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/.docker" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          name: pertisk-multiarch
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
 
       - name: Login to Harbor Registry
         run: |
@@ -112,15 +122,15 @@ jobs:
           mkdir -p "$DOCKER_CONFIG"
           echo "{\"auths\":{\"$REGISTRY\":{\"auth\":\"$AUTH\"}},\"credsStore\":\"\",\"credHelpers\":{}}" > "$DOCKER_CONFIG/config.json"
 
-      - name: Set up Docker Buildx
-        run: make docker-buildx-multi-builder
-
-      - name: Build and push proxy + ingress images
+      - name: Build and push proxy + ingress images (buildx)
         run: |
           set -euo pipefail
+          export DOCKER_CONFIG="${{ env.DOCKER_CONFIG }}"
+          docker buildx inspect --bootstrap
           make docker-harbor-multi \
             VERSION="${{ steps.version.outputs.VERSION }}" \
             BUILD_PLATFORMS=linux/amd64,linux/arm64 \
+            BUILD_SEQUENTIAL=1 \
             BUILD_PROVENANCE=false \
             BUILD_SBOM=false
 
@@ -137,7 +147,7 @@ jobs:
           echo "- \`${{ env.HARBOR_INGRESS_IMAGE }}:${{ steps.version.outputs.VERSION }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ env.HARBOR_INGRESS_IMAGE }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Platforms:** linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Platforms:** linux/amd64, linux/arm64 (buildx + imagetools manifest)" >> "$GITHUB_STEP_SUMMARY"
 
   helm-publish:
     name: Publish Helm chart
@@ -159,28 +169,30 @@ jobs:
           fi
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Login to Harbor OCI registry
-        run: |
-          set -euo pipefail
-          helm registry login "${{ env.HARBOR_REGISTRY }}" \
-            -u "${{ secrets.HARBOR_USERNAME }}" \
-            -p "${{ secrets.HARBOR_PASSWORD }}"
-
       - name: Publish pertisk-eproxy chart
-        run: |
-          bash scripts/release-helm.sh \
-            --chart-dir "${{ env.HELM_CHART_DIR }}" \
-            --output-dir release/helm \
-            --version "${{ steps.version.outputs.VERSION }}" \
-            --push \
-            --oci-repo "${{ env.HELM_OCI_REPO }}"
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          HELM_CHART_REPO_URL: ${{ env.HELM_CHART_REPO_URL }}
+          HELM_CHART_TOKEN: ${{ secrets.HELM_CHART_TOKEN }}
+          HELM_USER: ${{ secrets.HELM_USER }}
+          HELM_PASSWORD: ${{ secrets.HELM_PASSWORD }}
+          HARBOR_INGRESS_IMAGE: ${{ env.HARBOR_INGRESS_IMAGE }}
+        run: ./build/publish-helm-eproxy.sh
 
       - name: Summary
         run: |
           echo "## Helm Chart Published" >> "$GITHUB_STEP_SUMMARY"
           echo "**Chart:** pertisk-eproxy ${{ steps.version.outputs.VERSION }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**OCI repo:** ${{ env.HELM_OCI_REPO }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Ingress image:** \`${{ env.HARBOR_INGRESS_IMAGE }}:${{ steps.version.outputs.VERSION }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Repository:** ${{ env.HELM_CHART_REPO_URL }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Chart page:** ${{ env.HELM_CHART_REPO_URL }}/charts/pertisk-eproxy" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Image:** \`${{ env.HARBOR_INGRESS_IMAGE }}:${{ steps.version.outputs.VERSION }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "helm repo add pertisk ${{ env.HELM_CHART_REPO_URL }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "helm repo update" >> "$GITHUB_STEP_SUMMARY"
+          echo "helm upgrade --install pertisk-eproxy pertisk/pertisk-eproxy \\" >> "$GITHUB_STEP_SUMMARY"
+          echo "  --version ${{ steps.version.outputs.VERSION }} -n pertisk-eproxy --create-namespace" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Create Release
@@ -270,9 +282,12 @@ jobs:
             docker pull ${{ env.HARBOR_INGRESS_IMAGE }}:${{ steps.version.outputs.VERSION }}
             ```
 
-            ### Helm
+            ### Helm (pertisk-eproxy)
             ```bash
-            helm pull oci://${{ env.HARBOR_REGISTRY }}/pertisksoft/helm/pertisk-eproxy --version ${{ steps.version.outputs.VERSION }}
+            helm repo add pertisk ${{ env.HELM_CHART_REPO_URL }}
+            helm repo update
+            helm upgrade --install pertisk-eproxy pertisk/pertisk-eproxy \
+              --version ${{ steps.version.outputs.VERSION }} -n pertisk-eproxy --create-namespace
             ```
 
             ## Verify checksums

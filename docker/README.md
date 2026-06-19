@@ -12,9 +12,9 @@ Build context is always the **repository root** (`.`).
 make docker-ingress VERSION=0.5.10
 make docker-proxy VERSION=0.5.10
 
-# Multi-arch push to Harbor
-make docker-ingress-multi VERSION=0.5.10
-make docker-harbor-multi VERSION=0.5.10
+# Multi-arch push to Harbor (buildx; sequential per-platform when BUILD_SEQUENTIAL=1)
+make docker-ingress-multi VERSION=0.5.10 BUILD_SEQUENTIAL=1
+make docker-harbor-multi VERSION=0.5.10 BUILD_SEQUENTIAL=1
 
 # Or use the wrapper
 ./build/docker-harbor.sh 0.5.10
