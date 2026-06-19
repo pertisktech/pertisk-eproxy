@@ -71,6 +71,9 @@ stage_linux_release_export() {
   sync
   tar -C "_build/.release-export" -czf "$REL_TAR" pertisk_eproxy
   rm -rf "_build/.release-export"
+  if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
+    chown -R "${HOST_UID}:${HOST_GID}" "_release_export" 2>/dev/null || true
+  fi
   echo "stage_linux_release_export: ok ($REL_TAR)"
 }
 
@@ -78,7 +81,15 @@ stage_linux_release_export() {
 # blocks mkdir when unpacking the staged tarball onto the workspace bind mount.
 reclaim_root_owned_path() {
   local rel="${1#./}"
-  local path="$ROOT_DIR/$rel"
+  local path
+  if [[ "$rel" = /* ]]; then
+    path="$rel"
+    rel="${rel#"$ROOT_DIR"/}"
+    rel="${rel#/}"
+  else
+    path="$ROOT_DIR/$rel"
+  fi
+  [ -n "$rel" ] || return 0
   [ -e "$path" ] || return 0
   if [ -w "$path" ]; then
     rm -rf "$path" 2>/dev/null || true
@@ -94,7 +105,7 @@ reclaim_root_owned_path() {
   fi
   if command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
-      sh -c "rm -rf /work/$rel 2>/dev/null; exit 0"
+      sh -c "rm -rf /work/$rel 2>/dev/null || chown -R $(id -u):$(id -g) /work/$rel 2>/dev/null && rm -rf /work/$rel; exit 0"
     return 0
   fi
   echo "reclaim_root_owned_path: cannot reclaim $path (permission denied)" >&2
@@ -130,13 +141,13 @@ install_staged_release_on_host() {
   fi
   reclaim_root_owned_path "_build" || true
   host_mkdir_p "$REL_PARENT"
-  rm -rf "$REL_DST"
-  if [ ! -r "$REL_TAR" ] && command -v docker >/dev/null 2>&1; then
+  reclaim_root_owned_path "_build/prod/rel/pertisk_eproxy" || true
+  if { [ ! -r "$REL_TAR" ] || [ ! -w "$(dirname "$REL_TAR")" ]; } && command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
-      sh -c "chown $(id -u):$(id -g) /work/_release_export/pertisk_eproxy.tgz 2>/dev/null || true"
+      sh -c "chown -R $(id -u):$(id -g) /work/_release_export 2>/dev/null || true"
   fi
   tar --no-same-owner -xzf "$REL_TAR" -C "$(dirname "$REL_DST")"
-  rm -rf "$ROOT_DIR/_release_export"
+  reclaim_root_owned_path "_release_export"
   echo "install_staged_release_on_host: ok ($REL_DST)"
 }
 
@@ -177,6 +188,8 @@ docker_build_release() {
     -e COWBOY_QUIC="$COWBOY_QUIC" \
     -e ERL_FLAGS="$ERL_FLAGS" \
     -e ERL_AFLAGS="$ERL_AFLAGS" \
+    -e HOST_UID="$(id -u)" \
+    -e HOST_GID="$(id -g)" \
     "$ERLANG_BUILD_IMAGE" \
     bash -lc '
       set -euo pipefail

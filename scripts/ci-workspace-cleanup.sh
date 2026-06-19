@@ -26,8 +26,13 @@ rm_paths_sudo() {
 
 rm_paths_docker() {
   command -v docker >/dev/null 2>&1 || return 1
+  local uid gid
+  uid="$(id -u)"
+  gid="$(id -g)"
   docker run --rm -v "$ROOT:/work" alpine:3.20 \
-    sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
+    sh -c "rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null \
+      || chown -R ${uid}:${gid} /work/_build /work/deps /work/_release_export /work/release 2>/dev/null \
+      && rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0"
 }
 
 if [ "$(id -u)" -eq 0 ]; then
