@@ -19,12 +19,12 @@ eunit_opts() ->
     Base =
         case os:getenv("EUNIT_BASE_TIMEOUT") of
             false -> 300;
-            S -> list_to_integer(S)
+            BaseStr -> list_to_integer(BaseStr)
         end,
     Scale =
-        case os:getenv("EUNIT_SCALE_TIMEOUTS") of
+        case os:getenv("EUNIT_SCALE_TIMEOUT") of
             false -> 12.0;
-            S -> list_to_float(S)
+            ScaleStr -> list_to_float(ScaleStr)
         end,
     [{scale_timeouts, Scale}, {timeout, Base}].
 
@@ -100,17 +100,22 @@ maybe_start_cover() ->
                 {error, {already_started, _}} -> ok
             end,
             maybe_cover_local_only(),
+            Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
             case os:getenv("PERTISK_EUNIT_COVER_PRECOMPILED") of
                 "1" ->
-                    ok;
+                    load_precompiled_cover_beams(Ebin);
                 _ ->
-                    Ebin = filename:join(root_dir(), "_build/test/lib/pertisk_eproxy/ebin"),
                     _ = cover:compile_beam_directory(Ebin),
                     ok
             end;
         _ ->
             ok
     end.
+
+load_precompiled_cover_beams(Ebin) ->
+    Beams = filelib:wildcard(filename:join(Ebin, "*.beam")),
+    lists:foreach(fun(Beam) -> _ = cover:compile_beam(Beam) end, Beams),
+    ok.
 
 maybe_cover_local_only() ->
     case os:getenv("PERTISK_EUNIT_COVER_LOCAL_ONLY") of

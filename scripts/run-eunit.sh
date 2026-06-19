@@ -6,8 +6,8 @@
 # Jobs call scripts/eunit-job.escript against precompiled beams. Parallel
 # rebar3 eunit races on _build/test/*.beam (missing_module, failed renames).
 #
-# With --cover, each job instruments beams via cover:compile_beam_directory and
-# writes coverdata under _build/test/cover/work/<job>/.
+# With --cover, run-eunit.sh instruments beams once via cover:compile_beam_directory;
+# parallel jobs register those beams with cover:compile_beam/1 (no per-job re-instrumentation).
 #
 # Env:
 #   EUNIT_PARALLEL                 max concurrent jobs (default: 4 with --cover, else min(8, CPU))
