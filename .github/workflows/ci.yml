@@ -78,7 +78,7 @@ jobs:
           fi
 
   coverage:
-    name: Coverage (${{ env.COVER_MIN }}% gate)
+    name: Coverage (80% gate)
     needs: unit-tests
     runs-on: [self-hosted, linux]
     steps:
