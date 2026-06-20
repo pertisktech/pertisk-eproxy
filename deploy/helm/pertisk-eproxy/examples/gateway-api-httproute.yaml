@@ -1,5 +1,8 @@
 # Example Gateway API Gateway + HTTPRoute for pertisk-eproxy.
 #
+# Production admin host: deploy/gateway-api/admin-gateway.yaml (admin.erlang.pertisk.com).
+# Rust pertisk-rproxy uses admin.gateway.pertisk.com — do not mix on one controller.
+#
 # Prerequisites:
 # - Gateway API CRDs installed in the cluster.
 # - Helm value ingress.gatewayApiEnabled=true for this chart.
@@ -25,12 +28,12 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: "*.gateway.pertisk.com"
+      hostname: "*.erlang.pertisk.com"
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: admin-gateway-pertisk-tls
+            name: admin-erlang-tls
 
 ---
 apiVersion: gateway.networking.k8s.io/v1
@@ -42,7 +45,7 @@ metadata:
     pertisk.io/gateway-class: pertisk-eproxy
 spec:
   hostnames:
-    - admin.gateway.pertisk.com
+    - admin.erlang.pertisk.com
   rules:
     - matches:
         - path:

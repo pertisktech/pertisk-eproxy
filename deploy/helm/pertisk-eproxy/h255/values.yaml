@@ -1,0 +1,26 @@
+# talos-255-prod-cluster — pertisk-eproxy (Erlang ingress controller).
+# Used by: VERSION=x.y.z ./deploy/h255.sh
+#
+# HTTP/3 (QUIC): externalTrafficPolicy Local keeps UDP on the same node/pod path.
+# For k6 HTTP/3 benchmarks: REPLICA_COUNT=1 VERSION=x.y.z ./deploy/h255.sh
+
+service:
+  externalTrafficPolicy: Local
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+
+controller:
+  config:
+    quic_enabled: true
+    proxy_access_log: false
+    health_access_log: false
+    h3_max_streams: 2048
+    h3_quic_pool_size: 32
+
+ingress:
+  gatewayApiEnabled: true
+
+gatewayClassResource:
+  enabled: true
