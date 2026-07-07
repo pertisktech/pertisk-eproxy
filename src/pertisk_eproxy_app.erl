@@ -6,7 +6,9 @@
 -export([
     quic_noise_filter/2,
     reload_tls_listeners/0,
-    reload_proxy_tls_listeners/0
+    reload_proxy_tls_listeners/0,
+    quic_sni_callback/4,
+    build_sni_hosts/1
 ]).
 
 -define(DEFAULT_DOWNSTREAM_IDLE_TIMEOUT_MS, 300000).
@@ -658,6 +660,58 @@ wildcard_sni_fun(SniHosts) when is_list(SniHosts) ->
     fun(ServerName) ->
         select_sni_opts(ServerName, SniHosts)
     end.
+
+%% HTTP/3 QUIC sni_callback: reuse the same host→certfile mapping as Cowboy TLS SNI.
+-spec quic_sni_callback(term(), term(), [binary()], map()) ->
+    fun((term()) -> {ok, map()}).
+quic_sni_callback(DefaultCert, DefaultKey, DefaultChain, Config) ->
+    SniHosts = build_sni_hosts(Config),
+    fun(ServerName) ->
+        Default = #{cert => DefaultCert, key => DefaultKey, cert_chain => DefaultChain},
+        case select_sni_opts(ServerName, SniHosts) of
+            undefined ->
+                {ok, Default};
+            Opts ->
+                CertPath = proplists:get_value(certfile, Opts),
+                KeyPath = proplists:get_value(keyfile, Opts),
+                case quic_load_cert_key_files(CertPath, KeyPath) of
+                    {ok, CertMap} ->
+                        {ok, CertMap};
+                    _ ->
+                        {ok, Default}
+                end
+        end
+    end.
+
+quic_load_cert_key_files(CertPath, KeyPath)
+when is_list(CertPath), is_list(KeyPath) ->
+    case {file:read_file(CertPath), file:read_file(KeyPath)} of
+        {{ok, CertPem}, {ok, KeyPem}} ->
+            try
+                CertDers = [
+                    D
+                 || {'Certificate', D, not_encrypted} <- public_key:pem_decode(CertPem)
+                ],
+                case CertDers of
+                    [] ->
+                        {error, invalid_cert_pem};
+                    [Leaf | Chain] ->
+                        [KeyEntry | _] = public_key:pem_decode(KeyPem),
+                        {ok, #{
+                            cert => Leaf,
+                            key => public_key:pem_entry_decode(KeyEntry),
+                            cert_chain => Chain
+                        }}
+                end
+            catch
+                _:_ ->
+                    {error, invalid_tls_material}
+            end;
+        _ ->
+            {error, unreadable_tls_files}
+    end;
+quic_load_cert_key_files(_, _) ->
+    {error, invalid_paths}.
 
 select_sni_opts(ServerName, SniHosts) ->
     Host = normalize_site_host(site_host_to_list(ServerName)),
