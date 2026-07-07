@@ -1503,21 +1503,20 @@ quic_transport_opts(Config) ->
             _ ->
                 ok
         end,
-    %% Max UDP payload: 1472 (Chrome's advertised transport parameter on Ethernet).
-    %% Chrome >= M125 handles this correctly. Only pin to 1200 via h3_max_udp_payload_size
-    %% if operator needs to work around path MTU issues on a specific deployment.
+    %% Max UDP payload defaults to 1200 for internet reliability.
+    %% This avoids PMTU blackholes on paths that drop larger UDP datagrams.
     MaxUdpPayload =
         case maps:get(h3_max_udp_payload_size, Config, undefined) of
             N when is_integer(N), N >= 1200, N =< 65527 ->
                 N;
             undefined ->
-                ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE;
+                1200;
             _ ->
-                ?H3_SAFE_MAX_UDP_PAYLOAD_SIZE
+                1200
         end,
-    %% PMTUD: enabled by default so the QUIC stack probes the path MTU and
-    %% converges to the real limit. Disable only via h3_pmtu_enabled: false.
-    PmtuEnabled = maps:get(h3_pmtu_enabled, Config, true),
+    %% PMTUD is disabled by default for stability on mixed WAN paths.
+    %% Operators can opt in via h3_pmtu_enabled: true.
+    PmtuEnabled = maps:get(h3_pmtu_enabled, Config, false),
     %% Quic listener acceptor pool: parallel gen_udp acceptors for new QUIC connections.
     %% Omit h3_quic_pool_size in JSON to auto-scale with schedulers; set 0 for erlang_quic default.
     PoolSize = h3_quic_pool_size(Config),
@@ -1527,9 +1526,12 @@ quic_transport_opts(Config) ->
     ConnRecvWindow =
         h3_quic_int_opt(Config, h3_conn_receive_window, ?H3_CONN_RECV_WINDOW_DEFAULT, 65536, 268435456),
     Base = #{
-        idle_timeout => IdleSecs * 1000,
+        idle_timeout => max(IdleSecs * 1000, 60000),
         socket_backend => gen_udp,
         backend => gen_udp,
+        %% Keep QUIC handshakes single-flight for internet probes and
+        %% high-latency paths; avoid Retry-driven partial success reports.
+        address_validation => never,
         max_datagram_frame_size => 0,
         max_udp_payload_size => MaxUdpPayload,
         pmtu_enabled => PmtuEnabled,
