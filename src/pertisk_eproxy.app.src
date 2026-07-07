@@ -1,6 +1,6 @@
 {application, pertisk_eproxy, [
     {description, "Erlang Cowboy Reverse Proxy"},
-    {vsn, "0.5.64"},
+    {vsn, "0.5.48"},
     {registered, [
         pertisk_eproxy_sup,
         pertisk_eproxy_config,

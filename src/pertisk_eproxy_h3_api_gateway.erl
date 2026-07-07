@@ -2363,8 +2363,94 @@ tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
     end,
     case maps:size(SniCerts) of
         0 -> Base;
-        _ -> Base#{sni_certs => SniCerts}
+        _ -> Base#{sni_callback => sni_callback_fun(SniCerts, CertDer, KeyTerm, Chain)}
     end.
+
+sni_callback_fun(SniCerts, DefaultCert, DefaultKey, DefaultChain) ->
+    fun(ServerName0) ->
+        case sni_lookup_cert(SniCerts, ServerName0) of
+            undefined ->
+                {ok, #{
+                    cert => DefaultCert,
+                    key => DefaultKey,
+                    cert_chain => DefaultChain
+                }};
+            Entry ->
+                {ok, sni_entry_to_cert_map(Entry, DefaultCert, DefaultKey, DefaultChain)}
+        end
+    end.
+
+sni_lookup_cert(SniCerts, ServerName0) ->
+    case sni_normalize_hostname(ServerName0) of
+        undefined ->
+            undefined;
+        Name ->
+            sni_cert_entry(Name, SniCerts)
+    end.
+
+sni_normalize_hostname(Name) when is_list(Name) ->
+    sni_normalize_hostname(unicode:characters_to_binary(Name, utf8));
+sni_normalize_hostname(Name) when is_binary(Name) ->
+    Lower0 = string:lowercase(Name),
+    case re:replace(Lower0, <<"\.$">>, <<>>, [{return, binary}]) of
+        <<>> -> undefined;
+        Lower -> Lower
+    end;
+sni_normalize_hostname(_) ->
+    undefined.
+
+sni_cert_entry(Name, SniCerts) ->
+    case maps:get(Name, SniCerts, undefined) of
+        undefined ->
+            case wildcard_sni_cert_entry(Name, maps:to_list(SniCerts), undefined) of
+                undefined -> undefined;
+                {_Len, Entry} -> Entry
+            end;
+        Entry ->
+            Entry
+    end.
+
+wildcard_sni_cert_entry(_Name, [], Best) ->
+    Best;
+wildcard_sni_cert_entry(Name, [{Key, Entry} | Rest], Best0) ->
+    KeyBin = sni_normalize_hostname(Key),
+    Best1 =
+        case wildcard_match_len(Name, KeyBin) of
+            none -> Best0;
+            Len ->
+                case Best0 of
+                    undefined -> {Len, Entry};
+                    {BestLen, _} when Len > BestLen -> {Len, Entry};
+                    _ -> Best0
+                end
+        end,
+    wildcard_sni_cert_entry(Name, Rest, Best1).
+
+wildcard_match_len(_Name, undefined) ->
+    none;
+wildcard_match_len(Name, <<"*.", Suffix/binary>>) ->
+    case {byte_size(Suffix) > 0, byte_size(Name) > byte_size(Suffix), binary:match(Name, Suffix)} of
+        {true, true, {Pos, _Len}} when Pos + byte_size(Suffix) =:= byte_size(Name) ->
+            DotPos = byte_size(Name) - byte_size(Suffix) - 1,
+            case binary:at(Name, DotPos) of
+                $. -> byte_size(Suffix);
+                _ -> none
+            end;
+        _ ->
+            none
+    end;
+wildcard_match_len(_Name, _) ->
+    none.
+
+sni_entry_to_cert_map(Entry, DefaultCert, DefaultKey, DefaultChain) ->
+    Cert = maps:get(cert, Entry, DefaultCert),
+    Chain = maps:get(cert_chain, Entry, DefaultChain),
+    Key =
+        case maps:get(private_key, Entry, undefined) of
+            undefined -> maps:get(key, Entry, DefaultKey);
+            PrivateKey -> PrivateKey
+        end,
+    #{cert => Cert, key => Key, cert_chain => Chain}.
 
 load_sni_certs(Config) ->
     Sites = maps:get(sites, Config, []),
