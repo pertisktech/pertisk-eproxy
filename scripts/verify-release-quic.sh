@@ -84,12 +84,25 @@ if [ -n "${H3_API_SRC}" ]; then
   fi
 fi
 
+QUIC_APP_SRC=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
+QUIC_VSN=""
+if [ -n "${QUIC_APP_SRC}" ] && [ -f "${QUIC_APP_SRC}" ]; then
+  QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "${QUIC_APP_SRC}" | head -1)
+fi
+
 CONN_SRC=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
 if [ -n "${CONN_SRC}" ]; then
-  if ! grep -q 'maybe_apply_server_cert_for_sni' "${CONN_SRC}"; then
-    echo "verify-release-quic: missing quic_connection SNI cert selection patch in ${CONN_SRC}" >&2
-    exit 1
-  fi
+  case "${QUIC_VSN}" in
+    1.7.*|1.[8-9]*|[2-9].*)
+      echo "verify-release-quic: skipping quic_connection SNI cert selection patch check for quic ${QUIC_VSN:-unknown}"
+      ;;
+    *)
+      if ! grep -q 'maybe_apply_server_cert_for_sni' "${CONN_SRC}"; then
+        echo "verify-release-quic: missing quic_connection SNI cert selection patch in ${CONN_SRC}" >&2
+        exit 1
+      fi
+      ;;
+  esac
 fi
 
 echo "verify-release-quic: all checks passed"

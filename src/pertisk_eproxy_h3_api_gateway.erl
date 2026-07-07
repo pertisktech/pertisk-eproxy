@@ -51,7 +51,9 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
             _ = pertisk_eproxy_tls_chain:verify_listener_parity(CertPath, CertDer, CertChain),
             ok
     end,
-    QuicOpts = quic_transport_opts(Config),
+    QuicOptsBase = quic_transport_opts(Config),
+    QuicTlsOpts = quic_tls_overrides(CertDer, KeyTerm, CertChain, SniCerts),
+    QuicOpts = maps:merge(QuicOptsBase, QuicTlsOpts),
     case CertChain of
         [] ->
             lager:warning(
@@ -81,7 +83,7 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
         N -> lager:info("HTTP/3 listener: loaded ~p SNI certificate override(s)", [N])
     end,
     BaseOpts = maps:merge(
-        tls_server_opts(CertDer, KeyTerm, CertChain, SniCerts),
+        tls_server_opts(CertDer, KeyTerm),
         #{
             settings => h3_http_settings(Config),
             handler => ?MODULE,
@@ -157,7 +159,9 @@ qpack_ric0_prefix_ok() ->
 
 do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
     Config = pertisk_eproxy_config:get_config(),
-    QuicOpts = quic_transport_opts(Config),
+    QuicOptsBase = quic_transport_opts(Config),
+    QuicTlsOpts = quic_tls_overrides(CertDer, KeyTerm, CertChain, #{}),
+    QuicOpts = maps:merge(QuicOptsBase, QuicTlsOpts),
     _ = lager:info(
         "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p",
         [
@@ -170,7 +174,7 @@ do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
         ]
     ),
     ProbeOpts = maps:merge(
-        tls_server_opts(CertDer, KeyTerm, CertChain, #{}),
+        tls_server_opts(CertDer, KeyTerm),
         #{
             handler => pertisk_eproxy_h3_probe_handler,
             quic_opts => QuicOpts
@@ -2355,20 +2359,99 @@ decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
             {error, {invalid_listener_pem, CertPath, KeyPath}}
     end.
 
-%% Leaf in 'cert', intermediates in 'cert_chain' (Chrome QUIC is strict; TCP certfile sends the full PEM).
-tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
-    Base = case Chain of
-        [] -> #{cert => CertDer, key => KeyTerm};
-        _ -> #{cert => CertDer, key => KeyTerm, cert_chain => Chain}
+%% quic_h3/build_server_quic_opts only forwards cert/key from top-level server opts.
+%% cert_chain and sni_certs must be passed via quic_opts to reach quic_listener/quic_connection.
+tls_server_opts(CertDer, KeyTerm) ->
+    #{cert => CertDer, key => KeyTerm}.
+
+quic_tls_overrides(DefaultCert, DefaultKey, Chain, SniCerts) ->
+    WithChain = case Chain of
+        [] -> #{};
+        _ -> #{cert_chain => Chain}
     end,
     case maps:size(SniCerts) of
-        0 -> Base;
-        _ -> Base#{sni_certs => SniCerts}
+        0 ->
+            WithChain;
+        _ ->
+            %% Support both quic styles:
+            %% - newer forks: `sni_certs`
+            %% - quic 1.7.0 layout: `sni_callback` returning #{cert,key,cert_chain}
+            WithChain#{
+                sni_certs => SniCerts,
+                sni_callback => build_quic_sni_callback(DefaultCert, DefaultKey, Chain, SniCerts)
+            }
     end.
+
+build_quic_sni_callback(DefaultCert, DefaultKey, DefaultChain, SniCerts) ->
+    fun(ServerName) ->
+        case quic_sni_entry(ServerName, SniCerts) of
+            #{cert := Cert, private_key := Key} = Entry ->
+                {ok, #{
+                    cert => Cert,
+                    key => Key,
+                    cert_chain => maps:get(cert_chain, Entry, [])
+                }};
+            _ ->
+                {ok, #{
+                    cert => DefaultCert,
+                    key => DefaultKey,
+                    cert_chain => DefaultChain
+                }}
+        end
+    end.
+
+quic_sni_entry(ServerName, SniCerts) when is_map(SniCerts) ->
+    case normalize_quic_sni_host(ServerName) of
+        undefined ->
+            undefined;
+        Host ->
+            case maps:get(Host, SniCerts, undefined) of
+                undefined -> quic_wildcard_sni_entry(Host, SniCerts);
+                Entry -> Entry
+            end
+    end;
+quic_sni_entry(_ServerName, _SniCerts) ->
+    undefined.
+
+quic_wildcard_sni_entry(Host, SniCerts) ->
+    Labels = binary:split(Host, <<".">>, [global]),
+    quic_wildcard_sni_entry_1(Labels, SniCerts).
+
+quic_wildcard_sni_entry_1([_Only], _SniCerts) ->
+    undefined;
+quic_wildcard_sni_entry_1([_Head | Tail], SniCerts) ->
+    Candidate = iolist_to_binary([<<"*">>, <<".">>, quic_join_labels(Tail)]),
+    case maps:get(Candidate, SniCerts, undefined) of
+        undefined -> quic_wildcard_sni_entry_1(Tail, SniCerts);
+        Entry -> Entry
+    end.
+
+quic_join_labels([]) ->
+    <<>>;
+quic_join_labels([One]) ->
+    One;
+quic_join_labels([H | T]) ->
+    <<H/binary, ".", (quic_join_labels(T))/binary>>.
+
+normalize_quic_sni_host(undefined) ->
+    undefined;
+normalize_quic_sni_host(<<>>) ->
+    undefined;
+normalize_quic_sni_host(Sni) when is_binary(Sni) ->
+    Lower = string:lowercase(Sni),
+    case {byte_size(Lower) > 0, binary:last(Lower)} of
+        {true, $.} -> normalize_quic_sni_host(binary:part(Lower, 0, byte_size(Lower) - 1));
+        _ -> Lower
+    end;
+normalize_quic_sni_host(Sni) when is_list(Sni) ->
+    normalize_quic_sni_host(unicode:characters_to_binary(Sni, utf8));
+normalize_quic_sni_host(_) ->
+    undefined.
 
 load_sni_certs(Config) ->
     Sites = maps:get(sites, Config, []),
     DbPath = pertisk_eproxy_config:db_file(),
+    DbSiteCertRefs = db_site_cert_refs(DbPath),
     DbAcc = case pertisk_eproxy_db:list_certificates(DbPath) of
         {ok, Rows} ->
             RowsById = maps:from_list([
@@ -2381,12 +2464,15 @@ load_sni_certs(Config) ->
             ]),
             lists:foldl(
                 fun(Site, Acc) ->
-                    case {site_host_key(maps:get(host, Site, undefined)), maps:get(certificate, Site, undefined)} of
-                        {undefined, _} ->
+                    case site_host_key(maps:get(host, Site, undefined)) of
+                        undefined ->
                             Acc;
-                        {_, undefined} ->
-                            Acc;
-                        {HostKey, CertRef} ->
+                        HostKey ->
+                            CertRef = case maps:get(certificate, Site, undefined) of
+                                undefined -> maps:get(HostKey, DbSiteCertRefs, undefined);
+                                null -> maps:get(HostKey, DbSiteCertRefs, undefined);
+                                V -> V
+                            end,
                             case resolve_sni_cert_entry(CertRef, RowsById, RowsByName) of
                                 {ok, Entry} -> maps:put(HostKey, Entry, Acc);
                                 _ -> Acc
@@ -2400,6 +2486,31 @@ load_sni_certs(Config) ->
             #{}
     end,
     merge_ingress_sni_certs(Sites, DbAcc).
+
+db_site_cert_refs(DbPath) ->
+    case pertisk_eproxy_db:list_sites(DbPath) of
+        {ok, DbSites} ->
+            lists:foldl(
+                fun(Site, Acc) ->
+                    HostKey = site_host_key(maps:get(host, Site, undefined)),
+                    CertRef = maps:get(certificate, Site, undefined),
+                    case {HostKey, CertRef} of
+                        {undefined, _} ->
+                            Acc;
+                        {_, undefined} ->
+                            Acc;
+                        {_, null} ->
+                            Acc;
+                        _ ->
+                            maps:put(HostKey, CertRef, Acc)
+                    end
+                end,
+                #{},
+                DbSites
+            );
+        _ ->
+            #{}
+    end.
 
 merge_ingress_sni_certs(Sites, Acc) ->
     case pertisk_ingress_env:enabled() of
@@ -2464,8 +2575,13 @@ resolve_sni_cert_entry(CertRef, RowsById, RowsByName) ->
     end,
     decode_sni_cert_ref(RefBin, Row).
 
-decode_sni_cert_ref(<<"acme/", _/binary>> = RefBin, _Row) ->
-    acme_sni_cert_entry(RefBin);
+decode_sni_cert_ref(<<"acme/", _/binary>> = RefBin, Row) ->
+    case acme_sni_cert_entry(RefBin) of
+        {ok, _} = Ok ->
+            Ok;
+        _ ->
+            decode_sni_cert_row(Row)
+    end;
 decode_sni_cert_ref(_RefBin, #{name := Name} = Row) ->
     case sni_ref_to_binary(Name) of
         <<"acme/", _/binary>> = AcmeRef ->

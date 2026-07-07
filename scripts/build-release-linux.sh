@@ -141,7 +141,8 @@ install_staged_release_on_host() {
   fi
   reclaim_root_owned_path "_build" || true
   host_mkdir_p "$REL_PARENT"
-  reclaim_root_owned_path "_build/prod/rel/pertisk_eproxy" || true
+  reclaim_root_owned_path "$REL_DST" || true
+  rm -rf "$REL_DST"
   if { [ ! -r "$REL_TAR" ] || [ ! -w "$(dirname "$REL_TAR")" ]; } && command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$ROOT_DIR:/work" alpine:3.20 \
       sh -c "chown -R $(id -u):$(id -g) /work/_release_export 2>/dev/null || true"

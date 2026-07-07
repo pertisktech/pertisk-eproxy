@@ -210,150 +210,72 @@ fi
 
 # QUIC SNI certificate selection: apply per-host cert override from sni_certs
 # during ClientHello processing (exact host first, wildcard fallback).
-conn_found=0
-for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
-  conn_found=1
+# quic 1.7.0 changed this code path significantly; keep the patch gated and
+# skip it when the upstream layout no longer matches the older pattern.
+conn_patch_enabled=1
+case "$QUIC_VSN" in
+  1.7.*|1.[8-9]*|[2-9].*)
+    conn_patch_enabled=0
+    ;;
+esac
 
-  if grep -q 'maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->' "$f"; then
-    continue
-  fi
+if [ "$conn_patch_enabled" -eq 1 ]; then
+  conn_found=0
+  for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
+    conn_found=1
 
-  perl -i -0pe '
-    s/server_private_key :: term\(\) \| undefined,\n    %% Server preferred address config/server_private_key :: term() | undefined,\n    sni_certs = #{} :: map(),\n    %% Server preferred address config/s
-  ' "$f"
-
-  perl -i -0pe '
-    s/PrivateKey = maps:get\(private_key, Opts\),\n    ALPNList = maps:get\(alpn, Opts, \[<<"h3">>\]\),/PrivateKey = maps:get(private_key, Opts),\n    SniCerts = maps:get(sni_certs, Opts, #{}),\n    ALPNList = maps:get(alpn, Opts, [<<"h3">>]),/s
-  ' "$f"
-
-  perl -i -0pe '
-    s/server_private_key = PrivateKey,\n        server_preferred_address = build_server_preferred_address\(Opts\),/server_private_key = PrivateKey,\n        sni_certs = SniCerts,\n        server_preferred_address = build_server_preferred_address(Opts),/s
-  ' "$f"
-
-  perl -i -0pe '
-    s/session_id := SessionId\n            } = ClientHelloInfo} ->\n            %% Select cipher suite \(prefer server.*?\)\n            Cipher = select_cipher\(CipherSuites\),/session_id := SessionId\n            } = ClientHelloInfo} ->\n            %% Apply SNI certificate override before building server handshake\n            %% flight so Certificate\/CertificateVerify match the requested host.\n            StateSni = maybe_apply_server_cert_for_sni(ClientHelloInfo, State),\n            %% Select cipher suite (prefer server order)\n            Cipher = select_cipher(CipherSuites),/s
-  ' "$f"
-
-  perl -i -0pe '
-    s/State#state\.tls_groups, KeyShareEntries, SupportedGroups/StateSni#state.tls_groups, KeyShareEntries, SupportedGroups/s;
-    s/SelGroup, ClientPubKey, Cipher, ClientHelloInfo, OriginalMsg, State\n                    \)/SelGroup, ClientPubKey, Cipher, ClientHelloInfo, OriginalMsg, StateSni\n                    )/s;
-    s/\{hrr, HrrGroup\} when not State#state\.hrr_sent ->\n                    send_hello_retry_request\(HrrGroup, Cipher, SessionId, OriginalMsg, State\);/{hrr, HrrGroup} when not StateSni#state.hrr_sent ->\n                    send_hello_retry_request(HrrGroup, Cipher, SessionId, OriginalMsg, StateSni);/s;
-    s/send_tls_alert\(\n                        \?TLS_ALERT_ILLEGAL_PARAMETER, <<"bad retry key_share">>, State\n                    \);/send_tls_alert(\n                        ?TLS_ALERT_ILLEGAL_PARAMETER, <<"bad retry key_share">>, StateSni\n                    );/s;
-    s/send_tls_alert\(\?TLS_ALERT_HANDSHAKE_FAILURE, <<"no common group">>, State\)/send_tls_alert(?TLS_ALERT_HANDSHAKE_FAILURE, <<"no common group">>, StateSni)/s;
-  ' "$f"
-
-  perl -i -0pe '
-    s/%% @private Continue a server-side ClientHello once the key-exchange\n%% group is settled \(direct or post-HRR\)\. SelectedGroup is the agreed\n%% named group; ClientPubKey is the client\x27s key_share for it\./maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->\n    State;\nmaybe_apply_server_cert_for_sni(#{server_name := Name0}, #state{sni_certs = SniCerts} = State)\nwhen is_binary(Name0); is_list(Name0) ->\n    case normalize_sni_hostname(Name0) of\n        undefined ->\n            State;\n        Name ->\n            case sni_cert_entry(Name, SniCerts) of\n                undefined ->\n                    State;\n                Entry ->\n                    apply_sni_cert_entry(Entry, State)\n            end\n    end;\nmaybe_apply_server_cert_for_sni(_, State) ->\n    State.\n\nnormalize_sni_hostname(Name) when is_list(Name) ->\n    normalize_sni_hostname(unicode:characters_to_binary(Name, utf8));\nnormalize_sni_hostname(Name) when is_binary(Name) ->\n    Lower0 = string:lowercase(Name),\n    case re:replace(Lower0, <<"\\\\.$">>, <<>>, [{return, binary}]) of\n        <<>> -> undefined;\n        Lower -> Lower\n    end;\nnormalize_sni_hostname(_) ->\n    undefined.\n\nsni_cert_entry(Name, SniCerts) ->\n    case maps:get(Name, SniCerts, undefined) of\n        undefined ->\n            wildcard_sni_cert_entry(Name, maps:to_list(SniCerts), undefined);\n        Entry ->\n            Entry\n    end.\n\nwildcard_sni_cert_entry(_Name, [], Best) ->\n    Best;\nwildcard_sni_cert_entry(Name, [{Key, Entry} | Rest], Best0) ->\n    KeyBin = normalize_sni_hostname(Key),\n    Best1 =\n        case wildcard_match_len(Name, KeyBin) of\n            none -> Best0;\n            Len ->\n                case Best0 of\n                    undefined -> {Len, Entry};\n                    {BestLen, _} when Len > BestLen -> {Len, Entry};\n                    _ -> Best0\n                end\n        end,\n    wildcard_sni_cert_entry(Name, Rest, Best1).\n\nwildcard_match_len(_Name, undefined) ->\n    none;\nwildcard_match_len(Name, <<"*.", Suffix\/binary>>) ->\n    case {byte_size(Suffix) > 0, byte_size(Name) > byte_size(Suffix), binary:match(Name, Suffix)} of\n        {true, true, {Pos, _Len}} when Pos + byte_size(Suffix) =:= byte_size(Name) ->\n            DotPos = byte_size(Name) - byte_size(Suffix) - 1,\n            case binary:at(Name, DotPos) of\n                $. -> byte_size(Suffix);\n                _ -> none\n            end;\n        _ ->\n            none\n    end;\nwildcard_match_len(_Name, _) ->\n    none.\n\napply_sni_cert_entry({_, Entry}, State) ->\n    apply_sni_cert_entry(Entry, State);\napply_sni_cert_entry(Entry, State) when is_map(Entry) ->\n    Cert = maps:get(cert, Entry, State#state.server_cert),\n    Chain = maps:get(cert_chain, Entry, State#state.server_cert_chain),\n    Key =\n        case maps:get(private_key, Entry, undefined) of\n            undefined -> maps:get(key, Entry, State#state.server_private_key);\n            PrivateKey -> PrivateKey\n        end,\n    State#state{server_cert = Cert, server_cert_chain = Chain, server_private_key = Key};\napply_sni_cert_entry(_, State) ->\n    State.\n\n%% @private Continue a server-side ClientHello once the key-exchange\n%% group is settled (direct or post-HRR). SelectedGroup is the agreed\n%% named group; ClientPubKey is the client\x27s key_share for it\./s
-  ' "$f"
-
-    # Fallback: if pattern-based insertion misses due upstream source drift,
-    # append helper functions to keep build deterministic.
-    # Check for function definition specifically (the call site also contains
-    # this token and must not suppress fallback insertion).
-    if ! grep -q 'maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->' "$f"; then
-    cat >> "$f" <<'EOF'
-
-  maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->
-    State;
-  maybe_apply_server_cert_for_sni(#{server_name := Name0}, #state{sni_certs = SniCerts} = State)
-  when is_binary(Name0); is_list(Name0) ->
-    case normalize_sni_hostname(Name0) of
-      undefined ->
-        State;
-      Name ->
-        case sni_cert_entry(Name, SniCerts) of
-          undefined ->
-            State;
-          Entry ->
-            apply_sni_cert_entry(Entry, State)
-        end
-    end;
-  maybe_apply_server_cert_for_sni(_, State) ->
-    State.
-
-  normalize_sni_hostname(Name) when is_list(Name) ->
-    normalize_sni_hostname(unicode:characters_to_binary(Name, utf8));
-  normalize_sni_hostname(Name) when is_binary(Name) ->
-    Lower0 = string:lowercase(Name),
-    case re:replace(Lower0, <<"\\.$">>, <<>>, [{return, binary}]) of
-      <<>> -> undefined;
-      Lower -> Lower
-    end;
-  normalize_sni_hostname(_) ->
-    undefined.
-
-  sni_cert_entry(Name, SniCerts) ->
-    case maps:get(Name, SniCerts, undefined) of
-      undefined ->
-        case wildcard_sni_cert_entry(Name, maps:to_list(SniCerts), undefined) of
-          undefined -> undefined;
-          {_Len, Entry} -> Entry
-        end;
-      Entry ->
-        Entry
-    end.
-
-  wildcard_sni_cert_entry(_Name, [], Best) ->
-    Best;
-  wildcard_sni_cert_entry(Name, [{Key, Entry} | Rest], Best0) ->
-    KeyBin = normalize_sni_hostname(Key),
-    Best1 =
-      case wildcard_match_len(Name, KeyBin) of
-        none -> Best0;
-        Len ->
-          case Best0 of
-            undefined -> {Len, Entry};
-            {BestLen, _} when Len > BestLen -> {Len, Entry};
-            _ -> Best0
-          end
-      end,
-    wildcard_sni_cert_entry(Name, Rest, Best1).
-
-  wildcard_match_len(_Name, undefined) ->
-    none;
-  wildcard_match_len(Name, <<"*.", Suffix/binary>>) ->
-    case {byte_size(Suffix) > 0, byte_size(Name) > byte_size(Suffix), binary:match(Name, Suffix)} of
-      {true, true, {Pos, _Len}} when Pos + byte_size(Suffix) =:= byte_size(Name) ->
-        DotPos = byte_size(Name) - byte_size(Suffix) - 1,
-        case binary:at(Name, DotPos) of
-          $. -> byte_size(Suffix);
-          _ -> none
-        end;
-      _ ->
-        none
-    end;
-  wildcard_match_len(_Name, _) ->
-    none.
-
-  apply_sni_cert_entry(Entry, State) when is_map(Entry) ->
-    Cert = maps:get(cert, Entry, State#state.server_cert),
-    Chain = maps:get(cert_chain, Entry, State#state.server_cert_chain),
-    Key =
-      case maps:get(private_key, Entry, undefined) of
-        undefined -> maps:get(key, Entry, State#state.server_private_key);
-        PrivateKey -> PrivateKey
-      end,
-    State#state{server_cert = Cert, server_cert_chain = Chain, server_private_key = Key};
-  apply_sni_cert_entry(_, State) ->
-    State.
-EOF
+    if grep -q 'maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->' "$f"; then
+      continue
     fi
 
-  rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
-done
+    if ! grep -q 'server_private_key :: term() | undefined' "$f"; then
+      echo "patch-quic: quic_connection SNI patch skipped: unexpected source layout in $f" >&2
+      continue
+    fi
 
-if [ "$conn_found" -eq 0 ]; then
-  echo "patch-quic: warning: no quic_connection.erl under _build (run rebar3 get-deps first)" >&2
+    perl -i -0pe '
+      s/server_private_key :: term\(\) \| undefined,\n    %% Server preferred address config/server_private_key :: term() | undefined,\n    sni_certs = #{} :: map(),\n    %% Server preferred address config/s
+    ' "$f"
+
+    perl -i -0pe '
+      s/PrivateKey = maps:get\(private_key, Opts\),\n    ALPNList = maps:get\(alpn, Opts, \[<<"h3">>\]\),/PrivateKey = maps:get(private_key, Opts),\n    SniCerts = maps:get(sni_certs, Opts, #{}),\n    ALPNList = maps:get(alpn, Opts, [<<"h3">>]),/s
+    ' "$f"
+
+    perl -i -0pe '
+      s/server_private_key = PrivateKey,\n        server_preferred_address = build_server_preferred_address\(Opts\),/server_private_key = PrivateKey,\n        sni_certs = SniCerts,\n        server_preferred_address = build_server_preferred_address(Opts),/s
+    ' "$f"
+
+    perl -i -0pe '
+      s/session_id := SessionId\n            } = ClientHelloInfo} ->\n            %% Select cipher suite \(prefer server.*?\)\n            Cipher = select_cipher\(CipherSuites\),/session_id := SessionId\n            } = ClientHelloInfo} ->\n            %% Apply SNI certificate override before building server handshake\n            %% flight so Certificate\/CertificateVerify match the requested host.\n            StateSni = maybe_apply_server_cert_for_sni(ClientHelloInfo, State),\n            %% Select cipher suite (prefer server order)\n            Cipher = select_cipher(CipherSuites),/s
+    ' "$f"
+
+    perl -i -0pe '
+      s/State#state\.tls_groups, KeyShareEntries, SupportedGroups/StateSni#state.tls_groups, KeyShareEntries, SupportedGroups/s;
+      s/SelGroup, ClientPubKey, Cipher, ClientHelloInfo, OriginalMsg, State\n                    \)/SelGroup, ClientPubKey, Cipher, ClientHelloInfo, OriginalMsg, StateSni\n                    )/s;
+      s/\{hrr, HrrGroup\} when not State#state\.hrr_sent ->\n                    send_hello_retry_request\(HrrGroup, Cipher, SessionId, OriginalMsg, State\);/{hrr, HrrGroup} when not StateSni#state.hrr_sent ->\n                    send_hello_retry_request(HrrGroup, Cipher, SessionId, OriginalMsg, StateSni);/s;
+      s/send_tls_alert\(\n                        \?TLS_ALERT_ILLEGAL_PARAMETER, <<"bad retry key_share">>, State\n                    \);/send_tls_alert(\n                        ?TLS_ALERT_ILLEGAL_PARAMETER, <<"bad retry key_share">>, StateSni\n                    );/s;
+      s/send_tls_alert\(\?TLS_ALERT_HANDSHAKE_FAILURE, <<"no common group">>, State\)/send_tls_alert(?TLS_ALERT_HANDSHAKE_FAILURE, <<"no common group">>, StateSni)/s;
+    ' "$f"
+
+    rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
+  done
+
+  if [ "$conn_found" -eq 0 ]; then
+    echo "patch-quic: warning: no quic_connection.erl under _build (run rebar3 get-deps first)" >&2
+  fi
+
+  CONN=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
+  if [ -n "$CONN" ]; then
+    grep -q 'maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->' "$CONN" || {
+      echo "patch-quic: quic_connection SNI cert selection patch missing in $CONN" >&2
+      exit 1
+    }
+    echo "patch-quic: quic_connection SNI cert selection ok"
+  fi
+else
+  echo "patch-quic: skipping quic_connection SNI cert selection for quic ${QUIC_VSN:-unknown}"
 fi
 
-CONN=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
-if [ -n "$CONN" ]; then
-  grep -q 'maybe_apply_server_cert_for_sni(#{server_name := undefined}, State) ->' "$CONN" || {
-    echo "patch-quic: quic_connection SNI cert selection patch missing in $CONN" >&2
-    exit 1
-  }
-  echo "patch-quic: quic_connection SNI cert selection ok"
-fi
 if [ -n "$LISTENER" ]; then
   if grep -q 'Family = case lists:member(inet6' "$LISTENER"; then
     echo "patch-quic: quic_listener inet6 ok"
