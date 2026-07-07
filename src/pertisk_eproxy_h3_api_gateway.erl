@@ -33,7 +33,8 @@ start(Config) ->
             end,
             case load_cert_and_key(Config) of
                 {ok, {CertDer, KeyTerm, CertChain}} ->
-                    do_start_gateway(Port, CertDer, KeyTerm, CertChain, Config);
+                    SniCerts = load_sni_certs(Config),
+                    do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts);
                 {error, Reason} ->
                     {error, Reason}
             end;
@@ -41,7 +42,7 @@ start(Config) ->
             Err
     end.
 
-do_start_gateway(Port, CertDer, KeyTerm, CertChain, Config) ->
+do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
     Config = pertisk_eproxy_config:get_config(),
     case pertisk_eproxy_tls_paths:resolve_cert_file(Config) of
         undefined ->
@@ -75,12 +76,12 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, Config) ->
             maps:get(max_receive_window, QuicOpts, undefined)
         ]
     ),
-    _ = case length(pertisk_eproxy_app:build_sni_hosts(Config)) of
+    _ = case maps:size(SniCerts) of
         0 -> ok;
         N -> lager:info("HTTP/3 listener: loaded ~p SNI certificate override(s)", [N])
     end,
     BaseOpts = maps:merge(
-        tls_server_opts(CertDer, KeyTerm, CertChain, Config),
+        tls_server_opts(CertDer, KeyTerm, CertChain, SniCerts),
         #{
             settings => h3_http_settings(Config),
             handler => ?MODULE,
@@ -2355,14 +2356,14 @@ decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
     end.
 
 %% Leaf in 'cert', intermediates in 'cert_chain' (Chrome QUIC is strict; TCP certfile sends the full PEM).
-tls_server_opts(CertDer, KeyTerm, Chain, Config) ->
+tls_server_opts(CertDer, KeyTerm, Chain, SniCerts) ->
     Base = case Chain of
         [] -> #{cert => CertDer, key => KeyTerm};
         _ -> #{cert => CertDer, key => KeyTerm, cert_chain => Chain}
     end,
-    case pertisk_eproxy_app:build_sni_hosts(Config) of
-        [] -> Base;
-        _ -> Base#{sni_callback => pertisk_eproxy_app:quic_sni_callback(CertDer, KeyTerm, Chain, Config)}
+    case maps:size(SniCerts) of
+        0 -> Base;
+        _ -> Base#{sni_certs => SniCerts}
     end.
 
 load_sni_certs(Config) ->
