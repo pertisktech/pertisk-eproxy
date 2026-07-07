@@ -22,6 +22,8 @@ REMOTE_HOST=10.1.1.9 REMOTE_USER=root PACKAGE_VERSION=0.5.11 ./build/deploy-deb.
 REMOTE_HOST=10.1.1.9 VERSION=0.5.11 ./build/deploy-deb.sh 0.5.11
 ```
 
+RPM builds pin the release image to `hexpm/erlang:27.0.1-debian-bullseye-20240701-slim` by default so bundled `erts` stays compatible with older glibc hosts such as EL9. Override with `RPM_RELEASE_BUILD_IMAGE=...` only if the replacement image keeps the runtime ABI at or below `GLIBC_2.34` and `GLIBCXX_3.4.29`.
+
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `REMOTE_HOST` | `10.1.1.8` (deb) / `135.181.197.40` (rpm) | Target server |

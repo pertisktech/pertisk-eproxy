@@ -41,11 +41,29 @@ clean_build_tree() {
   fi
 }
 
+retry_cmd() {
+  local attempts="$1"
+  shift
+  local attempt=1
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$attempts" ]; then
+      return 1
+    fi
+    echo "retry_cmd: attempt ${attempt}/${attempts} failed for: $*" >&2
+    sleep $((attempt * 2))
+    attempt=$((attempt + 1))
+  done
+}
+
 prepare_and_release() {
   cd "$ROOT_DIR"
   # Never reuse host _build/ in Docker (macOS beams break relx xref on Linux). Same as docker/Dockerfile.proxy.
   clean_build_tree
-  rebar3 get-deps
+  retry_cmd 3 rebar3 get-deps
   bash scripts/patch-ekub.sh
   bash scripts/patch-quic.sh
   bash scripts/patch-hackney.sh
@@ -196,7 +214,13 @@ docker_build_release() {
       set -euo pipefail
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        bash git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev util-linux
+        bash curl git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev util-linux
+      if ! command -v rebar3 >/dev/null 2>&1; then
+        mkdir -p /root/.local/bin
+        curl -fsSL https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 -o /root/.local/bin/rebar3
+        chmod +x /root/.local/bin/rebar3
+        export PATH="/root/.local/bin:$PATH"
+      fi
       export COWBOY_QUICER="'"$COWBOY_QUICER"'"
       export COWBOY_QUIC="'"$COWBOY_QUIC"'"
       export ERL_FLAGS="'"$ERL_FLAGS"'"

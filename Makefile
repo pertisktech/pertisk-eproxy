@@ -273,8 +273,10 @@ package-deb-amd64: release-amd64
 
 package-deb-x86_64: package-deb-amd64
 
-package-rpm-amd64: release-amd64
-	@bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
+package-rpm-amd64:
+	@bash scripts/set-app-version.sh "$(PACKAGE_VERSION)"
+	@COWBOY_QUICER=1 COWBOY_QUIC=1 RELEASE_BUILD_CLEAN=1 RELEASE_BUILD_PLATFORM=linux/amd64 ERLANG_BUILD_IMAGE="$${RPM_RELEASE_BUILD_IMAGE:-hexpm/erlang:27.0.1-debian-bullseye-20240701-slim}" bash scripts/build-release-linux.sh
+	@ERLANG_BUILD_PLATFORM=linux/amd64 ERLANG_BUILD_IMAGE="$${RPM_RELEASE_BUILD_IMAGE:-hexpm/erlang:27.0.1-debian-bullseye-20240701-slim}" bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-rpm-x86_64: package-rpm-amd64
 

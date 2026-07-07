@@ -6,8 +6,12 @@ VERSION="${2:-0.1.0}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL_SRC="$ROOT_DIR/_build/prod/rel/pertisk_eproxy"
+RPM_RELEASE_BUILD_IMAGE="${RPM_RELEASE_BUILD_IMAGE:-hexpm/erlang:27.0.1-debian-bullseye-20240701-slim}"
+ERLANG_BUILD_IMAGE="${ERLANG_BUILD_IMAGE:-$RPM_RELEASE_BUILD_IMAGE}"
 ERLANG_BUILD_PLATFORM="${ERLANG_BUILD_PLATFORM:-linux/amd64}"
-export ERLANG_BUILD_PLATFORM
+RPM_MAX_GLIBC="${RPM_MAX_GLIBC:-2.34}"
+RPM_MAX_GLIBCXX="${RPM_MAX_GLIBCXX:-3.4.29}"
+export ERLANG_BUILD_IMAGE ERLANG_BUILD_PLATFORM RPM_MAX_GLIBC RPM_MAX_GLIBCXX
 OUT_DIR="$ROOT_DIR/release"
 WORK_DIR="$ROOT_DIR/_build/package-rpm-amd64"
 PKG_ROOT="$WORK_DIR/pkg"
@@ -67,6 +71,7 @@ if [ ! -d "$REL_SRC" ]; then
 fi
 
 bash "$ROOT_DIR/scripts/verify-release-arch.sh" "$REL_SRC" x86_64
+bash "$ROOT_DIR/scripts/verify-release-runtime-abi.sh" "$REL_SRC"
 
 rm -rf "$WORK_DIR"
 mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"

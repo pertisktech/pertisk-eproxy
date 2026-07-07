@@ -5,7 +5,7 @@ set -euo pipefail
 DEST_ROOT="${1:?usage: bundle-runtime-libs-for-rpm.sh /path/to/pkg/opt/pertisk-eproxy}"
 ERLANG_IMAGE="${ERLANG_BUILD_IMAGE:-erlang:29}"
 ERLANG_BUILD_PLATFORM="${ERLANG_BUILD_PLATFORM:-}"
-OUT_DIR="${DEST_ROOT}/lib/runtime"
+OUT_DIR="$(cd "${DEST_ROOT}" && pwd)/lib/runtime"
 PLATFORM_OPT=()
 if [ -n "$ERLANG_BUILD_PLATFORM" ]; then
   PLATFORM_OPT=(--platform "$ERLANG_BUILD_PLATFORM")
@@ -17,7 +17,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "${OUT_DIR}"/libgcc_s.so* "${OUT_DIR}"/libtinfo.so* "${OUT_DIR}"/libncursesw.so* 2>/dev/null || true
+rm -f "${OUT_DIR}"/libgcc_s.so* "${OUT_DIR}"/libstdc++.so* "${OUT_DIR}"/libtinfo.so* "${OUT_DIR}"/libncursesw.so* 2>/dev/null || true
 
 echo "bundle-runtime-libs-for-rpm: copying libs from ${ERLANG_IMAGE} -> ${OUT_DIR}"
 docker run --rm \
@@ -30,7 +30,7 @@ docker run --rm \
     copied=0
     for dir in /usr/lib /lib /usr/lib64 /lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
       [ -d "$dir" ] || continue
-      for pat in libgcc_s.so.1 libtinfo.so.6 libtinfo.so libncursesw.so.6; do
+      for pat in libgcc_s.so.1 libstdc++.so.6 libtinfo.so.6 libtinfo.so libncursesw.so.6; do
         for f in "$dir"/${pat}*; do
           [ -e "$f" ] || continue
           cp -a "$f" /out/
