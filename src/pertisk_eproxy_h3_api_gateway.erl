@@ -53,7 +53,10 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
     end,
     QuicOptsBase = quic_transport_opts(Config),
     QuicTlsOpts = quic_tls_overrides(CertDer, KeyTerm, CertChain, SniCerts),
-    QuicOpts = maps:merge(QuicOptsBase, QuicTlsOpts),
+    QuicOpts = maps:merge(
+        QuicOptsBase,
+        QuicTlsOpts#{reset_secret => quic_stateless_reset_secret(CertDer)}
+    ),
     case CertChain of
         [] ->
             lager:warning(
@@ -161,7 +164,10 @@ do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
     Config = pertisk_eproxy_config:get_config(),
     QuicOptsBase = quic_transport_opts(Config),
     QuicTlsOpts = quic_tls_overrides(CertDer, KeyTerm, CertChain, #{}),
-    QuicOpts = maps:merge(QuicOptsBase, QuicTlsOpts),
+    QuicOpts = maps:merge(
+        QuicOptsBase,
+        QuicTlsOpts#{reset_secret => quic_stateless_reset_secret(CertDer)}
+    ),
     _ = lager:info(
         "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p",
         [
@@ -1532,6 +1538,10 @@ quic_transport_opts(Config) ->
         %% Keep QUIC handshakes single-flight for internet probes and
         %% high-latency paths; avoid Retry-driven partial success reports.
         address_validation => never,
+        %% http3check.net's second probe uses 0-RTT resume; erlang_quic 0-RTT
+        %% intermittently stalls that check. Disable tickets so both connections
+        %% complete a normal 1-RTT handshake (browsers still use HTTP/3 fine).
+        max_early_data => 0,
         max_datagram_frame_size => 0,
         max_udp_payload_size => MaxUdpPayload,
         pmtu_enabled => PmtuEnabled,
@@ -2085,7 +2095,9 @@ start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
         quic_opts =>
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
-                reuseport => true,
+                %% Single-socket dual-stack: reuseport spreads 0-RTT resumes across
+                %% acceptors and can stall http3check's second QUIC connection.
+                reuseport => false,
                 extra_socket_opts => [
                     inet6,
                     {ipv6_v6only, false},
@@ -2097,7 +2109,7 @@ start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
     case quic_h3:start_server(ServerName, Port, Opts) of
         {ok, _} = Ok ->
             _ = lager:info(
-                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack reuseport recbuf=~w sndbuf=~w)",
+                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack recbuf=~w sndbuf=~w)",
                 [Port, ?UDP_RECV_BUF, ?UDP_SEND_BUF]
             ),
             Ok;
@@ -2365,6 +2377,10 @@ decode_listener_pem(CertPem, KeyPem, CertPath, KeyPath) ->
 %% cert_chain and sni_certs must be passed via quic_opts to reach quic_listener/quic_connection.
 tls_server_opts(CertDer, KeyTerm) ->
     #{cert => CertDer, key => KeyTerm}.
+
+%% Stable 32-byte secret for erlang_quic stateless reset tokens (RFC 9000 §10.3).
+quic_stateless_reset_secret(CertDer) when is_binary(CertDer) ->
+    crypto:hash(sha256, CertDer).
 
 quic_tls_overrides(DefaultCert, DefaultKey, Chain, SniCerts) ->
     WithChain = case Chain of
