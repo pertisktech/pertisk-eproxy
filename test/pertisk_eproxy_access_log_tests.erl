@@ -249,3 +249,55 @@ ring_buffer_trim_test() ->
         ),
         ?assertEqual(1000, pertisk_eproxy_access_log:count())
     end).
+
+kube_omni_kube_api_401_downgraded_to_info_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{proxy_access_log => true}),
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"kube.omni.thaidevops.co">>,
+                    <<"GET">>,
+                    <<"/apis/apiextensions.k8s.io/v1/customresourcedefinitions">>,
+                    401,
+                    1,
+                    'HTTP/1.1',
+                    <<"http://127.0.0.1:8100">>,
+                    <<"kube.omni.thaidevops.co">>
+                )),
+            Entries = pertisk_eproxy_access_log:list(undefined, <<"kube.omni.thaidevops.co">>, undefined),
+            [Latest | _] = lists:reverse(Entries),
+            ?assertEqual(<<"info">>, maps:get(<<"level">>, Latest))
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.
+
+non_kube_401_remains_warn_test() ->
+    pertisk_eproxy_test_helpers:ensure_config(),
+    Base = pertisk_eproxy_config:get_config(),
+    ok = pertisk_eproxy_test_helpers:put_config_retry(Base#{proxy_access_log => true}),
+    try
+        with_server(fun() ->
+            pertisk_eproxy_access_log:refresh_hot_path_flags(),
+            ?assertEqual(ok,
+                pertisk_eproxy_access_log:log_proxy(
+                    <<"other.example">>,
+                    <<"GET">>,
+                    <<"/private">>,
+                    401,
+                    1,
+                    'HTTP/2',
+                    <<"http://127.0.0.1:9999">>,
+                    <<"other.example">>
+                )),
+            Entries = pertisk_eproxy_access_log:list(undefined, <<"other.example">>, undefined),
+            [Latest | _] = lists:reverse(Entries),
+            ?assertEqual(<<"warn">>, maps:get(<<"level">>, Latest))
+        end)
+    after
+        ok = pertisk_eproxy_test_helpers:put_config_retry(Base)
+    end.

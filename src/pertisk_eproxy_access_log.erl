@@ -177,11 +177,7 @@ handle_call(_Req, _From, St) ->
 
 handle_cast({log, Host, Method, Path, Status, DurationMs, ClientProto, Upstream, Site0}, #st{entries = Es}) ->
     Ts = iolist_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(second), [{offset, "Z"}])),
-    Level = case Status of
-        S when S >= 500 -> <<"error">>;
-        S when S >= 400 -> <<"warn">>;
-        _ -> <<"info">>
-    end,
+    Level = level_for_access(Host, Path, Status),
     ProtoShort = protocol_short(ClientProto),
     Msg = iolist_to_binary(io_lib:format("~s ~s ~w ~wms", [Method, Path, Status, DurationMs])),
     pertisk_eproxy_log:http(Level, ProtoShort, Host, Method, Path, Status, DurationMs),
@@ -240,4 +236,27 @@ protocol_short(_) -> <<"1.1">>.
 normalize_site(Site, _Host) when is_binary(Site), byte_size(Site) > 0 -> Site;
 normalize_site(_Site, Host) when is_binary(Host), byte_size(Host) > 0 -> Host;
 normalize_site(_, _) -> <<"unknown">>.
+
+level_for_access(Host, Path, Status) ->
+    case is_known_kube_probe_unauthorized(Host, Path, Status) of
+        true -> <<"info">>;
+        false ->
+            case Status of
+                S when S >= 500 -> <<"error">>;
+                S when S >= 400 -> <<"warn">>;
+                _ -> <<"info">>
+            end
+    end.
+
+is_known_kube_probe_unauthorized(Host, Path, 401)
+        when is_binary(Host), is_binary(Path) ->
+    IsKubeOmniHost =
+        Host =:= <<"kube.omni.thaidevops.co">> orelse
+        binary:match(Host, <<".kube.omni.thaidevops.co">>) =/= nomatch,
+    IsKubeApiPath =
+        binary:match(Path, <<"/apis/">>) =:= {0, 6} orelse
+        binary:match(Path, <<"/api/">>) =:= {0, 5},
+    IsKubeOmniHost andalso IsKubeApiPath;
+is_known_kube_probe_unauthorized(_, _, _) ->
+    false.
 

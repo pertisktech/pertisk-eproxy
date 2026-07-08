@@ -111,3 +111,22 @@ After deploy with the Omni code fixes:
 2. Omni UI loads over HTTPS.
 3. Machines register on `api.*`.
 4. `kubectl` via `kube.*` works.
+
+### Probe `api.*` correctly (gRPC)
+
+`api.omni.*` is a gRPC endpoint. Plain browser checks (`GET /` or `HEAD /`) can
+return `502` while gRPC traffic is actually healthy.
+
+Use an HTTP/2 gRPC-style probe instead:
+
+```bash
+curl -sk --http2 -D - -o /dev/null \
+  -H 'content-type: application/grpc' \
+  -H 'te: trailers' \
+  --data-binary '' \
+  https://api.omni.example.com/
+```
+
+Expected healthy signal: HTTP/2 response with `content-type: application/grpc`
+and a gRPC status/message (for `/` you may get `grpc-status: 12`, which still
+proves the gRPC path is reachable through the proxy).

@@ -1649,9 +1649,13 @@ upstream_req_kind(Path, HeadersMap, SiteHost) when is_binary(Path), is_map(Heade
                 true ->
                     eventstream;
                 false ->
-                    case is_grpc_headers_map(HeadersMap) orelse is_connect_service_path(Path) of
-                        true -> grpc;
-                        false -> http
+                    case should_use_mixed_grpc_compat_http(Path, SiteHost) of
+                        true -> http;
+                        false ->
+                            case is_grpc_headers_map(HeadersMap) orelse is_connect_service_path(Path) of
+                                true -> grpc;
+                                false -> http
+                            end
                     end
             end
     end;
@@ -1703,13 +1707,25 @@ detect_request_kind(Req, SiteHost) ->
                     case is_websocket_upgrade(Req) of
                         true -> websocket;
                         false ->
-                            case is_grpc_request(Req) orelse is_connect_service_path(Path) of
-                                true -> grpc;
-                                false -> http
+                            case should_use_mixed_grpc_compat_http(Path, SiteHost) of
+                                true -> http;
+                                false ->
+                                    case is_grpc_request(Req) orelse is_connect_service_path(Path) of
+                                        true -> grpc;
+                                        false -> http
+                                    end
                             end
                     end
             end
     end.
+
+should_use_mixed_grpc_compat_http(Path, SiteHost) when is_binary(Path) ->
+    is_binary(SiteHost)
+        andalso SiteHost =/= <<>>
+        andalso is_connect_service_path(Path)
+        andalso binary:match(Path, <<"/api/">>) =:= {0, byte_size(<<"/api/">>)};
+should_use_mixed_grpc_compat_http(_Path, _SiteHost) ->
+    false.
 
 %% Connect / gRPC service paths (Talos Omni, Connect RPC): /api/pkg.Service/Method.
 -spec is_connect_service_path(binary()) -> boolean().

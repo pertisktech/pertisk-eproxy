@@ -106,6 +106,38 @@ upstream_req_kind_connect_path_test() ->
         )
     ).
 
+upstream_req_kind_connect_path_mixed_site_test() ->
+    ?assertEqual(
+        http,
+        pertisk_eproxy_handler:upstream_req_kind(
+            <<"/api/omni.resources.ResourceService/Get">>,
+            #{<<"content-type">> => <<"application/grpc">>},
+            <<"omni.example.com">>
+        )
+    ).
+
+upstream_req_kind_connect_path_grpc_upstream_site_test() ->
+    Config = #{
+        sites => [#{host => <<"api.omni.example.com">>, backend => <<"omni-api">>}]
+    },
+    meck:new(pertisk_eproxy_config, [unstick, no_link]),
+    meck:expect(pertisk_eproxy_config, get_config, fun() -> Config end),
+    meck:expect(pertisk_eproxy_config, get_backend, fun(<<"omni-api">>) ->
+        {ok, #{grpc_upstream => true}}
+    end),
+    try
+        ?assertEqual(
+            grpc,
+            pertisk_eproxy_handler:upstream_req_kind(
+                <<"/api/omni.resources.ResourceService/Get">>,
+                #{<<"content-type">> => <<"application/grpc">>},
+                <<"api.omni.example.com">>
+            )
+        )
+    after
+        meck:unload(pertisk_eproxy_config)
+    end.
+
 upstream_gun_opts_grpc_test() ->
     Opts = pertisk_eproxy_handler:upstream_gun_opts_with_port("host", 443, tls, grpc),
     ?assertEqual([http2], maps:get(protocols, Opts)).
