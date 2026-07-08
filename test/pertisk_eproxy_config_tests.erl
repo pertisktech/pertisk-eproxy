@@ -510,6 +510,7 @@ h3_quic_tuning_test() ->
         <<"h3_idle_timeout_secs">> => 120,
         <<"h3_keepalive_interval_secs">> => 15,
         <<"h3_quic_pool_size">> => 16,
+        <<"h3_congestion_control">> => <<"cubic">>,
         <<"h3_max_udp_payload_size">> => 1400,
         <<"h3_pmtu_enabled">> => false,
         <<"h3_max_streams">> => 1024,
@@ -519,11 +520,18 @@ h3_quic_tuning_test() ->
     ?assertEqual(120, maps:get(h3_idle_timeout_secs, C)),
     ?assertEqual(15, maps:get(h3_keepalive_interval_secs, C)),
     ?assertEqual(16, maps:get(h3_quic_pool_size, C)),
+    ?assertEqual(cubic, maps:get(h3_congestion_control, C)),
     ?assertEqual(1400, maps:get(h3_max_udp_payload_size, C)),
     ?assertEqual(false, maps:get(h3_pmtu_enabled, C)),
     ?assertEqual(1024, maps:get(h3_max_streams, C)),
     ?assertEqual(1048576, maps:get(h3_stream_receive_window, C)),
     ?assertEqual(8388608, maps:get(h3_conn_receive_window, C)).
+
+h3_congestion_control_invalid_value_is_ignored_test() ->
+    C = pertisk_eproxy_config:json_to_config_pub(#{
+        <<"h3_congestion_control">> => <<"invalid">>
+    }),
+    ?assertEqual(false, maps:is_key(h3_congestion_control, C)).
 
 management_addr_parsed_test() ->
     C = pertisk_eproxy_config:json_to_config_pub(#{<<"management_addr">> => <<"127.0.0.1">>}),

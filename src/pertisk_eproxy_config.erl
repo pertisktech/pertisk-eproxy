@@ -903,7 +903,7 @@ listener_tuning_keys() ->
         tls_cert_file, tls_key_file, tls_http2_enabled,
         h3_api_gateway_enabled, h3_probe_enabled, h3_probe_port,
         h3_idle_timeout_secs, h3_keepalive_interval_secs,
-        h3_udp_bind, h3_qpack_static, h3_quic_pool_size,
+        h3_udp_bind, h3_qpack_static, h3_quic_pool_size, h3_congestion_control,
         h3_max_udp_payload_size, h3_pmtu_enabled,
         h3_max_streams, h3_stream_receive_window, h3_conn_receive_window,
         alt_svc_port, alt_svc_ma_secs, alt_svc_persist
@@ -1035,6 +1035,8 @@ json_to_config(Json) ->
         h3_qpack_static => parse_opt_bool(maps:get(<<"h3_qpack_static">>, Json, true)),
         h3_quic_pool_size =>
             parse_opt_int(maps:get(<<"h3_quic_pool_size">>, Json, null)),
+        h3_congestion_control =>
+            parse_h3_congestion_control(maps:get(<<"h3_congestion_control">>, Json, null)),
         h3_max_udp_payload_size =>
             parse_opt_int(maps:get(<<"h3_max_udp_payload_size">>, Json, null)),
         h3_pmtu_enabled =>
@@ -1363,6 +1365,15 @@ parse_h3_udp_bind(<<"split">>) -> split;
 parse_h3_udp_bind(dual_stack) -> dual_stack;
 parse_h3_udp_bind(split) -> split;
 parse_h3_udp_bind(_) -> dual_stack.
+
+parse_h3_congestion_control(null) -> undefined;
+parse_h3_congestion_control(<<"newreno">>) -> newreno;
+parse_h3_congestion_control(<<"cubic">>) -> cubic;
+parse_h3_congestion_control(<<"bbr">>) -> bbr;
+parse_h3_congestion_control(newreno) -> newreno;
+parse_h3_congestion_control(cubic) -> cubic;
+parse_h3_congestion_control(bbr) -> bbr;
+parse_h3_congestion_control(_) -> undefined.
 
 parse_opt_challenge_type(<<"http-01">>) -> "http-01";
 parse_opt_challenge_type(<<"dns-01">>) -> "dns-01";

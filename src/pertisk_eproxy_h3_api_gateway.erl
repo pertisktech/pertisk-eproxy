@@ -68,7 +68,7 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
                        [1 + length(CertChain), length(CertChain)])
     end,
     _ = lager:info(
-        "HTTP/3 gateway QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p max_streams_bidi=~w stream_recv_window=~w conn_recv_window=~w",
+        "HTTP/3 gateway QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p congestion_control=~p max_streams_bidi=~w stream_recv_window=~w conn_recv_window=~w",
         [
             maps:get(idle_timeout, QuicOpts, undefined),
             maps:get(keep_alive_interval, QuicOpts, undefined),
@@ -76,6 +76,7 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
             maps:get(max_datagram_frame_size, QuicOpts, undefined),
             maps:get(pool_size, QuicOpts, undefined),
             maps:get(pmtu_enabled, QuicOpts, undefined),
+            maps:get(congestion_control, QuicOpts, undefined),
             maps:get(max_streams_bidi, QuicOpts, undefined),
             maps:get(max_stream_data_bidi_local, QuicOpts, undefined),
             maps:get(max_receive_window, QuicOpts, undefined)
@@ -169,14 +170,15 @@ do_start_probe(ProbePort, CertDer, KeyTerm, CertChain) ->
         QuicTlsOpts#{reset_secret => quic_stateless_reset_secret(CertDer)}
     ),
     _ = lager:info(
-        "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p",
+        "HTTP/3 probe QUIC opts: idle_timeout=~wms keep_alive_interval=~p max_udp_payload_size=~w max_datagram_frame_size=~w pool_size=~w pmtu_enabled=~p congestion_control=~p",
         [
             maps:get(idle_timeout, QuicOpts, undefined),
             maps:get(keep_alive_interval, QuicOpts, undefined),
             maps:get(max_udp_payload_size, QuicOpts, undefined),
             maps:get(max_datagram_frame_size, QuicOpts, undefined),
             maps:get(pool_size, QuicOpts, undefined),
-            maps:get(pmtu_enabled, QuicOpts, undefined)
+            maps:get(pmtu_enabled, QuicOpts, undefined),
+            maps:get(congestion_control, QuicOpts, undefined)
         ]
     ),
     ProbeOpts = maps:merge(
@@ -1465,6 +1467,14 @@ default_h3_quic_pool_size() ->
     Schedulers = erlang:system_info(schedulers_online),
     max(4, min(32, Schedulers * 2)).
 
+h3_congestion_control_opt(Config) ->
+    case maps:get(h3_congestion_control, Config, undefined) of
+        newreno -> newreno;
+        cubic -> cubic;
+        bbr -> bbr;
+        _ -> newreno
+    end.
+
 quic_transport_opts(Config) ->
     IdleSecs0 =
         case maps:get(h3_idle_timeout_secs, Config, undefined) of
@@ -1531,10 +1541,12 @@ quic_transport_opts(Config) ->
         h3_quic_int_opt(Config, h3_stream_receive_window, ?H3_STREAM_RECV_WINDOW_DEFAULT, 65536, 268435456),
     ConnRecvWindow =
         h3_quic_int_opt(Config, h3_conn_receive_window, ?H3_CONN_RECV_WINDOW_DEFAULT, 65536, 268435456),
+    CongestionControl = h3_congestion_control_opt(Config),
     Base = #{
         idle_timeout => max(IdleSecs * 1000, 60000),
         socket_backend => gen_udp,
         backend => gen_udp,
+        congestion_control => CongestionControl,
         %% Keep QUIC handshakes single-flight for internet probes and
         %% high-latency paths; avoid Retry-driven partial success reports.
         address_validation => never,

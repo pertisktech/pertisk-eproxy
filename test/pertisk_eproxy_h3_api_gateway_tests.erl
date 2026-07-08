@@ -1234,6 +1234,7 @@ gateway_start_full_quic_opts_test() ->
         h3_idle_timeout_secs => 0,
         h3_keepalive_interval_secs => 0,
         h3_quic_pool_size => 0,
+        h3_congestion_control => cubic,
         h3_max_streams => 100,
         h3_stream_receive_window => 65536,
         h3_conn_receive_window => 65536,
@@ -1242,6 +1243,26 @@ gateway_start_full_quic_opts_test() ->
     with_gateway_start_mock(fun() ->
         ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config))
     end).
+
+gateway_start_invalid_cc_falls_back_to_newreno_test() ->
+    pertisk_eproxy_test_helpers:ensure_h3_env(),
+    unload_mocks([quic_h3]),
+    meck:new(quic_h3, [unstick, no_link]),
+    meck:expect(quic_h3, start_server, fun(_, _, Opts) ->
+        QuicOpts = maps:get(quic_opts, Opts, #{}),
+        put(last_gateway_quic_cc, maps:get(congestion_control, QuicOpts, undefined)),
+        {ok, self()}
+    end),
+    meck:expect(quic_h3, stop_server, fun(_) -> ok end),
+    try
+        Config = gateway_tls_config(#{h3_congestion_control => invalid}),
+        ?assertMatch({ok, _}, pertisk_eproxy_h3_api_gateway:start(Config)),
+        ?assertEqual(newreno, get(last_gateway_quic_cc))
+    after
+        erase(last_gateway_quic_cc),
+        pertisk_eproxy_test_helpers:ignoring_errors(fun() -> pertisk_eproxy_h3_api_gateway:stop() end),
+        unload_mocks([quic_h3])
+    end.
 
 gateway_start_with_ingress_tls_test() ->
     pertisk_eproxy_test_helpers:ensure_h3_env(),

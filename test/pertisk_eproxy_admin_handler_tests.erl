@@ -3058,6 +3058,7 @@ api_config_get_includes_mode_and_configured_h3_quic_pool_size_test() ->
         {ok, 200, _, AllBody} = dispatch(<<"GET">>, <<"/api/config">>, <<"show_all=1">>, <<>>),
         {ok, AllConfig} = thoas:decode(AllBody),
         ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, AllConfig)),
+        ?assertEqual(<<"newreno">>, maps:get(<<"h3_congestion_control">>, AllConfig)),
         ?assertEqual(
             maps:get(<<"h3_quic_pool_size">>, Config),
             maps:get(<<"h3_quic_pool_size">>, AllConfig)

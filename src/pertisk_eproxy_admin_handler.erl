@@ -1383,7 +1383,8 @@ config_to_json_all(Config) ->
         {<<"http_addr">>, http_addr},
         {<<"management_addr">>, management_addr},
         {<<"metrics_addr">>, metrics_addr},
-        {<<"h3_udp_bind">>, h3_udp_bind}
+        {<<"h3_udp_bind">>, h3_udp_bind},
+        {<<"h3_congestion_control">>, h3_congestion_control}
     ],
     Base1 = lists:foldl(fun maybe_put_int_key/2, Base, [{Config, JK, MK} || {JK, MK} <- IntKeys]),
     Base2 = lists:foldl(fun maybe_put_bool_key/2, Base1, [{Config, JK, MK} || {JK, MK} <- BoolKeys]),

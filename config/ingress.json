@@ -18,6 +18,7 @@
   "h3_idle_timeout_secs": 300,
   "h3_keepalive_interval_secs": 20,
   "h3_quic_pool_size": 32,
+  "h3_congestion_control": "newreno",
   "h3_max_udp_payload_size": 1200,
   "h3_pmtu_enabled": false,
   "h3_max_streams": 4096,
