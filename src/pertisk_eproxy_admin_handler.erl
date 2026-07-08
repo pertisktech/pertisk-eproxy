@@ -1372,6 +1372,7 @@ config_to_json_all(Config) ->
     BoolKeys = [
         {<<"proxy_access_log">>, proxy_access_log},
         {<<"health_access_log">>, health_access_log},
+        {<<"upstream_loopback_pool_enabled">>, upstream_loopback_pool_enabled},
         {<<"h3_pmtu_enabled">>, h3_pmtu_enabled},
         {<<"h3_qpack_static">>, h3_qpack_static},
         {<<"alt_svc_persist">>, alt_svc_persist},

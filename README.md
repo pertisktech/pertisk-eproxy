@@ -73,8 +73,11 @@ Defaults in `config/proxy.json` / `config/ingress.json`:
 | `h3_conn_receive_window` | 67108864 (64 MiB) |
 | `upstream_pool_size` | 256 |
 | `upstream_pool_idle_timeout_secs` | 90 |
+| `upstream_loopback_pool_enabled` | false |
 
 The H3 gateway uses the same upstream Gun options as TCP HTTPS (`[http2, http]` on TLS) so many concurrent requests can share one upstream HTTP/2 connection. Previously H3 forced `[http]` (one request per connection), which capped throughput around ~120 TPS at 100 VUs.
+
+For local benchmark topologies where upstreams are loopback targets (`127.0.0.1`, `localhost`, `::1`), set `upstream_loopback_pool_enabled: true` to reuse upstream keep-alive sockets. The default keeps loopback requests ephemeral for operational safety.
 
 ### Ingress throughput tuning
 

@@ -1074,6 +1074,11 @@ json_to_config(Json) ->
         upstream_pool_size => parse_opt_int(maps:get(<<"upstream_pool_size">>, Json, null)),
         upstream_pool_idle_timeout_secs =>
             parse_opt_int(maps:get(<<"upstream_pool_idle_timeout_secs">>, Json, null)),
+        upstream_loopback_pool_enabled =>
+            case maps:get(<<"upstream_loopback_pool_enabled">>, Json, undefined) of
+                undefined -> undefined;
+                V -> parse_opt_bool(V)
+            end,
         health_cache_refresh_ms =>
             parse_opt_int(maps:get(<<"health_cache_refresh_ms">>, Json, null)),
         rate_limit_enabled =>
