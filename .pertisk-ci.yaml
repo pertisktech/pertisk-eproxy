@@ -1,0 +1,80 @@
+on:
+  push:
+    branches: [main, release/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-docker:
+    runs-on: docker
+    timeout_minutes: 120
+    steps:
+      - name: docker login
+        run: |
+          test -n "$CI_REGISTRY" || (echo "CI_REGISTRY is empty" && exit 1)
+          test -n "$CI_REGISTRY_USER" || (echo "CI_REGISTRY_USER is empty" && exit 1)
+          test -n "$CI_REGISTRY_PASSWORD" || (echo "CI_REGISTRY_PASSWORD is empty" && exit 1)
+          echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+          if ! docker buildx inspect mybuilder >/dev/null 2>&1; then
+            docker buildx create --use --name mybuilder
+          fi
+          docker buildx use mybuilder
+          docker buildx inspect --bootstrap mybuilder
+          
+      - name: build and push docker proxy
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64) NATIVE_ARCH=amd64 ;;
+            aarch64|arm64) NATIVE_ARCH=arm64 ;;
+            *) echo "unsupported runner arch: $(uname -m)" && exit 1 ;;
+          esac
+          IMAGE_REPO="${PROXY_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
+          IMAGE_TAG="${IMAGE_TAG:-proxy-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
+          IMAGE="$IMAGE_REPO:$IMAGE_TAG"
+          CACHE_DIR=".buildx-cache/proxy"
+          CACHE_IMAGE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
+          CACHE_FROM_ARGS=""
+          mkdir -p "$CACHE_DIR"
+          if [ -f "$CACHE_DIR/index.json" ]; then
+            CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
+          fi
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --provenance=false \
+            -t "$IMAGE" \
+            --cache-from type=registry,ref="$CACHE_IMAGE" \
+            $CACHE_FROM_ARGS \
+            --cache-to type=registry,ref="$CACHE_IMAGE",mode=max,ignore-error=true \
+            --cache-to type=local,dest="$CACHE_DIR",mode=max \
+            --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
+            --build-arg BUILDARCH="$NATIVE_ARCH" \
+            -f Dockerfile.proxy --push .
+
+      - name: build and push docker ingress
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64) NATIVE_ARCH=amd64 ;;
+            aarch64|arm64) NATIVE_ARCH=arm64 ;;
+            *) echo "unsupported runner arch: $(uname -m)" && exit 1 ;;
+          esac
+          IMAGE_REPO="${INGRESS_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
+          IMAGE_TAG="${IMAGE_TAG:-ingress-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
+          IMAGE="$IMAGE_REPO:$IMAGE_TAG"
+          CACHE_DIR=".buildx-cache/ingress"
+          CACHE_IMAGE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
+          CACHE_FROM_ARGS=""
+          mkdir -p "$CACHE_DIR"
+          if [ -f "$CACHE_DIR/index.json" ]; then
+            CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
+          fi
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --provenance=false \
+            -t "$IMAGE" \
+            --cache-from type=registry,ref="$CACHE_IMAGE" \
+            $CACHE_FROM_ARGS \
+            --cache-to type=registry,ref="$CACHE_IMAGE",mode=max,ignore-error=true \
+            --cache-to type=local,dest="$CACHE_DIR",mode=max \
+            --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
+            --build-arg BUILDARCH="$NATIVE_ARCH" \
+            -f Dockerfile.ingress --push .
