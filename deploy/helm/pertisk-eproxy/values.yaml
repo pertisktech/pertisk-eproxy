@@ -32,6 +32,13 @@ serviceAccount:
 rbac:
   create: true
 
+# BEAM runtime flags appended via ERL_FLAGS (no image rebuild needed).
+# Default disables scheduler busy-wait spinning: under Kubernetes CFS CPU
+# limits, spin loops burn quota and trigger throttling (high p95, low TPS).
+# Add "+S N:N" here to pin scheduler count when CPU limits are small.
+beam:
+  erlFlags: "+sbwt none +sbwtdcpu none +sbwtdio none"
+
 leaderElection:
   enabled: true
   leaseName: ""

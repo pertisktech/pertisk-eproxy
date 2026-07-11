@@ -23,6 +23,9 @@ CPU_REQUEST="${CPU_REQUEST:-1000m}"
 MEMORY_REQUEST="${MEMORY_REQUEST:-512Mi}"
 CPU_LIMIT="${CPU_LIMIT:-2000m}"
 MEMORY_LIMIT="${MEMORY_LIMIT:-1Gi}"
+# BEAM flags: disable scheduler busy-wait (CFS throttling) and pin schedulers
+# to the CPU limit so spin/over-scheduling does not burn quota under load.
+BEAM_ERL_FLAGS="${BEAM_ERL_FLAGS:-+sbwt none +sbwtdcpu none +sbwtdio none +S 2:2}"
 PROXY_ACCESS_LOG="${PROXY_ACCESS_LOG:-false}"
 HEALTH_ACCESS_LOG="${HEALTH_ACCESS_LOG:-false}"
 HEALTH_ACCESS_LOG_SAMPLE="${HEALTH_ACCESS_LOG_SAMPLE:-0}"
@@ -75,6 +78,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set metrics.serviceMonitor.enabled="$SERVICEMONITOR_ENABLED" \
   --set metrics.serviceMonitor.labels.release="$SERVICEMONITOR_RELEASE_LABEL" \
   --set controller.config.h3_quic_pool_size=32 \
+  --set-string beam.erlFlags="$BEAM_ERL_FLAGS" \
   --set resources.requests.cpu="$CPU_REQUEST" \
   --set resources.requests.memory="$MEMORY_REQUEST" \
   --set resources.limits.cpu="$CPU_LIMIT" \

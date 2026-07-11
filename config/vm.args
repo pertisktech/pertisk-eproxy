@@ -11,6 +11,13 @@
 # Omit +S to use all CPUs visible to the pod (respects cgroup limits in K8s).
 # Optional fixed count for small CPU limits: +S 2:2
 
+# Disable scheduler busy-wait spinning. Under Kubernetes CFS CPU limits the
+# default (+sbwt medium) burns quota on spin loops, causing throttling that
+# inflates p95 latency and caps throughput (k6 /api/health benchmarks).
++sbwt none
++sbwtdcpu none
++sbwtdio none
+
 # Async thread pool (QUIC UDP I/O at high throughput needs many async threads)
 +A 64
 
