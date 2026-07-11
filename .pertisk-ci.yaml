@@ -48,7 +48,7 @@ jobs:
             --cache-to type=local,dest="$CACHE_DIR",mode=max \
             --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
             --build-arg BUILDARCH="$NATIVE_ARCH" \
-            -f Dockerfile.proxy --push .
+            -f docker/Dockerfile.proxy --push .
 
       - name: build and push docker ingress
         run: |
@@ -77,4 +77,4 @@ jobs:
             --cache-to type=local,dest="$CACHE_DIR",mode=max \
             --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
             --build-arg BUILDARCH="$NATIVE_ARCH" \
-            -f Dockerfile.ingress --push .
+            -f docker/Dockerfile.ingress --push .
