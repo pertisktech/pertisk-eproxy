@@ -37,12 +37,13 @@ run() ->
 %% `connections`, `duration_ms`, `warmup_ms`, `port` (0 = ephemeral).
 run(Opts) ->
     Protocol = maps:get(protocol, Opts, h1),
+    H3Impl = maps:get(h3_impl, Opts, gateway),
     Workload = maps:get(workload, Opts, tiny),
     Conns = maps:get(connections, Opts, 50),
     Duration = maps:get(duration_ms, Opts, 3000),
     Warmup = maps:get(warmup_ms, Opts, 500),
     Port = maps:get(port, Opts, 0),
-    {ok, Stack} = start_stack(Protocol, Port),
+    {ok, Stack} = start_stack(Protocol, Port, H3Impl),
     try
         ProxyPort = maps:get(proxy_port, Stack),
         _ = drive(Protocol, ProxyPort, Conns, Warmup, Workload),
@@ -125,7 +126,7 @@ report(M) ->
 %% Launch under its own BEAM and kill that process to stop. Used by `bench/compare.sh`.
 %% Signals readiness via stderr and, when `PERTISK_BENCH_READY_FILE' is set, that path.
 serve(Protocol, Port) ->
-    case start_stack(Protocol, Port) of
+    case start_stack(Protocol, Port, gateway) of
         {ok, Stack} ->
             ProxyPort = maps:get(proxy_port, Stack),
             notify_ready(Protocol, ProxyPort),
@@ -159,24 +160,25 @@ notify_failed(Protocol, Port, Reason) ->
 %% Stack lifecycle
 %%====================================================================
 
-start_stack(Protocol, Port) ->
+start_stack(Protocol, Port, H3Impl) ->
     ok = ensure_bench_env(),
     {UpstreamPort, ProxyPort0} = bench_ports(Port),
     case start_upstream(UpstreamPort) of
         {ok, UpRef} ->
-            start_stack_with_upstream(Protocol, ProxyPort0, UpRef);
+            start_stack_with_upstream(Protocol, ProxyPort0, UpRef, H3Impl);
         {error, Reason} ->
             {error, Reason}
     end.
 
-start_stack_with_upstream(Protocol, ProxyPort0, UpRef) ->
+start_stack_with_upstream(Protocol, ProxyPort0, UpRef, H3Impl) ->
     UpPort = ranch:get_port(UpRef),
     ok = setup_bench_routing(UpPort),
     {CertFile, KeyFile} = ensure_bench_certs(),
-    case start_proxy_listener(Protocol, ProxyPort0, CertFile, KeyFile) of
+    case start_proxy_listener(Protocol, ProxyPort0, CertFile, KeyFile, H3Impl) of
         {ok, ProxyPort, ProxyRef} ->
             {ok, #{
                 protocol => Protocol,
+                h3_impl => H3Impl,
                 upstream_ref => UpRef,
                 upstream_port => UpPort,
                 proxy_ref => ProxyRef,
@@ -317,7 +319,7 @@ proxy_routes() ->
         {"/[...]", pertisk_eproxy_handler, []}
     ].
 
-start_proxy_listener(h1, Port, _Cert, _Key) ->
+start_proxy_listener(h1, Port, _Cert, _Key, _H3Impl) ->
     Dispatch = cowboy_router:compile([{'_', proxy_routes()}]),
     Ref = bench_ref(h1),
     case cowboy:start_clear(
@@ -331,7 +333,7 @@ start_proxy_listener(h1, Port, _Cert, _Key) ->
         {ok, _} -> {ok, ranch:get_port(Ref), Ref};
         {error, Reason} -> {error, Reason}
     end;
-start_proxy_listener(h2, Port, CertFile, KeyFile) ->
+start_proxy_listener(h2, Port, CertFile, KeyFile, _H3Impl) ->
     Dispatch = cowboy_router:compile([{'_', proxy_routes()}]),
     Ref = bench_ref(h2),
     case cowboy:start_tls(
@@ -347,7 +349,7 @@ start_proxy_listener(h2, Port, CertFile, KeyFile) ->
         {ok, _} -> {ok, ranch:get_port(Ref), Ref};
         {error, Reason} -> {error, Reason}
     end;
-start_proxy_listener(h3, Port, CertFile, KeyFile) ->
+start_proxy_listener(h3, Port, CertFile, KeyFile, gateway) ->
     ProxyPort =
         case Port of
             0 -> free_udp_port();
@@ -368,13 +370,52 @@ start_proxy_listener(h3, Port, CertFile, KeyFile) ->
         ok -> {ok, ProxyPort, h3_gateway};
         {ok, _} -> {ok, ProxyPort, h3_gateway};
         {error, Reason} -> {error, Reason}
+    end;
+start_proxy_listener(h3, Port, CertFile, KeyFile, cowboy_quic) ->
+    ProxyPort =
+        case Port of
+            0 -> free_udp_port();
+            P -> P
+        end,
+    Dispatch = cowboy_router:compile([{'_', proxy_routes()}]),
+    Ref = bench_ref(h3_cowboy_quic),
+    StartQuic = quic_start_quic_fun(),
+    case erlang:function_exported(cowboy, StartQuic, 3) of
+        false ->
+            {error, cowboy_quic_not_available};
+        true ->
+            case catch erlang:apply(cowboy, StartQuic, [
+                Ref,
+                (?BENCH_TRANSPORT_OPTS(ProxyPort))#{
+                    socket_opts => [
+                        {port, ProxyPort},
+                        {certfile, CertFile},
+                        {keyfile, KeyFile}
+                    ]
+                },
+                maps:merge(?BENCH_PROTO_OPTS, #{
+                    env => #{dispatch => Dispatch},
+                    enable_connect_protocol => true,
+                    h3_datagram => true,
+                    enable_webtransport => true,
+                    wt_max_sessions => 16
+                })
+            ]) of
+                {ok, _} -> {ok, ProxyPort, Ref};
+                {error, Reason} -> {error, Reason};
+                {'EXIT', Reason} -> {error, Reason};
+                Other -> {error, Other}
+            end
     end.
 
-stop_proxy_listener(h3, _) ->
+stop_proxy_listener(h3, h3_gateway) ->
     pertisk_eproxy_h3_api_gateway:stop();
 stop_proxy_listener(_, Ref) ->
     catch cowboy:stop_listener(Ref),
     ok.
+
+quic_start_quic_fun() ->
+    binary_to_atom(<<"start_quic">>, utf8).
 
 ensure_bench_certs() ->
     case persistent_term:get(pertisk_eproxy_bench_certs, undefined) of

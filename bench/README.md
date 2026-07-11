@@ -21,7 +21,7 @@ mid-teardown logs spurious connection crashes.
 Options: `protocol` (`h1` | `h2` | `h3`, default `h1`), `workload`
 (`tiny` | `bytes1k` | `bytes10k` | `bytes100k` | `echo`, default `tiny`),
 `connections` (default 50), `duration_ms` (3000), `warmup_ms` (500),
-`port` (0 = ephemeral).
+`port` (0 = ephemeral), `h3_impl` (`gateway` | `cowboy_quic`, default `gateway`).
 
 `run/0,1` prints a report and returns a metrics map:
 
@@ -68,6 +68,11 @@ listener did not become ready (see stderr tail from `serve.log`).
 HTTP/3 uses the in-VM `quic_h3` driver (same as [livery bench](https://github.com/benoitc/livery/tree/main/bench));
 external h3 load tools do not interoperate cleanly with the self-signed QUIC
 listener, so H3 figures are not directly comparable to the external H1/H2 runs.
+
+`bench/bench_quic_compare.sh` compares:
+1. `benoitc/erlang_quic` gateway mode (`h3_impl => gateway`)
+2. `emqx/quic` gateway mode (`h3_impl => gateway`)
+3. Cowboy QUIC HTTP/3 (`h3_impl => cowboy_quic`) when `cowboy:start_quic/3` is available
 
 ## p99 regression gate
 

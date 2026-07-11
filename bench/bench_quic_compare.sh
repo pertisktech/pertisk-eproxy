@@ -5,6 +5,7 @@
 #   bench/bench_quic_compare.sh                 # Quick H3 comparison
 #   DURATION=10000 bench/bench_quic_compare.sh  # Longer run
 #   CONNS=100 bench/bench_quic_compare.sh       # More connections
+#   Includes optional Cowboy QUIC H3 when available in bench_quicer profile
 
 set -euo pipefail
 
@@ -39,6 +40,7 @@ run_bench() {
   local profile=$1
   local label=$2
   local output_file=$3
+  local h3_impl=${4:-gateway}
   
   echo "==> Running benchmark with $label..."
   
@@ -60,6 +62,7 @@ run_bench() {
       -eval "
         Opts = #{
           protocol => h3,
+          h3_impl => $h3_impl,
           workload => tiny,
           connections => $CONNS,
           duration_ms => $DURATION,
@@ -95,10 +98,18 @@ run_bench() {
 # Run both benchmarks
 ERLANG_QUIC_OUT="/tmp/erlang_quic_metrics.erl"
 QUICER_OUT="/tmp/quicer_metrics.erl"
+COWBOY_QUIC_OUT="/tmp/cowboy_quic_metrics.erl"
+COWBOY_QUIC_AVAILABLE=0
 
-run_bench "bench" "benoitc/erlang_quic" "$ERLANG_QUIC_OUT"
+run_bench "bench" "benoitc/erlang_quic (gateway)" "$ERLANG_QUIC_OUT" "gateway"
 echo ""
-run_bench "bench_quicer" "emqx/quic (quicer)" "$QUICER_OUT"
+run_bench "bench_quicer" "emqx/quic (gateway)" "$QUICER_OUT" "gateway"
+echo ""
+if run_bench "bench_quicer" "cowboy HTTP/3 (quicer)" "$COWBOY_QUIC_OUT" "cowboy_quic"; then
+  COWBOY_QUIC_AVAILABLE=1
+else
+  echo "Warning: Cowboy HTTP/3 benchmark unavailable in this build; continuing with gateway comparison only."
+fi
 echo ""
 
 # Compare results
@@ -109,6 +120,11 @@ echo "==============================================="
 erl -noinput -eval "
   {ok, [ErlangQuic]} = file:consult(\"$ERLANG_QUIC_OUT\"),
   {ok, [Quicer]} = file:consult(\"$QUICER_OUT\"),
+  CowboyQuicMaybe =
+    case file:consult(\"$COWBOY_QUIC_OUT\") of
+      {ok, [CowboyMetrics]} -> {ok, CowboyMetrics};
+      _ -> unavailable
+    end,
   
   EQ_RPS = maps:get(throughput_rps, ErlangQuic),
   EQ_P50 = maps:get(p50_us, ErlangQuic) / 1000,
@@ -152,10 +168,36 @@ erl -noinput -eval "
   Summary = #{
     erlang_quic => ErlangQuic,
     quicer => Quicer,
+    cowboy_quic => CowboyQuicMaybe,
     diff_rps_percent => DiffRPS,
     diff_p50_percent => DiffP50,
     diff_p99_percent => DiffP99
   },
+
+  case CowboyQuicMaybe of
+    {ok, CowboyQuic} ->
+      CB_RPS = maps:get(throughput_rps, CowboyQuic),
+      CB_P50 = maps:get(p50_us, CowboyQuic) / 1000,
+      CB_P90 = maps:get(p90_us, CowboyQuic) / 1000,
+      CB_P99 = maps:get(p99_us, CowboyQuic) / 1000,
+      CB_MAX = maps:get(max_us, CowboyQuic) / 1000,
+      CB_REQS = maps:get(requests, CowboyQuic),
+      io:format(\"Cowboy HTTP/3 (quicer):~n\"),
+      io:format(\"  Throughput (req/s): ~.1f (vs erlang_quic gateway: ~.1f%)~n\", [
+        CB_RPS,
+        ((CB_RPS - EQ_RPS) / EQ_RPS) * 100
+      ]),
+      io:format(\"  Total Requests: ~b~n\", [CB_REQS]),
+      io:format(\"  P50/P90/P99/Max (ms): ~.3f / ~.3f / ~.3f / ~.3f~n~n\", [
+        CB_P50,
+        CB_P90,
+        CB_P99,
+        CB_MAX
+      ]);
+    unavailable ->
+      io:format(\"Cowboy HTTP/3 (quicer): unavailable in this build/profile~n~n\")
+  end,
+
   file:write_file(\"/tmp/quic_comparison.erl\", io_lib:format(\"~p.~n\", [Summary])),
   
   halt(0).
@@ -165,5 +207,8 @@ echo "==============================================="
 echo "Full results saved to:"
 echo "  - /tmp/erlang_quic_metrics.erl"
 echo "  - /tmp/quicer_metrics.erl"
+if [ "$COWBOY_QUIC_AVAILABLE" -eq 1 ]; then
+  echo "  - /tmp/cowboy_quic_metrics.erl"
+fi
 echo "  - /tmp/quic_comparison.erl"
 echo "==============================================="
