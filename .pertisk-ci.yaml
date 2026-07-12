@@ -32,13 +32,12 @@ jobs:
           IMAGE_REPO="${PROXY_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-proxy-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          CACHE_IMAGE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
+          CACHE_BASE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
           # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races.
-          # Registry cache only (no local cache-to) — local exporter races on empty layers.
+          # Per-arch cache tags + image-manifest=true avoid OCI referrers (Harbor/GitLab often
+          # return HTML for /referrers → "failed to decode referrers index: invalid character '<'").
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
-          COMMON_ARGS="--provenance=false \
-            --cache-from type=registry,ref=$CACHE_IMAGE \
-            --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
+          COMMON_ARGS="--provenance=false --sbom=false \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
@@ -47,10 +46,13 @@ jobs:
             for p in linux/amd64 linux/arm64; do
               SUFFIX="${p#linux/}"
               PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
-              echo "==> buildx platform=$p tag=$PTAG"
+              CACHE_REF="${CACHE_BASE}-${SUFFIX}"
+              echo "==> buildx platform=$p tag=$PTAG cache=$CACHE_REF"
               docker buildx build \
                 --platform "$p" \
                 $COMMON_ARGS \
+                --cache-from "type=registry,ref=$CACHE_REF" \
+                --cache-to "type=registry,ref=$CACHE_REF,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
                 -f docker/Dockerfile.proxy \
                 -t "$PTAG" \
                 --push .
@@ -61,6 +63,8 @@ jobs:
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
               $COMMON_ARGS \
+              --cache-from "type=registry,ref=$CACHE_BASE" \
+              --cache-to "type=registry,ref=$CACHE_BASE,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
               -t "$IMAGE" \
               -f docker/Dockerfile.proxy \
               --push .
@@ -77,13 +81,12 @@ jobs:
           IMAGE_REPO="${INGRESS_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-ingress-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          CACHE_IMAGE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
+          CACHE_BASE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
           # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races.
-          # Registry cache only (no local cache-to) — local exporter races on empty layers.
+          # Per-arch cache tags + image-manifest=true avoid OCI referrers (Harbor/GitLab often
+          # return HTML for /referrers → "failed to decode referrers index: invalid character '<'").
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
-          COMMON_ARGS="--provenance=false \
-            --cache-from type=registry,ref=$CACHE_IMAGE \
-            --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
+          COMMON_ARGS="--provenance=false --sbom=false \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
@@ -92,10 +95,13 @@ jobs:
             for p in linux/amd64 linux/arm64; do
               SUFFIX="${p#linux/}"
               PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
-              echo "==> buildx platform=$p tag=$PTAG"
+              CACHE_REF="${CACHE_BASE}-${SUFFIX}"
+              echo "==> buildx platform=$p tag=$PTAG cache=$CACHE_REF"
               docker buildx build \
                 --platform "$p" \
                 $COMMON_ARGS \
+                --cache-from "type=registry,ref=$CACHE_REF" \
+                --cache-to "type=registry,ref=$CACHE_REF,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
                 -f docker/Dockerfile.ingress \
                 -t "$PTAG" \
                 --push .
@@ -106,6 +112,8 @@ jobs:
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
               $COMMON_ARGS \
+              --cache-from "type=registry,ref=$CACHE_BASE" \
+              --cache-to "type=registry,ref=$CACHE_BASE,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
               -t "$IMAGE" \
               -f docker/Dockerfile.ingress \
               --push .
