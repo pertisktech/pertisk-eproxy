@@ -20,7 +20,7 @@ jobs:
           fi
           docker buildx use mybuilder
           docker buildx inspect --bootstrap mybuilder
-          
+
       - name: build and push docker proxy
         run: |
           case "$(uname -m)" in
@@ -33,22 +33,43 @@ jobs:
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
           CACHE_DIR=".buildx-cache/proxy"
           CACHE_IMAGE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
+          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-0}"
           CACHE_FROM_ARGS=""
           mkdir -p "$CACHE_DIR"
           if [ -f "$CACHE_DIR/index.json" ]; then
             CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
           fi
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --provenance=false \
-            -t "$IMAGE" \
-            --cache-from type=registry,ref="$CACHE_IMAGE" \
+          COMMON_ARGS="--provenance=false \
+            --cache-from type=registry,ref=$CACHE_IMAGE \
             $CACHE_FROM_ARGS \
-            --cache-to type=registry,ref="$CACHE_IMAGE",mode=max,ignore-error=true \
-            --cache-to type=local,dest="$CACHE_DIR",mode=max \
-            --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
-            --build-arg BUILDARCH="$NATIVE_ARCH" \
-            -f docker/Dockerfile.proxy --push .
+            --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
+            --cache-to type=local,dest=$CACHE_DIR,mode=max \
+            --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
+            --build-arg BUILDARCH=$NATIVE_ARCH"
+          if [ "$BUILD_SEQUENTIAL" = "1" ]; then
+            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64 (lower peak RAM, avoids QEMU overlap)"
+            SRCS=""
+            for p in linux/amd64 linux/arm64; do
+              SUFFIX="${p#linux/}"
+              PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
+              echo "==> buildx platform=$p tag=$PTAG"
+              docker buildx build \
+                --platform "$p" \
+                $COMMON_ARGS \
+                -f docker/Dockerfile.proxy \
+                -t "$PTAG" \
+                --push .
+              SRCS="$SRCS $PTAG"
+            done
+            docker buildx imagetools create -t "$IMAGE" $SRCS
+          else
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              $COMMON_ARGS \
+              -t "$IMAGE" \
+              -f docker/Dockerfile.proxy \
+              --push .
+          fi
 
       - name: build and push docker ingress
         run: |
@@ -62,19 +83,40 @@ jobs:
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
           CACHE_DIR=".buildx-cache/ingress"
           CACHE_IMAGE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
+          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-0}"
           CACHE_FROM_ARGS=""
           mkdir -p "$CACHE_DIR"
           if [ -f "$CACHE_DIR/index.json" ]; then
             CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
           fi
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --provenance=false \
-            -t "$IMAGE" \
-            --cache-from type=registry,ref="$CACHE_IMAGE" \
+          COMMON_ARGS="--provenance=false \
+            --cache-from type=registry,ref=$CACHE_IMAGE \
             $CACHE_FROM_ARGS \
-            --cache-to type=registry,ref="$CACHE_IMAGE",mode=max,ignore-error=true \
-            --cache-to type=local,dest="$CACHE_DIR",mode=max \
-            --build-arg BUILDPLATFORM="linux/$NATIVE_ARCH" \
-            --build-arg BUILDARCH="$NATIVE_ARCH" \
-            -f docker/Dockerfile.ingress --push .
+            --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
+            --cache-to type=local,dest=$CACHE_DIR,mode=max \
+            --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
+            --build-arg BUILDARCH=$NATIVE_ARCH"
+          if [ "$BUILD_SEQUENTIAL" = "1" ]; then
+            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64 (lower peak RAM, avoids QEMU overlap)"
+            SRCS=""
+            for p in linux/amd64 linux/arm64; do
+              SUFFIX="${p#linux/}"
+              PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
+              echo "==> buildx platform=$p tag=$PTAG"
+              docker buildx build \
+                --platform "$p" \
+                $COMMON_ARGS \
+                -f docker/Dockerfile.ingress \
+                -t "$PTAG" \
+                --push .
+              SRCS="$SRCS $PTAG"
+            done
+            docker buildx imagetools create -t "$IMAGE" $SRCS
+          else
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              $COMMON_ARGS \
+              -t "$IMAGE" \
+              -f docker/Dockerfile.ingress \
+              --push .
+          fi
