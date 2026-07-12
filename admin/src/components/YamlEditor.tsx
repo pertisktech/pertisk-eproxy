@@ -1,6 +1,7 @@
 import FaIcon from "@/components/FaIcon";
 import { useRef, useEffect } from 'react';
-import Editor, { type Monaco, type OnMount } from '@monaco-editor/react';
+import Editor, { type Monaco } from '@monaco-editor/react';
+import type { editor } from 'monaco-editor';
 import { configureMonacoYaml } from 'monaco-yaml';
 
 interface YamlEditorProps {
@@ -28,9 +29,8 @@ export default function YamlEditor({ value, height = 400, readOnly = true }: Yam
     });
   };
 
-  const handleMount: OnMount = (editor) => {
-    // Additional editor configuration if needed
-    editor.updateOptions({
+  const handleMount = (ed: editor.IStandaloneCodeEditor) => {
+    ed.updateOptions({
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       folding: true,

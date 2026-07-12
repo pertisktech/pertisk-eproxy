@@ -13,9 +13,9 @@ ENV VITE_BUILD_ID=${FRONTEND_BUILD_ID}
 
 WORKDIR /app/admin
 
-COPY admin/package.json admin/package-lock.json* ./
+COPY admin/package.json admin/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts 2>/dev/null || npm install
+    npm ci --ignore-scripts
 
 COPY admin/ ./
 RUN npm run build
