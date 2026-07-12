@@ -8,6 +8,9 @@ jobs:
   build-docker:
     runs-on: docker
     timeout_minutes: 120
+    # gitdev returns HTML for OCI referrers; BuildKit still probes after push and fails.
+    env:
+      BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
     steps:
       - name: docker login
         run: |
@@ -32,51 +35,81 @@ jobs:
           IMAGE_REPO="${PROXY_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-proxy-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          # Registry remote cache disabled by default: gitdev returns HTML for OCI
-          # referrers → "failed to decode referrers index: invalid character '<'".
-          # Set BUILDX_REGISTRY_CACHE=1 to re-enable once the registry supports referrers
-          # (or use a cache backend that does). Builder-local layer cache still applies.
-          BUILDX_REGISTRY_CACHE="${BUILDX_REGISTRY_CACHE:-0}"
-          CACHE_BASE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
+          # No registry remote cache — referrers probe fails on this registry.
+          # Attestations disabled: BuildKit still GETs /referrers after push otherwise.
           COMMON_ARGS="--provenance=false --sbom=false \
+            --attest=type=provenance,disabled=true \
+            --attest=type=sbom,disabled=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
-          cache_flags() {
-            local ref="$1"
-            if [ "$BUILDX_REGISTRY_CACHE" = "1" ]; then
-              echo "--cache-from" "type=registry,ref=${ref}" \
-                "--cache-to" "type=registry,ref=${ref},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true"
+
+          # Push succeeded but buildx exits non-zero when registry returns HTML for referrers.
+          run_buildx_push() {
+            local tag="$1"
+            shift
+            local log
+            log="$(mktemp)"
+            set +e
+            docker buildx build "$@" -t "$tag" --push . 2>&1 | tee "$log"
+            local rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              if grep -q "failed to decode referrers index" "$log" \
+                && grep -q "pushing manifest for ${tag}" "$log"; then
+                echo "WARN: ignoring registry referrers quirk after successful push of ${tag}"
+              else
+                rm -f "$log"
+                exit "$rc"
+              fi
             fi
+            rm -f "$log"
           }
+
+          create_manifest() {
+            local dest="$1"
+            shift
+            local log
+            log="$(mktemp)"
+            set +e
+            docker buildx imagetools create -t "$dest" "$@" 2>&1 | tee "$log"
+            local rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              if grep -q "failed to decode referrers index" "$log"; then
+                echo "WARN: imagetools hit referrers quirk; falling back to docker manifest"
+                docker manifest rm "$dest" 2>/dev/null || true
+                # shellcheck disable=SC2068
+                docker manifest create "$dest" $@
+                docker manifest push "$dest"
+              else
+                rm -f "$log"
+                exit "$rc"
+              fi
+            fi
+            rm -f "$log"
+          }
+
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
-            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64 (registry_cache=${BUILDX_REGISTRY_CACHE})"
+            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64"
             SRCS=""
             for p in linux/amd64 linux/arm64; do
               SUFFIX="${p#linux/}"
               PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
-              CACHE_REF="${CACHE_BASE}-${SUFFIX}"
               echo "==> buildx platform=$p tag=$PTAG"
-              # shellcheck disable=SC2046
-              docker buildx build \
+              run_buildx_push "$PTAG" \
                 --platform "$p" \
                 $COMMON_ARGS \
-                $(cache_flags "$CACHE_REF") \
-                -f docker/Dockerfile.proxy \
-                -t "$PTAG" \
-                --push .
+                -f docker/Dockerfile.proxy
               SRCS="$SRCS $PTAG"
             done
-            docker buildx imagetools create -t "$IMAGE" $SRCS
+            # shellcheck disable=SC2086
+            create_manifest "$IMAGE" $SRCS
           else
-            # shellcheck disable=SC2046
-            docker buildx build \
+            run_buildx_push "$IMAGE" \
               --platform linux/amd64,linux/arm64 \
               $COMMON_ARGS \
-              $(cache_flags "$CACHE_BASE") \
-              -t "$IMAGE" \
-              -f docker/Dockerfile.proxy \
-              --push .
+              -f docker/Dockerfile.proxy
           fi
 
       - name: build and push docker ingress
@@ -90,46 +123,76 @@ jobs:
           IMAGE_REPO="${INGRESS_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-ingress-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          # Registry remote cache disabled by default (see proxy step).
-          BUILDX_REGISTRY_CACHE="${BUILDX_REGISTRY_CACHE:-0}"
-          CACHE_BASE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
           COMMON_ARGS="--provenance=false --sbom=false \
+            --attest=type=provenance,disabled=true \
+            --attest=type=sbom,disabled=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
-          cache_flags() {
-            local ref="$1"
-            if [ "$BUILDX_REGISTRY_CACHE" = "1" ]; then
-              echo "--cache-from" "type=registry,ref=${ref}" \
-                "--cache-to" "type=registry,ref=${ref},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true"
+
+          run_buildx_push() {
+            local tag="$1"
+            shift
+            local log
+            log="$(mktemp)"
+            set +e
+            docker buildx build "$@" -t "$tag" --push . 2>&1 | tee "$log"
+            local rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              if grep -q "failed to decode referrers index" "$log" \
+                && grep -q "pushing manifest for ${tag}" "$log"; then
+                echo "WARN: ignoring registry referrers quirk after successful push of ${tag}"
+              else
+                rm -f "$log"
+                exit "$rc"
+              fi
             fi
+            rm -f "$log"
           }
+
+          create_manifest() {
+            local dest="$1"
+            shift
+            local log
+            log="$(mktemp)"
+            set +e
+            docker buildx imagetools create -t "$dest" "$@" 2>&1 | tee "$log"
+            local rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              if grep -q "failed to decode referrers index" "$log"; then
+                echo "WARN: imagetools hit referrers quirk; falling back to docker manifest"
+                docker manifest rm "$dest" 2>/dev/null || true
+                # shellcheck disable=SC2068
+                docker manifest create "$dest" $@
+                docker manifest push "$dest"
+              else
+                rm -f "$log"
+                exit "$rc"
+              fi
+            fi
+            rm -f "$log"
+          }
+
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
-            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64 (registry_cache=${BUILDX_REGISTRY_CACHE})"
+            echo "BUILD_SEQUENTIAL=1: building linux/amd64 then linux/arm64"
             SRCS=""
             for p in linux/amd64 linux/arm64; do
               SUFFIX="${p#linux/}"
               PTAG="$IMAGE_REPO:$IMAGE_TAG-$SUFFIX"
-              CACHE_REF="${CACHE_BASE}-${SUFFIX}"
               echo "==> buildx platform=$p tag=$PTAG"
-              # shellcheck disable=SC2046
-              docker buildx build \
+              run_buildx_push "$PTAG" \
                 --platform "$p" \
                 $COMMON_ARGS \
-                $(cache_flags "$CACHE_REF") \
-                -f docker/Dockerfile.ingress \
-                -t "$PTAG" \
-                --push .
+                -f docker/Dockerfile.ingress
               SRCS="$SRCS $PTAG"
             done
-            docker buildx imagetools create -t "$IMAGE" $SRCS
+            # shellcheck disable=SC2086
+            create_manifest "$IMAGE" $SRCS
           else
-            # shellcheck disable=SC2046
-            docker buildx build \
+            run_buildx_push "$IMAGE" \
               --platform linux/amd64,linux/arm64 \
               $COMMON_ARGS \
-              $(cache_flags "$CACHE_BASE") \
-              -t "$IMAGE" \
-              -f docker/Dockerfile.ingress \
-              --push .
+              -f docker/Dockerfile.ingress
           fi
