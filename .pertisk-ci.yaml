@@ -33,7 +33,9 @@ jobs:
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
           CACHE_DIR=".buildx-cache/proxy"
           CACHE_IMAGE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
-          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-0}"
+          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races
+          # ("ref layer-sha256:... locked ... unavailable") on multi-arch builds.
+          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
           CACHE_FROM_ARGS=""
           mkdir -p "$CACHE_DIR"
           if [ -f "$CACHE_DIR/index.json" ]; then
@@ -43,7 +45,7 @@ jobs:
             --cache-from type=registry,ref=$CACHE_IMAGE \
             $CACHE_FROM_ARGS \
             --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
-            --cache-to type=local,dest=$CACHE_DIR,mode=max \
+            --cache-to type=local,dest=$CACHE_DIR,mode=max,ignore-error=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
@@ -83,7 +85,9 @@ jobs:
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
           CACHE_DIR=".buildx-cache/ingress"
           CACHE_IMAGE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
-          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-0}"
+          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races
+          # ("ref layer-sha256:... locked ... unavailable") on multi-arch builds.
+          BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
           CACHE_FROM_ARGS=""
           mkdir -p "$CACHE_DIR"
           if [ -f "$CACHE_DIR/index.json" ]; then
@@ -93,7 +97,7 @@ jobs:
             --cache-from type=registry,ref=$CACHE_IMAGE \
             $CACHE_FROM_ARGS \
             --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
-            --cache-to type=local,dest=$CACHE_DIR,mode=max \
+            --cache-to type=local,dest=$CACHE_DIR,mode=max,ignore-error=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
