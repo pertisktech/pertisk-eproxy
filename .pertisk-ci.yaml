@@ -23,6 +23,7 @@ jobs:
 
       - name: build and push docker proxy
         run: |
+          set -euo pipefail
           case "$(uname -m)" in
             x86_64|amd64) NATIVE_ARCH=amd64 ;;
             aarch64|arm64) NATIVE_ARCH=arm64 ;;
@@ -31,21 +32,13 @@ jobs:
           IMAGE_REPO="${PROXY_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-proxy-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          CACHE_DIR=".buildx-cache/proxy"
           CACHE_IMAGE="${CACHE_IMAGE_PROXY:-${IMAGE_REPO}:proxy-buildcache}"
-          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races
-          # ("ref layer-sha256:... locked ... unavailable") on multi-arch builds.
+          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races.
+          # Registry cache only (no local cache-to) — local exporter races on empty layers.
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
-          CACHE_FROM_ARGS=""
-          mkdir -p "$CACHE_DIR"
-          if [ -f "$CACHE_DIR/index.json" ]; then
-            CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
-          fi
           COMMON_ARGS="--provenance=false \
             --cache-from type=registry,ref=$CACHE_IMAGE \
-            $CACHE_FROM_ARGS \
             --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
-            --cache-to type=local,dest=$CACHE_DIR,mode=max,ignore-error=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then
@@ -75,6 +68,7 @@ jobs:
 
       - name: build and push docker ingress
         run: |
+          set -euo pipefail
           case "$(uname -m)" in
             x86_64|amd64) NATIVE_ARCH=amd64 ;;
             aarch64|arm64) NATIVE_ARCH=arm64 ;;
@@ -83,21 +77,13 @@ jobs:
           IMAGE_REPO="${INGRESS_IMAGE_REPO:-${CI_REGISTRY_IMAGE:-${CI_REGISTRY}/${CI_PROJECT_PATH}}}"
           IMAGE_TAG="${IMAGE_TAG:-ingress-v0.1.${{ secrets.CI_PIPELINE_IID }}}"
           IMAGE="$IMAGE_REPO:$IMAGE_TAG"
-          CACHE_DIR=".buildx-cache/ingress"
           CACHE_IMAGE="${CACHE_IMAGE_INGRESS:-${IMAGE_REPO}:ingress-buildcache}"
-          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races
-          # ("ref layer-sha256:... locked ... unavailable") on multi-arch builds.
+          # Sequential platforms avoid QEMU overlap and BuildKit local-cache layer lock races.
+          # Registry cache only (no local cache-to) — local exporter races on empty layers.
           BUILD_SEQUENTIAL="${BUILD_SEQUENTIAL:-1}"
-          CACHE_FROM_ARGS=""
-          mkdir -p "$CACHE_DIR"
-          if [ -f "$CACHE_DIR/index.json" ]; then
-            CACHE_FROM_ARGS="--cache-from type=local,src=$CACHE_DIR"
-          fi
           COMMON_ARGS="--provenance=false \
             --cache-from type=registry,ref=$CACHE_IMAGE \
-            $CACHE_FROM_ARGS \
             --cache-to type=registry,ref=$CACHE_IMAGE,mode=max,ignore-error=true \
-            --cache-to type=local,dest=$CACHE_DIR,mode=max,ignore-error=true \
             --build-arg BUILDPLATFORM=linux/$NATIVE_ARCH \
             --build-arg BUILDARCH=$NATIVE_ARCH"
           if [ "$BUILD_SEQUENTIAL" = "1" ]; then

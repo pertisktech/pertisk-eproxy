@@ -37,14 +37,26 @@ COPY . .
 COPY --from=admin-builder /app/priv/admin ./priv/admin
 
 # ekub 0.2.0 sets fail_if_no_peer_cert (server-only) on K8s API client SSL — patch before compile.
-RUN chmod +x \
+# get-deps retries: git fetches (cowboy etc.) are flaky under QEMU user-mode emulation.
+RUN --mount=type=cache,target=/root/.cache/rebar3 \
+    chmod +x \
     /src/scripts/set-app-version.sh \
     /src/scripts/patch-ekub.sh \
     /src/scripts/patch-quic.sh \
     /src/scripts/patch-hackney.sh \
     && /src/scripts/set-app-version.sh "$VERSION" \
+    && git config --global http.version HTTP/1.1 \
+    && git config --global http.lowSpeedLimit 1000 \
+    && git config --global http.lowSpeedTime 300 \
     && rm -rf _build deps \
-    && rebar3 get-deps \
+    && i=1; \
+       until rebar3 get-deps; do \
+         if [ "$i" -ge 5 ]; then echo "rebar3 get-deps failed after $i attempts" >&2; exit 1; fi; \
+         echo "rebar3 get-deps failed (attempt $i/5), retrying..." >&2; \
+         rm -rf _build deps; \
+         sleep $((i * 5)); \
+         i=$((i + 1)); \
+       done \
     && /src/scripts/patch-ekub.sh \
     && /src/scripts/patch-quic.sh \
     && /src/scripts/patch-hackney.sh \
