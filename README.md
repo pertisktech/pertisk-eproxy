@@ -41,14 +41,21 @@ rebar3 shell
 
 For Erlang/Cowboy, the closest equivalent to NGINX `worker_processes` and `worker_connections` is:
 
-- BEAM schedulers (CPU workers): configured via `config/vm.args`
+- BEAM schedulers (CPU workers): configured via `config/vm.args` / Helm `beam.erlFlags`
 - Cowboy acceptors (listener workers): `*_num_acceptors` in proxy JSON
 - Listener connection limits: `proxy_max_connections` and `management_max_connections`
 
+**HTTP/3 k6 first** — use:
+
+- `deploy/helm/pertisk-eproxy/values-h3-perf.yaml` (default via `./deploy/erlang.sh` when `H3_PERF=1`)
+- `config/proxy.json` H3 keys for SQLite proxy mode
+
+H2/TCP-only overlay: `PROXY_PERF=1 H3_PERF=0` → `values-proxy-perf.yaml`.
+
 Recommended production setup:
 
-- Keep `config/vm.args` without `+S` so BEAM uses all CPUs visible to the container/host.
-- Let acceptors auto-scale by omitting these keys from JSON (or setting them only when you need fixed values):
+- Keep `config/vm.args` / `beam.erlFlags` **without** `+S` so BEAM uses all CPUs visible to the container/host. Do not pin `+S 2:2` unless the pod is limited to 2 CPU.
+- Let acceptors auto-scale by omitting these keys from JSON (or set them for benches):
 	- `http_num_acceptors`
 	- `https_num_acceptors`
 	- `quic_num_acceptors`
@@ -61,6 +68,8 @@ Current auto behavior in this app:
 - Management listener: scheduler-based default when `management_num_acceptors` is not set.
 
 This gives an "auto workers" model similar to NGINX tuning, while still allowing explicit per-listener overrides when required.
+
+See [Tune ingress throughput](docs/guides/tune-ingress-throughput.md).
 
 ### HTTP/3 performance
 

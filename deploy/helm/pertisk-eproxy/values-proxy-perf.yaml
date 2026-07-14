@@ -1,0 +1,38 @@
+# Proxy-mode (HTTP/1.1 + HTTP/2 over TCP/TLS) throughput profile.
+# Use this first when comparing against Rust cloud on /api/health (H2).
+# Does not force H3 single-replica settings — see values-h3-single.yaml for QUIC.
+#
+#   VERSION=0.5.xx ./deploy/erlang.sh   # already wires these via --set
+#   # or:
+#   helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
+#     -f deploy/helm/pertisk-eproxy/values-proxy-perf.yaml \
+#     -n pertisk-eproxy --create-namespace
+
+# Match k6 load: enough CPU that BEAM is not CFS-throttled at ~100 VUs.
+resources:
+  requests:
+    cpu: 2000m
+    memory: 1Gi
+  limits:
+    cpu: 4000m
+    memory: 2Gi
+
+# Do not pin +S — let BEAM use cgroup CPUs. Busy-wait off avoids CFS burn.
+beam:
+  erlFlags: "+sbwt none +sbwtdcpu none +sbwtdio none"
+
+controller:
+  config:
+    # Cowboy H2/TLS proxy path (admin.erlang… k6 health runs here)
+    http_num_acceptors: 32
+    https_num_acceptors: 32
+    proxy_max_connections: 65536
+    management_num_acceptors: 8
+    management_max_connections: 4096
+    proxy_access_log: false
+    health_access_log: false
+    log_level: warn
+    health_cache_refresh_ms: 3000
+    tls_http2_enabled: true
+    upstream_pool_size: 512
+    # H3 left alone; tune later with values-h3-single.yaml

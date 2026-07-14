@@ -130,6 +130,11 @@ controller:
     # health_access_log_sample: 1000
     # Application log verbosity (console + proxy.log): debug | info | warn | error
     log_level: warn
+    # Cowboy H2/TCP proxy acceptors (omit to auto = schedulers*2, capped 32).
+    # Pin for k6 vs Rust cloud: see values-proxy-perf.yaml
+    # http_num_acceptors: 32
+    # https_num_acceptors: 32
+    # proxy_max_connections: 65536
     # SSE / EventSource (e.g. Argo CD /api/v1/stream/*)
     sse_early_flush_enabled: true
     sse_initial_headers_timeout_ms: 5000
