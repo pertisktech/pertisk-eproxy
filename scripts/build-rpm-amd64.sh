@@ -79,6 +79,7 @@ mkdir -p "$PKG_ROOT/opt" "$PKG_ROOT/usr/lib/systemd/system" "$OUT_DIR"
 copy_tree "$REL_SRC" "$PKG_ROOT/opt/$PKG_NAME"
 bash "$ROOT_DIR/scripts/bundle-openssl-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
 bash "$ROOT_DIR/scripts/bundle-runtime-libs-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
+bash "$ROOT_DIR/scripts/bundle-msquic-for-rpm.sh" "$PKG_ROOT/opt/$PKG_NAME"
 copy_tree "$ROOT_DIR/config" "$PKG_ROOT/opt/$PKG_NAME/config"
 copy_tree "$ROOT_DIR/priv" "$PKG_ROOT/opt/$PKG_NAME/priv"
 # Do not package data/ or log/ — would overwrite production SQLite and ACME state on upgrade.

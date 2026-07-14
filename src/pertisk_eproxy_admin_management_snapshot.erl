@@ -148,7 +148,7 @@ http_versions_list(C) ->
 
 %% HTTP/3 is offered on UDP (erlang_quic gateway and/or Cowboy QUIC when built).
 http3_offered(C) ->
-    Gw = maps:get(h3_api_gateway_enabled, C, true),
+    Gw = maps:get(h3_api_gateway_enabled, C, false),
     Cowboy = maps:get(quic_enabled, C, false) andalso erlang:function_exported(cowboy, start_quic, 3),
     Gw orelse Cowboy.
 
@@ -222,7 +222,7 @@ listeners_json(C, HttpPort, MgmtAddr, MgmtPort) ->
         _ ->
             L2b
     end,
-    case maps:get(h3_api_gateway_enabled, C, true) of
+    case maps:get(h3_api_gateway_enabled, C, false) of
         true ->
             %% Keep snapshot in sync with pertisk_eproxy_h3_api_gateway:start/1 port selection.
             GwPort = case maps:get(quic_port, C, undefined) of
@@ -326,7 +326,7 @@ os_version_bin() ->
 runtime_capabilities(C) ->
     CowboyQuic = erlang:function_exported(cowboy, start_quic, 3),
     QuicerLoaded = app_loaded(quicer),
-    H3Gw = maps:get(h3_api_gateway_enabled, C, true),
+    H3Gw = maps:get(h3_api_gateway_enabled, C, false),
     #{
         <<"beam">> => list_to_binary(erlang:system_info(machine)),
         <<"jit">> => erlang:system_info(emu_flavor) =:= jit,

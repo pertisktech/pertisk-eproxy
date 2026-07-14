@@ -106,7 +106,8 @@ controller:
     metrics_addr: "0.0.0.0"
     metrics_port: 9090
     quic_enabled: false
-    h3_api_gateway_enabled: true
+    # false = Cowboy+quicer; true = erlang_quic gateway (rollback)
+    h3_api_gateway_enabled: false
     tls_http2_enabled: true
     # HTTP/3 QUIC throughput (see README high-performance tuning)
     h3_idle_timeout_secs: 300

@@ -1,4 +1,4 @@
-.PHONY: all compile admin-build patch-ekub patch-quic patch-hackney shell test test-acme-dns test-acme-dns-one cover cover-local docs docs-clean clean release \
+.PHONY: all compile admin-build patch-ekub patch-quic patch-cowboy-quic patch-hackney shell test test-acme-dns test-acme-dns-one cover cover-local docs docs-clean clean release \
 	docker-release docker-build docker-push \
 	docker-proxy docker-proxy-push docker-proxy-multi \
 	docker-ingress docker-ingress-push docker-ingress-multi \
@@ -60,11 +60,15 @@ patch-quic:
 	@$(REBAR) get-deps
 	@bash scripts/patch-quic.sh
 
+patch-cowboy-quic:
+	@$(REBAR) get-deps
+	@bash scripts/patch-cowboy-quic.sh
+
 patch-hackney:
 	@$(REBAR) get-deps
 	@bash scripts/patch-hackney.sh
 
-compile: patch-ekub patch-quic patch-hackney
+compile: patch-ekub patch-quic patch-cowboy-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
 
 admin-build:
@@ -73,7 +77,7 @@ admin-build:
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
 
-bench: patch-ekub patch-quic patch-hackney
+bench: patch-ekub patch-quic patch-cowboy-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) as bench compile
 
 bench-shell: bench

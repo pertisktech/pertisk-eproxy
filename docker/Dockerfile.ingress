@@ -41,6 +41,7 @@ RUN --mount=type=cache,target=/root/.cache/rebar3 \
     /src/scripts/set-app-version.sh \
     /src/scripts/patch-ekub.sh \
     /src/scripts/patch-quic.sh \
+    /src/scripts/patch-cowboy-quic.sh \
     /src/scripts/patch-hackney.sh \
     && /src/scripts/set-app-version.sh "$VERSION" \
     && git config --global http.version HTTP/1.1 \
@@ -57,6 +58,7 @@ RUN --mount=type=cache,target=/root/.cache/rebar3 \
        done \
     && /src/scripts/patch-ekub.sh \
     && /src/scripts/patch-quic.sh \
+    && /src/scripts/patch-cowboy-quic.sh \
     && /src/scripts/patch-hackney.sh \
     && /src/scripts/verify-deps.sh /src \
     && mkdir -p priv/tls \

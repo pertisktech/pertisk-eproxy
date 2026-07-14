@@ -1327,7 +1327,7 @@ config_to_json(Config) ->
         _ -> WithQuic
     end,
     WithH3Gw = WithQuicPort#{
-        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
+        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, false),
         <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true),
         <<"h3_quic_pool_size">> => config_json_h3_quic_pool_size(Config)
     },
@@ -1445,7 +1445,7 @@ backup_config_to_json(Config) ->
         _ -> WithQuic
     end,
     WithH3Gw = WithQuicPort#{
-        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, true),
+        <<"h3_api_gateway_enabled">> => maps:get(h3_api_gateway_enabled, Config, false),
         <<"h3_probe_enabled">> => maps:get(h3_probe_enabled, Config, true)
     },
     WithTlsH2 = case maps:get(tls_http2_enabled, Config, undefined) of

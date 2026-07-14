@@ -66,10 +66,15 @@ prepare_and_release() {
   retry_cmd 3 rebar3 get-deps
   bash scripts/patch-ekub.sh
   bash scripts/patch-quic.sh
+  bash scripts/patch-cowboy-quic.sh
   bash scripts/patch-hackney.sh
   bash scripts/verify-deps.sh "$ROOT_DIR"
+  # Force Cowboy rebuild after COWBOY_QUICER define patch.
+  find _build -type d -name 'cowboy' 2>/dev/null | while read -r d; do rm -rf "$d/ebin"; done || true
+  find _build -path '*/cowboy-*/ebin' -type d 2>/dev/null | while read -r d; do rm -rf "$d"; done || true
   COWBOY_QUICER="$COWBOY_QUICER" COWBOY_QUIC="$COWBOY_QUIC" rebar3 as prod release
   bash scripts/verify-release-quic.sh "$ROOT_DIR"
+  bash scripts/verify-release-quicer.sh "$ROOT_DIR"
 }
 
 # Tar the release onto the host bind mount. Snapshot on the Linux volume first so relx

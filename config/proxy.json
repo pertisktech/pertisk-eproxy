@@ -27,6 +27,7 @@
     "h3_probe_enabled": false,
     "tls_http2_enabled": true,
     "quic_enabled": true,
+    "quic_num_acceptors": 32,
     "h3_idle_timeout_secs": 300,
     "h3_keepalive_interval_secs": 20,
     "h3_quic_pool_size": 2,

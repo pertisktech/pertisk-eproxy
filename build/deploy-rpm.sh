@@ -169,6 +169,24 @@ fi
 sudo systemctl daemon-reload
 sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl reset-failed "${PACKAGE_NAME}" || true
+
+# Prefer Cowboy+quicer: ensure live proxy.json disables erlang_quic gateway (rpmnew-safe).
+if [ -f "\${PACKAGE_ROOT}/config/proxy.json" ]; then
+  sudo python3 - <<"PY" || true
+import json
+path = "/opt/pertisk-eproxy/config/proxy.json"
+with open(path) as f:
+    c = json.load(f)
+c["quic_enabled"] = True
+c["h3_api_gateway_enabled"] = False
+c["h3_probe_enabled"] = False
+with open(path, "w") as f:
+    json.dump(c, f, indent=4)
+    f.write("\n")
+print("proxy.json: quic_enabled=true h3_api_gateway_enabled=false")
+PY
+fi
+
 sudo systemctl restart "${PACKAGE_NAME}"
 
 STALE_EXECSTART_LINES="\$(sudo systemctl cat "${PACKAGE_NAME}" | grep '^ExecStart=' | grep '/releases/' | grep -v "/releases/\${REL_VSN}/" || true)"
@@ -187,6 +205,15 @@ fi
 sudo systemctl is-active --quiet "${PACKAGE_NAME}"
 echo "Service status:"
 sudo systemctl status "${PACKAGE_NAME}" --no-pager
+
+# Smoke: Cowboy start_quic should be present in the release beams
+sudo -u "${PACKAGE_NAME}" bash -lc '
+  REL=/opt/pertisk-eproxy
+  COWBOY_EBIN=$(ls -d \$REL/lib/cowboy-*/ebin 2>/dev/null | head -1)
+  if [ -n "\$COWBOY_EBIN" ]; then
+    \$REL/erts-*/bin/erl -noshell -pa "\$COWBOY_EBIN" -eval "io:format(\"start_quic=~p~n\", [erlang:function_exported(cowboy, start_quic, 3)]), halt()." 2>/dev/null || true
+  fi
+' || true
 EOF
 
 log_ok "RPM deployment completed successfully!"

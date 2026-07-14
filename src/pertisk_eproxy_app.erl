@@ -257,22 +257,25 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     end.
 
 maybe_start_quic(Config, Routes) ->
-    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
+    %% Default false: Cowboy+quicer is the preferred UDP H3 path. Set true to use
+    %% erlang_quic gateway (rollback). Both backends cannot share the same UDP port.
+    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, false),
     QuicAcceptors = listener_acceptors(quic, Config),
     ProxyMaxConns = listener_max_connections(quic4, Config),
     _ = maybe_start_h3_api_gateway(Config),
     _ = maybe_start_h3_probe(Config),
     case {maps:get(quic_enabled, Config, false), GatewayEnabled} of
         {_, true} ->
-            %% When erlang_quic gateway is enabled we reserve UDP QUIC port for it.
+            lager:info("HTTP/3 backend: erlang_quic gateway (h3_api_gateway_enabled=true)"),
             ok;
         {true, false} ->
             Port = case maps:get(quic_port, Config, undefined) of
                 P when is_integer(P), P > 0 -> P;
                 _ -> maps:get(https_port, Config, 443)
             end,
-            Tls = tls_opts(Config),
-            QuicSocketOpts4 = [{ip, {0,0,0,0}}, {port, Port} | Tls],
+            %% quicer:listen/2 does maps:from_list/1 — only `{Key,Val}` tuples allowed
+            %% (no bare `inet6`), and only MsQuic-known TLS keys (not OTP ssl opts).
+            QuicTls = quic_msquic_tls_opts(tls_opts(Config)),
             QuicProtoOpts = #{
                 env => #{dispatch => cowboy_router:compile([{'_', Routes}])},
                 logger => pertisk_eproxy_cowboy_logger,
@@ -284,6 +287,7 @@ maybe_start_quic(Config, Routes) ->
             StartQuic = quic_start_quic_fun(),
             case erlang:function_exported(cowboy, StartQuic, 3) of
                 true ->
+                    QuicSocketOpts4 = [{ip, {0, 0, 0, 0}}, {port, Port} | QuicTls],
                     R1 = catch erlang:apply(cowboy, StartQuic, [
                         quic4,
                         #{
@@ -295,14 +299,26 @@ maybe_start_quic(Config, Routes) ->
                     ]),
                     case R1 of
                         {ok, _} ->
-                            lager:info("QUIC proxy listening on udp/:~w", [Port]),
+                            lager:info(
+                                "HTTP/3 backend: cowboy+quicer (MsQuic) listening on udp/0.0.0.0:~w "
+                                "(num_acceptors=~w)",
+                                [Port, QuicAcceptors]
+                            ),
                             ok;
                         _ ->
-                            lager:warning("QUIC start requested but failed (~p). Keep using HTTP/1.1+HTTP/2 on TCP 443.", [R1]),
+                            lager:error(
+                                "QUIC cowboy+quicer start failed on udp/:~w (~p). "
+                                "HTTP/3 unavailable — check quicer NIF/libmsquic and TLS material.",
+                                [Port, R1]
+                            ),
                             ok
                     end;
                 false ->
-                    lager:warning("QUIC requested on udp/:~w but Cowboy was built without start_quic/3 (enable COWBOY_QUICER=1 and quicer dependency).", [Port]),
+                    lager:error(
+                        "QUIC requested on udp/:~w but cowboy:start_quic/3 is missing. "
+                        "Rebuild with quicer dep and Cowboy {d,'COWBOY_QUICER',1}.",
+                        [Port]
+                    ),
                     ok
             end;
         _ ->
@@ -339,12 +355,28 @@ default_proxy_acceptors() ->
 quic_start_quic_fun() ->
     binary_to_atom(<<"start_quic">>, utf8).
 
+%% Strip OTP ssl / Cowboy opts that break quicer:listen/2 (maps:from_list + MsQuic).
+quic_msquic_tls_opts(TlsOpts) when is_list(TlsOpts) ->
+    lists:filtermap(
+        fun
+            ({certfile, Path}) when is_list(Path); is_binary(Path) -> {true, {certfile, Path}};
+            ({keyfile, Path}) when is_list(Path); is_binary(Path) -> {true, {keyfile, Path}};
+            ({password, Pass}) -> {true, {password, Pass}};
+            ({cacertfile, Path}) when is_list(Path); is_binary(Path) -> {true, {cacertfile, Path}};
+            (_) -> false
+        end,
+        TlsOpts
+    ).
+
 maybe_start_h3_api_gateway(Config) ->
-    case maps:get(h3_api_gateway_enabled, Config, true) of
+    case maps:get(h3_api_gateway_enabled, Config, false) of
         true ->
             case pertisk_eproxy_h3_api_gateway:start(Config) of
                 {ok, _Pid} ->
-                    lager:info("HTTP/3 API gateway (erlang_quic) listening on udp/:~w", [maps:get(quic_port, Config, maps:get(https_port, Config, 443))]),
+                    lager:info(
+                        "HTTP/3 backend: erlang_quic gateway listening on udp/:~w",
+                        [maps:get(quic_port, Config, maps:get(https_port, Config, 443))]
+                    ),
                     ok;
                 {error, {already_started, _}} ->
                     ok;

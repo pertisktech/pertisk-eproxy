@@ -45,12 +45,11 @@ For Erlang/Cowboy, the closest equivalent to NGINX `worker_processes` and `worke
 - Cowboy acceptors (listener workers): `*_num_acceptors` in proxy JSON
 - Listener connection limits: `proxy_max_connections` and `management_max_connections`
 
-**HTTP/3 k6 first** — use:
+**HTTP/3 k6** — default edge is Cowboy + quicer (MsQuic):
 
-- `deploy/helm/pertisk-eproxy/values-h3-perf.yaml` (default via `./deploy/erlang.sh` when `H3_PERF=1`)
-- `config/proxy.json` H3 keys for SQLite proxy mode
-
-H2/TCP-only overlay: `PROXY_PERF=1 H3_PERF=0` → `values-proxy-perf.yaml`.
+- `quic_enabled: true`, `h3_api_gateway_enabled: false` in `config/proxy.json` / Helm
+- Rollback: `h3_api_gateway_enabled: true` (erlang_quic gateway)
+- RPM ships MsQuic via `scripts/bundle-msquic-for-rpm.sh`
 
 Recommended production setup:
 

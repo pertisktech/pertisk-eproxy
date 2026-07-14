@@ -1,6 +1,6 @@
 {application, pertisk_eproxy, [
     {description, "Erlang Cowboy Reverse Proxy"},
-    {vsn, "0.5.35"},
+    {vsn, "0.5.36"},
     {registered, [
         pertisk_eproxy_sup,
         pertisk_eproxy_config,
@@ -21,6 +21,7 @@
         crypto,
         ssl,
         inets,
+        quicer,
         quic,
         cowlib,
         cowboy,

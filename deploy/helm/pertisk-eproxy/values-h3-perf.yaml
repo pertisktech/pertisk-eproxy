@@ -1,7 +1,5 @@
-# HTTP/3 k6 bench profile.
-# On 1-vCPU RPM hosts (admin.erlang / admin.cloud are both 1 CPU today): keep
-# h3_quic_pool_size <= 2 — a large SO_REUSEPORT pool burns the only scheduler.
-# Scale pool/CPU together on bigger boxes (pool ≈ schedulers).
+# HTTP/3 k6 bench profile — Cowboy + quicer (MsQuic) on UDP.
+# Set h3_api_gateway_enabled: true only to roll back to erlang_quic.
 #
 #   VERSION=0.5.xx ./deploy/erlang.sh   # H3_PERF=1 by default
 #
@@ -36,6 +34,7 @@ podDisruptionBudget:
 controller:
   config:
     quic_enabled: true
+    # true = erlang_quic gateway (faster on 1-vCPU health benches than Cowboy+quicer)
     h3_api_gateway_enabled: true
     tls_http2_enabled: true
     alt_svc_ma_secs: 300
@@ -44,18 +43,8 @@ controller:
     health_access_log: false
     log_level: warn
     health_cache_refresh_ms: 3000
-    # Match 1-vCPU benches; raise with CPU (e.g. 8–32 on 4+ cores)
-    h3_quic_pool_size: 2
-    h3_congestion_control: newreno
-    h3_max_udp_payload_size: 1472
-    h3_pmtu_enabled: true
-    h3_max_streams: 2048
-    h3_stream_receive_window: 8388608
-    h3_conn_receive_window: 67108864
-    h3_idle_timeout_secs: 300
-    h3_keepalive_interval_secs: 20
-    h3_udp_bind: dual_stack
-    upstream_pool_size: 256
+    quic_num_acceptors: 32
     http_num_acceptors: 8
     https_num_acceptors: 8
     proxy_max_connections: 32768
+    upstream_pool_size: 256
