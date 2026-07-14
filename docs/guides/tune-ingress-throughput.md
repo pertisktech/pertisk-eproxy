@@ -4,15 +4,15 @@ Recommended settings for Kubernetes ingress at scale.
 
 ## HTTP/3 first (what we k6)
 
-Default edge stack is **Cowboy + quicer (MsQuic)** (`quic_enabled: true`, `h3_api_gateway_enabled: false`).
-Set `h3_api_gateway_enabled: true` to roll back to the erlang_quic gateway.
+Default edge stack is **erlang_quic gateway** (`quic_enabled: true`, `h3_api_gateway_enabled: true`).
+Set `h3_api_gateway_enabled: false` for Cowboy + quicer (MsQuic) A-B — slower on 1-vCPU health benches in our k6 runs.
 
 Reports under `pertisk-k6-proxy/reports/proxy` come from `tests/api-health-http3.js` (xk6-http3).
 
 | Lever | Setting | Why |
 |---|---|---|
-| Backend | `h3_api_gateway_enabled: false` | Cowboy+quicer (MsQuic NIF) |
-| Rollback | `h3_api_gateway_enabled: true` | erlang_quic `quic_h3` gateway |
+| Backend | `h3_api_gateway_enabled: true` | erlang_quic `quic_h3` gateway (faster local health) |
+| A-B | `h3_api_gateway_enabled: false` | Cowboy+quicer (MsQuic NIF) |
 | Replicas | `replicaCount: 1` | UDP LB is not connection-sticky |
 | Service | `externalTrafficPolicy: Local` | Keep QUIC on one node/pod |
 | CPU | match Rust / raise with load | BEAM + MsQuic both need cores |
@@ -24,7 +24,7 @@ Deploy overlay (`values-h3-perf.yaml`, default via `./deploy/erlang.sh`):
 VERSION=0.5.xx ./deploy/erlang.sh
 ```
 
-RPM (glibc) is the MsQuic performance track; Alpine Docker may still prefer erlang_quic until musl MsQuic is sorted.
+Default performance path is erlang_quic; Cowboy+quicer remains available for A-B on glibc RPM hosts.
 
 Re-bench:
 

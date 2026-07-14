@@ -257,9 +257,9 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
     end.
 
 maybe_start_quic(Config, Routes) ->
-    %% Default false: Cowboy+quicer is the preferred UDP H3 path. Set true to use
-    %% erlang_quic gateway (rollback). Both backends cannot share the same UDP port.
-    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, false),
+    %% Default true: erlang_quic gateway wins 1-vCPU health benches vs Cowboy+quicer.
+    %% Set false for Cowboy+quicer (MsQuic) A-B. Both cannot share the same UDP port.
+    GatewayEnabled = maps:get(h3_api_gateway_enabled, Config, true),
     QuicAcceptors = listener_acceptors(quic, Config),
     ProxyMaxConns = listener_max_connections(quic4, Config),
     _ = maybe_start_h3_api_gateway(Config),
@@ -369,7 +369,7 @@ quic_msquic_tls_opts(TlsOpts) when is_list(TlsOpts) ->
     ).
 
 maybe_start_h3_api_gateway(Config) ->
-    case maps:get(h3_api_gateway_enabled, Config, false) of
+    case maps:get(h3_api_gateway_enabled, Config, true) of
         true ->
             case pertisk_eproxy_h3_api_gateway:start(Config) of
                 {ok, _Pid} ->

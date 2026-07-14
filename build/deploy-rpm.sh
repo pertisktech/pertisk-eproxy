@@ -170,7 +170,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl reset-failed "${PACKAGE_NAME}" || true
 
-# Prefer Cowboy+quicer: ensure live proxy.json disables erlang_quic gateway (rpmnew-safe).
+# Prefer erlang_quic gateway (faster on 1-vCPU H3 health benches than Cowboy+quicer).
 if [ -f "\${PACKAGE_ROOT}/config/proxy.json" ]; then
   sudo python3 - <<"PY" || true
 import json
@@ -178,12 +178,12 @@ path = "/opt/pertisk-eproxy/config/proxy.json"
 with open(path) as f:
     c = json.load(f)
 c["quic_enabled"] = True
-c["h3_api_gateway_enabled"] = False
+c["h3_api_gateway_enabled"] = True
 c["h3_probe_enabled"] = False
 with open(path, "w") as f:
     json.dump(c, f, indent=4)
     f.write("\n")
-print("proxy.json: quic_enabled=true h3_api_gateway_enabled=false")
+print("proxy.json: quic_enabled=true h3_api_gateway_enabled=true")
 PY
 fi
 

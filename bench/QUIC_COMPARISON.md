@@ -2,15 +2,15 @@
 
 This directory contains tools to compare performance between two QUIC implementations:
 
-1. **emqx/quicer** (**default**) — NIF binding to Microsoft's MsQuic via Cowboy `start_quic/3`
-2. **benoitc/erlang_quic** (fallback) — Pure Erlang; enable with `h3_api_gateway_enabled: true`
+1. **benoitc/erlang_quic** (**default**) — Pure Erlang gateway; `h3_api_gateway_enabled: true`
+2. **emqx/quicer** (A-B) — NIF binding to MsQuic via Cowboy `start_quic/3`; set `h3_api_gateway_enabled: false`
 
 ## Runtime switch
 
 | Config | Backend |
 |--------|---------|
-| `quic_enabled: true`, `h3_api_gateway_enabled: false` | Cowboy + quicer (default) |
-| `quic_enabled: true`, `h3_api_gateway_enabled: true` | erlang_quic `quic_h3` gateway |
+| `quic_enabled: true`, `h3_api_gateway_enabled: true` | erlang_quic `quic_h3` gateway (default; faster on 1-vCPU health) |
+| `quic_enabled: true`, `h3_api_gateway_enabled: false` | Cowboy + quicer |
 
 Build requires Cowboy compiled with `{d, 'COWBOY_QUICER', 1}` and the `quicer` dep (see `rebar.config`). Env `COWBOY_QUICER=1` alone is not enough under rebar3.
 

@@ -45,11 +45,11 @@ For Erlang/Cowboy, the closest equivalent to NGINX `worker_processes` and `worke
 - Cowboy acceptors (listener workers): `*_num_acceptors` in proxy JSON
 - Listener connection limits: `proxy_max_connections` and `management_max_connections`
 
-**HTTP/3 k6** — default edge is Cowboy + quicer (MsQuic):
+**HTTP/3 k6** — default edge is erlang_quic gateway:
 
-- `quic_enabled: true`, `h3_api_gateway_enabled: false` in `config/proxy.json` / Helm
-- Rollback: `h3_api_gateway_enabled: true` (erlang_quic gateway)
-- RPM ships MsQuic via `scripts/bundle-msquic-for-rpm.sh`
+- `quic_enabled: true`, `h3_api_gateway_enabled: true` in `config/proxy.json` / Helm
+- A-B Cowboy+quicer: `h3_api_gateway_enabled: false` (slower on 1-vCPU health benches)
+- RPM can still ship MsQuic via `scripts/bundle-msquic-for-rpm.sh` for A-B
 
 Recommended production setup:
 
