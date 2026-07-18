@@ -1,0 +1,1 @@
+VERSION=0.1.19 REMOTE_HOST=103.117.150.202 REMOTE_USER=nat  ./build/deploy-rpm.sh
