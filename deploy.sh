@@ -1,1 +1,1 @@
-VERSION=0.1.19 REMOTE_HOST=103.117.150.202 REMOTE_USER=nat  ./build/deploy-rpm.sh
+VERSION=0.1.20 REMOTE_HOST=10.1.1.160 REMOTE_USER=almalinux  ./build/deploy-rpm.sh

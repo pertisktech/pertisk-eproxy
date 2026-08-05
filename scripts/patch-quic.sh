@@ -359,7 +359,16 @@ else
   echo "patch-quic: skipping quic_connection SNI cert selection for quic ${QUIC_VSN:-unknown}"
 fi
 
-if [ -n "$LISTENER" ]; then
+# Older quic hardcoded `inet` in init_genudp_backend/2. Upstream >= 1.6
+# uses extra_socket_family/1, so skip the rewrite there.
+listener_patch_enabled=1
+case "$QUIC_VSN" in
+  1.6.*|1.[7-9]*|[2-9].*)
+    listener_patch_enabled=0
+    ;;
+esac
+
+if [ "$listener_patch_enabled" -eq 1 ] && [ -n "$LISTENER" ]; then
   if grep -q 'Family = case lists:member(inet6' "$LISTENER"; then
     echo "patch-quic: quic_listener inet6 ok"
   else
@@ -394,5 +403,7 @@ s/init_genudp_backend\(Port, Opts\) ->\n    ActiveN = maps:get\(active_n, Opts, 
       end ++ ExtraFlags,/s' "$LISTENER"
 
   rm -f "$(dirname "$LISTENER")/../../ebin/quic_listener.beam" 2>/dev/null || true
-fi
+  fi
+elif [ -n "$LISTENER" ]; then
+  echo "patch-quic: skipping quic_listener inet6 patch for quic ${QUIC_VSN:-unknown}"
 fi
