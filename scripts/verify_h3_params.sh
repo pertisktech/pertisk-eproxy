@@ -4,9 +4,9 @@ set -euo pipefail
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <host-or-url> [path]"
   echo "Examples:"
-  echo "  $0 eproxy.arm.thaidevops.co /"
-  echo "  $0 admin.arm.thaidevops.co/"
-  echo "  $0 https://admin.arm.thaidevops.co/api/health"
+  echo "  $0 eproxy.example.com /"
+  echo "  $0 admin.example.com/"
+  echo "  $0 https://admin.example.com/api/health"
   exit 1
 fi
 

@@ -20,6 +20,7 @@ doc/
 _checkouts/*
 log/
 data/
+artifacts/
 
 # IDE
 .vscode/

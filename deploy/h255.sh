@@ -24,7 +24,7 @@ NAMESPACE="${NAMESPACE:-pertisk-eproxy}"
 RELEASE_NAME="${RELEASE_NAME:-pertisk-eproxy}"
 CHART_PATH="${CHART_PATH:-./deploy/helm/pertisk-eproxy}"
 H255_VALUES="${H255_VALUES:-./deploy/helm/pertisk-eproxy/h255/values.yaml}"
-ADMIN_HOST="${ADMIN_HOST:-admin.erlang.pertisk.com}"
+ADMIN_HOST="${ADMIN_HOST:-admin.example.com}"
 ADMIN_TLS_SECRET="${ADMIN_TLS_SECRET:-admin-erlang-tls}"
 ADMIN_VIA_GATEWAY="${ADMIN_VIA_GATEWAY:-false}"
 APPLY_ADMIN_GATEWAY="${APPLY_ADMIN_GATEWAY:-true}"
@@ -34,9 +34,9 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-15m}"
 VERIFY_ADMIN_UI="${VERIFY_ADMIN_UI:-false}"
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 
-AUTH0_DOMAIN="${AUTH0_DOMAIN:-dev-od6cfzs2tugxm53g.us.auth0.com}"
-AUTH0_CLIENT_ID="${AUTH0_CLIENT_ID:-djuW8aR7VZQeS9SbW4ddnRCitgc6TiKO}"
-AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-https://dev-od6cfzs2tugxm53g.us.auth0.com/api/v2/}"
+AUTH0_DOMAIN="${AUTH0_DOMAIN:-}"
+AUTH0_CLIENT_ID="${AUTH0_CLIENT_ID:-}"
+AUTH0_AUDIENCE="${AUTH0_AUDIENCE:-}"
 
 GATEWAY_API_ENABLED="${GATEWAY_API_ENABLED:-true}"
 GATEWAYCLASS_ENABLED="${GATEWAYCLASS_ENABLED:-true}"
@@ -85,7 +85,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -n "$NAMESPACE" \
   --set image.tag="$VERSION" \
   --set image.pullPolicy=Always \
   --set auth.username=admin \
-  --set auth.password=admin \
+  --set auth.password="${AUTH_PASSWORD:?Set AUTH_PASSWORD}" \
   --set auth0.domain="$AUTH0_DOMAIN" \
   --set auth0.clientId="$AUTH0_CLIENT_ID" \
   --set auth0.audience="$AUTH0_AUDIENCE" \

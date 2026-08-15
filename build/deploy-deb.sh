@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Configuration (override via env vars or first CLI arg for version)
-REMOTE_HOST="${REMOTE_HOST:-10.1.1.8}"
+REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
 RAW_PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-${VERSION:-0.5.47}}}"

@@ -10,7 +10,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: dotnetnat@gmail.com  # Change to your email for ACME account
+    email: ops@example.com  # Change to your email for ACME account
     privateKeySecretRef:
       name: letsencrypt-cloudflare-account
     solvers:

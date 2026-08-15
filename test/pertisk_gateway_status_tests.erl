@@ -3,8 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 gateway_address_from_ip_test() ->
-    Addrs = pertisk_gateway_status:row_to_address(#{<<"ip">> => <<"10.1.1.83">>}),
-    ?assertEqual([#{<<"type">> => <<"IPAddress">>, <<"value">> => <<"10.1.1.83">>}], Addrs).
+    Addrs = pertisk_gateway_status:row_to_address(#{<<"ip">> => <<"192.0.2.10">>}),
+    ?assertEqual([#{<<"type">> => <<"IPAddress">>, <<"value">> => <<"192.0.2.10">>}], Addrs).
 
 gateway_address_from_hostname_test() ->
     Addrs = pertisk_gateway_status:row_to_address(#{<<"hostname">> => <<"lb.example.com">>}),

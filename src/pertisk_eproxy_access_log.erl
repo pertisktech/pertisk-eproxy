@@ -248,15 +248,17 @@ level_for_access(Host, Path, Status) ->
             end
     end.
 
+%% Downgrade expected kube-apiserver probe 401s (host looks like kube.*).
 is_known_kube_probe_unauthorized(Host, Path, 401)
         when is_binary(Host), is_binary(Path) ->
-    IsKubeOmniHost =
-        Host =:= <<"kube.omni.thaidevops.co">> orelse
-        binary:match(Host, <<".kube.omni.thaidevops.co">>) =/= nomatch,
+    IsKubeHost =
+        Host =:= <<"kube">> orelse
+        binary:match(Host, <<"kube.">>) =:= {0, 5} orelse
+        binary:match(Host, <<".kube.">>) =/= nomatch,
     IsKubeApiPath =
         binary:match(Path, <<"/apis/">>) =:= {0, 6} orelse
         binary:match(Path, <<"/api/">>) =:= {0, 5},
-    IsKubeOmniHost andalso IsKubeApiPath;
+    IsKubeHost andalso IsKubeApiPath;
 is_known_kube_probe_unauthorized(_, _, _) ->
     false.
 

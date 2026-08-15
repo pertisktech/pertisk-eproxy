@@ -1662,7 +1662,7 @@ export default function Sites() {
                       type="text"
                       value={formUpstream}
                       onChange={(e) => setFormUpstream(e.target.value)}
-                      placeholder="http://localhost:8080 or https://10.1.1.18:443"
+                      placeholder="http://localhost:8080 or https://192.0.2.10:443"
                       className={styles.input}
                       required
                     />

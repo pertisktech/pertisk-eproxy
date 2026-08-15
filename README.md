@@ -321,7 +321,7 @@ Use the helper script to print negotiated QUIC transport parameters from both pu
 
 ```bash
 chmod +x scripts/verify_h3_params.sh
-scripts/verify_h3_params.sh eproxy.arm.thaidevops.co /
+scripts/verify_h3_params.sh eproxy.example.com /
 ```
 
 The script checks ports `443` and `444` and reports lines such as `remote transport[...]` and `peer idle timeout is ...`.

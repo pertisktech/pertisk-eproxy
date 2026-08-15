@@ -17,16 +17,16 @@ make package-deb-amd64 VERSION=0.5.10
 make package-rpm-amd64 VERSION=0.5.10
 
 # Remote install (same env vars as before the folder move)
-REMOTE_HOST=10.1.1.9 REMOTE_USER=root PACKAGE_VERSION=0.5.11 ./build/deploy-deb.sh
+REMOTE_HOST=YOUR_HOST REMOTE_USER=root PACKAGE_VERSION=0.5.11 ./build/deploy-deb.sh
 # or
-REMOTE_HOST=10.1.1.9 VERSION=0.5.11 ./build/deploy-deb.sh 0.5.11
+REMOTE_HOST=YOUR_HOST VERSION=0.5.11 ./build/deploy-deb.sh 0.5.11
 ```
 
 RPM builds pin the release image to `hexpm/erlang:27.0.1-debian-bullseye-20240701-slim` by default so bundled `erts` stays compatible with older glibc hosts such as EL9. Override with `RPM_RELEASE_BUILD_IMAGE=...` only if the replacement image keeps the runtime ABI at or below `GLIBC_2.34` and `GLIBCXX_3.4.29`.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `REMOTE_HOST` | `10.1.1.8` (deb) / `135.181.197.40` (rpm) | Target server |
+| `REMOTE_HOST` | `YOUR_HOST` (deb) / `YOUR_HOST` (rpm) | Target server |
 | `REMOTE_USER` | `root` | SSH user |
 | `PACKAGE_VERSION` or `VERSION` | `0.5.47` | Package version (CLI arg overrides) |
 | `REMOTE_PATH` | `/tmp` | SCP destination on remote |
