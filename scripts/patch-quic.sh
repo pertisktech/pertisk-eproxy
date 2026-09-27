@@ -141,32 +141,46 @@ fi
 # H3 SNI support: preserve TLS override fields when translating quic_h3 server
 # options to quic:start_server options. Without this, sni_certs/cert_chain/private_key
 # are dropped and QUIC can serve only the default cert.
-h3_opts_found=0
-for f in $(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3.erl' 2>/dev/null | sort -u); do
-  h3_opts_found=1
+# quic 2.0 forwards cert_chain and sni_callback through quic_opts, and the
+# gateway already passes sni_callback that way. The old maps:with rewrite
+# no longer matches and must not fail the build.
+h3_opts_patch_enabled=1
+case "$QUIC_VSN" in
+  2.*|[3-9].*)
+    h3_opts_patch_enabled=0
+    ;;
+esac
 
-  if grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "$f"; then
-    continue
+if [ "$h3_opts_patch_enabled" -eq 1 ]; then
+  h3_opts_found=0
+  for f in $(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3.erl' 2>/dev/null | sort -u); do
+    h3_opts_found=1
+
+    if grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "$f"; then
+      continue
+    fi
+
+    perl -i -0pe '
+      s/TlsOpts = maps:with\(\[cert, key, cacerts\], Opts\),/TlsOpts = maps:with([cert, key, cert_chain, private_key, cacerts, sni_certs], Opts),/s
+    ' "$f"
+
+    rm -f "$(dirname "$f")/../../ebin/quic_h3.beam" 2>/dev/null || true
+  done
+
+  if [ "$h3_opts_found" -eq 0 ]; then
+    echo "patch-quic: warning: no quic_h3.erl under _build (run rebar3 get-deps first)" >&2
   fi
 
-  perl -i -0pe '
-    s/TlsOpts = maps:with\(\[cert, key, cacerts\], Opts\),/TlsOpts = maps:with([cert, key, cert_chain, private_key, cacerts, sni_certs], Opts),/s
-  ' "$f"
-
-  rm -f "$(dirname "$f")/../../ebin/quic_h3.beam" 2>/dev/null || true
-done
-
-if [ "$h3_opts_found" -eq 0 ]; then
-  echo "patch-quic: warning: no quic_h3.erl under _build (run rebar3 get-deps first)" >&2
-fi
-
-H3_API=$(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3.erl' 2>/dev/null | head -1)
-if [ -n "$H3_API" ]; then
-  grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "$H3_API" || {
-    echo "patch-quic: h3 sni/tls opts patch missing in $H3_API" >&2
-    exit 1
-  }
-  echo "patch-quic: h3 sni/tls opts ok"
+  H3_API=$(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3.erl' 2>/dev/null | head -1)
+  if [ -n "$H3_API" ]; then
+    grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "$H3_API" || {
+      echo "patch-quic: h3 sni/tls opts patch missing in $H3_API" >&2
+      exit 1
+    }
+    echo "patch-quic: h3 sni/tls opts ok"
+  fi
+else
+  echo "patch-quic: skipping h3 sni/tls opts patch for quic ${QUIC_VSN:-unknown}"
 fi
 
 # 0-RTT PSK binder hard-fail mitigation:
@@ -269,7 +283,8 @@ for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/n
     :
   else
     perl -i -0pe '
-      s/(%% Server: Send NewSessionTicket after handshake completes\n%% RFC 8446 Section 4.6.1: Server sends NewSessionTicket in post-handshake message\n%% In QUIC, this is sent as a TLS handshake message in a CRYPTO frame\n)(send_new_session_ticket\(#state\{selected_psk = Sel\} = State\) when Sel =\/= undefined ->)/$1send_new_session_ticket(#state{max_early_data = 0} = State) ->\n    State;\n$2/s
+      s/(%% Server: Send NewSessionTicket after handshake completes\n%% RFC 8446 Section 4.6.1: Server sends NewSessionTicket in post-handshake message\n%% In QUIC, this is sent as a TLS handshake message in a CRYPTO frame\n)(send_new_session_ticket\(#state\{selected_psk = Sel\} = State\) when Sel =\/= undefined ->)/$1send_new_session_ticket(#state{max_early_data = 0} = State) ->\n    State;\n$2/s;
+      s/send_new_session_ticket\(#state\{selected_psk = #\{source := external\}\} = State\) ->/send_new_session_ticket(#state{max_early_data = 0} = State) ->\n    State;\nsend_new_session_ticket(#state{selected_psk = #{source := external}} = State) ->/s
     ' "$f"
     rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
   fi

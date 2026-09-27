@@ -28,6 +28,7 @@ ARG VERSION
 # without it prim_tty NIF fails and kernel exits with nouser during rebar3.
 ENV ERL_FLAGS="+JMsingle true -noshell -noinput"
 ENV ERL_AFLAGS="-noshell -noinput"
+ENV QUIC_BUILD_NIF=1
 
 WORKDIR /src
 

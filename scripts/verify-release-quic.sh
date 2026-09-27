@@ -64,6 +64,12 @@ if ! find "${ROOT}/_build" -path '*/quic/ebin' -type d 2>/dev/null | grep -q .; 
   exit 1
 fi
 
+QUIC_APP_SRC=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
+QUIC_VSN=""
+if [ -n "${QUIC_APP_SRC}" ] && [ -f "${QUIC_APP_SRC}" ]; then
+  QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "${QUIC_APP_SRC}" | head -1)
+fi
+
 H3_SRC=$(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3_connection.erl' 2>/dev/null | head -1)
 if [ -n "${H3_SRC}" ]; then
   if grep -q 'next_event, cast, close' "${H3_SRC}"; then
@@ -78,20 +84,39 @@ fi
 
 H3_API_SRC=$(find "${ROOT}/_build" -path '*/quic/src/h3/quic_h3.erl' 2>/dev/null | head -1)
 if [ -n "${H3_API_SRC}" ]; then
-  if ! grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "${H3_API_SRC}"; then
-    echo "verify-release-quic: missing h3 sni/tls opts passthrough patch in ${H3_API_SRC}" >&2
-    exit 1
-  fi
-fi
-
-QUIC_APP_SRC=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
-QUIC_VSN=""
-if [ -n "${QUIC_APP_SRC}" ] && [ -f "${QUIC_APP_SRC}" ]; then
-  QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "${QUIC_APP_SRC}" | head -1)
+  case "${QUIC_VSN}" in
+    2.*|[3-9].*)
+      echo "verify-release-quic: skipping h3 sni/tls opts patch check for quic ${QUIC_VSN}"
+      ;;
+    *)
+      if ! grep -q 'maps:with(\[cert, key, cert_chain, private_key, cacerts, sni_certs\], Opts)' "${H3_API_SRC}"; then
+        echo "verify-release-quic: missing h3 sni/tls opts passthrough patch in ${H3_API_SRC}" >&2
+        exit 1
+      fi
+      ;;
+  esac
 fi
 
 CONN_SRC=$(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | head -1)
 if [ -n "${CONN_SRC}" ]; then
+  if ! grep -q 'max_early_data = maps:get(max_early_data, Opts' "${CONN_SRC}"; then
+    echo "verify-release-quic: missing max_early_data opt patch in ${CONN_SRC}" >&2
+    exit 1
+  fi
+  if ! grep -q 'send_new_session_ticket(#state{max_early_data = 0}' "${CONN_SRC}"; then
+    echo "verify-release-quic: missing session-ticket disable patch in ${CONN_SRC}" >&2
+    exit 1
+  fi
+  case "${QUIC_VSN}" in
+    1.[0-4]*|1.5.*)
+      ;;
+    *)
+      if ! grep -q 'PSK resume implies a previously validated path' "${CONN_SRC}"; then
+        echo "verify-release-quic: missing 0-RTT anti-amplification patch in ${CONN_SRC}" >&2
+        exit 1
+      fi
+      ;;
+  esac
   case "${QUIC_VSN}" in
     1.7.*|1.[8-9]*|[2-9].*)
       echo "verify-release-quic: skipping quic_connection SNI cert selection patch check for quic ${QUIC_VSN:-unknown}"

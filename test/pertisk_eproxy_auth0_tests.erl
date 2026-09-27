@@ -55,6 +55,18 @@ maybe_prefetch_jwks_unconfigured_test() ->
     clear_auth0_env(),
     ?assertEqual(ok, pertisk_eproxy_auth0:maybe_prefetch_jwks()).
 
+%% sys.config stores unset Auth0 fields as "". trim must not call binary:last/1 on <<>>.
+auth0_empty_string_config_does_not_crash_test() ->
+    application:set_env(pertisk_eproxy, admin_auth0_domain, ""),
+    application:set_env(pertisk_eproxy, admin_auth0_client_id, ""),
+    application:set_env(pertisk_eproxy, admin_auth0_audience, <<"">>),
+    try
+        ?assertEqual(#{}, pertisk_eproxy_auth0:auth0_public_config()),
+        ?assertEqual(ok, pertisk_eproxy_auth0:maybe_prefetch_jwks())
+    after
+        clear_auth0_env()
+    end.
+
 maybe_prefetch_jwks_configured_test() ->
     application:set_env(pertisk_eproxy, admin_auth0_domain, <<"tenant.auth0.com">>),
     application:set_env(pertisk_eproxy, admin_auth0_client_id, <<"client-id">>),

@@ -39,6 +39,8 @@ BUILDX_MULTI_BUILDER ?= pertisk-multiarch
 # Set to 1 to enable Cowboy QUIC/HTTP/3 hooks when supported by Cowboy build.
 COWBOY_QUICER ?= 1
 COWBOY_QUIC ?= 1
+# erlang_quic 1.9+ builds its crypto NIF only when this is 1. Requires cmake.
+export QUIC_BUILD_NIF ?= 1
 PACKAGE_NAME ?= pertisk-eproxy
 HELM_CHART_DIR ?= deploy/helm/pertisk-eproxy
 HELM_PACKAGE_DIR ?= release/helm

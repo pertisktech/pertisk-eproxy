@@ -113,11 +113,15 @@ trim_domain(D) ->
 binary_trim(B) ->
     re:replace(B, <<"^\\s+|\\s+$">>, <<>>, [{return, binary}, global]).
 
-binary_trim_trailing_slash(B) ->
+binary_trim_trailing_slash(<<>>) ->
+    <<>>;
+binary_trim_trailing_slash(B) when is_binary(B) ->
     case binary:last(B) of
         $/ -> binary_part(B, 0, byte_size(B) - 1);
         _ -> B
-    end.
+    end;
+binary_trim_trailing_slash(_) ->
+    <<>>.
 
 client_id_bin() ->
     case application:get_env(pertisk_eproxy, admin_auth0_client_id) of

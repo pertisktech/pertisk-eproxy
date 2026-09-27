@@ -21,6 +21,8 @@
 -define(DEFAULT_EVENT_STREAM_HEARTBEAT_MS, 15000).
 -define(CONNECT_TIMEOUT, 10000).
 -define(H3_BENCHMARK_BODY, <<"{\"status\":\"ok\"}">>).
+%% erlang_quic 2.0 reports send_queue_full only when nothing was written.
+-define(H3_SEND_QUEUE_RETRIES, 8).
 
 start(Config) ->
     _ = ensure_quic_started(),
@@ -421,25 +423,38 @@ h3_route_after_auth_body_continue(
 
 %% Client reset or QUIC connection closed before we finish the response.
 h3_send_response(H3Conn, StreamId, Status, Headers) ->
-    case catch quic_h3:send_response(H3Conn, StreamId, Status, Headers) of
-        ok -> ok;
-        {error, {invalid_state, draining}} -> {error, connection_gone};
-        {error, closed} -> {error, connection_gone};
-        {error, timeout} -> {error, connection_gone};
-        {error, _} = Err -> Err;
-        {'EXIT', {noproc, _}} -> {error, connection_gone};
-        {'EXIT', Reason} -> {error, Reason}
-    end.
+    h3_send_call(
+        fun() -> quic_h3:send_response(H3Conn, StreamId, Status, Headers) end,
+        ?H3_SEND_QUEUE_RETRIES
+    ).
 
 h3_send_data(H3Conn, StreamId, Data, Fin) ->
-    case catch quic_h3:send_data(H3Conn, StreamId, Data, Fin) of
-        ok -> ok;
-        {error, {invalid_state, draining}} -> {error, connection_gone};
-        {error, closed} -> {error, connection_gone};
-        {error, timeout} -> {error, connection_gone};
-        {error, _} = Err -> Err;
-        {'EXIT', {noproc, _}} -> {error, connection_gone};
-        {'EXIT', Reason} -> {error, Reason}
+    h3_send_call(
+        fun() -> quic_h3:send_data(H3Conn, StreamId, Data, Fin) end,
+        ?H3_SEND_QUEUE_RETRIES
+    ).
+
+%% `{error, send_queue_full}` means the write was refused before any byte
+%% was queued. Retry the same piece; do not treat it as a lost partial send.
+h3_send_call(Fun, RetriesLeft) ->
+    case catch Fun() of
+        ok ->
+            ok;
+        {error, send_queue_full} when RetriesLeft > 0 ->
+            receive after 2 -> ok end,
+            h3_send_call(Fun, RetriesLeft - 1);
+        {error, {invalid_state, draining}} ->
+            {error, connection_gone};
+        {error, closed} ->
+            {error, connection_gone};
+        {error, timeout} ->
+            {error, connection_gone};
+        {error, _} = Err ->
+            Err;
+        {'EXIT', {noproc, _}} ->
+            {error, connection_gone};
+        {'EXIT', Reason} ->
+            {error, Reason}
     end.
 
 h3_reply_status(H3Conn, StreamId, Status, Headers, Body) ->

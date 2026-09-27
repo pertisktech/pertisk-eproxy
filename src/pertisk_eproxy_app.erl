@@ -215,6 +215,18 @@ stop_proxy_tls_listeners() ->
     ok.
 
 start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
+    case missing_tls_files(TlsOpts) of
+        [] ->
+            start_https_proxy_listeners_1(HttpsPort, TlsOpts, Routes);
+        Missing ->
+            lager:error(
+                "HTTPS not started on port ~w: TLS file missing ~p",
+                [HttpsPort, Missing]
+            ),
+            {error, {missing_tls_file, Missing}}
+    end.
+
+start_https_proxy_listeners_1(HttpsPort, TlsOpts, Routes) ->
     Config = pertisk_eproxy_config:get_config(),
     HttpsAcceptors = listener_acceptors(https, Config),
     ProxyMaxConns = listener_max_connections(https4, Config),
@@ -255,6 +267,14 @@ start_https_proxy_listeners(HttpsPort, TlsOpts, Routes) ->
             lager:error("HTTPS IPv4 listener https4 failed on port ~p: ~p", [HttpsPort, Reason4]),
             {error, Reason4}
     end.
+
+missing_tls_files(TlsOpts) ->
+    lists:filter(
+        fun(Path) ->
+            not filelib:is_regular(Path)
+        end,
+        [Path || {Key, Path} <- TlsOpts, Key =:= certfile orelse Key =:= keyfile, is_list(Path)]
+    ).
 
 maybe_start_quic(Config, Routes) ->
     %% Default true: erlang_quic gateway wins 1-vCPU health benches vs Cowboy+quicer.

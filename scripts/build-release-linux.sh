@@ -72,7 +72,7 @@ prepare_and_release() {
   # Force Cowboy rebuild after COWBOY_QUICER define patch.
   find _build -type d -name 'cowboy' 2>/dev/null | while read -r d; do rm -rf "$d/ebin"; done || true
   find _build -path '*/cowboy-*/ebin' -type d 2>/dev/null | while read -r d; do rm -rf "$d"; done || true
-  COWBOY_QUICER="$COWBOY_QUICER" COWBOY_QUIC="$COWBOY_QUIC" rebar3 as prod release
+  COWBOY_QUICER="$COWBOY_QUICER" COWBOY_QUIC="$COWBOY_QUIC" QUIC_BUILD_NIF="${QUIC_BUILD_NIF:-1}" rebar3 as prod release
   bash scripts/verify-release-quic.sh "$ROOT_DIR"
   bash scripts/verify-release-quicer.sh "$ROOT_DIR"
 }

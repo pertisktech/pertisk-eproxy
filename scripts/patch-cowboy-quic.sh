@@ -7,11 +7,11 @@ found=0
 for f in $(find "${ROOT}/_build" "${ROOT}/deps" -path '*/cowboy/src/cowboy.erl' 2>/dev/null | sort -u); do
   found=1
 
-  if ! grep -q '%% pertisk COWBOY_QUICER' "$f"; then
-    if ! grep -q '^-define(COWBOY_QUICER' "$f"; then
-      perl -i -pe 'if (!$done && /^-module\(cowboy\)\./) { $_ .= "-define(COWBOY_QUICER, true). %% pertisk COWBOY_QUICER\n"; $done=1 }' "$f"
-      echo "patch-cowboy-quic: defined COWBOY_QUICER in $f"
-    fi
+  # rebar.config already passes {d, 'COWBOY_QUICER', true}. A second
+  # -define in cowboy.erl is a macro redefinition error on OTP 29.
+  if grep -q '%% pertisk COWBOY_QUICER' "$f"; then
+    perl -i -ne 'print unless /%% pertisk COWBOY_QUICER/' "$f"
+    echo "patch-cowboy-quic: removed redundant COWBOY_QUICER define in $f"
   fi
 
   # Cowboy master hardcodes 20 acceptors; honour TransOpts num_acceptors (Ranch-style).
