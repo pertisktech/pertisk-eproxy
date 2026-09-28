@@ -77,7 +77,10 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          REF="${REF#v}"
+          echo "VERSION=${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Set application version
         run: bash scripts/set-app-version.sh "${{ steps.version.outputs.VERSION }}"
@@ -170,7 +173,10 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          REF="${REF#v}"
+          echo "VERSION=${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Set application version
         run: bash scripts/set-app-version.sh "${{ steps.version.outputs.VERSION }}"
@@ -277,7 +283,10 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          REF="${REF#v}"
+          echo "VERSION=${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Install Helm
         run: |
@@ -373,7 +382,10 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          REF="${REF#v}"
+          echo "VERSION=${REF}" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
