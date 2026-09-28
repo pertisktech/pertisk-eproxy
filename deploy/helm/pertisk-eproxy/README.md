@@ -13,8 +13,8 @@ Helm chart for [pertisk-eproxy](https://github.com/pertisktech/pertisk-eproxy) i
 ```bash
 # Build and push both images (Harbor)
 make docker-harbor-multi VERSION=0.1.0
-#   proxy:   harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
-#   ingress: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
+#   proxy:   registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
+#   ingress: registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
 
 # Install ingress controller chart (uses ingress image)
 helm upgrade --install pertisk-eproxy ./deploy/helm/pertisk-eproxy \
@@ -35,7 +35,7 @@ helm uninstall pertisk-eproxy -n pertisk-eproxy
 |-----|-------------|---------|
 | `replicaCount` | Replicas (ignored when HPA on) | `3` |
 | `autoscaling.enabled` | HPA | `true` |
-| `image.registry` | Registry | `harbor.tools.thaidevops.co` |
+| `image.registry` | Registry | `registry.tools.thaidevops.co` |
 | `image.repository` | Image path (ingress image) | `pertisksoft/pertisk-eproxy/ingress` |
 | `ingress.className` | `ingressClassName` filter | `pertisk-eproxy` |
 | `ingress.gatewayApiEnabled` | Reconcile Gateway API HTTPRoutes; creates `GatewayClass` | `false` |

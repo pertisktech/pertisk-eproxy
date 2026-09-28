@@ -15,7 +15,7 @@ autoscaling:
   targetMemoryUtilizationPercentage: 75
 
 image:
-  registry: harbor.tools.thaidevops.co
+  registry: registry.tools.thaidevops.co
   repository: pertisksoft/pertisk-eproxy/ingress
   tag: "" # defaults to Chart appVersion
   pullPolicy: IfNotPresent

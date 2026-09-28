@@ -186,8 +186,8 @@ Application config defaults live in `config/sys.config` (e.g. `admin_auth`, ACME
 
 | Mode | Dockerfile | Image |
 |------|------------|--------|
-| Proxy / admin | `docker/Dockerfile.proxy` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` |
-| Ingress controller | `docker/Dockerfile.ingress` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` |
+| Proxy / admin | `docker/Dockerfile.proxy` | `registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` |
+| Ingress controller | `docker/Dockerfile.ingress` | `registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` |
 
 ```bash
 make docker-proxy-multi VERSION=0.1.0      # push proxy

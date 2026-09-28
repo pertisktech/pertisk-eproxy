@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Ingress controller image: same release as proxy, defaults to ingress mode + K8s watcher.
-# Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
+# Harbor: registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
 
 ARG VERSION=0.1.0
 ARG FRONTEND_BUILD_ID=dev

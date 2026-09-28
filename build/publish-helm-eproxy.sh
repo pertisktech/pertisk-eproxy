@@ -10,7 +10,7 @@
 #   HELM_USER + HELM_PASSWORD — login via /api/auth/login (username + password)
 #
 # Env:
-#   HELM_CHART_REPO_URL — default https://chart.cloud.pertisksoft.net
+#   HELM_CHART_REPO_URL — default https://charts.tools.thaidevops.co
 #   HELM_CHART_DIR      — default deploy/helm/pertisk-eproxy
 
 set -euo pipefail
@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 VERSION="${VERSION:-}"
-HELM_CHART_REPO_URL="${HELM_CHART_REPO_URL:-https://chart.cloud.pertisksoft.net}"
+HELM_CHART_REPO_URL="${HELM_CHART_REPO_URL:-https://charts.tools.thaidevops.co}"
 HELM_CHART_DIR="${HELM_CHART_DIR:-deploy/helm/pertisk-eproxy}"
-HARBOR_INGRESS_IMAGE="${HARBOR_INGRESS_IMAGE:-harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress}"
+HARBOR_INGRESS_IMAGE="${HARBOR_INGRESS_IMAGE:-registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress}"
 
 if [ -z "$VERSION" ]; then
   echo "VERSION is required (e.g. 0.1.0)" >&2

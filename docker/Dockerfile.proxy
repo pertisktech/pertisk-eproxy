@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Proxy + admin image (proxy mode via config/proxy.json).
-# Harbor: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
+# Harbor: registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
 
 ARG VERSION=0.1.0
 ARG FRONTEND_BUILD_ID=dev

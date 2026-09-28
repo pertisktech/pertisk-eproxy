@@ -18,10 +18,10 @@ concurrency:
 env:
   PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   PACKAGE_NAME: pertisk-eproxy
-  HARBOR_REGISTRY: harbor.tools.thaidevops.co
-  HARBOR_PROXY_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
-  HARBOR_INGRESS_IMAGE: harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
-  HELM_CHART_REPO_URL: https://chart.cloud.pertisksoft.net
+  HARBOR_REGISTRY: registry.tools.thaidevops.co
+  HARBOR_PROXY_IMAGE: registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy
+  HARBOR_INGRESS_IMAGE: registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress
+  HELM_CHART_REPO_URL: https://charts.tools.thaidevops.co
   HELM_CHART_DIR: deploy/helm/pertisk-eproxy
 
 jobs:
@@ -192,7 +192,7 @@ jobs:
       - name: Set up QEMU for multi-arch builds
         uses: docker/setup-qemu-action@v3
 
-      - name: Login to Harbor Registry
+      - name: Login to container registry
         run: |
           set -euo pipefail
           export DOCKER_CONFIG="${{ env.DOCKER_CONFIG }}"

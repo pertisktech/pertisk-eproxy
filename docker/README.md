@@ -4,8 +4,8 @@ Build context is always the **repository root** (`.`).
 
 | File | Image | Mode |
 |------|-------|------|
-| `Dockerfile.proxy` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` | Proxy + admin UI (SQLite config) |
-| `Dockerfile.ingress` | `harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` | Kubernetes ingress controller |
+| `Dockerfile.proxy` | `registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/proxy` | Proxy + admin UI (SQLite config) |
+| `Dockerfile.ingress` | `registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress` | Kubernetes ingress controller |
 
 ```bash
 # Single-arch (local)
@@ -23,5 +23,5 @@ make docker-harbor-multi VERSION=0.5.10 BUILD_SEQUENTIAL=1
 Equivalent explicit buildx:
 
 ```bash
-docker buildx build --push -f docker/Dockerfile.ingress -t harbor.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress:0.5.10 .
+docker buildx build --push -f docker/Dockerfile.ingress -t registry.tools.thaidevops.co/pertisksoft/pertisk-eproxy/ingress:0.5.10 .
 ```
