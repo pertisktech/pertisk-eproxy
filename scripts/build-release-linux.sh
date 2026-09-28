@@ -222,7 +222,7 @@ docker_build_release() {
         bash curl git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev util-linux
       if ! command -v rebar3 >/dev/null 2>&1; then
         mkdir -p /root/.local/bin
-        curl -fsSL https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 -o /root/.local/bin/rebar3
+        curl -fsSL https://github.com/erlang/rebar3/releases/download/3.27.1/rebar3 -o /root/.local/bin/rebar3
         chmod +x /root/.local/bin/rebar3
         export PATH="/root/.local/bin:$PATH"
       fi

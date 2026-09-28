@@ -16,7 +16,7 @@ concurrency:
 env:
   PATH: /usr/lib/erlang/bin:/usr/local/erlang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   COVER_MIN: "80"
-  REBAR3_VERSION: "3.24.0"
+  REBAR3_VERSION: "3.27.1"
   # Self-hosted runners: cover is CPU-heavy; cap parallel jobs (see scripts/run-eunit.sh).
   PERTISK_EUNIT_COVER_PARALLEL: "2"
   EUNIT_JOB_TIMEOUT: "1200"
