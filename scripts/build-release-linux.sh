@@ -191,17 +191,31 @@ maybe_reset_build_volumes() {
 }
 
 ensure_qemu_binfmt() {
-  # linux/arm64 (or any non-native platform) on an x86_64 runner needs
-  # binfmt_misc. Without it: exec /usr/bin/bash: exec format error.
+  # linux/arm64 on an x86_64 runner needs a host qemu interpreter registered
+  # with binfmt_misc. tonistiigi/binfmt alone leaves the binary inside a
+  # containerd snapshot, so the next exec fails with "exec format error".
   [ -n "$RELEASE_BUILD_PLATFORM" ] || return 0
   if host_matches_release_platform; then
     return 0
   fi
   local arch="${RELEASE_BUILD_PLATFORM#linux/}"
+  local qemu_bin="/usr/bin/qemu-${arch}"
+  case "$arch" in
+    arm64) qemu_bin="/usr/bin/qemu-aarch64" ;;
+    amd64) qemu_bin="/usr/bin/qemu-x86_64" ;;
+  esac
   echo "Registering QEMU binfmt for ${RELEASE_BUILD_PLATFORM} (host $(uname -m))"
-  if ! docker run --privileged --rm tonistiigi/binfmt --install "$arch"; then
-    echo "qemu binfmt registration failed." >&2
-    echo "On the runner: docker run --privileged --rm tonistiigi/binfmt --install ${arch}" >&2
+  docker run --privileged --rm tonistiigi/binfmt --install "$arch"
+  if [ ! -x "$qemu_bin" ]; then
+    docker rm -f binfmt-extract >/dev/null 2>&1 || true
+    docker create --name binfmt-extract tonistiigi/binfmt >/dev/null
+    docker cp "binfmt-extract:${qemu_bin}" "$qemu_bin"
+    chmod 755 "$qemu_bin"
+    docker rm binfmt-extract >/dev/null
+  fi
+  if ! docker run --rm --platform "$RELEASE_BUILD_PLATFORM" "$ERLANG_BUILD_IMAGE" uname -m >/dev/null; then
+    echo "Cannot execute ${RELEASE_BUILD_PLATFORM} containers on $(uname -m)." >&2
+    echo "Interpreter expected at ${qemu_bin}." >&2
     exit 1
   fi
 }
