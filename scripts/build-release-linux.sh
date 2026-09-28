@@ -190,6 +190,22 @@ maybe_reset_build_volumes() {
   docker volume create "$DEPS_CACHE_VOLUME" >/dev/null
 }
 
+ensure_qemu_binfmt() {
+  # linux/arm64 (or any non-native platform) on an x86_64 runner needs
+  # binfmt_misc. Without it: exec /usr/bin/bash: exec format error.
+  [ -n "$RELEASE_BUILD_PLATFORM" ] || return 0
+  if host_matches_release_platform; then
+    return 0
+  fi
+  local arch="${RELEASE_BUILD_PLATFORM#linux/}"
+  echo "Registering QEMU binfmt for ${RELEASE_BUILD_PLATFORM} (host $(uname -m))"
+  if ! docker run --privileged --rm tonistiigi/binfmt --install "$arch"; then
+    echo "qemu binfmt registration failed." >&2
+    echo "On the runner: docker run --privileged --rm tonistiigi/binfmt --install ${arch}" >&2
+    exit 1
+  fi
+}
+
 docker_build_release() {
   local PLATFORM_OPT=()
   if [ -n "$RELEASE_BUILD_PLATFORM" ]; then
@@ -197,6 +213,7 @@ docker_build_release() {
     PLATFORM_OPT=(--platform "$RELEASE_BUILD_PLATFORM")
   fi
 
+  ensure_qemu_binfmt
   maybe_reset_build_volumes
 
   # Linux-native Docker volumes for _build/deps (bind-mounting from macOS causes partial
@@ -219,7 +236,8 @@ docker_build_release() {
       set -euo pipefail
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        bash curl git build-essential cmake ninja-build perl patch libssl-dev libncurses-dev util-linux
+        bash curl git build-essential cmake ninja-build perl patch \
+        libssl-dev libncurses-dev util-linux libatomic1 libnuma-dev
       if ! command -v rebar3 >/dev/null 2>&1; then
         mkdir -p /root/.local/bin
         curl -fsSL https://github.com/erlang/rebar3/releases/download/3.27.1/rebar3 -o /root/.local/bin/rebar3
