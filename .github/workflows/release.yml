@@ -141,6 +141,15 @@ jobs:
               sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
           fi
 
+      - name: Prune Docker storage
+        if: always()
+        run: |
+          set +e
+          docker volume ls -q --filter name=pertisk-eproxy-linux- | xargs -r docker volume rm
+          docker buildx prune -af
+          docker system prune -af
+          docker system df
+
   docker:
     name: Docker (multi-arch buildx)
     runs-on: [self-hosted, linux]
@@ -249,6 +258,15 @@ jobs:
             docker run --rm -v "$GITHUB_WORKSPACE:/work" alpine:3.20 \
               sh -c 'rm -rf /work/_build /work/deps /work/_release_export /work/release 2>/dev/null; exit 0'
           fi
+
+      - name: Prune Docker storage
+        if: always()
+        run: |
+          set +e
+          docker volume ls -q --filter name=pertisk-eproxy-linux- | xargs -r docker volume rm
+          docker buildx prune -af
+          docker system prune -af
+          docker system df
 
   helm:
     name: Helm chart
