@@ -110,3 +110,9 @@ if ! rebar3_works; then
 fi
 
 rebar3 version
+
+# quicer/msquic NIF needs libatomic (+ numa headers) on Linux runners.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$(uname -s)" = "Linux" ]; then
+  bash "${SCRIPT_DIR}/ci-ensure-quicer-build-deps.sh"
+fi
