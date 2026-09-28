@@ -248,6 +248,21 @@ docker_build_release() {
     "$ERLANG_BUILD_IMAGE" \
     bash -lc '
       set -euo pipefail
+      # Bullseye security indexes still name debs the mirror has removed
+      # (404 on libc6 and friends). Main still has installable glibc 2.31.
+      if [ -f /etc/os-release ]; then
+        . /etc/os-release
+      fi
+      case "${VERSION_CODENAME:-}" in
+        bullseye|buster|stretch)
+          echo "Dropping broken ${VERSION_CODENAME}-security apt entries"
+          find /etc/apt -type f \( -name "*.list" -o -name "*.sources" \) -print0 |
+            while IFS= read -r -d "" src; do
+              sed -i "/debian-security/d" "$src"
+            done
+          printf "Acquire::Check-Valid-Until \"false\";\n" > /etc/apt/apt.conf.d/99no-check-valid-until
+          ;;
+      esac
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
         bash curl git build-essential cmake ninja-build perl patch \
