@@ -40,7 +40,7 @@
  {<<"quantile_estimator">>,{pkg,<<"quantile_estimator">>,<<"0.2.1">>},1},
  {<<"quic">>,
   {git,"https://github.com/benoitc/erlang_quic.git",
-       {ref,"406521416369fafa146c98661506b9f249bf9c82"}},
+       {ref,"0b5634b6468c1b2aa3132baaabe5515d4ea485bd"}},
   0},
  {<<"quicer">>,
   {git,"https://github.com/emqx/quic.git",
