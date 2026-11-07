@@ -103,7 +103,8 @@ if [ -n "${CONN_SRC}" ]; then
     echo "verify-release-quic: missing max_early_data opt patch in ${CONN_SRC}" >&2
     exit 1
   fi
-  if ! grep -q 'send_new_session_ticket(#state{max_early_data = 0}' "${CONN_SRC}"; then
+  # quic >= 2.1.3: max_early_data lives on #hs{}; older releases keep it on #state{}.
+  if ! grep -qE 'send_new_session_ticket\(#state\{(hs = #hs\{)?max_early_data = 0' "${CONN_SRC}"; then
     echo "verify-release-quic: missing session-ticket disable patch in ${CONN_SRC}" >&2
     exit 1
   fi
