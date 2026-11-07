@@ -852,6 +852,11 @@ init_loopback_uses_ephemeral_connection_test() ->
         }},
         pick => {ok, <<"127.0.0.1:8080">>}
     }, fun(Req) ->
+        %% proxy.json may enable loopback pooling; force ephemeral for this path.
+        Config0 = pertisk_eproxy_config:get_config(),
+        meck:expect(pertisk_eproxy_config, get_config, fun() ->
+            maps:merge(Config0, #{upstream_loopback_pool_enabled => false})
+        end),
         add_body_mocks(Req),
         meck:expect(pertisk_eproxy_metrics, record_proxy_bytes, fun(_, _, _) -> ok end),
         meck:expect(pertisk_eproxy_metrics, record_site_bytes, fun(_, _, _) -> ok end),

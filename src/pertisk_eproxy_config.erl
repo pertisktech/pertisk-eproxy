@@ -1335,11 +1335,21 @@ parse_opt_tls_path(_) -> undefined.
 sanitize_runtime_tls_paths(Cfg) when is_map(Cfg) ->
     Cert = sanitize_runtime_tls_value(maps:get(tls_cert_file, Cfg, undefined)),
     Key = sanitize_runtime_tls_value(maps:get(tls_key_file, Cfg, undefined)),
-    %% TLS listener needs cert+key as a pair. If one side is redacted/invalid,
-    %% clear both so normal default resolution can recover safely.
+    %% TLS listener needs cert+key as a pair. If one side is redacted/invalid
+    %% or missing on disk (e.g. leftover TMPDIR ACME paths from tests), clear
+    %% both so default resolution can recover safely.
     case {Cert, Key} of
         {C, K} when C =/= undefined, K =/= undefined ->
-            Cfg#{tls_cert_file => C, tls_key_file => K};
+            case {filelib:is_regular(C), filelib:is_regular(K)} of
+                {true, true} ->
+                    Cfg#{tls_cert_file => C, tls_key_file => K};
+                _ ->
+                    lager:warning(
+                        "Clearing runtime tls_cert_file/tls_key_file; file(s) missing (~s, ~s)",
+                        [C, K]
+                    ),
+                    maps:without([tls_cert_file, tls_key_file], Cfg)
+            end;
         _ ->
             maps:without([tls_cert_file, tls_key_file], Cfg)
     end.

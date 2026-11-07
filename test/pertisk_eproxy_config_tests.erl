@@ -1640,6 +1640,24 @@ sanitize_runtime_tls_redacted_pair_test() ->
         ?assertEqual(false, maps:is_key(tls_key_file, C))
     end).
 
+sanitize_runtime_tls_missing_files_test() ->
+    with_tmp_db_config(fun() ->
+        DbPath = pertisk_eproxy_config:db_file(),
+        Missing = "/nonexistent/pertisk-missing-" ++ integer_to_list(erlang:unique_integer([positive])),
+        Cfg = #{
+            mode => proxy,
+            tls_cert_file => Missing ++ ".pem",
+            tls_key_file => Missing ++ "-key.pem",
+            sites => [],
+            backends => []
+        },
+        ?assertEqual(ok, pertisk_eproxy_db:put_runtime_config(DbPath, Cfg)),
+        ?assertEqual(ok, pertisk_eproxy_config:reload()),
+        C = pertisk_eproxy_config:get_config(),
+        ?assertEqual(false, maps:is_key(tls_cert_file, C)),
+        ?assertEqual(false, maps:is_key(tls_key_file, C))
+    end).
+
 config_init_bad_config_file_test() ->
     with_env("PERTISK_CONFIG_FILE", unset, fun() ->
         Tmp = filename:join([

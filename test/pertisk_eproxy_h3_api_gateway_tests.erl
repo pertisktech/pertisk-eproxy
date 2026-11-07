@@ -2640,6 +2640,13 @@ loopback_ephemeral_open_direct_test() ->
     {ok, Pid} = pertisk_eproxy_test_helpers:start_backend(<<"web">>, [Up]),
     true = erlang:unlink(Pid),
     pertisk_eproxy_test_helpers:sync_router([Site], [Backend]),
+    %% proxy.json may enable loopback pooling; force ephemeral for this path.
+    Config0 = pertisk_eproxy_config:get_config(),
+    unload_mocks([pertisk_eproxy_config]),
+    meck:new(pertisk_eproxy_config, [unstick, no_link, passthrough]),
+    meck:expect(pertisk_eproxy_config, get_config, fun() ->
+        maps:merge(Config0, #{upstream_loopback_pool_enabled => false})
+    end),
     try
         with_quic_h3_mock(fun() ->
             capture_h3_status(fun() ->
@@ -2664,6 +2671,7 @@ loopback_ephemeral_open_direct_test() ->
             end)
         end)
     after
+        unload_mocks([pertisk_eproxy_config]),
         pertisk_eproxy_test_helpers:stop_backend(<<"web">>),
         pertisk_eproxy_test_helpers:sync_router([], [])
     end.

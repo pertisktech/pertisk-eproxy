@@ -3054,7 +3054,8 @@ api_config_get_includes_mode_and_configured_h3_quic_pool_size_test() ->
         {ok, 200, _, Body} = dispatch(<<"GET">>, <<"/api/config">>),
         {ok, Config} = thoas:decode(Body),
         ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, Config)),
-        ?assertEqual(32, maps:get(<<"h3_quic_pool_size">>, Config)),
+        %% Matches config/proxy.json h3_quic_pool_size (not the ingress default).
+        ?assertEqual(2, maps:get(<<"h3_quic_pool_size">>, Config)),
         {ok, 200, _, AllBody} = dispatch(<<"GET">>, <<"/api/config">>, <<"show_all=1">>, <<>>),
         {ok, AllConfig} = thoas:decode(AllBody),
         ?assertEqual(<<"proxy">>, maps:get(<<"mode">>, AllConfig)),
