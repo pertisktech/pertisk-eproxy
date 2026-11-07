@@ -241,9 +241,16 @@ if [ "$zero_rtt_amp_patch_enabled" -eq 1 ]; then
       continue
     fi
 
-    perl -i -0pe '
-      s/early_data_accepted = \(EarlyKeys =\/= undefined andalso WantsEarlyData\),\n        selected_psk = SelectedPsk/early_data_accepted = (EarlyKeys =\/= undefined andalso WantsEarlyData),\n        %% PSK resume implies a previously validated path (RFC 9000 §8.1).\n        address_validated =\n            case {EarlyKeys, SelectedPsk} of\n                {undefined, undefined} -> State#state.address_validated;\n                _ -> true\n            end,\n        selected_psk = SelectedPsk/s
-    ' "$f"
+    # quic >= 2.1.3: early_data/selected_psk/address_validated live in #hs{}.
+    if grep -q 'hs = (State#state.hs)#hs{' "$f"; then
+      perl -i -0pe '
+        s/early_data_accepted = \(EarlyKeys =\/= undefined andalso WantsEarlyData\),\n(\s*)selected_psk = SelectedPsk/early_data_accepted = (EarlyKeys =\/= undefined andalso WantsEarlyData),\n$1%% PSK resume implies a previously validated path (RFC 9000 §8.1).\n$1address_validated =\n$1    case {EarlyKeys, SelectedPsk} of\n$1        {undefined, undefined} -> (State#state.hs)#hs.address_validated;\n$1        _ -> true\n$1    end,\n$1selected_psk = SelectedPsk/s
+      ' "$f"
+    else
+      perl -i -0pe '
+        s/early_data_accepted = \(EarlyKeys =\/= undefined andalso WantsEarlyData\),\n        selected_psk = SelectedPsk/early_data_accepted = (EarlyKeys =\/= undefined andalso WantsEarlyData),\n        %% PSK resume implies a previously validated path (RFC 9000 §8.1).\n        address_validated =\n            case {EarlyKeys, SelectedPsk} of\n                {undefined, undefined} -> State#state.address_validated;\n                _ -> true\n            end,\n        selected_psk = SelectedPsk/s
+      ' "$f"
+    fi
 
     rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
   done
@@ -266,12 +273,18 @@ fi
 
 # Honor max_early_data from listener opts and skip session tickets when zero.
 # http3check.net counts only full 1-RTT handshakes; 0-RTT resume fails its probe.
+# quic >= 2.1.3 keeps max_early_data on #hs{}; older releases keep it on #state{}.
 early_data_opts_found=0
 for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/null | sort -u); do
   early_data_opts_found=1
 
   if grep -q 'max_early_data = maps:get(max_early_data, Opts' "$f"; then
     :
+  elif grep -q 'address_validated = maps:get(address_validated, Opts, false),' "$f" && grep -q 'hs = #hs{' "$f"; then
+    perl -i -0pe '
+      s/address_validated = maps:get\(address_validated, Opts, false\),\n(\s*)server_cert = Cert,/address_validated = maps:get(address_validated, Opts, false),\n$1max_early_data = maps:get(max_early_data, Opts, 16384),\n$1server_cert = Cert,/s
+    ' "$f"
+    rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
   else
     perl -i -0pe '
       s/spin_bit_enabled = maps:get\(spin_bit, Opts, true\),\n        stateless_reset_secret/spin_bit_enabled = maps:get(spin_bit, Opts, true),\n        max_early_data = maps:get(max_early_data, Opts, 16384),\n        stateless_reset_secret/s
@@ -279,8 +292,13 @@ for f in $(find "${ROOT}/_build" -path '*/quic/src/quic_connection.erl' 2>/dev/n
     rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
   fi
 
-  if grep -q 'send_new_session_ticket(#state{max_early_data = 0}' "$f"; then
+  if grep -qE 'send_new_session_ticket\(#state\{(hs = #hs\{)?max_early_data = 0' "$f"; then
     :
+  elif grep -q 'send_new_session_ticket(#state{hs = #hs{selected_psk = #{source := external}}}' "$f"; then
+    perl -i -0pe '
+      s/send_new_session_ticket\(#state\{hs = #hs\{selected_psk = #\{source := external\}\}\} = State\) ->/send_new_session_ticket(#state{hs = #hs{max_early_data = 0}} = State) ->\n    State;\nsend_new_session_ticket(#state{hs = #hs{selected_psk = #{source := external}}} = State) ->/s
+    ' "$f"
+    rm -f "$(dirname "$f")/../../ebin/quic_connection.beam" 2>/dev/null || true
   else
     perl -i -0pe '
       s/(%% Server: Send NewSessionTicket after handshake completes\n%% RFC 8446 Section 4.6.1: Server sends NewSessionTicket in post-handshake message\n%% In QUIC, this is sent as a TLS handshake message in a CRYPTO frame\n)(send_new_session_ticket\(#state\{selected_psk = Sel\} = State\) when Sel =\/= undefined ->)/$1send_new_session_ticket(#state{max_early_data = 0} = State) ->\n    State;\n$2/s;
@@ -299,7 +317,7 @@ if [ -n "$EARLY_CONN" ]; then
     echo "patch-quic: max_early_data opt patch missing in $EARLY_CONN" >&2
     exit 1
   }
-  grep -q 'send_new_session_ticket(#state{max_early_data = 0}' "$EARLY_CONN" || {
+  grep -qE 'send_new_session_ticket\(#state\{(hs = #hs\{)?max_early_data = 0' "$EARLY_CONN" || {
     echo "patch-quic: disable session ticket patch missing in $EARLY_CONN" >&2
     exit 1
   }
