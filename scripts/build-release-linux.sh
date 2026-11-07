@@ -192,32 +192,64 @@ maybe_reset_build_volumes() {
 
 ensure_qemu_binfmt() {
   # linux/arm64 on an x86_64 runner needs a host qemu interpreter registered
-  # with binfmt_misc. tonistiigi/binfmt alone leaves the binary inside a
-  # containerd snapshot, so the next exec fails with "exec format error".
+  # with binfmt_misc. tonistiigi/binfmt alone often leaves the binary only in a
+  # containerd snapshot (or the registration drops after reboot), so the next
+  # exec fails with "exec format error" even when /usr/bin/qemu-* looks present.
   [ -n "$RELEASE_BUILD_PLATFORM" ] || return 0
   if host_matches_release_platform; then
     return 0
   fi
   local arch="${RELEASE_BUILD_PLATFORM#linux/}"
   local qemu_bin="/usr/bin/qemu-${arch}"
+  local binfmt_name="qemu-${arch}"
   case "$arch" in
-    arm64) qemu_bin="/usr/bin/qemu-aarch64" ;;
-    amd64) qemu_bin="/usr/bin/qemu-x86_64" ;;
+    arm64)
+      qemu_bin="/usr/bin/qemu-aarch64"
+      binfmt_name="qemu-aarch64"
+      ;;
+    amd64)
+      qemu_bin="/usr/bin/qemu-x86_64"
+      binfmt_name="qemu-x86_64"
+      ;;
   esac
-  echo "Registering QEMU binfmt for ${RELEASE_BUILD_PLATFORM} (host $(uname -m))"
-  docker run --privileged --rm tonistiigi/binfmt --install "$arch"
-  if [ ! -x "$qemu_bin" ]; then
+
+  install_qemu_interpreter() {
+    echo "Registering QEMU binfmt for ${RELEASE_BUILD_PLATFORM} (host $(uname -m))"
+    docker run --privileged --rm tonistiigi/binfmt --install "$arch"
     docker rm -f binfmt-extract >/dev/null 2>&1 || true
     docker create --name binfmt-extract tonistiigi/binfmt >/dev/null
+    # Always refresh the host interpreter from the image: a leftover binary is
+    # not enough if binfmt_misc was wiped (common after reboot / runner reuse).
     docker cp "binfmt-extract:${qemu_bin}" "$qemu_bin"
     chmod 755 "$qemu_bin"
     docker rm binfmt-extract >/dev/null
+    if [ ! -r "/proc/sys/fs/binfmt_misc/${binfmt_name}" ]; then
+      echo "binfmt entry missing after install: /proc/sys/fs/binfmt_misc/${binfmt_name}" >&2
+      return 1
+    fi
+    echo "binfmt ${binfmt_name}:"
+    cat "/proc/sys/fs/binfmt_misc/${binfmt_name}" || true
+    ls -la "$qemu_bin"
+  }
+
+  probe_cross_platform() {
+    docker run --rm --platform "$RELEASE_BUILD_PLATFORM" "$ERLANG_BUILD_IMAGE" uname -m
+  }
+
+  install_qemu_interpreter || true
+  if ! probe_cross_platform >/dev/null; then
+    echo "Cross-platform probe failed; retrying QEMU binfmt install..." >&2
+    docker run --privileged --rm tonistiigi/binfmt --uninstall "$binfmt_name" >/dev/null 2>&1 || true
+    install_qemu_interpreter
+    if ! probe_cross_platform; then
+      echo "Cannot execute ${RELEASE_BUILD_PLATFORM} containers on $(uname -m)." >&2
+      echo "Interpreter expected at ${qemu_bin}." >&2
+      ls -la "$qemu_bin" 2>&1 || true
+      cat "/proc/sys/fs/binfmt_misc/${binfmt_name}" 2>&1 || true
+      exit 1
+    fi
   fi
-  if ! docker run --rm --platform "$RELEASE_BUILD_PLATFORM" "$ERLANG_BUILD_IMAGE" uname -m >/dev/null; then
-    echo "Cannot execute ${RELEASE_BUILD_PLATFORM} containers on $(uname -m)." >&2
-    echo "Interpreter expected at ${qemu_bin}." >&2
-    exit 1
-  fi
+  echo "QEMU binfmt ready for ${RELEASE_BUILD_PLATFORM}"
 }
 
 docker_build_release() {
