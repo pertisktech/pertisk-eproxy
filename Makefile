@@ -4,6 +4,7 @@
 	docker-ingress docker-ingress-push docker-ingress-multi \
 	docker-eproxy-multi docker-harbor-multi \
 	tls-smoke package-deb-amd64 package-rpm-amd64 \
+	deploy deploy-rpm deploy-deb \
 	helm-release helm-upload helm-release-upload \
 	run run-ingress reload config health metrics test-dns-provider-validate \
 	bench bench-shell bench-compare \
@@ -26,6 +27,14 @@ DOCKER_NO_CACHE ?= false
 ifeq ($(PACKAGE_VERSION),x.x.x)
 PACKAGE_VERSION := 0.1.0
 endif
+# Remote deploy — use DEPLOY_HOST=user@host or REMOTE_USER + REMOTE_HOST
+DEPLOY_HOST ?=
+REMOTE_HOST ?=
+REMOTE_USER ?= root
+REMOTE_PATH ?= /tmp
+PACKAGE_BUILD ?= 1
+PACKAGE_NAME ?= pertisk-eproxy
+DEPLOY_SSH_OPTS ?=
 DOCKER_BUILD_ARGS := --build-arg VERSION=$(PACKAGE_VERSION) --build-arg FRONTEND_BUILD_ID=$(FRONTEND_BUILD_ID)
 DOCKER_NO_CACHE_ARG :=
 ifeq ($(DOCKER_NO_CACHE),true)
@@ -74,7 +83,9 @@ compile: patch-ekub patch-quic patch-cowboy-quic patch-hackney
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) compile
 
 admin-build:
-	cd admin && npm run -s build
+	@cd admin && \
+		if [ -f package-lock.json ]; then npm ci; else npm install; fi && \
+		npm run -s build
 
 shell: compile
 	COWBOY_QUICER=$(COWBOY_QUICER) COWBOY_QUIC=$(COWBOY_QUIC) $(REBAR) shell
@@ -285,6 +296,31 @@ package-rpm-amd64:
 	@ERLANG_BUILD_PLATFORM=linux/amd64 ERLANG_BUILD_IMAGE="$${RPM_RELEASE_BUILD_IMAGE:-hexpm/erlang:27.0.1-debian-bullseye-20240701-slim}" bash scripts/build-rpm-amd64.sh "$(PACKAGE_NAME)" "$(PACKAGE_VERSION)"
 
 package-rpm-x86_64: package-rpm-amd64
+
+# Build + deploy: VERSION=0.2.16 DEPLOY_HOST=root@10.1.1.148 make deploy
+# Or: VERSION=0.2.16 DEPLOY_HOST=root@10.1.1.148 ./scripts/build-deploy.sh
+deploy:
+	@chmod +x scripts/build-deploy.sh scripts/build.sh scripts/deploy.sh
+	DEPLOY_HOST="$(DEPLOY_HOST)" VERSION="$(PACKAGE_VERSION)" \
+		DEPLOY_PKG="$(DEPLOY_PKG)" BUILD_PKG="$(BUILD_PKG)" \
+		DEPLOY_SSH_OPTS="$(DEPLOY_SSH_OPTS)" \
+		./scripts/build-deploy.sh
+
+deploy-rpm:
+	@chmod +x build/deploy-rpm.sh
+	DEPLOY_HOST="$(DEPLOY_HOST)" REMOTE_HOST="$(REMOTE_HOST)" REMOTE_USER="$(REMOTE_USER)" \
+		VERSION="$(PACKAGE_VERSION)" PACKAGE_NAME="$(PACKAGE_NAME)" \
+		REMOTE_PATH="$(REMOTE_PATH)" PACKAGE_BUILD="$(PACKAGE_BUILD)" \
+		DEPLOY_SSH_OPTS="$(DEPLOY_SSH_OPTS)" \
+		./build/deploy-rpm.sh
+
+deploy-deb:
+	@chmod +x build/deploy-deb.sh
+	DEPLOY_HOST="$(DEPLOY_HOST)" REMOTE_HOST="$(REMOTE_HOST)" REMOTE_USER="$(REMOTE_USER)" \
+		VERSION="$(PACKAGE_VERSION)" PACKAGE_NAME="$(PACKAGE_NAME)" \
+		REMOTE_PATH="$(REMOTE_PATH)" PACKAGE_BUILD="$(PACKAGE_BUILD)" \
+		DEPLOY_SSH_OPTS="$(DEPLOY_SSH_OPTS)" \
+		./build/deploy-deb.sh
 
 helm-release:
 	@bash scripts/release-helm.sh \

@@ -2,8 +2,14 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=deploy-common.sh
+source "${ROOT_DIR}/build/deploy-common.sh"
+resolve_deploy_host
+
 # Configuration (override via env vars or first CLI arg for version)
-REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST}"
+# Prefer DEPLOY_HOST=user@host; REMOTE_HOST / REMOTE_USER still work.
+REMOTE_HOST="${REMOTE_HOST:?Set DEPLOY_HOST=user@host or REMOTE_HOST}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PACKAGE_NAME="${PACKAGE_NAME:-pertisk-eproxy}"
 RAW_PACKAGE_VERSION="${1:-${PACKAGE_VERSION:-${VERSION:-0.5.47}}}"
@@ -12,8 +18,11 @@ PACKAGE_VERSION="${PACKAGE_VERSION#V}"
 RPM_RELEASE="${RPM_RELEASE:-1}"
 REMOTE_PATH="${REMOTE_PATH:-/tmp}"
 ADMIN_BUILD="${ADMIN_BUILD:-1}"
+# Skip rebuild when artifacts already exist (scripts/build-deploy.sh).
+PACKAGE_BUILD="${PACKAGE_BUILD:-1}"
 FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL:-warn}"
 FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG:-false}"
+FORCE_MANAGEMENT_PORT="${FORCE_MANAGEMENT_PORT:-9081}"
 
 RPM_FILE="${PACKAGE_NAME}-${PACKAGE_VERSION}-${RPM_RELEASE}.x86_64.rpm"
 
@@ -33,26 +42,31 @@ if [[ -n "${FORCE_LOG_LEVEL}" ]]; then
   echo -e "${YELLOW}Force runtime log level: ${FORCE_LOG_LEVEL}${NC}"
 fi
 echo -e "${YELLOW}Force proxy access log: ${FORCE_PROXY_ACCESS_LOG}${NC}"
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
-
-if [[ "$ADMIN_BUILD" = "1" ]]; then
-  log_info "Building admin UI assets..."
-  (
-    cd "${ROOT_DIR}/admin"
-    if [ -f package-lock.json ]; then
-      npm ci
-    else
-      npm install
-    fi
-    npm run build
-  )
+if [[ -n "${FORCE_MANAGEMENT_PORT}" ]]; then
+  echo -e "${YELLOW}Force management port: ${FORCE_MANAGEMENT_PORT}${NC}"
 fi
 
-# Step 1: Build package
-log_info "Building RPM package..."
-make package-rpm-amd64 VERSION="${PACKAGE_VERSION}"
+cd "$ROOT_DIR"
+
+if [[ "$PACKAGE_BUILD" = "1" ]]; then
+  if [[ "$ADMIN_BUILD" = "1" ]]; then
+    log_info "Building admin UI assets..."
+    (
+      cd "${ROOT_DIR}/admin"
+      if [ -f package-lock.json ]; then
+        npm ci
+      else
+        npm install
+      fi
+      npm run build
+    )
+  fi
+
+  log_info "Building RPM package..."
+  make package-rpm-amd64 VERSION="${PACKAGE_VERSION}"
+else
+  log_info "Skipping package build (PACKAGE_BUILD=0)"
+fi
 
 if [[ ! -f "release/${RPM_FILE}" ]]; then
   log_err "Expected package not found: release/${RPM_FILE}"
@@ -70,6 +84,7 @@ set -euo pipefail
 PKG_PATH="${REMOTE_PATH}/${RPM_FILE}"
 FORCE_LOG_LEVEL="${FORCE_LOG_LEVEL}"
 FORCE_PROXY_ACCESS_LOG="${FORCE_PROXY_ACCESS_LOG}"
+FORCE_MANAGEMENT_PORT="${FORCE_MANAGEMENT_PORT}"
 
 if command -v dnf >/dev/null 2>&1; then
   if rpm -q "${PACKAGE_NAME}" >/dev/null 2>&1; then
@@ -171,20 +186,36 @@ sudo systemctl enable "${PACKAGE_NAME}" --now
 sudo systemctl reset-failed "${PACKAGE_NAME}" || true
 
 # Prefer erlang_quic gateway (faster on 1-vCPU H3 health benches than Cowboy+quicer).
+# Also pin management_port (default 9081 for local deploy) via proxy.json so it
+# wins over SQLite runtime_config on reload (merge_proxy_file_defaults).
 if [ -f "\${PACKAGE_ROOT}/config/proxy.json" ]; then
-  sudo python3 - <<"PY" || true
-import json
+  sudo FORCE_MANAGEMENT_PORT="\${FORCE_MANAGEMENT_PORT}" python3 - <<"PY" || true
+import json, os
 path = "/opt/pertisk-eproxy/config/proxy.json"
 with open(path) as f:
     c = json.load(f)
 c["quic_enabled"] = True
 c["h3_api_gateway_enabled"] = True
 c["h3_probe_enabled"] = False
+port = os.environ.get("FORCE_MANAGEMENT_PORT", "").strip()
+if port:
+    c["management_port"] = int(port)
 with open(path, "w") as f:
     json.dump(c, f, indent=4)
     f.write("\n")
-print("proxy.json: quic_enabled=true h3_api_gateway_enabled=true")
+msg = "proxy.json: quic_enabled=true h3_api_gateway_enabled=true"
+if port:
+    msg += f" management_port={port}"
+print(msg)
 PY
+fi
+
+if [ -n "\${FORCE_MANAGEMENT_PORT}" ] && command -v firewall-cmd >/dev/null 2>&1; then
+  if systemctl is-active --quiet firewalld 2>/dev/null; then
+    sudo firewall-cmd --permanent --add-port="\${FORCE_MANAGEMENT_PORT}/tcp" || true
+    sudo firewall-cmd --reload || true
+    echo "firewalld: opened \${FORCE_MANAGEMENT_PORT}/tcp"
+  fi
 fi
 
 sudo systemctl restart "${PACKAGE_NAME}"

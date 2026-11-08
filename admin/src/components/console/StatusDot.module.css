@@ -1,0 +1,47 @@
+.dot {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.core,
+.ping {
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.core {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+}
+
+.ping {
+  position: absolute;
+  inset: 0;
+  opacity: 0.6;
+  animation: ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes ping {
+  75%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ping {
+    animation: none;
+  }
+}
+
+.success { color: var(--color-success); }
+.warning { color: var(--color-warning); }
+.danger { color: var(--color-destructive); }
+.info { color: var(--color-info); }
+.muted { color: var(--color-muted-foreground); }

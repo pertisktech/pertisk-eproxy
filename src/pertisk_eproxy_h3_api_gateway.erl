@@ -202,7 +202,7 @@ handle_request(H3Conn, StreamId, Method, Path, Headers) ->
     Auth = authority_host(Headers),
     LogHost = host_for_route(Auth),
     {PathOnly, Qs} = split_path_query(Path),
-    case try_h3_benchmark_fast_path(H3Conn, StreamId, Method, PathOnly) of
+    case try_h3_benchmark_fast_path(H3Conn, StreamId, Method, PathOnly, LogHost) of
         ok ->
             ok;
         skip ->
@@ -1868,8 +1868,9 @@ maybe_log_h3_access(Host, Site, Method, Path, Status, T0, Upstream) ->
             log_h3_access(Host, Site, Method, Path, Status, T0, Upstream)
     end.
 
-%% k6 / probe hot path: skip router, backend pick, compression, metrics, access log.
-try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly) ->
+%% k6 / probe hot path: skip router, backend pick, compression, and access log.
+%% Request counters still increment so Metrics RPS reflects health-probe load.
+try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly, LogHost) ->
     case is_h3_benchmark_path(PathOnly) of
         false ->
             skip;
@@ -1883,6 +1884,7 @@ try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly) ->
                         [{<<"content-type">>, <<"application/json">>}],
                         ?H3_BENCHMARK_BODY
                     ),
+                    inc_h3_metrics(LogHost, LogHost, <<"200">>),
                     ok;
                 <<"HEAD">> ->
                     _ = h3_reply_status(
@@ -1892,6 +1894,7 @@ try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly) ->
                         [{<<"content-type">>, <<"application/json">>}],
                         <<>>
                     ),
+                    inc_h3_metrics(LogHost, LogHost, <<"200">>),
                     ok;
                 _ ->
                     skip
@@ -1906,11 +1909,13 @@ is_h3_benchmark_path(Path) ->
 maybe_h3_success_side_effects(
     LogHost, SiteHost, PathOnly, StatusBin, Body, RespBin, BackendName, UpstreamAddr
 ) ->
+    %% Always count metrics (including /api/health). Skip access-log noise and
+    %% upstream accounting for health probes only.
+    inc_h3_metrics(LogHost, SiteHost, StatusBin),
     case pertisk_eproxy_access_log:is_health_path(PathOnly) of
         true ->
             ok;
         false ->
-            inc_h3_metrics(LogHost, SiteHost, StatusBin),
             ok = pertisk_eproxy_metrics:record_proxy_bytes(
                 LogHost, byte_size(Body), byte_size(RespBin)
             ),

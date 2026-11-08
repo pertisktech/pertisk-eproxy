@@ -1,17 +1,24 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { ArrowUpRight, Cpu, ListTree, MemoryStick, RefreshCw } from 'lucide-react';
 import {
   api,
-  type BeamMemoryBreakdown,
+  openRealtimeStream,
   type CertificateRow,
   type HealthReport,
   type ProxyConfig,
   type ManagementInfo,
   type Metrics,
   type K8sPodRow,
+  type RealtimeSnapshot,
 } from '@/api/client';
-import { getUsername } from '@/auth';
-import { formatContainerCpuLine, formatPertiskVmCpuLine, containerCpuTooltip, pertiskVmCpuTooltip } from '@/utils/beamCpu';
+import {
+  beamCpuShareOfHostCpusPercent,
+  formatContainerCpuLine,
+  formatPertiskVmCpuLine,
+  containerCpuTooltip,
+  pertiskVmCpuTooltip,
+} from '@/utils/beamCpu';
 import {
   buildTlsSiteValidationRows,
   tlsValidationDetail,
@@ -19,17 +26,27 @@ import {
 } from '@/utils/tlsSiteValidation';
 import PrometheusScrapePanel from '@/components/PrometheusScrapePanel';
 import HealthProbesPanel from '@/components/HealthProbesPanel';
+import {
+  BandwidthChart,
+  ChartEmpty,
+  ChartLegend,
+  Meter,
+  PageHeader,
+  Panel,
+  RequestsChart,
+  ShareDonut,
+  StatCard,
+  StatusBadge,
+  StatusDot,
+  protocolColors,
+  type BandwidthPoint,
+  type RequestPoint,
+} from '@/components/console';
 import styles from './Dashboard.module.css';
 
-type KpiTile = {
-  key: string;
-  value: string;
-  label: string;
-  sub?: string | null;
-  icon: string;
-  tone: 'blue' | 'teal' | 'purple' | 'green' | 'orange' | 'slate';
-  title?: string;
-};
+const MAX_POINTS = 24;
+/** Ignore samples closer together than this (poll + websocket can fire back to back). */
+const MIN_SAMPLE_GAP_MS = 1500;
 
 type DashboardCache = {
   config: ProxyConfig | null;
@@ -51,6 +68,14 @@ function formatBytes(n: number | undefined | null): string {
   return `${(mb / 1024).toFixed(2)} GiB`;
 }
 
+function formatBytesPerSec(bytesPerSec: number): string {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '0 B/s';
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KiB/s`;
+  if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MiB/s`;
+  return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GiB/s`;
+}
+
 function formatMillicores(millicores: number): string {
   return `${millicores}m`;
 }
@@ -66,27 +91,50 @@ function formatTopMemory(bytes: number): string {
   return `${(mib / 1024).toFixed(1)}Gi`;
 }
 
-const MEMORY_BREAKDOWN_ROWS: { key: keyof BeamMemoryBreakdown; label: string; hint?: string }[] = [
-  { key: 'code', label: 'Code', hint: 'Erlang modules loaded in the VM (often higher in release embedded mode).' },
-  { key: 'processes', label: 'Processes' },
-  { key: 'system', label: 'System' },
-  { key: 'binary', label: 'Binary' },
-  { key: 'ets', label: 'ETS' },
-  { key: 'atom', label: 'Atom' },
-];
-
-function formatTs(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms)) return '—';
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return String(ms);
-  }
+function formatUptime(secs: number | null | undefined): string {
+  if (secs == null || !Number.isFinite(secs)) return '—';
+  const total = Math.max(0, Math.floor(secs));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return s > 0 && m < 10 ? `${m}m ${s}s` : `${m}m`;
+  return `${s}s`;
 }
 
 function formatPercent(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return '—';
   return `${value.toFixed(1)}%`;
+}
+
+function tickLabel(ts: number) {
+  return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function deltaRate(curr: number, prev: number, seconds: number): number {
+  if (seconds <= 0 || curr < prev) return 0;
+  return (curr - prev) / seconds;
+}
+
+function InfoRow({
+  label,
+  value,
+  mono = true,
+  title,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  title?: string;
+}) {
+  return (
+    <div className={styles.infoRow} title={title}>
+      <dt className={styles.infoLabel}>{label}</dt>
+      <dd className={`${styles.infoValue} ${mono ? styles.mono : ''}`}>{value}</dd>
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -100,37 +148,79 @@ export default function Dashboard() {
   );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(() => dashboardCache == null);
+  const [refreshing, setRefreshing] = useState(false);
   const [k8sLoading, setK8sLoading] = useState(false);
+  const [requestSeries, setRequestSeries] = useState<RequestPoint[]>([]);
+  const [bandwidthSeries, setBandwidthSeries] = useState<BandwidthPoint[]>([]);
+  const [rates, setRates] = useState({ sent: 0, recv: 0 });
+  const prevSample = useRef<{ m: Metrics; at: number } | null>(null);
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = opts?.silent === true;
-    if (!silent) {
-      setLoading(true);
-    }
-    try {
-      const [c, h, m, st, certList] = await Promise.all([
-        api.config(),
-        api.health(),
-        api.management(),
-        api.metrics(),
-        api.certificates.list().catch(() => [] as CertificateRow[]),
-      ]);
-      const certs = Array.isArray(certList) ? certList : [];
-      setConfig(c);
-      setHealth(h);
-      setManagement(m);
-      setStats(st);
-      setIssuedTlsCerts(certs);
-      dashboardCache = { config: c, health: h, management: m, stats: st, issuedTlsCerts: certs };
-      setError(null);
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      if (!silent) {
-        setLoading(false);
-      }
-    }
+  /** Turn successive counter snapshots into per-second rates (poll + realtime stream share this). */
+  const ingestStats = useCallback((m: Metrics) => {
+    const now = Date.now();
+    const prev = prevSample.current;
+    if (prev && now - prev.at < MIN_SAMPLE_GAP_MS) return;
+    prevSample.current = { m, at: now };
+    if (!prev) return;
+
+    const secs = (now - prev.at) / 1000;
+    const h2 = deltaRate(m.h2_requests_total ?? 0, prev.m.h2_requests_total ?? 0, secs);
+    const h3 = deltaRate(m.h3_requests_total ?? 0, prev.m.h3_requests_total ?? 0, secs);
+    const egress = deltaRate(m.bytes_sent_total ?? 0, prev.m.bytes_sent_total ?? 0, secs);
+    const ingress = deltaRate(m.bytes_received_total ?? 0, prev.m.bytes_received_total ?? 0, secs);
+    setRates({ sent: egress, recv: ingress });
+
+    const label = tickLabel(now);
+    setRequestSeries((series) =>
+      [...series, { t: label, http2: Math.round(h2 * 10) / 10, http3: Math.round(h3 * 10) / 10 }].slice(-MAX_POINTS),
+    );
+    setBandwidthSeries((series) =>
+      [
+        ...series,
+        {
+          t: label,
+          egress: Math.round((egress / (1024 * 1024)) * 100) / 100,
+          ingress: Math.round((ingress / (1024 * 1024)) * 100) / 100,
+        },
+      ].slice(-MAX_POINTS),
+    );
   }, []);
+
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent === true;
+      if (!silent) {
+        setLoading(true);
+      }
+      setRefreshing(true);
+      try {
+        const [c, h, m, st, certList] = await Promise.all([
+          api.config(),
+          api.health(),
+          api.management(),
+          api.metrics(),
+          api.certificates.list().catch(() => [] as CertificateRow[]),
+        ]);
+        const certs = Array.isArray(certList) ? certList : [];
+        setConfig(c);
+        setHealth(h);
+        setManagement(m);
+        setStats(st);
+        setIssuedTlsCerts(certs);
+        dashboardCache = { config: c, health: h, management: m, stats: st, issuedTlsCerts: certs };
+        setError(null);
+        ingestStats(st);
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setRefreshing(false);
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [ingestStats],
+  );
 
   useEffect(() => {
     void load({ silent: dashboardCache != null });
@@ -144,9 +234,20 @@ export default function Dashboard() {
     return () => window.clearInterval(timer);
   }, [load]);
 
+  // Realtime stream: keeps stats/management fresh and feeds the live rate charts between polls.
+  useEffect(() => {
+    const stop = openRealtimeStream((snapshot: RealtimeSnapshot) => {
+      setStats(snapshot.stats);
+      setManagement(snapshot.management);
+      ingestStats(snapshot.stats);
+    });
+    return stop;
+  }, [ingestStats]);
+
   useEffect(() => {
     if (management?.mode !== 'ingress') return;
     let cancelled = false;
+
     async function loadK8s() {
       try {
         setK8sLoading(true);
@@ -193,127 +294,44 @@ export default function Dashboard() {
     (typeof pi?.memory_total_bytes === 'number' ? pi.memory_total_bytes : null);
   const codeMemBytes = typeof memBreakdown?.code === 'number' ? memBreakdown.code : null;
   const beamCpu = management?.process_cpu_usage_percent;
+  const beamCpuOk = beamCpu != null && Number.isFinite(beamCpu);
   const selfPod =
-    isIngressMode && pi?.hostname
-      ? ingressPods.find((pod) => pod.name === pi.hostname)
-      : undefined;
+    isIngressMode && pi?.hostname ? ingressPods.find((pod) => pod.name === pi.hostname) : undefined;
   const containerCpuMilli = selfPod?.cpu_usage_millicores;
   const containerCpuLimitMilli = selfPod?.cpu_limit_millicores ?? 1000;
   const containerCpuSummary =
-    containerCpuMilli != null && containerCpuLimitMilli != null
-      ? formatContainerCpuLine(containerCpuMilli, containerCpuLimitMilli)
+    containerCpuMilli != null ? formatContainerCpuLine(containerCpuMilli, containerCpuLimitMilli) : null;
+  const containerCpuPct =
+    containerCpuMilli != null && containerCpuLimitMilli > 0
+      ? (containerCpuMilli / containerCpuLimitMilli) * 100
       : null;
-  const cpuSummary =
-    containerCpuSummary ??
-    (beamCpu != null && Number.isFinite(beamCpu)
-      ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
+  const cpuMeterPct =
+    containerCpuPct ??
+    (beamCpuOk && pi?.logical_processors
+      ? beamCpuShareOfHostCpusPercent(beamCpu, pi.logical_processors)
       : null);
-  const cpuSummarySub =
-    containerCpuSummary != null
-      ? 'metrics-server (this pod)'
-      : beamCpu != null && Number.isFinite(beamCpu) && pi?.logical_processors
-        ? `Erlang VM · ${pi.logical_processors} logical CPUs`
-        : beamCpu != null && Number.isFinite(beamCpu)
-          ? 'Erlang VM'
-          : null;
-  const cpuTileTitle =
+  const cpuDetail =
+    containerCpuSummary ?? (beamCpuOk ? formatPertiskVmCpuLine(beamCpu, pi?.logical_processors) : '—');
+  const cpuTitle =
     containerCpuSummary != null
       ? containerCpuTooltip()
       : pertiskVmCpuTooltip(pi?.logical_processors, beamCpu);
+  const cpuStatValue =
+    containerCpuPct != null ? formatPercent(containerCpuPct) : beamCpuOk ? formatPercent(beamCpu) : '—';
   const processCount = typeof pi?.process_count === 'number' ? pi.process_count : null;
   const processLimit = typeof pi?.process_limit === 'number' ? pi.process_limit : null;
   const processUsagePct =
     processCount != null && processLimit != null && processLimit > 0
       ? (processCount / processLimit) * 100
       : null;
-  const runtimePorts = listeners
-    .filter((l) => Number.isFinite(l.port) && l.port > 0)
-    .sort((a, b) => a.port - b.port);
+  const publicIp = [management?.public_ipv4, management?.public_ipv6].filter(Boolean).join(' · ');
+
   const tlsSiteRows = useMemo(
     () => buildTlsSiteValidationRows(config?.sites ?? [], health, issuedTlsCerts),
     [config?.sites, health, issuedTlsCerts],
   );
   const siteCount = config?.sites?.length ?? 0;
-  const displayName = getUsername() || 'operator';
-  const todayLine = useMemo(() => {
-    try {
-      return new Intl.DateTimeFormat(undefined, {
-        weekday: 'long',
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-      }).format(new Date());
-    } catch {
-      return new Date().toLocaleDateString();
-    }
-  }, []);
-
-  const kpiTiles: KpiTile[] = useMemo(
-    () => [
-      {
-        key: 'cpu',
-        value: cpuSummary ?? '—',
-        label: 'CPU usage',
-        sub: cpuSummarySub,
-        icon: 'fa-microchip',
-        tone: 'blue',
-        title: cpuTileTitle,
-      },
-      {
-        key: 'mem',
-        value: memBytes != null ? formatBytes(memBytes) : '—',
-        label: 'Memory usage',
-        sub: codeMemBytes != null ? `code ${formatBytes(codeMemBytes)}` : null,
-        icon: 'fa-memory',
-        tone: 'teal',
-        title:
-          'erlang:memory(total) — VM allocated memory. Code is Erlang bytecode in RAM; release embedded mode preloads modules and can use more code memory than dev.',
-      },
-      {
-        key: 'sites',
-        value: String(config?.sites?.length ?? 0),
-        label: 'Total sites',
-        icon: 'fa-globe',
-        tone: 'purple',
-      },
-      {
-        key: 'backends',
-        value: String(config?.backends?.length ?? 0),
-        label: 'Total backends',
-        icon: 'fa-server',
-        tone: 'green',
-      },
-      {
-        key: 'visits',
-        value: (stats?.http_requests_total ?? 0).toLocaleString(),
-        label: 'Total visits',
-        icon: 'fa-chart-bar',
-        tone: 'orange',
-      },
-      {
-        key: 'active',
-        value: String(stats?.active_connections ?? 0),
-        label: 'Active upstreams',
-        icon: 'fa-bolt',
-        tone: 'slate',
-        title: 'In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle.',
-      },
-    ],
-    [
-      beamCpu,
-      codeMemBytes,
-      config?.backends?.length,
-      config?.sites?.length,
-      containerCpuSummary,
-      cpuSummary,
-      cpuSummarySub,
-      cpuTileTitle,
-      memBytes,
-      pi?.logical_processors,
-      stats?.active_connections,
-      stats?.http_requests_total,
-    ],
-  );
+  const backendCount = config?.backends?.length ?? 0;
 
   const healthOk = useMemo(() => {
     const rows = health?.backends ?? [];
@@ -321,8 +339,56 @@ export default function Dashboard() {
     return rows.every((b) => b.total === 0 || b.healthy >= b.total);
   }, [health?.backends]);
 
+  const h2Total = stats?.h2_requests_total ?? 0;
+  const h3Total = stats?.h3_requests_total ?? 0;
+  const httpTotal = h2Total + h3Total;
+  const h3Share = httpTotal > 0 ? (h3Total / httpTotal) * 100 : null;
+  const shareData = [
+    { name: 'HTTP/3', value: h3Total, color: protocolColors.h3 },
+    { name: 'HTTP/2', value: h2Total, color: protocolColors.h2 },
+  ];
+
+  const busiestSites = useMemo(() => {
+    const h2 = stats?.site_h2_requests_total ?? {};
+    const h3 = stats?.site_h3_requests_total ?? {};
+    return Array.from(new Set([...Object.keys(h2), ...Object.keys(h3)]))
+      .map((host) => ({ host, count: (h2[host] ?? 0) + (h3[host] ?? 0) }))
+      .filter((s) => s.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+  }, [stats?.site_h2_requests_total, stats?.site_h3_requests_total]);
+
+  const busy = loading || refreshing;
+
   return (
     <section className={styles.page}>
+      <PageHeader
+        title="Dashboard"
+        description="Live overview of the pertisk-eproxy runtime, traffic, and host health."
+        actions={
+          <>
+            <StatusBadge tone={healthOk ? 'success' : 'warning'} pulse={healthOk}>
+              uptime {formatUptime(stats?.uptime_secs)}
+            </StatusBadge>
+            <StatusBadge tone="muted" dot={false}>
+              {management?.mode ?? 'proxy'} mode
+            </StatusBadge>
+            {health && !healthOk ? <StatusBadge tone="warning">Needs attention</StatusBadge> : null}
+            <button
+              type="button"
+              className={styles.refreshBtn}
+              onClick={() => void load()}
+              disabled={busy}
+              aria-busy={busy}
+              title="Reload dashboard data"
+            >
+              <RefreshCw size={14} className={busy ? styles.spin : undefined} aria-hidden />
+              Refresh
+            </button>
+          </>
+        }
+      />
+
       {error && (
         <div className="error-banner" role="alert">
           <i className="fas fa-exclamation-circle" aria-hidden />
@@ -330,231 +396,230 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className={styles.hero}>
-        <div className={styles.heroCopy}>
-          <p className={styles.heroEyebrow}>{todayLine}</p>
-          <h1 className={styles.heroTitle}>Welcome back, {displayName}</h1>
-          <p className={styles.heroSubtitle}>
-            Operational snapshot of runtime health, traffic, and proxy readiness.
-            {health ? (
-              <span className={`${styles.healthChip} ${healthOk ? styles.healthChipOk : styles.healthChipWarn}`}>
-                <i className={`fas ${healthOk ? 'fa-check-circle' : 'fa-exclamation-triangle'}`} aria-hidden />
-                {healthOk ? 'All systems operational' : 'Needs attention'}
-              </span>
-            ) : null}
-          </p>
-        </div>
-        <div className={styles.heroMeta}>
-          <button
-            type="button"
-            className={styles.heroBtnGhost}
-            onClick={() => void load()}
-            disabled={loading}
-            aria-busy={loading}
-            title="Reload dashboard data"
-          >
-            <i className={`fas fa-sync-alt ${loading ? styles.heroRefreshSpin : ''}`} aria-hidden /> Refresh
-          </button>
-          <Link to="/metrics" className={styles.heroBtnPrimary}>
-            <i className="fas fa-chart-line" aria-hidden /> View metrics
-          </Link>
-        </div>
-      </div>
-
       {loading ? (
         <div className={styles.loadingWrap}>
           <div className="spinner" />
         </div>
       ) : (
         <>
-          <div className={styles.glance}>
-            <div className={styles.glanceMetrics} role="group" aria-label="Dashboard summary">
-              {kpiTiles.map((tile) => (
-                <article
-                  key={tile.key}
-                  className={`${styles.metricTile} ${styles[`metricTone${tile.tone.charAt(0).toUpperCase()}${tile.tone.slice(1)}`]}`}
-                  title={tile.title}
-                >
-                  <div className={styles.metricTileHead}>
-                    <span className={styles.metricTileIcon} aria-hidden>
-                      <i className={`fas ${tile.icon}`} />
-                    </span>
-                  </div>
-                  <div className={styles.metricTileVal}>{tile.value}</div>
-                  <div className={styles.metricTileLabel}>{tile.label}</div>
-                  {tile.sub ? <div className={styles.metricTileSub}>{tile.sub}</div> : null}
-                </article>
-              ))}
-            </div>
-
-            <div className={styles.glanceBottom}>
-              <div className={styles.panel}>
-                <h2 className={styles.panelTitle}>
-                  <i className="fas fa-memory" aria-hidden /> VM resources
-                </h2>
-                <dl className={styles.kv}>
-                  <dt>CPU</dt>
-                  <dd title={cpuTileTitle}>
-                    {containerCpuSummary != null ? (
-                      <>
-                        <div>{containerCpuSummary}</div>
-                        <div className={styles.kvMuted}>metrics-server (this pod)</div>
-                      </>
-                    ) : beamCpu != null && Number.isFinite(beamCpu) ? (
-                      formatPertiskVmCpuLine(beamCpu, pi?.logical_processors)
-                    ) : (
-                      '—'
-                    )}
-                  </dd>
-                  <dt>Memory (total)</dt>
-                  <dd title="erlang:memory(total) — total allocated by the runtime.">
-                    {memBytes != null ? `${formatBytes(memBytes)} allocated` : '—'}
-                  </dd>
-                  {MEMORY_BREAKDOWN_ROWS.map(({ key, label, hint }) => {
-                    const n = memBreakdown?.[key];
-                    if (n == null || !Number.isFinite(n)) return null;
-                    return (
-                      <span key={key} className={styles.kvBreakdownPair}>
-                        <dt title={hint}>{label}</dt>
-                        <dd title={hint}>{formatBytes(n)}</dd>
-                      </span>
-                    );
-                  })}
-                </dl>
-              </div>
-
-              <div className={styles.panel}>
-                <h2 className={styles.panelTitle}>
-                  <i className="fas fa-plug" aria-hidden /> Runtime
-                </h2>
-                <dl className={styles.kv}>
-                  <dt>Hostname</dt>
-                  <dd className="mono">{pi?.hostname ?? '—'}</dd>
-                  <dt>Node</dt>
-                  <dd className="mono">{pi?.node ?? '—'}</dd>
-                  <dt>Runtime process</dt>
-                  <dd className="mono">{pi?.os_pid ?? '—'}</dd>
-                  <dt>BEAM processes</dt>
-                  <dd>
-                    {processCount != null && processLimit != null
-                      ? `${processCount} / ${processLimit} (${formatPercent(processUsagePct)})`
-                      : '—'}
-                  </dd>
-                  {management?.log_level ? (
-                    <>
-                      <dt>Log level</dt>
-                      <dd className="mono">{management.log_level}</dd>
-                    </>
-                  ) : null}
-                  <dt>Ports</dt>
-                  <dd>
-                    {runtimePorts.length === 0 ? (
-                      '—'
-                    ) : (
-                      <div className={styles.portBadgeWrap}>
-                        {runtimePorts.map((listener) => (
-                          <span key={listener.id} className={styles.portBadge}>
-                            <span className={styles.portProto}>{listener.protocol.toUpperCase()}</span>
-                            <span className="mono">:{listener.port}</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </dd>
-                  {health?.acme?.lego_required === false ? null : (
-                    <>
-                      <dt>Lego DNS CLI</dt>
-                      <dd className="mono">
-                        {health?.acme?.lego_installed
-                          ? `Installed${health?.acme?.lego_path ? ` (${health.acme.lego_path})` : ''}`
-                          : 'Not installed'}
-                      </dd>
-                    </>
-                  )}
-                </dl>
-              </div>
-            </div>
+          <div className={styles.statGrid} role="group" aria-label="Dashboard summary">
+            <StatCard label="Sites" value={String(siteCount)} hint={`${backendCount} backends`} />
+            <StatCard label="Backends" value={String(backendCount)} hint={`${health?.backends?.length ?? 0} health-checked`} />
+            <StatCard
+              label="Active connections"
+              value={(stats?.active_connections ?? 0).toLocaleString()}
+              hint={`${formatBytes(stats?.bytes_sent_total)} sent`}
+              title="In-flight requests to backend upstreams (not admin UI sessions). Often 0 when idle."
+            />
+            <StatCard
+              label="Requests"
+              value={httpTotal.toLocaleString()}
+              hint={`H2 ${h2Total.toLocaleString()} · H3 ${h3Total.toLocaleString()}`}
+            />
+            <StatCard
+              label="HTTP/3 share"
+              value={h3Share != null ? `${h3Share.toFixed(1)}%` : '—'}
+              hint={`${h3Total.toLocaleString()} of ${httpTotal.toLocaleString()} reqs`}
+            />
+            <StatCard label="Bytes sent" value={formatBytesPerSec(rates.sent)} hint="egress rate" />
+            <StatCard label="Bytes received" value={formatBytesPerSec(rates.recv)} hint="ingress rate" />
+            <StatCard
+              label="Memory"
+              value={memBytes != null ? formatBytes(memBytes) : '—'}
+              hint={codeMemBytes != null ? `code ${formatBytes(codeMemBytes)}` : `CPU ${cpuStatValue}`}
+              title="erlang:memory(total) — VM allocated memory."
+            />
           </div>
 
-          <div className={styles.twoCol}>
-            <div className={styles.panel}>
-              <h2 className={styles.panelTitle}>
-                <i className="fas fa-microchip" aria-hidden /> System
-              </h2>
-              <dl className={styles.kv}>
-                <dt>Hostname</dt>
-                <dd className="mono">{pi?.hostname || '—'}</dd>
-                <dt>OS</dt>
-                <dd>
-                  {pi?.os_type ?? '—'} {pi?.os_version ? `(${pi.os_version})` : ''}
-                </dd>
-                <dt>Architecture</dt>
-                <dd className="mono">{pi?.system_architecture ?? '—'}</dd>
-                {!isIngressMode ? (
-                  <>
-                    <dt>Database</dt>
-                    <dd className="mono">{management?.db_path ?? '—'}</dd>
-                  </>
-                ) : null}
-                {isIngressMode && leaderInfo && leaderStatus ? (
-                  <>
-                    <dt>Leader election</dt>
-                    <dd className="mono">
-                      {leaderStatus} ({leaderInfo.namespace}/{leaderInfo.lease_name})
-                    </dd>
-                  </>
-                ) : null}
-              </dl>
-            </div>
+          <div className={styles.threeCol}>
+            <Panel
+              title="Request throughput"
+              description="HTTP/2 vs HTTP/3 requests per second"
+              className={styles.span2}
+              actions={
+                <ChartLegend
+                  items={[
+                    { label: 'HTTP/3', color: protocolColors.h3 },
+                    { label: 'HTTP/2', color: protocolColors.h2 },
+                  ]}
+                />
+              }
+            >
+              {requestSeries.length > 0 ? (
+                <RequestsChart data={requestSeries} />
+              ) : (
+                <ChartEmpty message="Collecting live samples…" height={240} />
+              )}
+            </Panel>
 
-            <div className={styles.panel}>
-              <h2 className={styles.panelTitle}>
-                <i className="fas fa-project-diagram" aria-hidden /> Process (BEAM)
-              </h2>
-              <dl className={styles.kv}>
-                <dt>Node</dt>
-                <dd className="mono">{pi?.node ?? '—'}</dd>
-                <dt>OS PID</dt>
-                <dd className="mono">{pi?.os_pid ?? '—'}</dd>
-                <dt>OTP / ERTS</dt>
-                <dd className="mono">
-                  {pi?.otp_release ?? '—'} / {pi?.erts_version ?? '—'}
-                </dd>
-                <dt>Schedulers</dt>
-                <dd>
-                  {pi?.schedulers ?? '—'} ({pi?.logical_processors ?? '—'} logical CPUs,{' '}
-                  {pi?.word_size ?? '—'}
-                  -bit word)
-                </dd>
-                <dt>Processes</dt>
-                <dd>
-                  {pi?.process_count ?? '—'} / {pi?.process_limit ?? '—'}
-                </dd>
-                <dt>SMP / async threads</dt>
-                <dd>
-                  {pi?.smp_enabled === true ? 'yes' : pi?.smp_enabled === false ? 'no' : '—'} · pool{' '}
-                  {pi?.thread_pool ?? '—'}
-                </dd>
-              </dl>
-            </div>
+            <Panel title="Protocol share" description="HTTP/2 vs HTTP/3 since process start">
+              {httpTotal > 0 ? (
+                <ShareDonut
+                  data={shareData}
+                  centerValue={h3Share != null ? `${h3Share.toFixed(1)}%` : '—'}
+                  centerLabel="HTTP/3"
+                />
+              ) : (
+                <ChartEmpty message="No H2/H3 requests yet." height={220} />
+              )}
+              <ul className={styles.shareList}>
+                {shareData.map((s) => (
+                  <li key={s.name} className={styles.shareItem}>
+                    <span className={styles.shareName}>
+                      <span className={styles.shareDot} style={{ background: s.color }} />
+                      {s.name}
+                    </span>
+                    <span className={styles.mono}>{s.value.toLocaleString()}</span>
+                  </li>
+                ))}
+              </ul>
+            </Panel>
+          </div>
+
+          <div className={styles.threeCol}>
+            {!isIngressMode ? (
+              <Panel title="Host system" description={`${pi?.hostname ?? 'host'} · ${pi?.os_type ?? 'unknown OS'}`} bodyClassName={styles.stack}>
+                <Meter
+                  label="CPU"
+                  detail={cpuDetail}
+                  pct={cpuMeterPct}
+                  icon={<Cpu size={16} aria-hidden />}
+                  title={cpuTitle}
+                />
+                <Meter
+                  label="Memory"
+                  detail={memBytes != null ? `${formatBytes(memBytes)} allocated` : '—'}
+                  pct={null}
+                  icon={<MemoryStick size={16} aria-hidden />}
+                  title="erlang:memory(total) — total allocated by the runtime."
+                />
+                <Meter
+                  label="Processes"
+                  detail={
+                    processCount != null && processLimit != null
+                      ? `${processCount.toLocaleString()} / ${processLimit.toLocaleString()}`
+                      : '—'
+                  }
+                  pct={processUsagePct}
+                  icon={<ListTree size={16} aria-hidden />}
+                />
+                <dl className={styles.infoList}>
+                  <InfoRow label="Node" value={pi?.node ?? '—'} />
+                  <InfoRow label="OTP / ERTS" value={`${pi?.otp_release ?? '—'} / ${pi?.erts_version ?? '—'}`} />
+                  <InfoRow
+                    label="Schedulers"
+                    value={pi?.schedulers != null ? `${pi.schedulers} · ${pi.logical_processors ?? '—'} CPUs` : '—'}
+                  />
+                  <InfoRow label="Public IP" value={publicIp || '—'} title={management?.public_ip_error ?? undefined} />
+                  <InfoRow label="Database" value={management?.db_path ?? '—'} />
+                </dl>
+              </Panel>
+            ) : (
+              <Panel title="Controller" description="Ingress runtime" bodyClassName={styles.stack}>
+                <dl className={styles.infoList}>
+                  <InfoRow label="Hostname" value={pi?.hostname ?? '—'} />
+                  <InfoRow label="OS PID" value={pi?.os_pid ?? '—'} />
+                  <InfoRow label="Node" value={pi?.node ?? '—'} />
+                  <InfoRow label="OTP / ERTS" value={`${pi?.otp_release ?? '—'} / ${pi?.erts_version ?? '—'}`} />
+                  <InfoRow
+                    label="Leader"
+                    value={
+                      leaderInfo && leaderStatus
+                        ? `${leaderStatus} (${leaderInfo.namespace}/${leaderInfo.lease_name})`
+                        : 'n/a'
+                    }
+                  />
+                  <InfoRow label="Public IP" value={publicIp || '—'} title={management?.public_ip_error ?? undefined} />
+                </dl>
+                <Meter label="CPU" detail={cpuDetail} pct={cpuMeterPct} icon={<Cpu size={16} aria-hidden />} title={cpuTitle} />
+                <div className={styles.podBlock}>
+                  <p className={styles.podCount}>
+                    {k8sLoading ? 'Loading pods…' : `${ingressPods.length} pod${ingressPods.length === 1 ? '' : 's'}`}
+                  </p>
+                  <ul className={styles.podList}>
+                    {ingressPods.length === 0 ? (
+                      <li className={styles.podEmpty}>{k8sLoading ? 'Loading…' : 'No ingress pods found'}</li>
+                    ) : (
+                      ingressPods.slice(0, 4).map((pod) => (
+                        <li key={`${pod.namespace}/${pod.name}`} className={styles.podRow}>
+                          <span className={`${styles.mono} ${styles.podName}`} title={pod.name}>
+                            {pod.name}
+                          </span>
+                          <span className={styles.podMeta}>
+                            {pod.ready}
+                            {pod.cpu_usage_millicores != null ? ` · ${formatMillicores(pod.cpu_usage_millicores)}` : ''}
+                            {pod.memory_usage_bytes != null ? ` · ${formatTopMemory(pod.memory_usage_bytes)}` : ''}
+                          </span>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
+              </Panel>
+            )}
+
+            <Panel
+              title="Bandwidth"
+              description="Ingress vs egress rate (MB/s)"
+              actions={
+                <ChartLegend
+                  items={[
+                    { label: 'Egress', color: 'var(--color-chart-1)' },
+                    { label: 'Ingress', color: 'var(--color-chart-2)' },
+                  ]}
+                />
+              }
+            >
+              {bandwidthSeries.length > 0 ? (
+                <BandwidthChart data={bandwidthSeries} unit="MB/s" />
+              ) : (
+                <ChartEmpty message="Collecting live samples…" height={240} />
+              )}
+            </Panel>
+
+            <Panel
+              title="Busiest sites"
+              description="By H2 + H3 request volume"
+              flush
+              actions={
+                <Link to="/sites" className={styles.panelLink}>
+                  All sites <ArrowUpRight size={12} aria-hidden />
+                </Link>
+              }
+            >
+              {busiestSites.length === 0 ? (
+                <p className={styles.emptyNote}>No traffic yet</p>
+              ) : (
+                <ul className={styles.siteList}>
+                  {busiestSites.map((site) => (
+                    <li key={site.host} className={styles.siteRow}>
+                      <span className={styles.siteHost}>
+                        <StatusDot tone="success" />
+                        <span className={`${styles.mono} ${styles.siteName}`} title={site.host}>
+                          {site.host}
+                        </span>
+                      </span>
+                      <span className={styles.siteCount}>{site.count.toLocaleString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
           </div>
 
           {isIngressMode ? (
-            <div className={styles.panel}>
-              <h2 className={styles.panelTitle}>
-                <i className="fas fa-diagram-project" aria-hidden /> Kubernetes runtime
-              </h2>
-              <p className={styles.panelHint}>
-                All ingress controller replicas in the release namespace (refreshes every 10s)
-              </p>
-              <div className={styles.k8sHeader}>
-                <span className={styles.k8sLabel}>Ingress pods</span>
-                <span className={styles.k8sHint}>
+            <Panel
+              title="Kubernetes runtime"
+              description="Ingress controller replicas in the release namespace (refreshes every 10s)"
+              actions={
+                <StatusBadge tone="muted" dot={false}>
                   {k8sLoading ? 'Loading…' : `${ingressPods.length} pods`}
-                </span>
-              </div>
-              <div className={styles.k8sTableWrap}>
-                <table className={styles.k8sTable}>
+                </StatusBadge>
+              }
+              flush
+            >
+              <div className={styles.tableScroll}>
+                <table className={styles.table}>
                   <thead>
                     <tr>
                       <th>Name</th>
@@ -571,30 +636,26 @@ export default function Dashboard() {
                   <tbody>
                     {ingressPods.map((pod) => (
                       <tr key={`${pod.namespace}/${pod.name}`}>
-                        <td className={styles.k8sNameCell} title={pod.name}>
+                        <td className={`${styles.mono} ${styles.nameCell}`} title={pod.name}>
                           {pod.name}
                         </td>
-                        <td>{pod.namespace}</td>
+                        <td className={styles.mono}>{pod.namespace}</td>
                         <td>{pod.phase}</td>
-                        <td>{pod.ready}</td>
-                        <td>{pod.restarts ?? 0}</td>
-                        <td>
-                          {pod.cpu_usage_millicores != null
-                            ? formatMillicores(pod.cpu_usage_millicores)
-                            : 'n/a'}
+                        <td className={styles.mono}>{pod.ready}</td>
+                        <td className={styles.mono}>{pod.restarts ?? 0}</td>
+                        <td className={styles.mono}>
+                          {pod.cpu_usage_millicores != null ? formatMillicores(pod.cpu_usage_millicores) : 'n/a'}
                         </td>
-                        <td>
-                          {pod.memory_usage_bytes != null
-                            ? formatTopMemory(pod.memory_usage_bytes)
-                            : 'n/a'}
+                        <td className={styles.mono}>
+                          {pod.memory_usage_bytes != null ? formatTopMemory(pod.memory_usage_bytes) : 'n/a'}
                         </td>
-                        <td>{pod.pod_ip ?? 'n/a'}</td>
-                        <td>{pod.node_name ?? pod.node ?? 'n/a'}</td>
+                        <td className={styles.mono}>{pod.pod_ip ?? 'n/a'}</td>
+                        <td className={styles.mono}>{pod.node_name ?? pod.node ?? 'n/a'}</td>
                       </tr>
                     ))}
                     {ingressPods.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className={styles.k8sEmpty}>
+                        <td colSpan={9} className={styles.emptyCell}>
                           {k8sLoading ? 'Loading pods…' : 'No ingress pods found'}
                         </td>
                       </tr>
@@ -602,13 +663,10 @@ export default function Dashboard() {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </Panel>
           ) : null}
 
-          <div className={`${styles.panel} ${styles.listenersPortsCard}`}>
-            <h2 className={styles.panelTitle}>
-              <i className="fas fa-plug" aria-hidden /> Listeners & ports
-            </h2>
+          <Panel title="Listeners & ports" description="Bound services for this node" flush>
             <div className={styles.tableScroll}>
               <table className={styles.table}>
                 <thead>
@@ -635,9 +693,9 @@ export default function Dashboard() {
                           <span className={styles.svcId}>{L.id}</span>
                           <div className={styles.svcDesc}>{L.description}</div>
                         </td>
-                        <td className="mono">{L.protocol}</td>
-                        <td className="mono">{L.bind}</td>
-                        <td className="mono">{L.port}</td>
+                        <td className={styles.mono}>{L.protocol}</td>
+                        <td className={styles.mono}>{L.bind}</td>
+                        <td className={styles.mono}>{L.port}</td>
                         <td>{L.tls ? 'yes' : 'no'}</td>
                         <td>{L.stack}</td>
                       </tr>
@@ -646,21 +704,21 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Panel>
 
-          <div className={styles.panel}>
+          <Panel>
             <PrometheusScrapePanel management={management} />
-          </div>
+          </Panel>
 
-          <div className={styles.panel}>
+          <Panel>
             <HealthProbesPanel />
-          </div>
+          </Panel>
 
-          <div className={`${styles.panel} ${styles.tlsValidationCard}`}>
-            <h2 className={styles.panelTitle}>
-              <i className="fas fa-shield-halved" aria-hidden /> Site TLS validation
-            </h2>
-            <p className={styles.panelHint}>Hostname versus assigned certificate SAN/wildcard coverage.</p>
+          <Panel
+            title="Site TLS validation"
+            description="Hostname versus assigned certificate SAN/wildcard coverage."
+            flush
+          >
             <div className={styles.tableScroll}>
               <table className={styles.table}>
                 <thead>
@@ -682,21 +740,21 @@ export default function Dashboard() {
                   ) : (
                     tlsSiteRows.map((row) => {
                       const result = tlsValidationResultLabel(row);
-                      const resultClass =
+                      const tone =
                         result === 'match'
-                          ? styles.statusOk
+                          ? 'success'
                           : result === 'mismatch'
-                            ? styles.statusMismatch
+                            ? 'danger'
                             : result === 'pending'
-                              ? styles.statusPending
-                              : styles.statusUnknown;
+                              ? 'warning'
+                              : 'muted';
                       return (
                         <tr key={row.host}>
-                          <td className="mono">{row.host}</td>
+                          <td className={styles.mono}>{row.host}</td>
                           <td>
-                            <span className={`${styles.statusPill} ${resultClass}`}>{result}</span>
+                            <StatusBadge tone={tone}>{result}</StatusBadge>
                           </td>
-                          <td className="mono">{tlsValidationDetail(row)}</td>
+                          <td className={styles.mono}>{tlsValidationDetail(row)}</td>
                         </tr>
                       );
                     })
@@ -704,8 +762,7 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
-          </div>
-
+          </Panel>
         </>
       )}
     </section>

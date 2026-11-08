@@ -62,6 +62,25 @@
   --color-purple: var(--color-primary-p4);
   --color-orange: #f67a51;
 
+  /* Console-style aliases (pertisk-proxy admin parity) */
+  --color-muted-foreground: var(--color-text-secondary);
+  --color-success: var(--color-green);
+  --color-destructive: var(--color-red);
+  --color-warning: var(--color-yellow);
+  --color-info: var(--color-blue);
+  --color-popover: var(--color-card);
+  --color-popover-foreground: var(--color-text);
+  --color-chart-1: var(--color-primary);
+  --color-chart-2: var(--color-blue);
+  --color-chart-3: var(--color-green);
+  --color-chart-4: var(--color-orange);
+  --color-chart-5: var(--color-yellow);
+  --color-dashboard-metric-primary: var(--color-blue);
+  --color-dashboard-metric-secondary: var(--color-teal);
+  --color-dashboard-metric-tertiary: var(--color-green);
+  --color-dashboard-metric-quaternary: var(--color-orange);
+  --color-dashboard-warning: var(--color-orange);
+
   --color-icon-primary: var(--color-primary-p3);
   --color-icon-secondary: var(--color-naturals-n10);
   --color-icon-success: var(--color-green-g1);
