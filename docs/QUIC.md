@@ -8,7 +8,7 @@ Chrome advertises **1472** bytes and drops oversized packets (`ERR_MSG_TOO_BIG`)
 
 ## Upstream erlang_quic status
 
-`erlang_quic` **1.4.0** includes the Chromium interop fix for oversized TLS handshake flight datagrams (#134/#137), plus related HTTP/3/QPACK fixes.
+Tracked pin is **`2.5.0`** (see `rebar.config`). Upstream since 1.4.0 includes the Chromium interop fix for oversized TLS handshake flight datagrams (#134/#137). Releases **2.2.1–2.5.0** add migration/0-RTT hardening, QPACK DoS bounds, mTLS listener fixes, and WebTransport stream helpers. OTP **27+** is required (CI/RPM already use 27–29).
 
 ## Admin UI over HTTP/3
 

@@ -64,7 +64,7 @@ See [Prometheus metrics](prometheus-metrics.md).
 
 pertisk-eproxy tracks **Cowboy master** (2.13+). **Proxy** HTTP/1.1 and HTTPS listeners set `dynamic_buffer => {1024, 131072}` for H2c/large-body workloads ([OTP #9423](https://github.com/erlang/otp/issues/9423)).
 
-**k6 `GET /api/health` over HTTP/3** (Cowboy+quicer) hits the same proxy routes as HTTPS (`pertisk_eproxy_handler` / health cache). The legacy erlang_quic gateway still has `try_h3_benchmark_fast_path/4` when enabled.
+**k6 `GET /api/health` over HTTP/3** (Cowboy+quicer) hits the same proxy routes as HTTPS (`pertisk_eproxy_handler` / health cache). The erlang_quic gateway still has `try_h3_benchmark_fast_path/5` when enabled (health paths now count metrics).
 
 | Symptom | Likely cause | Mitigation |
 |---------|--------------|------------|
