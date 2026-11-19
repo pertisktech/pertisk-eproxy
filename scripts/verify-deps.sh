@@ -2,8 +2,13 @@
 set -e
 ROOT="${1:-.}"
 EKUB_SRC=$(find "${ROOT}/_build" -path '*/ekub/src/ekub_core.erl' 2>/dev/null | head -1)
-QUIC_APP=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
-QUIC_QPACK=$(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/dev/null | head -1)
+# Local erlang_quic via `_checkouts/quic` (no copy under `_build/.../src`).
+QUIC_APP=$(find "${ROOT}/_build" "${ROOT}/_checkouts" \
+  \( -path '*/quic/src/quic.app.src' -o -path '*/quic-*/src/quic.app.src' \) \
+  2>/dev/null | head -1)
+QUIC_QPACK=$(find "${ROOT}/_build" "${ROOT}/_checkouts" \
+  \( -path '*/quic/src/qpack/quic_qpack.erl' -o -path '*/quic-*/src/qpack/quic_qpack.erl' \) \
+  2>/dev/null | head -1)
 [ -f "$EKUB_SRC" ] || { echo "verify-deps: ekub not fetched" >&2; exit 1; }
 [ -f "$QUIC_APP" ] || { echo "verify-deps: quic not fetched" >&2; exit 1; }
 [ -f "$QUIC_QPACK" ] || { echo "verify-deps: quic_qpack source missing" >&2; exit 1; }

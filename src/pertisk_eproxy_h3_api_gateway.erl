@@ -93,6 +93,10 @@ do_start_gateway(Port, CertDer, KeyTerm, CertChain, SniCerts) ->
         #{
             settings => h3_http_settings(Config),
             handler => ?MODULE,
+            %% Health / live probes: run on the H3 connection process (no
+            %% spawn). Tiny fixed body via quic_h3:respond/5. Proxied paths
+            %% still spawn so Gun I/O cannot stall the connection.
+            handler_inline_paths => fun h3_inline_handler_path/1,
             quic_opts => QuicOpts
         }
     ),
@@ -459,15 +463,13 @@ h3_send_call(Fun, RetriesLeft) ->
 
 h3_reply_status(H3Conn, StreamId, Status, Headers, Body) ->
     H3Headers = pertisk_eproxy_response_headers:merge_h3(Headers),
-    case h3_send_response(H3Conn, StreamId, Status, H3Headers) of
-        ok ->
-            %% Always FIN the stream (required for HEAD with empty body too).
-            h3_send_data(H3Conn, StreamId, Body, true);
-        {error, connection_gone} ->
-            {error, connection_gone};
-        {error, _} = Err ->
-            Err
-    end.
+    %% One gen_statem:call: HEADERS+DATA+FIN coalesce in the H3 connection
+    %% (quic_h3:respond/5). Two calls (send_response + send_data) doubled
+    %% wakeup cost under +sbwt none and showed ~2x worse than Quinn on health.
+    h3_send_call(
+        fun() -> quic_h3:respond(H3Conn, StreamId, Status, H3Headers, Body) end,
+        ?H3_SEND_QUEUE_RETRIES
+    ).
 
 h3_send_failed_reason({noproc, {gen_statem, call, _}}) ->
     connection_gone;
@@ -1901,6 +1903,13 @@ try_h3_benchmark_fast_path(H3Conn, StreamId, Method0, PathOnly, LogHost) ->
             end
     end.
 
+%% Paths that may run inline on the H3 connection (handler_inline_paths).
+h3_inline_handler_path(Path) when is_binary(Path) ->
+    {PathOnly, _} = split_path_query(Path),
+    is_h3_benchmark_path(PathOnly);
+h3_inline_handler_path(_) ->
+    false.
+
 is_h3_benchmark_path(<<"/api/ingress/live">>) ->
     true;
 is_h3_benchmark_path(Path) ->
@@ -2114,43 +2123,56 @@ start_prefer_ipv6_server(ServerName, Port, BaseOpts) ->
     end.
 
 %% Single [::] dual-stack socket on Linux (Quinn / Node http3 model).
-%% Must use gen_udp backend: the socket backend ignores extra_socket_opts for server sockets
-%% (open_socket_backend hardcodes 'inet' family), so inet6/ipv6_v6only opts are silently
-%% dropped. gen_udp backend appends extra_socket_opts after the base 'inet' flag so the
-%% last entry (inet6) wins, producing a dual-stack [::] socket.
--define(UDP_RECV_BUF, 1048576).
--define(UDP_SEND_BUF, 1048576).
+%% Prefer OTP `socket` backend (GSO/GRO + shared sender). erlang_quic applies
+%% `{ipv6_v6only, false}` before bind so IPv4-mapped peers reach the listener.
+%% Fall back to gen_udp if the socket backend cannot open dual-stack.
+%% Match pertisk-proxy Quinn (7 MiB). Kernel still caps at net.core.rmem_max / wmem_max.
+-define(UDP_RECV_BUF, 7340032).
+-define(UDP_SEND_BUF, 7340032).
+
+udp_buf_socket_opts() ->
+    [{recbuf, ?UDP_RECV_BUF}, {sndbuf, ?UDP_SEND_BUF}].
+
+dual_stack_quic_opts(QuicBase, Backend) ->
+    maps:merge(QuicBase, #{
+        socket_backend => Backend,
+        %% Single-socket dual-stack: reuseport spreads 0-RTT resumes across
+        %% acceptors and can stall http3check's second QUIC connection.
+        reuseport => false,
+        extra_socket_opts =>
+            [inet6, {ipv6_v6only, false}] ++ udp_buf_socket_opts()
+    }).
 
 start_linux_dual_stack_udp(ServerName, Port, BaseOpts) ->
     QuicBase = maps:get(quic_opts, BaseOpts, #{}),
-    Opts = BaseOpts#{
-        quic_opts =>
-            maps:merge(QuicBase, #{
-                socket_backend => gen_udp,
-                %% Single-socket dual-stack: reuseport spreads 0-RTT resumes across
-                %% acceptors and can stall http3check's second QUIC connection.
-                reuseport => false,
-                extra_socket_opts => [
-                    inet6,
-                    {ipv6_v6only, false},
-                    {recbuf, ?UDP_RECV_BUF},
-                    {sndbuf, ?UDP_SEND_BUF}
-                ]
-            })
-    },
-    case quic_h3:start_server(ServerName, Port, Opts) of
+    SocketOpts = BaseOpts#{quic_opts => dual_stack_quic_opts(QuicBase, socket)},
+    case quic_h3:start_server(ServerName, Port, SocketOpts) of
         {ok, _} = Ok ->
             _ = lager:info(
-                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack recbuf=~w sndbuf=~w)",
+                "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack socket/GSO recbuf=~w sndbuf=~w)",
                 [Port, ?UDP_RECV_BUF, ?UDP_SEND_BUF]
             ),
             Ok;
-        {error, Reason} ->
+        {error, SocketReason} ->
             _ = lager:warning(
-                "HTTP/3 dual-stack udp/[::]:~w failed (~p); falling back to IPv4-only UDP",
-                [Port, Reason]
+                "HTTP/3 dual-stack socket backend on udp/[::]:~w failed (~p); trying gen_udp",
+                [Port, SocketReason]
             ),
-            start_single_udp_listener(ServerName, Port, BaseOpts)
+            GenOpts = BaseOpts#{quic_opts => dual_stack_quic_opts(QuicBase, gen_udp)},
+            case quic_h3:start_server(ServerName, Port, GenOpts) of
+                {ok, _} = Ok ->
+                    _ = lager:info(
+                        "HTTP/3 QUIC listener on udp/[::]:~w (dual-stack gen_udp recbuf=~w sndbuf=~w)",
+                        [Port, ?UDP_RECV_BUF, ?UDP_SEND_BUF]
+                    ),
+                    Ok;
+                {error, Reason} ->
+                    _ = lager:warning(
+                        "HTTP/3 dual-stack udp/[::]:~w failed (~p); falling back to IPv4-only UDP",
+                        [Port, Reason]
+                    ),
+                    start_single_udp_listener(ServerName, Port, BaseOpts)
+            end
     end.
 
 %% Non-Linux Unix: 0.0.0.0 + [::] via gen_udp (OTP socket inet6 bind is einval on macOS).
@@ -2162,7 +2184,7 @@ start_unix_split_udp(ServerName, Port, BaseOpts) ->
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
                 reuseport => false,
-                extra_socket_opts => []
+                extra_socket_opts => udp_buf_socket_opts()
             })
     },
     V6Opts = BaseOpts#{
@@ -2170,7 +2192,8 @@ start_unix_split_udp(ServerName, Port, BaseOpts) ->
             maps:merge(QuicBase, #{
                 socket_backend => gen_udp,
                 reuseport => false,
-                extra_socket_opts => [inet6, {ipv6_v6only, true}]
+                extra_socket_opts =>
+                    [inet6, {ipv6_v6only, true}] ++ udp_buf_socket_opts()
             })
     },
     _ = lager:info(
@@ -2227,7 +2250,7 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     maps:merge(QuicBase, #{
                         socket_backend => gen_udp,
                         reuseport => true,
-                        extra_socket_opts => []
+                        extra_socket_opts => udp_buf_socket_opts()
                     })
             },
             %% Native IPv6 only (::, V6ONLY=1). Do not use V6ONLY=0 when v4 is also bound.
@@ -2237,7 +2260,8 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                     maps:merge(QuicBase, #{
                         socket_backend => gen_udp,
                         reuseport => true,
-                        extra_socket_opts => [inet6, {ipv6_v6only, true}]
+                        extra_socket_opts =>
+                            [inet6, {ipv6_v6only, true}] ++ udp_buf_socket_opts()
                     })
             },
 
@@ -2272,7 +2296,8 @@ start_linux_split_udp(ServerName, Port, BaseOpts) ->
                                 maps:merge(QuicBase, #{
                                     socket_backend => gen_udp,
                                     reuseport => false,
-                                    extra_socket_opts => [inet6, {ipv6_v6only, false}]
+                                    extra_socket_opts =>
+                                        [inet6, {ipv6_v6only, false}] ++ udp_buf_socket_opts()
                                 })
                         }
                 end,

@@ -8,7 +8,15 @@ set -e
 ROOT="${REBAR_ROOT_DIR:-.}"
 found=0
 
-for f in $(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/dev/null | sort -u); do
+# `_checkouts/quic` is used for local erlang_quic (Docker bind-mount). Rebar
+# does not copy checkout sources under `_build/.../lib/quic`, so search both.
+quic_src_roots() {
+  find "${ROOT}/_build" "${ROOT}/_checkouts" \
+    \( -path '*/quic/src/qpack/quic_qpack.erl' -o -path '*/quic-*/src/qpack/quic_qpack.erl' \) \
+    2>/dev/null | sort -u
+}
+
+for f in $(quic_src_roots); do
   found=1
 
   if grep -q '0 -> 16#00' "$f"; then
@@ -24,12 +32,14 @@ for f in $(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/dev/
 done
 
 if [ "$found" -eq 0 ]; then
-  echo "patch-quic: no quic_qpack.erl under _build (run rebar3 get-deps first)" >&2
+  echo "patch-quic: no quic_qpack.erl under _build or _checkouts (run rebar3 get-deps first)" >&2
   exit 1
 fi
 
-QPACK=$(find "${ROOT}/_build" -path '*/quic/src/qpack/quic_qpack.erl' 2>/dev/null | head -1)
-QUIC_APP=$(find "${ROOT}/_build" -path '*/quic/src/quic.app.src' 2>/dev/null | head -1)
+QPACK=$(quic_src_roots | head -1)
+QUIC_APP=$(find "${ROOT}/_build" "${ROOT}/_checkouts" \
+  \( -path '*/quic/src/quic.app.src' -o -path '*/quic-*/src/quic.app.src' \) \
+  2>/dev/null | head -1)
 QUIC_VSN=""
 if [ -n "$QUIC_APP" ] && [ -f "$QUIC_APP" ]; then
   QUIC_VSN=$(sed -n 's/.*{vsn, "\([^"]*\)"}.*/\1/p' "$QUIC_APP" | head -1)
