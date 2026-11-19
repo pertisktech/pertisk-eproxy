@@ -8,7 +8,9 @@ Chrome advertises **1472** bytes and drops oversized packets (`ERR_MSG_TOO_BIG`)
 
 ## Upstream erlang_quic status
 
-Tracked pin is **`2.6.1`** (see `rebar.config`). Upstream since 1.4.0 includes the Chromium interop fix for oversized TLS handshake flight datagrams (#134/#137). Releases **2.2.1–2.6.1** add migration/0-RTT hardening, QPACK DoS bounds, mTLS listener fixes, WebTransport stream helpers, and opt-in `notify_streams_available`. OTP **27+** is required (CI/RPM already use 27–29).
+Tracked pin is **`3.1.3`** (see `rebar.config`). Upstream since 1.4.0 includes the Chromium interop fix for oversized TLS handshake flight datagrams (#134/#137). Highlights through **3.1.3**: hostname/EKU cert checks, secret redaction, BBRv3, ACK frequency, idle/timer CPU cuts, H3 datagram malformed close. OTP **27+** is required (CI/RPM already use 27–29).
+
+Local `scripts/patch-quic.sh` still applies three HTTP/3 helpers not upstream yet: H3 draining `catch open_critical_streams`, listener `max_early_data` + ticket disable when 0, and PSK-resume anti-amplification. QPACK RIC / inet6 / SNI passthrough are already upstream.
 
 ## Admin UI over HTTP/3
 
